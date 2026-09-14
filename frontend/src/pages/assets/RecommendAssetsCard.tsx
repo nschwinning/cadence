@@ -515,12 +515,24 @@ function CompletedSummary({
           Added <strong>{added}</strong> new {assetWord}. Skipped {skipped} (
           {duplicate} duplicate, {ineligible} ineligible), {errored} {errorWord}.
         </div>
+      ) : results.length === 0 ? (
+        <div
+          role="alert"
+          className="rounded border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-700"
+        >
+          The recommender returned no candidates to evaluate — there was nothing
+          new to add. This is expected in offline (stub) mode once the stub&apos;s
+          fixed pool is already in your universe; configure the live recommender
+          to discover new assets.
+        </div>
       ) : (
         <div
           role="alert"
           className="rounded border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-700"
         >
-          No new assets were added — see details below.
+          No new assets were added — every candidate was skipped ({duplicate}{' '}
+          duplicate, {ineligible} ineligible), {errored} {errorWord}. See details
+          below.
         </div>
       )}
 
@@ -545,7 +557,8 @@ function CompletedSummary({
             : ''
         }`}
       >
-        {sorted.map((result, i) => {
+        {sorted.length > 0 &&
+          sorted.map((result, i) => {
           const meta = OUTCOME_META[result.outcome];
           return (
             <li
