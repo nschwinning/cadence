@@ -14,6 +14,7 @@ from typing import Protocol, runtime_checkable
 
 from cadence.broker.models import (
     AccountInfo,
+    AssetClass,
     Order,
     OrderType,
     Position,
@@ -62,7 +63,9 @@ class Broker(Protocol):
         ...
 
     # Market data
-    def get_quote(self, symbol: str) -> Quote:
+    def get_quote(
+        self, symbol: str, asset_class: AssetClass = ...
+    ) -> Quote:
         """Return the latest quote for ``symbol``."""
         ...
 
@@ -95,6 +98,7 @@ class Broker(Protocol):
         order_type: OrderType = ...,
         limit_price: float | None = ...,
         time_in_force: TimeInForce = ...,
+        asset_class: AssetClass = ...,
     ) -> Order:
         """Submit a buy order and return the resulting :class:`Order`."""
         ...
@@ -106,6 +110,7 @@ class Broker(Protocol):
         order_type: OrderType = ...,
         limit_price: float | None = ...,
         time_in_force: TimeInForce = ...,
+        asset_class: AssetClass = ...,
     ) -> Order:
         """Submit a sell order and return the resulting :class:`Order`."""
         ...

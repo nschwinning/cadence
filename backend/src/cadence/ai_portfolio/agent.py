@@ -122,6 +122,9 @@ Requirements:
 - You may set an asset's allocation_pct to ~0 to effectively exclude it
 - Provide concrete, evidence-based investment theses
 - Focus on stocks you have high conviction in
+- Candidates may include crypto assets (shown via their ``category``); crypto uses
+  yfinance-style tickers like ``BTC-USD`` and trades 24/7. Size any crypto weight
+  according to the requested risk profile.
 
 Discovery and cost controls:
 - You may also research and include assets NOT in the candidate universe if you
@@ -145,6 +148,9 @@ Requirements:
 - Be conservative: buy-and-hold means holding through normal volatility, so only
   change weights materially when there are real, evidence-based reasons
 - Use the web_search tool to check latest news and fundamentals
+- Candidates may include crypto assets (shown via their ``category``); crypto uses
+  yfinance-style tickers like ``BTC-USD`` and trades 24/7. Weight any crypto
+  according to the portfolio's risk profile.
 
 Discovery and cost controls:
 - You may include assets NOT in the current holdings or universe if compelling.

@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import pytest
+
 from cadence.ai_portfolio.agent import AIPortfolioStock, AITargetAllocation
 from cadence.ai_portfolio.executor import AIPortfolioExecutor
 from cadence.broker.base import OrderError
-from cadence.broker.models import OrderType, Position, TimeInForce
+from cadence.broker.models import AssetClass, OrderType, Position, TimeInForce
 from cadence.broker.stub import StubBroker
 
 
@@ -43,10 +45,13 @@ class _FailingBroker(StubBroker):
         order_type: OrderType = OrderType.MARKET,
         limit_price: float | None = None,
         time_in_force: TimeInForce = TimeInForce.DAY,
+        asset_class: AssetClass = AssetClass.EQUITY,
     ):  # type: ignore[override]
         if symbol == self._fail_ticker:
             raise OrderError(f"forced failure for {symbol}")
-        return super().buy(symbol, quantity, order_type, limit_price, time_in_force)
+        return super().buy(
+            symbol, quantity, order_type, limit_price, time_in_force, asset_class
+        )
 
 
 # --------------------------------------------------------------------------- #
@@ -169,6 +174,103 @@ def test_execute_rebalance_zero_total_weight_exits_all() -> None:
     assert results[0].ticker == "AAPL"
     assert results[0].side == "sell"
     assert results[0].shares == 3
+
+
+# --------------------------------------------------------------------------- #
+# Crypto: fractional, class-aware sizing
+# --------------------------------------------------------------------------- #
+
+_CRYPTO = {"BTC-USD": AssetClass.CRYPTO}
+
+
+def test_execute_build_crypto_places_fractional_units() -> None:
+    broker = StubBroker()
+    price = broker.get_quote("BTC-USD").last
+    # A single crypto pick normalizes to weight 1.0; allocate 0.25 units' worth.
+    executor = AIPortfolioExecutor(broker, allocated_capital=price * 0.25)
+
+    results = executor.execute_build(
+        [_stock("BTC-USD", 1.0)], asset_classes=_CRYPTO
+    )
+
+    assert len(results) == 1
+    assert results[0].executed is True
+    assert 0 < results[0].shares < 1  # fractional unit placed, not skipped
+
+
+def test_execute_build_crypto_skips_below_min_notional() -> None:
+    broker = StubBroker()
+    # $0.50 allocation is below the ~$1 crypto minimum notional -> skipped.
+    executor = AIPortfolioExecutor(broker, allocated_capital=0.5)
+
+    results = executor.execute_build(
+        [_stock("BTC-USD", 1.0)], asset_classes=_CRYPTO
+    )
+
+    assert results[0].executed is False
+    assert results[0].shares == 0
+    assert "notional" in results[0].reason.lower()
+
+
+def test_execute_rebalance_crypto_buys_fractional_delta() -> None:
+    broker = StubBroker()
+    broker.buy("BTC-USD", 1.0)
+    positions = {p.symbol: p for p in broker.get_positions()}
+    price = broker.get_quote("BTC-USD").last
+    # Target 2 units vs 1 held -> buy 1.0 fractional-capable unit.
+    executor = AIPortfolioExecutor(broker, allocated_capital=price * 2)
+
+    results = executor.execute_rebalance(
+        targets=[_target("BTC-USD", 1.0)],
+        current_positions=positions,
+        asset_classes=_CRYPTO,
+    )
+
+    assert len(results) == 1
+    assert results[0].side == "long"
+    assert results[0].shares == pytest.approx(1.0)
+
+
+def test_execute_rebalance_crypto_exit_sells_full_float_qty() -> None:
+    broker = StubBroker()
+    broker.buy("BTC-USD", 0.5)
+    positions = {p.symbol: p for p in broker.get_positions()}
+    executor = AIPortfolioExecutor(broker, allocated_capital=100_000)
+
+    results = executor.execute_rebalance(
+        targets=[],  # crypto omitted -> full exit
+        current_positions=positions,
+        asset_classes=_CRYPTO,
+    )
+
+    assert len(results) == 1
+    assert results[0].side == "sell"
+    assert results[0].shares == pytest.approx(0.5)
+    assert "exit" in results[0].reason.lower()
+
+
+def test_execute_rebalance_market_closed_skips_equity_trades_crypto() -> None:
+    broker = StubBroker()
+    broker.buy("AAPL", 10)
+    broker.buy("BTC-USD", 1.0)
+    positions = {p.symbol: p for p in broker.get_positions()}
+    price_btc = broker.get_quote("BTC-USD").last
+    executor = AIPortfolioExecutor(broker, allocated_capital=price_btc * 4)
+
+    results = executor.execute_rebalance(
+        targets=[_target("AAPL", 0.5), _target("BTC-USD", 0.5)],
+        current_positions=positions,
+        asset_classes=_CRYPTO,
+        market_open=False,
+    )
+
+    by_ticker = {r.ticker: r for r in results}
+    # Equity is not traded while the market is closed.
+    assert by_ticker["AAPL"].executed is False
+    assert by_ticker["AAPL"].reason == "equity market closed"
+    # Crypto still trades.
+    assert by_ticker["BTC-USD"].executed is True
+    assert by_ticker["BTC-USD"].side == "long"
 
 
 def test_position_helper_import_available() -> None:

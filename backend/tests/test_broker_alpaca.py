@@ -12,7 +12,7 @@ import pytest
 
 from cadence.broker import AlpacaBroker
 from cadence.broker.base import ConnectionError
-from cadence.broker.models import OrderSide, OrderStatus, OrderType
+from cadence.broker.models import AssetClass, OrderSide, OrderStatus, OrderType
 
 
 class FakeResponse:
@@ -163,3 +163,127 @@ def test_get_quote_uses_data_host_and_parses_bid_ask() -> None:
     assert quote.bid == 149.9
     assert quote.ask == 150.1
     assert session.calls[0]["url"].startswith("https://data.alpaca.markets")
+
+
+# --------------------------------------------------------------------------- #
+# Crypto routing
+# --------------------------------------------------------------------------- #
+
+
+def test_crypto_buy_posts_slash_symbol_gtc_and_fractional_qty() -> None:
+    order_response = {
+        "id": "crypto-1",
+        "symbol": "BTC/USD",
+        "side": "buy",
+        "qty": "0.05",
+        "type": "market",
+        "time_in_force": "gtc",
+        "status": "filled",
+        "filled_qty": "0.05",
+        "filled_avg_price": "60000.0",
+    }
+    broker, session = _make_broker({("POST", "/v2/orders"): order_response})
+
+    order = broker.buy("BTC-USD", 0.05, asset_class=AssetClass.CRYPTO)
+
+    assert order.status == OrderStatus.FILLED
+    payload = session.calls[0]["json"]
+    assert payload["symbol"] == "BTC/USD"
+    assert payload["time_in_force"] == "gtc"
+    assert payload["qty"] == "0.05"
+    assert payload["side"] == "buy"
+
+
+def test_equity_buy_still_posts_day() -> None:
+    order_response = {
+        "id": "eq-1",
+        "symbol": "AAPL",
+        "side": "buy",
+        "qty": "10",
+        "type": "market",
+        "time_in_force": "day",
+        "status": "filled",
+    }
+    broker, session = _make_broker({("POST", "/v2/orders"): order_response})
+
+    broker.buy("AAPL", 10)
+
+    payload = session.calls[0]["json"]
+    assert payload["symbol"] == "AAPL"
+    assert payload["time_in_force"] == "day"
+
+
+def test_get_quote_crypto_uses_crypto_endpoint() -> None:
+    quote_response = {
+        "quotes": {
+            "BTC/USD": {"bp": 59990.0, "ap": 60010.0, "t": "2026-09-14T10:00:00Z"}
+        }
+    }
+    broker, session = _make_broker(
+        {("GET", "/v1beta3/crypto/us/latest/quotes"): quote_response}
+    )
+
+    quote = broker.get_quote("BTC-USD", AssetClass.CRYPTO)
+
+    # The canonical input symbol is preserved on the returned quote.
+    assert quote.symbol == "BTC-USD"
+    assert quote.bid == 59990.0
+    assert quote.ask == 60010.0
+    assert session.calls[0]["url"].startswith("https://data.alpaca.markets")
+    assert session.calls[0]["url"].endswith("/v1beta3/crypto/us/latest/quotes")
+    assert session.calls[0]["params"] == {"symbols": "BTC/USD"}
+
+
+def test_get_quote_crypto_falls_back_to_trades() -> None:
+    broker, _session = _make_broker(
+        {
+            ("GET", "/v1beta3/crypto/us/latest/quotes"): {"quotes": {}},
+            ("GET", "/v1beta3/crypto/us/latest/trades"): {
+                "trades": {"BTC/USD": {"p": 60050.0, "t": "2026-09-14T10:00:00Z"}}
+            },
+        }
+    )
+
+    quote = broker.get_quote("BTC-USD", AssetClass.CRYPTO)
+
+    assert quote.symbol == "BTC-USD"
+    assert quote.last == 60050.0
+
+
+def test_parse_crypto_position_maps_to_canonical() -> None:
+    positions_response = [
+        {
+            "symbol": "BTC/USD",
+            "asset_class": "crypto",
+            "qty": "0.5",
+            "avg_entry_price": "60000.0",
+            "current_price": "61000.0",
+            "market_value": "30500.0",
+            "unrealized_pl": "500.0",
+        }
+    ]
+    broker, _ = _make_broker({("GET", "/v2/positions"): positions_response})
+
+    positions = broker.get_positions()
+
+    assert len(positions) == 1
+    assert positions[0].symbol == "BTC-USD"
+    assert positions[0].quantity == 0.5
+
+
+def test_parse_equity_position_symbol_unchanged() -> None:
+    positions_response = [
+        {
+            "symbol": "AAPL",
+            "asset_class": "us_equity",
+            "qty": "10",
+            "avg_entry_price": "150.0",
+            "current_price": "155.0",
+            "market_value": "1550.0",
+            "unrealized_pl": "50.0",
+        }
+    ]
+    broker, _ = _make_broker({("GET", "/v2/positions"): positions_response})
+
+    positions = broker.get_positions()
+    assert positions[0].symbol == "AAPL"

@@ -20,6 +20,7 @@ import requests
 from cadence.broker.base import BrokerError, ConnectionError, OrderError
 from cadence.broker.models import (
     AccountInfo,
+    AssetClass,
     Order,
     OrderSide,
     OrderStatus,
@@ -28,6 +29,7 @@ from cadence.broker.models import (
     Quote,
     TimeInForce,
 )
+from cadence.broker.symbols import to_alpaca_symbol, to_canonical_symbol
 from cadence.config import settings
 
 logger = logging.getLogger(__name__)
@@ -163,12 +165,17 @@ class AlpacaBroker:
     # Orders --------------------------------------------------------------
     def submit_order(self, order: Order) -> Order:
         """Submit an order and update it from the broker response."""
+        time_in_force = order.time_in_force
+        if order.asset_class == AssetClass.CRYPTO and time_in_force == TimeInForce.DAY:
+            # Crypto rejects "day"; Alpaca crypto orders take gtc/ioc only.
+            time_in_force = TimeInForce.GTC
+
         order_data: dict[str, str] = {
-            "symbol": order.symbol,
+            "symbol": to_alpaca_symbol(order.symbol, order.asset_class),
             "qty": str(order.quantity),
             "side": order.side.value,
             "type": self._map_order_type(order.order_type),
-            "time_in_force": self._map_time_in_force(order.time_in_force),
+            "time_in_force": self._map_time_in_force(time_in_force),
         }
 
         if order.order_type == OrderType.LIMIT:
@@ -238,8 +245,17 @@ class AlpacaBroker:
         return [self._parse_order(o) for o in results]
 
     # Market data ---------------------------------------------------------
-    def get_quote(self, symbol: str) -> Quote:
-        """Get the latest quote, falling back to the latest trade price."""
+    def get_quote(
+        self, symbol: str, asset_class: AssetClass = AssetClass.EQUITY
+    ) -> Quote:
+        """Get the latest quote, falling back to the latest trade price.
+
+        Equities use the ``/v2/stocks`` data endpoints; crypto uses the
+        ``/v1beta3/crypto`` endpoints. The returned :class:`Quote` always carries
+        the canonical input ``symbol``.
+        """
+        if asset_class == AssetClass.CRYPTO:
+            return self._get_crypto_quote(symbol)
         try:
             result = self._request(
                 "GET",
@@ -271,6 +287,49 @@ class AlpacaBroker:
             except (BrokerError, ValueError, KeyError, TypeError):
                 return Quote(symbol=symbol)
 
+    def _get_crypto_quote(self, symbol: str) -> Quote:
+        """Get a crypto quote from Alpaca's crypto data endpoints.
+
+        Reads the latest quote (bid/ask); on failure or empty payload falls back
+        to the latest trade price. The returned :class:`Quote` carries the
+        canonical input ``symbol``.
+        """
+        alpaca_symbol = to_alpaca_symbol(symbol, AssetClass.CRYPTO)
+        try:
+            result = self._request(
+                "GET",
+                "/v1beta3/crypto/us/latest/quotes",
+                params={"symbols": alpaca_symbol},
+                base_url=DATA_BASE_URL,
+            )
+            quote_data = (result or {}).get("quotes", {}).get(alpaca_symbol, {})
+            quote = Quote(
+                symbol=symbol,
+                bid=float(quote_data.get("bp", 0)) or None,
+                ask=float(quote_data.get("ap", 0)) or None,
+                timestamp=_parse_iso(quote_data.get("t")),
+            )
+            if quote.bid is not None or quote.ask is not None:
+                return quote
+        except (BrokerError, ValueError, KeyError, TypeError):
+            pass
+
+        try:
+            result = self._request(
+                "GET",
+                "/v1beta3/crypto/us/latest/trades",
+                params={"symbols": alpaca_symbol},
+                base_url=DATA_BASE_URL,
+            )
+            trade_data = (result or {}).get("trades", {}).get(alpaca_symbol, {})
+            return Quote(
+                symbol=symbol,
+                last=float(trade_data.get("p", 0)) or None,
+                timestamp=_parse_iso(trade_data.get("t")),
+            )
+        except (BrokerError, ValueError, KeyError, TypeError):
+            return Quote(symbol=symbol)
+
     def get_quotes(self, symbols: list[str]) -> dict[str, Quote]:
         """Get quotes for multiple symbols."""
         return {symbol: self.get_quote(symbol) for symbol in symbols}
@@ -283,6 +342,7 @@ class AlpacaBroker:
         order_type: OrderType = OrderType.MARKET,
         limit_price: float | None = None,
         time_in_force: TimeInForce = TimeInForce.DAY,
+        asset_class: AssetClass = AssetClass.EQUITY,
     ) -> Order:
         """Submit a buy order."""
         return self.submit_order(
@@ -290,9 +350,10 @@ class AlpacaBroker:
                 symbol=symbol,
                 side=OrderSide.BUY,
                 quantity=quantity,
+                asset_class=asset_class,
                 order_type=order_type,
                 limit_price=limit_price,
-                time_in_force=time_in_force,
+                time_in_force=self._effective_tif(time_in_force, asset_class),
             )
         )
 
@@ -303,6 +364,7 @@ class AlpacaBroker:
         order_type: OrderType = OrderType.MARKET,
         limit_price: float | None = None,
         time_in_force: TimeInForce = TimeInForce.DAY,
+        asset_class: AssetClass = AssetClass.EQUITY,
     ) -> Order:
         """Submit a sell order."""
         return self.submit_order(
@@ -310,11 +372,21 @@ class AlpacaBroker:
                 symbol=symbol,
                 side=OrderSide.SELL,
                 quantity=quantity,
+                asset_class=asset_class,
                 order_type=order_type,
                 limit_price=limit_price,
-                time_in_force=time_in_force,
+                time_in_force=self._effective_tif(time_in_force, asset_class),
             )
         )
+
+    @staticmethod
+    def _effective_tif(
+        time_in_force: TimeInForce, asset_class: AssetClass
+    ) -> TimeInForce:
+        """Default crypto to GTC when the caller left the equity default (DAY)."""
+        if asset_class == AssetClass.CRYPTO and time_in_force == TimeInForce.DAY:
+            return TimeInForce.GTC
+        return time_in_force
 
     # Market status -------------------------------------------------------
     def get_clock(self) -> dict[str, Any]:
@@ -329,8 +401,17 @@ class AlpacaBroker:
     # Parsing helpers -----------------------------------------------------
     @staticmethod
     def _parse_position(pos: dict[str, Any]) -> Position:
+        raw_symbol = cast("str", pos.get("symbol"))
+        # Reconcile crypto positions back to the canonical universe ticker
+        # (Alpaca reports e.g. "BTC/USD"); equities are returned unchanged.
+        raw_class = str(pos.get("asset_class") or "").lower()
+        symbol = (
+            to_canonical_symbol(raw_symbol, AssetClass.CRYPTO)
+            if "crypto" in raw_class
+            else raw_symbol
+        )
         return Position(
-            symbol=cast("str", pos.get("symbol")),
+            symbol=symbol,
             quantity=float(pos.get("qty", 0)),
             avg_cost=float(pos.get("avg_entry_price", 0)),
             current_price=float(pos.get("current_price", 0)),

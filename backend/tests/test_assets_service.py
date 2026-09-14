@@ -128,11 +128,21 @@ def test_add_asset_missing_company_profile_fields_stored_as_none(
 
 
 def test_add_asset_classifies_crypto(db_session: Session) -> None:
+    # A crypto ticker with no provider sector is stored classified as crypto
+    # with a null sector (a valid state), and appears in the universe.
     asset = service.add_asset(
-        db_session, "BTC-USD", _eligible_provider(quote_type="CRYPTOCURRENCY")
+        db_session,
+        "BTC-USD",
+        _eligible_provider(quote_type="CRYPTOCURRENCY", sector_key=None),
     )
 
+    assert asset.ticker == "BTC-USD"
     assert asset.category == AssetCategory.CRYPTO.value
+    assert asset.sector is None
+
+    universe = {a.ticker: a for a in service.list_assets(db_session)}
+    assert "BTC-USD" in universe
+    assert universe["BTC-USD"].category == AssetCategory.CRYPTO.value
 
 
 def test_add_asset_persists_sector_for_equity(db_session: Session) -> None:

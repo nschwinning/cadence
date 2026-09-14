@@ -15,6 +15,7 @@ from datetime import UTC, datetime
 from cadence.broker.base import OrderError
 from cadence.broker.models import (
     AccountInfo,
+    AssetClass,
     Order,
     OrderSide,
     OrderStatus,
@@ -91,8 +92,10 @@ class StubBroker:
         return None
 
     # Market data ---------------------------------------------------------
-    def get_quote(self, symbol: str) -> Quote:
-        """Return a deterministic quote for ``symbol``."""
+    def get_quote(
+        self, symbol: str, asset_class: AssetClass = AssetClass.EQUITY
+    ) -> Quote:
+        """Return a deterministic quote for ``symbol`` (``asset_class`` ignored)."""
         price = _deterministic_price(symbol)
         return Quote(
             symbol=symbol,
@@ -214,13 +217,15 @@ class StubBroker:
         order_type: OrderType = OrderType.MARKET,
         limit_price: float | None = None,
         time_in_force: TimeInForce = TimeInForce.DAY,
+        asset_class: AssetClass = AssetClass.EQUITY,
     ) -> Order:
-        """Submit a buy order."""
+        """Submit a buy order (``asset_class`` accepted for parity, unused)."""
         return self.submit_order(
             Order(
                 symbol=symbol,
                 side=OrderSide.BUY,
                 quantity=quantity,
+                asset_class=asset_class,
                 order_type=order_type,
                 limit_price=limit_price,
                 time_in_force=time_in_force,
@@ -234,13 +239,15 @@ class StubBroker:
         order_type: OrderType = OrderType.MARKET,
         limit_price: float | None = None,
         time_in_force: TimeInForce = TimeInForce.DAY,
+        asset_class: AssetClass = AssetClass.EQUITY,
     ) -> Order:
-        """Submit a sell order."""
+        """Submit a sell order (``asset_class`` accepted for parity, unused)."""
         return self.submit_order(
             Order(
                 symbol=symbol,
                 side=OrderSide.SELL,
                 quantity=quantity,
+                asset_class=asset_class,
                 order_type=order_type,
                 limit_price=limit_price,
                 time_in_force=time_in_force,

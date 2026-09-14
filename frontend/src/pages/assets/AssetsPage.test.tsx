@@ -45,6 +45,15 @@ const apple: Asset = {
   created_at: '2026-08-01T00:00:00Z',
 };
 
+const bitcoin: Asset = {
+  ...apple,
+  id: 2,
+  ticker: 'BTCUSD',
+  name: 'Bitcoin',
+  category: 'crypto',
+  sector: null,
+};
+
 function renderWithClient(ui: ReactNode) {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
@@ -77,6 +86,23 @@ describe('AssetsPage', () => {
       '/assets/AAPL',
     );
     expect(screen.getByText('Showing 1 of 7')).toBeInTheDocument();
+  });
+
+  it('shows a category badge distinguishing a crypto asset from a stock', async () => {
+    mockedGet.mockResolvedValue(page([apple, bitcoin]));
+
+    renderWithClient(<AssetsPage />);
+
+    const cryptoRow = (await screen.findByText('Bitcoin')).closest('tr');
+    expect(cryptoRow).not.toBeNull();
+    expect(
+      within(cryptoRow as HTMLElement).getByText('Crypto'),
+    ).toBeInTheDocument();
+
+    const stockRow = screen.getByText('Apple Inc.').closest('tr');
+    expect(
+      within(stockRow as HTMLElement).getByText('Stock'),
+    ).toBeInTheDocument();
   });
 
   it('surfaces a specific message when adding a duplicate ticker (409)', async () => {

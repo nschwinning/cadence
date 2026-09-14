@@ -18,6 +18,7 @@ from cadence.broker.base import (
 )
 from cadence.broker.models import (
     AccountInfo,
+    AssetClass,
     Order,
     OrderSide,
     OrderStatus,
@@ -33,6 +34,7 @@ from cadence.config import settings
 __all__ = [
     "AccountInfo",
     "AlpacaBroker",
+    "AssetClass",
     "Broker",
     "BrokerError",
     "ConnectionError",

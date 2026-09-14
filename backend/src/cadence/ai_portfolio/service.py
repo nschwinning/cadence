@@ -40,10 +40,11 @@ from cadence.ai_portfolio.errors import (
 from cadence.ai_portfolio.executor import AIPortfolioExecutor, TradeResult
 from cadence.ai_portfolio.models import AIPortfolioEvent
 from cadence.assets import service as assets_service
+from cadence.assets.category import AssetCategory
 from cadence.assets.market_data import MarketDataProvider
 from cadence.assets.models import Asset
 from cadence.broker.base import Broker
-from cadence.broker.models import OrderSide, Position
+from cadence.broker.models import AssetClass, OrderSide, Position
 from cadence.config import settings
 from cadence.paper_trading import service as paper_service
 from cadence.paper_trading.constants import RunStatus, ScheduleMode
@@ -238,8 +239,14 @@ def run_build_event(
         event.portfolio_id = portfolio.id
         session.commit()
 
+        # Re-read the universe so discovered crypto is classified, then build the
+        # per-ticker class map threaded into the executor.
+        asset_classes = _asset_class_map(assets_service.list_assets(session))
+
         executor = AIPortfolioExecutor(broker, params.allocated_capital)
-        trade_results = executor.execute_build(result.stocks)
+        trade_results = executor.execute_build(
+            result.stocks, asset_classes=asset_classes
+        )
 
         executed = _record_trades(
             session, session_row.id, trade_results, signal_prefix="ai_build"
@@ -313,8 +320,19 @@ def run_rebalance_event(
         session_row = paper_service.get_session(session, session_id)
         portfolio = portfolios_service.get_portfolio(session, session_row.portfolio_id)
 
-        # Market-open guard: closed => record a skipped run and event, no orders.
-        if not broker.is_market_open():
+        # Crypto trades 24/7, so the market-open guard can no longer skip the
+        # whole run unconditionally. Gather positions and the class map first to
+        # decide whether anything is tradable while the equities market is closed.
+        market_open = broker.is_market_open()
+        positions = {pos.symbol: pos for pos in broker.get_positions()}
+
+        universe = assets_service.list_assets(session)
+        asset_classes = _asset_class_map(universe)
+        any_crypto = _involves_crypto(positions, portfolio.stocks, asset_classes)
+
+        # Nothing tradable: equities market closed and no crypto held/targeted.
+        # Record a skipped run and event without ever consulting the agent.
+        if not market_open and not any_crypto:
             paper_service.record_session_run(
                 session,
                 session_id=session_id,
@@ -338,10 +356,8 @@ def run_rebalance_event(
             logger.info("AI rebalance %s skipped: market closed", event.id)
             return
 
-        positions = {pos.symbol: pos for pos in broker.get_positions()}
         account = broker.get_account_info()
 
-        universe = assets_service.list_assets(session)
         candidates = _candidates_from_universe(universe)
         holdings = _build_holdings(portfolio.stocks, positions)
         account_summary = {
@@ -365,10 +381,15 @@ def run_rebalance_event(
         discovered = [t for t in target_tickers if t not in universe_tickers]
         _add_discovered_assets(session, discovered, provider)
 
+        # Rebuild the class map so any discovered crypto target is classified.
+        asset_classes = _asset_class_map(assets_service.list_assets(session))
+
         executor = AIPortfolioExecutor(broker, session_row.allocated_capital)
         trade_results = executor.execute_rebalance(
             targets=result.target_allocations,
             current_positions=positions,
+            asset_classes=asset_classes,
+            market_open=market_open,
         )
 
         executed, realized_pnl = _apply_rebalance_trades(
@@ -433,6 +454,41 @@ _ORDER_ACTION = {
 
 def _order_action(side: str) -> OrderSide:
     return _ORDER_ACTION.get(side, OrderSide.BUY)
+
+
+def _asset_class_map(assets: list[Asset]) -> dict[str, AssetClass]:
+    """Map each asset's ticker to its :class:`AssetClass` (crypto iff category).
+
+    The asset record is the single source of truth: a ticker is crypto iff its
+    ``category == AssetCategory.CRYPTO``. Tickers not present in the universe are
+    absent from the map; callers default them to :attr:`AssetClass.EQUITY`.
+    """
+    return {
+        asset.ticker: (
+            AssetClass.CRYPTO
+            if asset.category == AssetCategory.CRYPTO.value
+            else AssetClass.EQUITY
+        )
+        for asset in assets
+    }
+
+
+def _involves_crypto(
+    positions: dict[str, Position],
+    target_tickers: list[str],
+    asset_classes: dict[str, AssetClass],
+) -> bool:
+    """Whether any held position or current target ticker is crypto.
+
+    Used to decide, while the equities market is closed, whether there is any
+    tradable crypto (24/7) or the run is a true no-op. ``target_tickers`` are the
+    portfolio's current end-state holdings.
+    """
+    tickers = set(positions) | set(target_tickers)
+    return any(
+        asset_classes.get(ticker, AssetClass.EQUITY) == AssetClass.CRYPTO
+        for ticker in tickers
+    )
 
 
 def _candidates_from_universe(assets: list[Asset]) -> list[dict[str, Any]]:

@@ -10,6 +10,7 @@ import { aiPortfolioKeys } from '../../api/aiPortfolio';
 import type {
   AIEventStatus,
   AIPortfolioEvent,
+  PaperTrade,
   PaperTradingSession,
 } from '../../types/api';
 
@@ -175,5 +176,42 @@ describe('PaperTradingSessionPage', () => {
     expect(screen.getByText('Target allocations')).toBeInTheDocument();
     expect(screen.getByText('60.0%')).toBeInTheDocument();
     expect(screen.getByText('40.0%')).toBeInTheDocument();
+  });
+
+  it('renders a fractional crypto trade quantity trimmed of trailing zeros', async () => {
+    const cryptoTrade: PaperTrade = {
+      id: 'trade-1',
+      session_id: 's1',
+      ticker: 'BTCUSD',
+      side: 'buy',
+      quantity: 0.05123456,
+      price: 60000,
+      notional: 3074.07,
+      signal_type: 'entry',
+      executed_at: '2026-09-12T09:30:00Z',
+      order_id: 'ord-1',
+      order_status: 'filled',
+      filled_price: 60000,
+      filled_at: '2026-09-12T09:30:01Z',
+    };
+    mockedGet.mockImplementation((url: string) => {
+      if (url.endsWith('/paper-trading/sessions')) {
+        return Promise.resolve({ data: { items: [session], total: 1 } });
+      }
+      if (url.includes('/ai-portfolio/sessions/') && url.endsWith('/events')) {
+        return Promise.resolve({ data: [] });
+      }
+      if (url.includes('/trades')) {
+        return Promise.resolve({ data: { items: [cryptoTrade], total: 1 } });
+      }
+      return Promise.resolve({ data: { items: [], total: 0 } });
+    });
+
+    renderPage(<PaperTradingSessionPage />);
+
+    // Fractional crypto quantity shows its fraction (capped at 6 digits)...
+    expect(await screen.findByText('0.051235')).toBeInTheDocument();
+    // ...and a whole-share equity would not render padded zeros.
+    expect(screen.queryByText('0.051235')?.textContent).not.toContain('000');
   });
 });

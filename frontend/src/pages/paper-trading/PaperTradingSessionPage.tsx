@@ -7,6 +7,7 @@ import {
 } from '../../api/paperTrading';
 import { useSessionEvents } from '../../api/aiPortfolio';
 import { SessionRebalanceCard } from './SessionRebalanceCard';
+import { formatQuantity } from '../../lib/format';
 import type {
   AIPortfolioEvent,
   ClosedPosition,
@@ -21,9 +22,6 @@ const eur = new Intl.NumberFormat(undefined, {
   currency: 'EUR',
   maximumFractionDigits: 2,
 });
-
-/** Format a plain number with up to 4 fraction digits. */
-const num = new Intl.NumberFormat(undefined, { maximumFractionDigits: 4 });
 
 /** Format an ISO timestamp for display, or an em dash when absent. */
 function ts(value: string | null | undefined): string {
@@ -172,7 +170,7 @@ function TradesPanel({ sessionId }: { sessionId: string }) {
               </td>
               <td className="px-4 py-3 capitalize text-slate-700">{t.side}</td>
               <td className="px-4 py-3 text-right tabular-nums text-slate-700">
-                {num.format(t.quantity)}
+                {formatQuantity(t.quantity)}
               </td>
               <td className="px-4 py-3 text-right tabular-nums text-slate-700">
                 {eur.format(t.price)}
@@ -282,7 +280,7 @@ function PositionsPanel({ sessionId }: { sessionId: string }) {
                 </Link>
               </td>
               <td className="px-4 py-3 text-right tabular-nums text-slate-700">
-                {num.format(p.quantity)}
+                {formatQuantity(p.quantity)}
               </td>
               <td className="px-4 py-3 text-right tabular-nums text-slate-700">
                 {eur.format(p.entry_price)}

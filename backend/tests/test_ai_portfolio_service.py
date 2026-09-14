@@ -25,6 +25,7 @@ from cadence.ai_portfolio.errors import AIPortfolioValidationError
 from cadence.ai_portfolio.service import AIBuildParams
 from cadence.assets import service as assets_service
 from cadence.assets.market_data import AssetInfo, HistoryBar
+from cadence.broker.models import AssetClass, OrderType, TimeInForce
 from cadence.broker.stub import StubBroker
 from cadence.paper_trading import service as paper_service
 from cadence.paper_trading.constants import ScheduleMode
@@ -34,6 +35,48 @@ from cadence.portfolios import service as portfolios_service
 class _ClosedBroker(StubBroker):
     def is_market_open(self) -> bool:
         return False
+
+
+class _RecordingBroker(StubBroker):
+    """StubBroker that records the ``asset_class`` used for each buy."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.buy_classes: dict[str, AssetClass] = {}
+
+    def buy(
+        self,
+        symbol: str,
+        quantity: float,
+        order_type: OrderType = OrderType.MARKET,
+        limit_price: float | None = None,
+        time_in_force: TimeInForce = TimeInForce.DAY,
+        asset_class: AssetClass = AssetClass.EQUITY,
+    ):  # type: ignore[override]
+        self.buy_classes[symbol] = asset_class
+        return super().buy(
+            symbol, quantity, order_type, limit_price, time_in_force, asset_class
+        )
+
+
+def _crypto_provider() -> FakeMarketDataProvider:
+    """A provider yielding a crypto (``CRYPTOCURRENCY``) profile with no sector."""
+    return FakeMarketDataProvider(
+        info=AssetInfo(
+            company_name="Bitcoin USD",
+            exchange="CCC",
+            currency="USD",
+            price=60000.0,
+            market_cap=1_000_000_000_000.0,
+            quote_type="CRYPTOCURRENCY",
+            sector_key=None,
+        ),
+        history=[
+            HistoryBar(date=date(2015, 1, 1), close=300.0, volume=1_000_000.0),
+            HistoryBar(date=date(2024, 1, 1), close=60000.0, volume=1_000_000.0),
+        ],
+        fx_rates={"USD": 0.9},
+    )
 
 
 def _provider() -> FakeMarketDataProvider:
@@ -272,6 +315,108 @@ def test_run_rebalance_event_trades_toward_targets_and_updates_stocks(
 
     portfolio = portfolios_service.get_portfolio(db_session, portfolio_id)
     assert set(portfolio.stocks) == {"AAPL", "MSFT"}
+
+
+# --------------------------------------------------------------------------- #
+# Crypto routing
+# --------------------------------------------------------------------------- #
+
+
+def test_run_build_event_routes_crypto_by_asset_class(db_session: Session) -> None:
+    eq_provider = _seed_universe(db_session, "AAPL")
+    assets_service.add_asset(db_session, "BTC-USD", _crypto_provider())
+
+    agent = FakeAIPortfolioAgent(build_result=_build_result("AAPL", "BTC-USD"))
+    broker = _RecordingBroker()
+    event = service.create_build_event(db_session, _params())
+
+    service.run_build_event(db_session, event.id, agent, broker, eq_provider)
+
+    refreshed = service.get_event(db_session, event.id)
+    assert refreshed.status == EventStatus.SUCCEEDED.value
+    # The universe's asset class drove the per-ticker routing.
+    assert broker.buy_classes["BTC-USD"] == AssetClass.CRYPTO
+    assert broker.buy_classes["AAPL"] == AssetClass.EQUITY
+
+
+def test_run_rebalance_event_closed_market_trades_crypto(db_session: Session) -> None:
+    eq_provider = _seed_universe(db_session, "AAPL")
+    assets_service.add_asset(db_session, "BTC-USD", _crypto_provider())
+
+    broker = _ClosedBroker()
+    # Build a session holding AAPL + BTC-USD (build has no market guard).
+    agent = FakeAIPortfolioAgent(build_result=_build_result("AAPL", "BTC-USD"))
+    build_event = service.create_build_event(
+        db_session, _params(allocated_capital=50_000.0, daily_rebalancing=True)
+    )
+    service.run_build_event(db_session, build_event.id, agent, broker, eq_provider)
+    session_id = service.get_event(db_session, build_event.id).session_id
+
+    # Rebalance while the equities market is closed: target only crypto (AAPL is
+    # untargeted -> would exit, but is skipped as an equity while closed).
+    rebalance = FakeAIPortfolioAgent(
+        rebalance_result=AIRebalanceResult(
+            evaluation_summary="crypto up",
+            target_allocations=[
+                AITargetAllocation(
+                    ticker="BTC-USD",
+                    company_name="Bitcoin USD",
+                    allocation_pct=1.0,
+                    investment_thesis="momentum",
+                    confidence=0.9,
+                ),
+            ],
+            portfolio_health="healthy",
+        )
+    )
+    rb_event = service.create_rebalance_event(db_session, session_id)
+    service.run_rebalance_event(db_session, rb_event.id, rebalance, broker, eq_provider)
+
+    refreshed = service.get_event(db_session, rb_event.id)
+    # The run was NOT skipped: crypto is tradable 24/7, so the agent was consulted.
+    assert rebalance.rebalance_calls
+    assert refreshed.status in (
+        EventStatus.SUCCEEDED.value,
+        EventStatus.PARTIAL.value,
+    )
+
+    trades = paper_service.get_session_trades(db_session, session_id, limit=100)
+    rebalance_btc = [
+        t
+        for t in trades
+        if t.ticker == "BTC-USD" and t.signal_type.startswith("ai_rebalance")
+    ]
+    assert rebalance_btc  # crypto traded while the equities market was closed
+
+    # The equity was recorded as skipped (equity market closed), never traded in
+    # this rebalance.
+    rebalance_aapl = [
+        t
+        for t in trades
+        if t.ticker == "AAPL" and t.signal_type.startswith("ai_rebalance")
+    ]
+    assert rebalance_aapl == []
+
+
+def test_run_rebalance_event_closed_market_equity_only_is_skipped(
+    db_session: Session,
+) -> None:
+    # Equity-only session with the market closed -> skipped run, no agent call.
+    provider = _seed_universe(db_session, "AAPL", "MSFT")
+    broker = _ClosedBroker()
+    session_id, _ = _seed_session(db_session, broker, provider)
+
+    rebalance = FakeAIPortfolioAgent(
+        rebalance_result=AIRebalanceResult(
+            evaluation_summary="x", target_allocations=[], portfolio_health="healthy"
+        )
+    )
+    rb_event = service.create_rebalance_event(db_session, session_id)
+    service.run_rebalance_event(db_session, rb_event.id, rebalance, broker, provider)
+
+    refreshed = service.get_event(db_session, rb_event.id)
+    assert refreshed.status == EventStatus.SKIPPED.value
+    assert rebalance.rebalance_calls == []
 
 
 def test_get_inflight_rebalance_event(db_session: Session) -> None:

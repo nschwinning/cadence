@@ -15,6 +15,19 @@ from enum import Enum
 from typing import Any
 
 
+class AssetClass(str, Enum):
+    """The tradable asset class of an order/quote.
+
+    Derived from the asset universe's ``Asset.category`` at the domain boundary
+    and threaded into the broker so it can route symbols, time-in-force, and
+    quote endpoints correctly. Business logic never sniffs symbol format — it
+    passes this class explicitly.
+    """
+
+    EQUITY = "equity"
+    CRYPTO = "crypto"
+
+
 class OrderSide(str, Enum):
     """Direction of an order."""
 
@@ -58,6 +71,7 @@ class Order:
     symbol: str
     side: OrderSide
     quantity: float
+    asset_class: AssetClass = AssetClass.EQUITY
     order_type: OrderType = OrderType.MARKET
     limit_price: float | None = None
     stop_price: float | None = None
