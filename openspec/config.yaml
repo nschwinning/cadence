@@ -1,0 +1,80 @@
+schema: spec-driven
+
+context: |
+  Cadence is an AI paper-trading web app. It combines asset management + an AI
+  recommender (ported from the sibling "quantara" project) with AI-based paper
+  trading on Alpaca and daily portfolio rebalancing (ported from the sibling
+  "trading-bot" project). Domain entities: Asset, Portfolio (AI-managed),
+  PaperTradingSession, PaperTrade, SessionRun, ClosedPosition, AIPortfolioEvent.
+
+  Backend tech stack: Python 3.12 (uv), FastAPI + Uvicorn, Pydantic v2,
+  SQLAlchemy 2.0 SYNC (psycopg3 driver), Alembic (schema is owned by Alembic;
+  models never create_all at runtime), pydantic-settings single `settings`
+  singleton, openai-agents SDK for agents (build_agent forces a Pydantic
+  output_type), SerpAPI web_search tool, yfinance for market data, truststore
+  for corporate TLS. Alpaca REST via `requests` (paper/live + base URLs are
+  config-driven via settings; ALPACA_STUB enables an offline fake broker).
+
+  Backend conventions (mirror quantara exactly): each domain capability is a
+  package with models.py (SQLAlchemy ORM, Mapped[]/mapped_column) + service.py
+  (ALL business logic and DB access) + errors.py (domain exceptions the router
+  maps to HTTP status codes) + constants.py (enums/thresholds) + optional
+  background.py (single-worker ThreadPoolExecutor jobs with a startup
+  orphaned-run reaper). Pydantic request/response schemas live in a shared
+  api/schemas.py. Routers are THIN: DI aliases -> validate params -> call
+  service -> model_validate -> map domain errors to HTTPException. External I/O
+  sits behind @runtime_checkable Protocols (MarketDataProvider, Broker,
+  RecommenderAgent) with a real impl + an injectable fake/stub via get_*
+  dependency factories overridden in tests. All resource routers mount under
+  /api/v1; health is unprefixed. Background/AI runs are queued and polled
+  (POST returns 202/started, client polls a status/detail endpoint until a
+  terminal phase). Cron-triggered endpoints are guarded by an X-Cron-Token
+  shared secret.
+
+  Frontend tech stack: React 19 + TypeScript, Vite 6, React Router 7, TanStack
+  Query, axios, Tailwind CSS 3, Vitest + React Testing Library. One shared
+  axios apiClient + per-resource typed clients (query-key factory + raw async
+  fns + TanStack Query hooks; polling hooks use refetchInterval until terminal).
+  types/api.ts hand-mirrors the Pydantic schemas. Vite proxies /api and /health
+  to the backend (no CORS in the common path). Tailwind utility classes only.
+  Co-located Vitest tests.
+
+  Ports (to coexist with sibling apps): Postgres host 5435, backend host 8002,
+  frontend host 5174. Config env (unprefixed): DATABASE_URL, TEST_DATABASE_URL,
+  CORS_ORIGINS, OPENAI_API_KEY, SERP_API_KEY, RECOMMENDER_MODEL, RECOMMENDER_STUB,
+  AI_PORTFOLIO_MODEL, ALPACA_API_KEY, ALPACA_SECRET_KEY, ALPACA_PAPER,
+  ALPACA_STUB, REBALANCE_CRON_TOKEN.
+
+  Out of scope for this project: technical indicators, price-history ingestion,
+  backtesting, Interactive Brokers, and the multi-agent stock-discovery pipeline.
+
+# Project context (optional)
+# This is shown to AI when creating artifacts.
+# Add your tech stack, conventions, style guides, domain knowledge, etc.
+# Example:
+#   context: |
+#     Tech stack: TypeScript, React, Node.js
+#     We use conventional commits
+#     Domain: e-commerce platform
+
+# Per-artifact rules (optional)
+# Add custom rules for specific artifacts.
+# Example:
+#   rules:
+#     proposal:
+#       - Keep proposals under 500 words
+#       - Always include a "Non-goals" section
+#     tasks:
+#       - Break tasks into chunks of max 2 hours
+
+# Per-operation guidance (optional)
+# Add advisory guidance for how apply and archive work should be conducted.
+# This is separate from artifact rules above.
+# Example:
+#   operations:
+#     apply:
+#       guidance:
+#         - Keep test summaries concise
+#     archive:
+#       guidance:
+#         - Summarize the archive outcome before finishing

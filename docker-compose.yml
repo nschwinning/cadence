@@ -1,0 +1,121 @@
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-cadence}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-cadence}
+      POSTGRES_DB: ${POSTGRES_DB:-cadence}
+    ports:
+      # Host 5435 -> container 5432 (5432/5433/5434 already used by other apps locally)
+      - "5435:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-cadence} -d ${POSTGRES_DB:-cadence}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  backend:
+    build: ./backend
+    environment:
+      # Inside the compose network the DB is always reachable at host `db`, port
+      # 5432. Pinned (not interpolated from the root .env) because that .env holds
+      # the HOST-dev URL (localhost:5435), which Docker Compose would otherwise
+      # substitute here and break the container's DB connection.
+      DATABASE_URL: postgresql+psycopg://cadence:cadence@db:5432/cadence
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:5174}
+      # AI recommender credentials/config, forwarded from the root .env.
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      SERP_API_KEY: ${SERP_API_KEY:-}
+      RECOMMENDER_MODEL: ${RECOMMENDER_MODEL:-gpt-5-mini}
+      # Offline stub recommender toggle (empty/off by default). Enable for the
+      # end-to-end smoke or local dev when OpenAI/SerpAPI keys are absent.
+      RECOMMENDER_STUB: ${RECOMMENDER_STUB:-}
+      # AI portfolio manager model id.
+      AI_PORTFOLIO_MODEL: ${AI_PORTFOLIO_MODEL:-gpt-5-mini}
+      # Alpaca paper-trading credentials/config, forwarded from the root .env.
+      ALPACA_API_KEY: ${ALPACA_API_KEY:-}
+      ALPACA_SECRET_KEY: ${ALPACA_SECRET_KEY:-}
+      ALPACA_PAPER: ${ALPACA_PAPER:-true}
+      ALPACA_STUB: ${ALPACA_STUB:-}
+      # Shared secret guarding the daily-rebalance trigger; the cron sidecar sends
+      # the same value in the X-Cron-Token header. Empty => every trigger is
+      # rejected, so set REBALANCE_CRON_TOKEN in the root .env to enable rebalances.
+      REBALANCE_CRON_TOKEN: ${REBALANCE_CRON_TOKEN:-}
+    ports:
+      # Host 8002 -> container 8000 (8000/8001 already used by other apps locally)
+      - "8002:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+    volumes:
+      # Live-mount source for hot reload; deps/venv stay baked in the image
+      - ./backend/src:/app/src
+    # Apply migrations (Alembic owns the schema), then run uvicorn with reload
+    command: >
+      sh -c "alembic upgrade head &&
+             uvicorn cadence.api.app:app --host 0.0.0.0 --port 8000 --reload --reload-dir /app/src"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/health').status==200 else 1)"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    restart: unless-stopped
+
+  cron:
+    # Daily rebalance trigger. On a weekday schedule (default 09:35 America/
+    # New_York, just after the US market open) it POSTs the AI portfolio's
+    # daily-rebalance endpoint, guarded by the X-Cron-Token shared secret. Uses
+    # busybox crond; the schedule is interpreted in the configured timezone. The
+    # rebalance endpoint is implemented in a later phase — this sidecar is
+    # configured now so the trigger is ready.
+    image: alpine:3.20
+    environment:
+      # Timezone the cron schedule is interpreted in (busybox reads TZ).
+      TZ: ${CRON_TZ:-America/New_York}
+      # Cron expression; default 09:35 on weekdays (just after the US open).
+      REBALANCE_SCHEDULE: ${REBALANCE_SCHEDULE:-35 9 * * 1-5}
+      # Must match the backend's REBALANCE_CRON_TOKEN.
+      REBALANCE_CRON_TOKEN: ${REBALANCE_CRON_TOKEN:-}
+    depends_on:
+      backend:
+        condition: service_healthy
+    # Install curl + tzdata, stash the token in a file, then generate a small
+    # script that POSTs the daily-rebalance endpoint with the shared token. The
+    # crontab invokes that script. `$$` keeps expansion in the container shell;
+    # `\"` embeds a literal quote (not compose interpolation).
+    command: >
+      sh -c "apk add --no-cache curl tzdata >/dev/null &&
+      cp /usr/share/zoneinfo/$${TZ} /etc/localtime 2>/dev/null || true;
+      printf %s \"$${REBALANCE_CRON_TOKEN}\" > /tmp/cron.token &&
+      printf '%s\n'
+      '#!/bin/sh'
+      'set -eu'
+      'B=http://backend:8000/api/v1'
+      'T=$$(cat /tmp/cron.token)'
+      'curl -fsS -X POST -H X-Cron-Token:$$T $$B/ai-portfolio/rebalance-daily >/dev/null'
+      > /usr/local/bin/rebalance.sh &&
+      chmod +x /usr/local/bin/rebalance.sh &&
+      echo \"$${REBALANCE_SCHEDULE} /usr/local/bin/rebalance.sh\" > /etc/crontabs/root &&
+      crond -f -l 8"
+    restart: unless-stopped
+
+  frontend:
+    build: ./frontend
+    environment:
+      # Dev proxy target = backend service on the compose network
+      VITE_PROXY_TARGET: http://backend:8000
+    ports:
+      - "5174:5173"
+    depends_on:
+      - backend
+    volumes:
+      # Live-mount source for hot reload; node_modules stays baked in the image
+      - ./frontend/src:/app/src
+    restart: unless-stopped
+
+volumes:
+  pgdata:

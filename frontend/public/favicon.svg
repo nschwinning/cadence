@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 32 32" fill="none" role="img" aria-label="Cadence">
+  <defs>
+    <linearGradient id="cadenceFaviconRing" x1="9" y1="9" x2="23" y2="23" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#2dd4bf"/>
+      <stop offset="1" stop-color="#34d399"/>
+    </linearGradient>
+  </defs>
+  <!-- Brand-dark container so the mark stays legible on light OR dark browser tabs -->
+  <rect x="1" y="1" width="30" height="30" rx="7" fill="#2a3547"/>
+  <!-- Ring: rhythmic orbit -->
+  <circle cx="16" cy="16" r="6.3" stroke="url(#cadenceFaviconRing)" stroke-width="2.4"/>
+  <!-- Upward trend arrow breaking through the ring -->
+  <path d="M11.7 19.2 L14.2 16.7 L16.4 18.2 L20.9 11.8 M17.4 12.9 L20.9 11.8 L21 15.4"
+        stroke="#ecfdf5" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

@@ -1,0 +1,24 @@
+# Env / secrets
+.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+
+# Node / frontend
+node_modules/
+dist/
+dist-ssr/
+*.local
+
+# Claude Code local settings
+.claude/settings.local.json
+
+# OS
+.DS_Store

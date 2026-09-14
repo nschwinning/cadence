@@ -1,0 +1,57 @@
+[project]
+name = "cadence"
+version = "0.1.0"
+description = "Cadence backend API"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.35",
+    "pydantic>=2.9",
+    "pydantic-settings>=2.5",
+    "sqlalchemy>=2.0",
+    "alembic>=1.13",
+    "psycopg[binary]>=3.2",
+    "python-dotenv>=1.0",
+    "yfinance>=0.2",
+    "pandas>=2.2",
+    "numpy>=1.26",
+    "openai-agents>=0.13.6",
+    "openai>=2.31.0",
+    "serpapi>=1.0.2",
+    "truststore>=0.10.4",
+    "requests>=2.32",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3",
+    "ruff>=0.7",
+    "mypy>=1.13",
+    "httpx>=0.28",
+    "types-requests",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/cadence"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src", "."]
+
+[tool.ruff]
+src = ["src"]
+line-length = 100
+
+[tool.mypy]
+python_version = "3.12"
+mypy_path = "src"
+packages = ["cadence"]
+strict = true
+
+[[tool.mypy.overrides]]
+module = ["yfinance", "yfinance.*", "serpapi", "serpapi.*", "pandas", "pandas.*"]
+ignore_missing_imports = true
