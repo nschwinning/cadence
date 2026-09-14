@@ -91,6 +91,20 @@ def test_create_run_rejects_empty_categories(db_session: Session) -> None:
         service.create_run(db_session, count=3, categories=[])
 
 
+def test_create_run_rejects_unsupported_categories(db_session: Session) -> None:
+    # Only stock and crypto are supported; anything else is rejected.
+    with pytest.raises(RecommendationValidationError):
+        service.create_run(db_session, count=3, categories=["etf"])
+    with pytest.raises(RecommendationValidationError):
+        service.create_run(db_session, count=3, categories=["stock", "fund"])
+
+
+def test_create_run_accepts_stock_and_crypto(db_session: Session) -> None:
+    run_id = service.create_run(db_session, count=3, categories=["stock", "crypto"])
+    run = service.get_run(db_session, run_id)
+    assert run.requested_categories == ["stock", "crypto"]
+
+
 # --- 4.2 executor drives to completed --------------------------------------
 
 
@@ -166,6 +180,24 @@ def test_duplicate_candidate_recorded_as_skipped(db_session: Session) -> None:
     run = service.get_run(db_session, run_id)
     outcomes = {r["ticker"]: r["outcome"] for r in run.results}
     assert outcomes["DUP"] == CandidateOutcome.SKIPPED_DUPLICATE.value
+
+
+def test_execute_run_passes_existing_tickers_as_exclusions(
+    db_session: Session,
+) -> None:
+    # Seed the universe; the recommender must be told to exclude those tickers
+    # (and the recorded prompt must list them) so it stops re-proposing them.
+    assets_service.add_asset(db_session, "SEED", _eligible_provider())
+
+    run_id = service.create_run(db_session, count=1, categories=["stock"])
+    agent = _agent(["NEW"])
+    service.execute_run(db_session, run_id, agent, _eligible_provider())
+
+    assert agent.exclude_calls == [["SEED"]]
+    run = service.get_run(db_session, run_id)
+    assert run.prompt is not None
+    assert "SEED" in run.prompt
+    assert "already in the universe" in run.prompt
 
 
 # --- 4.4 count upper bound --------------------------------------------------

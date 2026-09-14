@@ -23,5 +23,9 @@ class DuplicateAssetError(AssetError):
     """An asset with the same ticker already exists in the universe."""
 
 
+class UnsupportedCategoryError(AssetError):
+    """The instrument's category is not tradeable (only stock and crypto are)."""
+
+
 class AssetNotFoundError(AssetError):
     """No asset with the requested ticker exists in the stored universe."""

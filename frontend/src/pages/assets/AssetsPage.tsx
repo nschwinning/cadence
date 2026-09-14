@@ -2,11 +2,11 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import axios from 'axios';
 import {
-  ASSET_CATEGORIES,
   ASSET_PAGE_SIZES,
   DEFAULT_ASSET_DIRECTION,
   DEFAULT_ASSET_SORT,
   SECTORS,
+  SUPPORTED_CATEGORIES,
   useAddAsset,
   useAssets,
   useDeleteAsset,
@@ -272,7 +272,7 @@ function MultiSelectDropdown<T extends string>({
 
 /** Category filter options (value + display label), in the canonical order. */
 const CATEGORY_OPTIONS: readonly FilterOption<AssetCategory>[] =
-  ASSET_CATEGORIES.map((value) => ({
+  SUPPORTED_CATEGORIES.map((value) => ({
     value,
     label: CATEGORY_STYLES[value].label,
   }));

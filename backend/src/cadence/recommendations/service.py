@@ -15,13 +15,14 @@ from __future__ import annotations
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from cadence.assets.category import SUPPORTED_CATEGORIES
 from cadence.assets.errors import (
     DuplicateAssetError,
     MarketDataUnavailableError,
     UnknownTickerError,
 )
 from cadence.assets.market_data import MarketDataProvider
-from cadence.assets.service import add_asset, delete_asset
+from cadence.assets.service import add_asset, delete_asset, list_assets
 from cadence.dashboard.service import get_universe_composition
 from cadence.recommendations.agent import (
     RecommenderAgent,
@@ -48,13 +49,21 @@ def create_run(
     """Validate the request and insert a queued run; return its id.
 
     Raises:
-        RecommendationValidationError: if ``count`` is not positive or no
-            category is provided.
+        RecommendationValidationError: if ``count`` is not positive, no category
+            is provided, or a category outside the supported set (stock, crypto)
+            is requested.
     """
     if count <= 0:
         raise RecommendationValidationError("count must be greater than zero")
     if not categories:
         raise RecommendationValidationError("at least one category is required")
+    supported = {c.value for c in SUPPORTED_CATEGORIES}
+    unsupported = sorted(set(categories) - supported)
+    if unsupported:
+        raise RecommendationValidationError(
+            f"unsupported categories {unsupported}; only "
+            f"{sorted(supported)} are supported"
+        )
 
     run = RecommendationRun(
         status=RunPhase.QUEUED.value,
@@ -117,13 +126,21 @@ def execute_run(
         # Snapshot the universe composition now so the agent is steered toward
         # under-represented sectors; the recorded prompt reflects it.
         composition = get_universe_composition(session)
+        # The tickers already in the universe, passed to the agent as a hard
+        # exclusion so it stops re-proposing existing assets (server-side dedup
+        # remains as a safety net).
+        exclude_tickers = [asset.ticker for asset in list_assets(session)]
 
         # Phase: searching — record the exact prompt, then run the agent.
-        run.prompt = agent.build_prompt(categories, ask_for, criteria, composition)
+        run.prompt = agent.build_prompt(
+            categories, ask_for, criteria, composition, exclude_tickers
+        )
         run.status = RunPhase.SEARCHING.value
         session.commit()
 
-        result = agent.recommend(categories, ask_for, criteria, composition)
+        result = agent.recommend(
+            categories, ask_for, criteria, composition, exclude_tickers
+        )
 
         run.tool_call_count = result.tool_call_count
         run.status = RunPhase.VALIDATING.value

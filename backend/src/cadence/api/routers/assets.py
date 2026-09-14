@@ -21,6 +21,7 @@ from cadence.assets.errors import (
     DuplicateAssetError,
     MarketDataUnavailableError,
     UnknownTickerError,
+    UnsupportedCategoryError,
 )
 from cadence.assets.market_data import (
     MarketDataProvider,
@@ -54,7 +55,7 @@ def create_asset(
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT, detail=str(exc)
         ) from exc
-    except UnknownTickerError as exc:
+    except (UnknownTickerError, UnsupportedCategoryError) as exc:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
         ) from exc

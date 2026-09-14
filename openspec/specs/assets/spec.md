@@ -7,12 +7,17 @@ Lets a user build and curate a universe of tradeable assets sourced from public 
 
 ### Requirement: Add an asset by ticker
 
-The system SHALL allow a client to add an asset by its ticker symbol. The system SHALL normalize the ticker (trim and uppercase), fetch market and profile data from the market-data provider, derive metrics, and evaluate eligibility before any persistence occurs. The stored asset SHALL include ticker, name, category, sector, exchange, currency, profile fields, derived metrics, an eligibility flag, and the per-criterion evaluation results.
+The system SHALL allow a client to add an asset by its ticker symbol. The system SHALL normalize the ticker (trim and uppercase), fetch market and profile data from the market-data provider, derive metrics, and evaluate eligibility before any persistence occurs. The system SHALL support only tradeable categories — **stock** and **crypto**; an asset the provider classifies as any other category (for example ETF, fund, or other) SHALL be rejected and SHALL NOT be persisted. The stored asset SHALL include ticker, name, category, sector, exchange, currency, profile fields, derived metrics, an eligibility flag, and the per-criterion evaluation results.
 
 #### Scenario: Successfully add a new asset
 
-- **WHEN** a client POSTs a valid, previously unseen ticker
+- **WHEN** a client POSTs a valid, previously unseen ticker classified as stock or crypto
 - **THEN** the system fetches its data, evaluates eligibility, persists the asset, and responds 201 with the full asset record including its criteria results
+
+#### Scenario: Unsupported category
+
+- **WHEN** a client adds a ticker the provider classifies as a category other than stock or crypto (for example an ETF, mutual fund, or other instrument)
+- **THEN** the system SHALL respond 422 naming the unsupported category and SHALL NOT persist the asset
 
 #### Scenario: Duplicate ticker
 
@@ -84,3 +89,24 @@ The system SHALL evaluate each asset against eligibility criteria expressed in E
 
 - **WHEN** an asset fails one or more thresholds
 - **THEN** the system SHALL mark it ineligible and store the failing criterion results with observed values and thresholds
+
+### Requirement: Crypto assets are a first-class, tradable universe member
+
+The system SHALL allow crypto assets to be added to the universe and SHALL classify
+them as crypto from the market-data provider's instrument type. A crypto asset's
+missing equity-only attributes (such as sector) SHALL be a valid state and SHALL NOT
+prevent it from being added or traded. Eligibility SHALL remain informational and
+SHALL NOT be a precondition for the AI to trade a universe asset.
+
+#### Scenario: Add a crypto asset
+
+- **WHEN** a client adds a crypto ticker (e.g. `BTC-USD`) that the provider reports
+  as a cryptocurrency
+- **THEN** the system SHALL store it in the universe classified as crypto, with a
+  null sector treated as valid
+
+#### Scenario: Crypto included as a trading candidate
+
+- **WHEN** the AI build or rebalance reads the asset universe
+- **THEN** crypto assets SHALL be presented as candidates alongside equities,
+  regardless of their eligibility flag

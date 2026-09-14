@@ -50,14 +50,15 @@ def _populated_composition() -> UniverseComposition:
 
 def test_prompt_includes_categories_and_thresholds() -> None:
     prompt = build_recommendation_prompt(
-        categories=["stock", "etf"],
+        categories=["stock", "crypto"],
         count=7,
         criteria=_criteria(),
         composition=_empty_composition(),
+        exclude_tickers=[],
     )
 
     assert "stock" in prompt
-    assert "etf" in prompt
+    assert "crypto" in prompt
     assert "7" in prompt
     # Thresholds appear (thousands-separated).
     assert "2,000,000" in prompt
@@ -72,6 +73,7 @@ def test_prompt_includes_composition_and_diversification_steer() -> None:
         count=3,
         criteria=_criteria(),
         composition=_populated_composition(),
+        exclude_tickers=[],
     )
 
     # The current composition is surfaced, including a zero-count (absent) sector.
@@ -93,11 +95,29 @@ def test_prompt_handles_empty_universe() -> None:
         count=3,
         criteria=_criteria(),
         composition=_empty_composition(),
+        exclude_tickers=[],
     )
 
     assert "currently empty" in prompt
     # The index preference is still expressed for an empty universe.
     assert "S&P 500" in prompt
+
+
+def test_prompt_lists_excluded_tickers() -> None:
+    prompt = build_recommendation_prompt(
+        categories=["stock"],
+        count=3,
+        criteria=_criteria(),
+        composition=_populated_composition(),
+        exclude_tickers=["AAPL", "MSFT", "SAP.DE"],
+    )
+
+    # Each existing ticker is surfaced as a do-not-propose exclusion.
+    assert "AAPL" in prompt
+    assert "MSFT" in prompt
+    assert "SAP.DE" in prompt
+    assert "already in the universe" in prompt
+    assert "Do NOT propose" in prompt
 
 
 def test_default_criteria_match_asset_constants() -> None:

@@ -27,10 +27,12 @@ def test_fake_satisfies_protocol_and_returns_candidates() -> None:
         count=5,
         criteria=default_eligibility_criteria(),
         composition=_EMPTY_COMPOSITION,
+        exclude_tickers=["MSFT"],
     )
     assert result.tool_call_count == 3
     assert [c.ticker for c in result.output.candidates] == ["AAPL"]
     assert fake.recommend_calls == [(["stock"], 5)]
+    assert fake.exclude_calls == [["MSFT"]]
 
 
 def test_fake_can_raise() -> None:
@@ -41,4 +43,5 @@ def test_fake_can_raise() -> None:
             count=5,
             criteria=default_eligibility_criteria(),
             composition=_EMPTY_COMPOSITION,
+            exclude_tickers=[],
         )

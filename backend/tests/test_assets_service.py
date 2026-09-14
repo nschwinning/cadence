@@ -15,6 +15,7 @@ from cadence.assets.errors import (
     DuplicateAssetError,
     MarketDataUnavailableError,
     UnknownTickerError,
+    UnsupportedCategoryError,
 )
 from cadence.assets.market_data import AssetDetailData, AssetInfo, HistoryBar
 from cadence.assets.models import Asset, AssetDailySnapshot
@@ -143,6 +144,33 @@ def test_add_asset_classifies_crypto(db_session: Session) -> None:
     universe = {a.ticker: a for a in service.list_assets(db_session)}
     assert "BTC-USD" in universe
     assert universe["BTC-USD"].category == AssetCategory.CRYPTO.value
+
+
+@pytest.mark.parametrize("quote_type", ["ETF", "MUTUALFUND", "SOMETHINGELSE"])
+def test_add_asset_rejects_unsupported_category(
+    db_session: Session, quote_type: str
+) -> None:
+    # Only stock and crypto are tradeable; anything else is rejected before
+    # persistence so no untradeable row ever enters the universe.
+    with pytest.raises(UnsupportedCategoryError):
+        service.add_asset(db_session, "NOPE", _eligible_provider(quote_type=quote_type))
+
+    assert service.list_assets(db_session) == []
+
+
+def test_add_asset_accepts_stock_and_crypto(db_session: Session) -> None:
+    service.add_asset(db_session, "STK", _eligible_provider(quote_type="EQUITY"))
+    service.add_asset(
+        db_session,
+        "BTC-USD",
+        _eligible_provider(quote_type="CRYPTOCURRENCY", sector_key=None),
+    )
+
+    categories = {a.ticker: a.category for a in service.list_assets(db_session)}
+    assert categories == {
+        "STK": AssetCategory.STOCK.value,
+        "BTC-USD": AssetCategory.CRYPTO.value,
+    }
 
 
 def test_add_asset_persists_sector_for_equity(db_session: Session) -> None:
@@ -275,7 +303,19 @@ def test_list_assets_filter_by_category(db_session: Session) -> None:
     service.add_asset(
         db_session, "BTC", _eligible_provider(quote_type="CRYPTOCURRENCY")
     )
-    service.add_asset(db_session, "ETFX", _eligible_provider(quote_type="ETF"))
+    # A legacy ETF row (etf is no longer addable via add_asset, but pre-existing
+    # rows must still be filterable). Insert it directly to exercise the filter.
+    db_session.add(
+        Asset(
+            ticker="ETFX",
+            name="ETFX",
+            category=AssetCategory.ETF.value,
+            currency="EUR",
+            is_eligible=True,
+            criteria_results=[],
+        )
+    )
+    db_session.commit()
 
     only_stock = service.list_assets(db_session, categories=["stock"])
     assert [a.ticker for a in only_stock] == ["STK"]
@@ -344,15 +384,20 @@ def test_list_assets_sector_composes_with_category_and_search(
             sector_key="technology",
         ),
     )
-    service.add_asset(
-        db_session,
-        "ETFF",
-        _eligible_provider(
-            quote_type="ETF",
-            company_name="Apex Financials ETF",
-            sector_key="financial-services",
-        ),
+    # A legacy ETF row inserted directly (etf is no longer addable) so the
+    # category-narrowing assertion still has a non-stock match to exclude.
+    db_session.add(
+        Asset(
+            ticker="ETFF",
+            name="Apex Financials ETF",
+            category=AssetCategory.ETF.value,
+            sector="financial-services",
+            currency="EUR",
+            is_eligible=True,
+            criteria_results=[],
+        )
     )
+    db_session.commit()
 
     # search "apex" matches all three; category=stock narrows to STKF/STKT;
     # sector=financial-services narrows to STKF alone.

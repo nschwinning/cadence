@@ -11,13 +11,28 @@ from enum import StrEnum
 
 
 class AssetCategory(StrEnum):
-    """The supported asset categories. Values are part of the API contract."""
+    """All asset categories the classifier can produce. Values are part of the
+    API contract.
+
+    Only :data:`SUPPORTED_CATEGORIES` are tradeable and may enter the universe;
+    the remaining members exist so :func:`categorize` can *detect* and reject
+    unsupported instruments, and so any pre-existing rows still read.
+    """
 
     STOCK = "stock"
     CRYPTO = "crypto"
     ETF = "etf"
     FUND = "fund"
     OTHER = "other"
+
+
+#: Tradeable categories Cadence supports. The AI allocates across the ENTIRE
+#: universe and trades it on Alpaca, so only categories Alpaca can trade —
+#: stocks and crypto — are allowed to enter the universe. Anything else is
+#: rejected at add time rather than producing failed orders later.
+SUPPORTED_CATEGORIES: frozenset[AssetCategory] = frozenset(
+    {AssetCategory.STOCK, AssetCategory.CRYPTO}
+)
 
 
 # Provider ``quoteType`` (upper-cased) -> category. Anything absent maps to OTHER.

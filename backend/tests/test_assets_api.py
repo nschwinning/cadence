@@ -290,26 +290,36 @@ def test_list_assets_sort_by_name_asc_and_desc(client: TestClient) -> None:
 def test_list_assets_filter_by_category(client: TestClient) -> None:
     _use_provider(_eligible_provider(quote_type="EQUITY"))
     _add(client, "STK")
+    _add(client, "STK2")
     _use_provider(_eligible_provider(quote_type="CRYPTOCURRENCY"))
     _add(client, "BTC")
-    _use_provider(_eligible_provider(quote_type="ETF"))
-    _add(client, "ETFX")
 
-    only_stock = client.get("/api/v1/assets", params={"category": "stock"})
-    only_stock_body = only_stock.json()
-    assert only_stock_body["total"] == 1
-    assert [a["ticker"] for a in only_stock_body["items"]] == ["STK"]
+    only_crypto = client.get("/api/v1/assets", params={"category": "crypto"})
+    only_crypto_body = only_crypto.json()
+    assert only_crypto_body["total"] == 1
+    assert [a["ticker"] for a in only_crypto_body["items"]] == ["BTC"]
 
-    # Repeatable param: stock OR etf.
-    stock_etf = client.get(
-        "/api/v1/assets", params=[("category", "stock"), ("category", "etf")]
+    # Repeatable param: stock OR crypto = all three.
+    stock_crypto = client.get(
+        "/api/v1/assets", params=[("category", "stock"), ("category", "crypto")]
     )
-    stock_etf_body = stock_etf.json()
-    assert stock_etf_body["total"] == 2
-    assert [a["ticker"] for a in stock_etf_body["items"]] == ["ETFX", "STK"]
+    stock_crypto_body = stock_crypto.json()
+    assert stock_crypto_body["total"] == 3
+    assert [a["ticker"] for a in stock_crypto_body["items"]] == ["BTC", "STK", "STK2"]
 
     # No category = all.
     assert client.get("/api/v1/assets").json()["total"] == 3
+
+
+def test_create_asset_rejects_unsupported_category(client: TestClient) -> None:
+    _use_provider(_eligible_provider(quote_type="ETF"))
+
+    response = client.post("/api/v1/assets", json={"ticker": "ETFX"})
+    assert response.status_code == 422
+
+    # Nothing persisted.
+    listing = client.get("/api/v1/assets")
+    assert all(a["ticker"] != "ETFX" for a in listing.json()["items"])
 
 
 def test_list_assets_filter_by_sector(client: TestClient) -> None:
@@ -367,12 +377,11 @@ def test_list_assets_sector_composes_with_category_and_search(
     _add(client, "STKT")
     _use_provider(
         _eligible_provider(
-            quote_type="ETF",
-            company_name="Apex Financials ETF",
-            sector_key="financial-services",
+            quote_type="CRYPTOCURRENCY",
+            company_name="Apex Coin",
         )
     )
-    _add(client, "ETFF")
+    _add(client, "BTCX")
 
     response = client.get(
         "/api/v1/assets",
@@ -416,26 +425,25 @@ def test_list_assets_sort_filter_search_compose_across_pages(
         _eligible_provider(quote_type="CRYPTOCURRENCY", company_name="Apex Coin")
     )
     _add(client, "BTC")
-    _use_provider(_eligible_provider(quote_type="ETF", company_name="Apex Fund"))
-    _add(client, "ETFX")
 
-    # search "apex" matches STKA/BTC/ETFX; category narrows to stock+etf -> STKA, ETFX.
-    # sort name desc -> "Apex Fund" (ETFX) before "Apex" (STKA). Paginate limit=20.
+    # search "apex" matches STKA/BTC; category stock+crypto keeps both (STKB is
+    # excluded by the search). sort name desc -> "Apex Coin" (BTC) before "Apex"
+    # (STKA). Paginate limit=20.
     base = {
         "search": "apex",
-        "category": ["stock", "etf"],
+        "category": ["stock", "crypto"],
         "sort": "name",
         "direction": "desc",
     }
     full = client.get("/api/v1/assets", params={**base})
     full_body = full.json()
     assert full_body["total"] == 2
-    assert [a["ticker"] for a in full_body["items"]] == ["ETFX", "STKA"]
+    assert [a["ticker"] for a in full_body["items"]] == ["BTC", "STKA"]
 
     # total is stable across offsets; page slices are consistent with the order.
     page1 = client.get("/api/v1/assets", params={**base, "limit": 20, "offset": 0})
     assert page1.json()["total"] == 2
-    assert [a["ticker"] for a in page1.json()["items"]] == ["ETFX", "STKA"]
+    assert [a["ticker"] for a in page1.json()["items"]] == ["BTC", "STKA"]
 
     page2 = client.get("/api/v1/assets", params={**base, "limit": 20, "offset": 2})
     assert page2.json()["total"] == 2

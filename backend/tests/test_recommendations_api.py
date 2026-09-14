@@ -108,3 +108,15 @@ def test_create_rejects_invalid_count(
         "/api/v1/recommendations", json={"count": 0, "categories": ["stock"]}
     )
     assert resp.status_code == 422
+
+
+def test_create_rejects_unsupported_category(
+    client: TestClient, db_session: Session
+) -> None:
+    agent = FakeRecommenderAgent(candidates=[], tool_call_count=0)
+    _wire(client, db_session, agent, ManualExecutor())
+
+    resp = client.post(
+        "/api/v1/recommendations", json={"count": 1, "categories": ["etf"]}
+    )
+    assert resp.status_code == 422

@@ -25,6 +25,7 @@ def test_stub_returns_canned_candidates_and_tool_call_count() -> None:
         count=2,
         criteria=criteria,
         composition=_EMPTY_COMPOSITION,
+        exclude_tickers=[],
     )
 
     tickers = [c.ticker for c in result.output.candidates]
@@ -39,16 +40,35 @@ def test_stub_unions_pools_across_categories_without_duplicates() -> None:
     criteria = default_eligibility_criteria()
 
     result = stub.recommend(
-        categories=["stock", "etf"],
+        categories=["stock", "crypto"],
         count=5,
         criteria=criteria,
         composition=_EMPTY_COMPOSITION,
+        exclude_tickers=[],
     )
 
     tickers = [c.ticker for c in result.output.candidates]
-    assert "SPY" in tickers  # etf pool contributed
+    assert "BTC-USD" in tickers  # crypto pool contributed
     assert "NVDA" in tickers  # stock pool contributed
     assert len(set(tickers)) == len(tickers)
+
+
+def test_stub_drops_excluded_tickers() -> None:
+    stub = StubRecommenderAgent()
+    criteria = default_eligibility_criteria()
+
+    result = stub.recommend(
+        categories=["stock"],
+        count=5,
+        criteria=criteria,
+        composition=_EMPTY_COMPOSITION,
+        exclude_tickers=["NVDA", "googl"],  # case-insensitive
+    )
+
+    tickers = [c.ticker for c in result.output.candidates]
+    assert "NVDA" not in tickers
+    assert "GOOGL" not in tickers
+    assert tickers  # other canned names still proposed
 
 
 def test_stub_prompt_embeds_categories_and_thresholds() -> None:
@@ -60,6 +80,7 @@ def test_stub_prompt_embeds_categories_and_thresholds() -> None:
         count=3,
         criteria=criteria,
         composition=_EMPTY_COMPOSITION,
+        exclude_tickers=[],
     )
 
     assert "stock" in prompt

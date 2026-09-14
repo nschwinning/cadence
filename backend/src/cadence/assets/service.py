@@ -15,7 +15,12 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import InstrumentedAttribute, Session
 from sqlalchemy.sql.expression import ColumnElement, UnaryExpression
 
-from cadence.assets.errors import AssetNotFoundError, DuplicateAssetError
+from cadence.assets.category import SUPPORTED_CATEGORIES
+from cadence.assets.errors import (
+    AssetNotFoundError,
+    DuplicateAssetError,
+    UnsupportedCategoryError,
+)
 from cadence.assets.evaluation import EvaluationResult, evaluate
 from cadence.assets.market_data import HistoryBar, MarketDataProvider
 from cadence.assets.metrics import derive_metrics
@@ -38,6 +43,8 @@ def add_asset(
         DuplicateAssetError: if the (normalized) ticker already exists.
         UnknownTickerError: if the provider has no data for the ticker.
         MarketDataUnavailableError: on provider/FX failure (nothing persisted).
+        UnsupportedCategoryError: if the instrument's category is not tradeable
+            (only stock and crypto are supported); nothing is persisted.
     """
     normalized = normalize_ticker(ticker)
 
@@ -50,6 +57,15 @@ def add_asset(
     # May raise UnknownTickerError / MarketDataUnavailableError before any
     # persistence, guaranteeing no partial rows.
     derived = derive_metrics(provider, normalized)
+
+    # Only tradeable categories (stock, crypto) may enter the universe; reject
+    # anything else before persistence so no untradeable row is ever stored.
+    if derived.category not in SUPPORTED_CATEGORIES:
+        raise UnsupportedCategoryError(
+            f"Asset {normalized!r} has unsupported category "
+            f"{derived.category.value!r}; only stock and crypto are supported"
+        )
+
     result = evaluate(derived.metrics)
 
     asset = Asset(

@@ -37,7 +37,9 @@ fixed set of eligibility rules. Use the web_search tool to check recent facts
 (price, market capitalization, liquidity, listing history) before proposing an
 asset. Base your final answer on tool results from this run; if the evidence is
 insufficient, return fewer candidates rather than guessing. Only return valid
-exchange ticker symbols. Do not invent tickers.
+exchange ticker symbols. Do not invent tickers. Never propose an asset that is
+already in the universe: the prompt lists the tickers to exclude, and any such
+proposal is wasted because it will be rejected as a duplicate.
 """.strip()
 
 
@@ -111,8 +113,12 @@ class RecommenderAgent(Protocol):
         count: int,
         criteria: EligibilityCriteria,
         composition: UniverseComposition,
+        exclude_tickers: list[str],
     ) -> RecommendationResult:
-        """Return up to ``count``-worth of candidates for the given categories."""
+        """Return up to ``count``-worth of candidates for the given categories.
+
+        ``exclude_tickers`` are already in the universe and MUST NOT be proposed.
+        """
         ...
 
     def build_prompt(
@@ -121,6 +127,7 @@ class RecommenderAgent(Protocol):
         count: int,
         criteria: EligibilityCriteria,
         composition: UniverseComposition,
+        exclude_tickers: list[str],
     ) -> str:
         """Return the exact prompt text that would be sent for this request."""
         ...
@@ -148,11 +155,32 @@ sectors and countries, and AVOID adding to the largest existing groups.
 """.strip()
 
 
+def _render_exclusions(exclude_tickers: list[str]) -> str:
+    """Render the do-not-propose list of tickers already in the universe.
+
+    Existing tickers would be caught as duplicates server-side, so listing them
+    up front stops the agent wasting proposals (and web searches) on names that
+    can never be added.
+    """
+    if not exclude_tickers:
+        return (
+            "The universe is currently empty, so no tickers are excluded — "
+            "propose any eligible assets."
+        )
+    ticker_line = ", ".join(exclude_tickers)
+    return f"""
+These {len(exclude_tickers)} tickers are already in the universe. Do NOT propose
+any of them (proposing one is wasted — it will be rejected as a duplicate):
+  {ticker_line}
+""".strip()
+
+
 def build_recommendation_prompt(
     categories: list[str],
     count: int,
     criteria: EligibilityCriteria,
     composition: UniverseComposition,
+    exclude_tickers: list[str],
 ) -> str:
     """Compose the agent input from the requested categories and thresholds.
 
@@ -160,13 +188,16 @@ def build_recommendation_prompt(
     while searching; Cadence still re-validates every candidate server-side. The
     current-universe composition is included so the agent can steer toward
     under-represented sectors and countries — a soft preference only; it does not
-    relax eligibility or de-duplication.
+    relax eligibility or de-duplication. ``exclude_tickers`` are the assets
+    already in the universe; the agent is told not to propose any of them.
     """
     category_line = ", ".join(categories) if categories else "any"
     return f"""
 Find up to {count} distinct assets for a EUR investor's universe.
 
 Restrict candidates to these categories: {category_line}.
+
+{_render_exclusions(exclude_tickers)}
 
 {_render_composition(composition)}
 
@@ -202,8 +233,11 @@ class OpenAIRecommenderAgent:
         count: int,
         criteria: EligibilityCriteria,
         composition: UniverseComposition,
+        exclude_tickers: list[str],
     ) -> str:
-        return build_recommendation_prompt(categories, count, criteria, composition)
+        return build_recommendation_prompt(
+            categories, count, criteria, composition, exclude_tickers
+        )
 
     def recommend(
         self,
@@ -211,8 +245,11 @@ class OpenAIRecommenderAgent:
         count: int,
         criteria: EligibilityCriteria,
         composition: UniverseComposition,
+        exclude_tickers: list[str],
     ) -> RecommendationResult:
-        prompt = self.build_prompt(categories, count, criteria, composition)
+        prompt = self.build_prompt(
+            categories, count, criteria, composition, exclude_tickers
+        )
         return asyncio.run(self._run(prompt))
 
     async def _run(self, prompt: str) -> RecommendationResult:

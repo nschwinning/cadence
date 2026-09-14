@@ -92,8 +92,9 @@ class FakeRecommenderAgent:
     """In-memory :class:`RecommenderAgent` returning canned candidates.
 
     Set ``error`` to raise from :meth:`recommend` (to drive failure paths).
-    ``recommend_calls`` records the ``(categories, count)`` of each call. The
-    prompt is built with the real builder so the recorded prompt is realistic.
+    ``recommend_calls`` records the ``(categories, count)`` of each call and
+    ``exclude_calls`` records the exclusion list passed to each call. The prompt
+    is built with the real builder so the recorded prompt is realistic.
     """
 
     def __init__(
@@ -107,6 +108,7 @@ class FakeRecommenderAgent:
         self._tool_call_count = tool_call_count
         self._error = error
         self.recommend_calls: list[tuple[list[str], int]] = []
+        self.exclude_calls: list[list[str]] = []
 
     def build_prompt(
         self,
@@ -114,8 +116,11 @@ class FakeRecommenderAgent:
         count: int,
         criteria: EligibilityCriteria,
         composition: UniverseComposition,
+        exclude_tickers: list[str],
     ) -> str:
-        return build_recommendation_prompt(categories, count, criteria, composition)
+        return build_recommendation_prompt(
+            categories, count, criteria, composition, exclude_tickers
+        )
 
     def recommend(
         self,
@@ -123,8 +128,10 @@ class FakeRecommenderAgent:
         count: int,
         criteria: EligibilityCriteria,
         composition: UniverseComposition,
+        exclude_tickers: list[str],
     ) -> RecommendationResult:
         self.recommend_calls.append((list(categories), count))
+        self.exclude_calls.append(list(exclude_tickers))
         if self._error is not None:
             raise self._error
         return RecommendationResult(

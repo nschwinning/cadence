@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
-import { assetKeys } from '../../api/assets';
+import { assetKeys, SUPPORTED_CATEGORIES } from '../../api/assets';
 import {
   isTerminalPhase,
   useCreateRecommendationRun,
@@ -13,15 +13,6 @@ import type {
   RecommendationCandidateResult,
   RunPhase,
 } from '../../types/api';
-
-/** All selectable categories, in display order. */
-const ALL_CATEGORIES: AssetCategory[] = [
-  'stock',
-  'crypto',
-  'etf',
-  'fund',
-  'other',
-];
 
 /** The three in-flight phases rendered as stepper nodes (in order). */
 const PHASE_STEPS: { phase: RunPhase; label: string; caption: string }[] = [
@@ -358,7 +349,7 @@ export function RecommendAssetsCard({ onViewUniverse }: RecommendAssetsCardProps
               aria-labelledby="rec-cat-label"
               className="mt-1 flex flex-wrap gap-2"
             >
-              {ALL_CATEGORIES.map((category) => (
+              {SUPPORTED_CATEGORIES.map((category) => (
                 <CategoryChip
                   key={category}
                   category={category}

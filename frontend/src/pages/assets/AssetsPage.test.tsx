@@ -105,6 +105,21 @@ describe('AssetsPage', () => {
     ).toBeInTheDocument();
   });
 
+  it('offers only stock and crypto in the category filter', async () => {
+    const user = userEvent.setup();
+
+    renderWithClient(<AssetsPage />);
+    await screen.findByText('Apple Inc.');
+
+    await user.click(screen.getByRole('button', { name: /Categories/ }));
+
+    expect(screen.getByLabelText('Filter by Stock')).toBeInTheDocument();
+    expect(screen.getByLabelText('Filter by Crypto')).toBeInTheDocument();
+    expect(screen.queryByLabelText('Filter by ETF')).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('Filter by Fund')).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('Filter by Other')).not.toBeInTheDocument();
+  });
+
   it('surfaces a specific message when adding a duplicate ticker (409)', async () => {
     const user = userEvent.setup();
     mockedPost.mockRejectedValue({

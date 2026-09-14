@@ -20,13 +20,17 @@ import type {
 export const ASSET_PAGE_SIZES = [20, 50, 100] as const;
 export type AssetPageSize = (typeof ASSET_PAGE_SIZES)[number];
 
-/** Selectable category filter values; kept in lockstep with the backend enum. */
-export const ASSET_CATEGORIES = [
+/**
+ * The asset categories Cadence supports as user-facing choices — the single
+ * source of truth for every selectable/filterable category control (the assets
+ * list category filter and the recommendation-run form). Cadence supports
+ * stocks and crypto only; legacy `etf`/`fund`/`other` values may still be stored
+ * on existing assets and are still rendered by `CategoryBadge`, but they are not
+ * offered as choices here.
+ */
+export const SUPPORTED_CATEGORIES = [
   'stock',
   'crypto',
-  'etf',
-  'fund',
-  'other',
 ] as const satisfies readonly AssetCategory[];
 
 /** Selectable sector filter values; kept in lockstep with the backend enum. */

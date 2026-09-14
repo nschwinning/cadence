@@ -54,9 +54,11 @@ def _seed_universe(db_session: Session) -> None:
     assets_service.add_asset(
         db_session, "FIN", _provider(sector_key="financial-services", country="USA")
     )
-    # An ETF has no sector; still eligible.
+    # A crypto asset has no sector; still eligible.
     assets_service.add_asset(
-        db_session, "ETFA", _provider(quote_type="ETF", sector_key=None, country="Ireland")
+        db_session,
+        "BTC-USD",
+        _provider(quote_type="CRYPTOCURRENCY", sector_key=None, country="Ireland"),
     )
     # Below the market-cap threshold -> ineligible, but still stored.
     assets_service.add_asset(
@@ -130,7 +132,7 @@ def test_metrics_reflect_seeded_data(db_session: Session) -> None:
     assert metrics.assets.ineligible == 1
 
     by_category = {e.key: e.count for e in metrics.assets.by_category}
-    assert by_category == {"stock": 3, "etf": 1}
+    assert by_category == {"stock": 3, "crypto": 1}
 
     by_sector = {e.key: e.count for e in metrics.assets.by_sector}
     assert by_sector == {
