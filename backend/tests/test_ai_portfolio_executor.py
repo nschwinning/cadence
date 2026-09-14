@@ -2,24 +2,27 @@
 
 from __future__ import annotations
 
-from cadence.ai_portfolio.agent import (
-    AIPortfolioStock,
-    ExistingHoldingEvaluation,
-    NewStockRecommendation,
-    PositionSide,
-    RebalanceAction,
-)
+from cadence.ai_portfolio.agent import AIPortfolioStock, AITargetAllocation
 from cadence.ai_portfolio.executor import AIPortfolioExecutor
 from cadence.broker.base import OrderError
 from cadence.broker.models import OrderType, Position, TimeInForce
 from cadence.broker.stub import StubBroker
 
 
-def _stock(ticker: str, alloc: float, side: PositionSide = PositionSide.LONG) -> AIPortfolioStock:
+def _stock(ticker: str, alloc: float) -> AIPortfolioStock:
     return AIPortfolioStock(
         ticker=ticker,
         company_name=ticker,
-        side=side,
+        allocation_pct=alloc,
+        investment_thesis="thesis",
+        confidence=0.7,
+    )
+
+
+def _target(ticker: str, alloc: float) -> AITargetAllocation:
+    return AITargetAllocation(
+        ticker=ticker,
+        company_name=ticker,
         allocation_pct=alloc,
         investment_thesis="thesis",
         confidence=0.7,
@@ -46,6 +49,11 @@ class _FailingBroker(StubBroker):
         return super().buy(symbol, quantity, order_type, limit_price, time_in_force)
 
 
+# --------------------------------------------------------------------------- #
+# Build sizing (long-only)
+# --------------------------------------------------------------------------- #
+
+
 def test_execute_build_sizes_positions_from_capital() -> None:
     broker = StubBroker()
     executor = AIPortfolioExecutor(broker, allocated_capital=100_000)
@@ -55,6 +63,7 @@ def test_execute_build_sizes_positions_from_capital() -> None:
     assert len(results) == 2
     assert all(r.executed for r in results)
     for r in results:
+        assert r.side == "long"
         assert r.shares >= 1
         assert r.order_id is not None
 
@@ -83,83 +92,83 @@ def test_execute_build_isolates_per_ticker_failures() -> None:
     assert by_ticker["MSFT"].executed is True
 
 
-def test_execute_rebalance_closes_before_opening() -> None:
+# --------------------------------------------------------------------------- #
+# Target-weight rebalance
+# --------------------------------------------------------------------------- #
+
+
+def test_execute_rebalance_trades_toward_target_weights() -> None:
     broker = StubBroker()
-    # Establish a held long position to close.
+    # Establish held long positions: one to increase, one to decrease, one to exit.
     broker.buy("AAPL", 10)
+    broker.buy("MSFT", 20)
+    broker.buy("GOOG", 5)
     positions = {p.symbol: p for p in broker.get_positions()}
 
-    executor = AIPortfolioExecutor(broker, allocated_capital=100_000)
+    executor = AIPortfolioExecutor(broker, allocated_capital=50_000)
     results = executor.execute_rebalance(
-        evaluations=[
-            ExistingHoldingEvaluation(
-                ticker="AAPL",
-                action=RebalanceAction.SELL,
-                reasoning="exit",
-                confidence=0.8,
-            )
-        ],
-        new_recs=[
-            NewStockRecommendation(
-                ticker="MSFT",
-                company_name="Microsoft",
-                side=PositionSide.LONG,
-                allocation_pct=0.3,
-                investment_thesis="cloud",
-                confidence=0.9,
-            )
+        targets=[
+            _target("AAPL", 0.5),  # increase (target shares > 10)
+            _target("MSFT", 0.05),  # decrease (target shares < 20)
+            _target("NVDA", 0.45),  # brand-new long
+            # GOOG omitted -> full exit
         ],
         current_positions=positions,
     )
 
-    executed = [r for r in results if r.executed]
-    assert executed[0].ticker == "AAPL"
-    assert executed[0].side == "sell"
-    assert executed[1].ticker == "MSFT"
+    by_ticker = {r.ticker: r for r in results}
+
+    # Increase is a buy.
+    assert by_ticker["AAPL"].executed is True
+    assert by_ticker["AAPL"].side == "long"
+    assert by_ticker["AAPL"].shares >= 1
+
+    # Decrease is a sell of the delta (< held quantity).
+    assert by_ticker["MSFT"].executed is True
+    assert by_ticker["MSFT"].side == "sell"
+    assert 0 < by_ticker["MSFT"].shares < 20
+
+    # Held-but-untargeted ticker is fully sold.
+    assert by_ticker["GOOG"].executed is True
+    assert by_ticker["GOOG"].side == "sell"
+    assert by_ticker["GOOG"].shares == 5
+
+    # A new target opens a long position.
+    assert by_ticker["NVDA"].executed is True
+    assert by_ticker["NVDA"].side == "long"
+    assert by_ticker["NVDA"].shares >= 1
 
 
-def test_execute_rebalance_holds_are_noops() -> None:
+def test_execute_rebalance_skips_trivial_deltas() -> None:
     broker = StubBroker()
-    broker.buy("AAPL", 5)
+    broker.buy("AAPL", 10)
     positions = {p.symbol: p for p in broker.get_positions()}
-    executor = AIPortfolioExecutor(broker, allocated_capital=100_000)
+    price = broker.get_quote("AAPL").last
 
+    # With a single target the weight normalizes to 1.0, so size the capital so
+    # the target share count rounds to exactly the 10 held shares -> delta 0.
+    executor = AIPortfolioExecutor(broker, allocated_capital=price * 10.4)
     results = executor.execute_rebalance(
-        evaluations=[
-            ExistingHoldingEvaluation(
-                ticker="AAPL",
-                action=RebalanceAction.HOLD,
-                reasoning="keep",
-                confidence=0.9,
-            )
-        ],
-        new_recs=[],
+        targets=[_target("AAPL", 1.0)],
         current_positions=positions,
     )
 
     assert results == []
 
 
-def test_execute_rebalance_skips_missing_position() -> None:
+def test_execute_rebalance_zero_total_weight_exits_all() -> None:
     broker = StubBroker()
+    broker.buy("AAPL", 3)
+    positions = {p.symbol: p for p in broker.get_positions()}
     executor = AIPortfolioExecutor(broker, allocated_capital=100_000)
 
-    results = executor.execute_rebalance(
-        evaluations=[
-            ExistingHoldingEvaluation(
-                ticker="AAPL",
-                action=RebalanceAction.SELL,
-                reasoning="exit",
-                confidence=0.8,
-            )
-        ],
-        new_recs=[],
-        current_positions={},
-    )
+    # Guard against a zero-sum target set: every held position is exited.
+    results = executor.execute_rebalance(targets=[], current_positions=positions)
 
     assert len(results) == 1
-    assert results[0].executed is False
-    assert results[0].reason == "No position to close"
+    assert results[0].ticker == "AAPL"
+    assert results[0].side == "sell"
+    assert results[0].shares == 3
 
 
 def test_position_helper_import_available() -> None:

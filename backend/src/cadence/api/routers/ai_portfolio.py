@@ -27,6 +27,7 @@ from cadence.ai_portfolio.errors import (
     SessionNotEligibleError,
 )
 from cadence.ai_portfolio.service import AIBuildParams
+from cadence.api.routers.assets import get_market_data_provider
 from cadence.api.schemas import (
     AIDailyRebalanceResponse,
     AIPortfolioBuildRequest,
@@ -34,6 +35,7 @@ from cadence.api.schemas import (
     AIPortfolioEventRead,
     AIRebalanceResponse,
 )
+from cadence.assets.market_data import MarketDataProvider
 from cadence.broker import get_broker
 from cadence.broker.base import Broker
 from cadence.config import settings
@@ -80,6 +82,7 @@ DbSession = Annotated[Session, Depends(get_db)]
 Agent = Annotated[AIPortfolioAgent, Depends(get_ai_portfolio_agent)]
 JobRunner = Annotated[AIPortfolioJobRunner, Depends(get_ai_job_runner)]
 BrokerDep = Annotated[Broker, Depends(get_broker)]
+Provider = Annotated[MarketDataProvider, Depends(get_market_data_provider)]
 
 
 @router.post(
@@ -92,20 +95,17 @@ def build_ai_portfolio_endpoint(
     db: DbSession,
     agent: Agent,
     broker: BrokerDep,
+    provider: Provider,
     job_runner: JobRunner,
 ) -> AIPortfolioBuildResponse:
     """Queue an AI portfolio build and return the event immediately (202)."""
     params = AIBuildParams(
-        tickers=payload.tickers,
         allocated_capital=payload.allocated_capital,
         risk_profile=payload.risk_profile,
-        allow_new_picks=payload.allow_new_picks,
-        allow_short=payload.allow_short,
-        max_stock_count=payload.max_stock_count,
         daily_rebalancing=payload.daily_rebalancing,
     )
     try:
-        event = job_runner.start_build(db, params, agent, broker)
+        event = job_runner.start_build(db, params, agent, broker, provider)
     except AIPortfolioValidationError as exc:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
@@ -137,6 +137,7 @@ def rebalance_session(
     db: DbSession,
     agent: Agent,
     broker: BrokerDep,
+    provider: Provider,
     job_runner: JobRunner,
 ) -> AIRebalanceResponse:
     """Trigger an AI rebalance for an eligible session.
@@ -155,7 +156,9 @@ def rebalance_session(
             status_code=status.HTTP_409_CONFLICT, detail=str(exc)
         ) from exc
 
-    event, started = job_runner.start_rebalance(db, session_id, agent, broker)
+    event, started = job_runner.start_rebalance(
+        db, session_id, agent, broker, provider
+    )
     return AIRebalanceResponse(event_id=event.id, status=event.status, started=started)
 
 
@@ -164,6 +167,7 @@ def rebalance_daily(
     db: DbSession,
     agent: Agent,
     broker: BrokerDep,
+    provider: Provider,
     job_runner: JobRunner,
     _token: Annotated[None, Depends(require_valid_cron_token)],
 ) -> AIDailyRebalanceResponse:
@@ -184,7 +188,7 @@ def rebalance_daily(
     skipped: list[uuid.UUID] = []
     for session_row in targets:
         _event, started = job_runner.start_rebalance(
-            db, session_row.id, agent, broker
+            db, session_row.id, agent, broker, provider
         )
         if started:
             triggered.append(session_row.id)

@@ -5,7 +5,28 @@ import {
   useBuildStatus,
   useRebalanceSession,
 } from '../../api/aiPortfolio';
-import type { AIEventStatus } from '../../types/api';
+import type {
+  AIEventStatus,
+  AIRebalanceResultPayload,
+  AITargetAllocation,
+} from '../../types/api';
+
+/** Format a fractional confidence/allocation (0–1) as a percentage string. */
+function pct(value: number): string {
+  return `${(value * 100).toFixed(1)}%`;
+}
+
+/**
+ * Narrow a raw event `result_payload` to the rebalance shape. Returns null when
+ * the payload is missing or does not carry target allocations, so the UI can
+ * fall back gracefully.
+ */
+function parseRebalanceResult(
+  payload: Record<string, unknown> | null | undefined,
+): AIRebalanceResultPayload | null {
+  if (!payload || !Array.isArray(payload.target_allocations)) return null;
+  return payload as unknown as AIRebalanceResultPayload;
+}
 
 /** Presentation per terminal event status. */
 const TERMINAL_META: Record<
@@ -43,6 +64,56 @@ function rebalanceErrorMessage(error: unknown): string {
     }
   }
   return 'Could not trigger a rebalance. Please try again.';
+}
+
+/** Render the AI's evaluation summary, health, and new target allocations. */
+function RebalanceResult({
+  result,
+}: {
+  result: AIRebalanceResultPayload | null;
+}) {
+  if (!result) return null;
+  return (
+    <div className="mt-3 flex flex-col gap-3 border-t border-black/10 pt-3">
+      {result.evaluation_summary && (
+        <p className="whitespace-pre-wrap break-words">
+          {result.evaluation_summary}
+        </p>
+      )}
+      {result.portfolio_health && (
+        <p>
+          <span className="font-semibold">Portfolio health:</span>{' '}
+          {result.portfolio_health}
+        </p>
+      )}
+      {result.target_allocations.length > 0 && (
+        <div>
+          <p className="mb-1 font-semibold">Target allocations</p>
+          <ul className="flex flex-col gap-1">
+            {result.target_allocations.map((a: AITargetAllocation) => (
+              <li
+                key={a.ticker}
+                className="flex items-baseline justify-between gap-3"
+              >
+                <span className="font-medium">
+                  {a.ticker}
+                  {a.company_name ? (
+                    <span className="font-normal opacity-70">
+                      {' '}
+                      · {a.company_name}
+                    </span>
+                  ) : null}
+                </span>
+                <span className="tabular-nums font-medium">
+                  {pct(a.allocation_pct)}
+                </span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+    </div>
+  );
 }
 
 export function SessionRebalanceCard({ sessionId }: { sessionId: string }) {
@@ -136,6 +207,7 @@ export function SessionRebalanceCard({ sessionId }: { sessionId: string }) {
                 {event.actions_taken.length === 1 ? '' : 's'} placed.
               </p>
             )}
+            <RebalanceResult result={parseRebalanceResult(event.result_payload)} />
           </div>
         )}
     </div>

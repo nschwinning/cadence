@@ -6,12 +6,12 @@ Keeps AI-managed paper portfolios current by letting the AI re-evaluate holdings
 
 ### Requirement: Rebalance a session
 
-The system SHALL rebalance a single active AI-managed session: read its current live positions and account summary, assemble candidate tickers, ask the AI to evaluate each existing holding (hold, sell, or cover) and optionally propose new positions, and then apply the resulting deltas as brokerage orders. Closing trades SHALL be executed before opening trades, and opening trades SHALL be sized against available buying power. The rebalance SHALL be processed in the background and recorded as an AI-portfolio event and a session run.
+The system SHALL rebalance a single active AI-managed session: read its current live positions and account summary, assemble candidate tickers from the entire current asset universe (enriched with name, sector, category, and eligibility), and ask the AI to produce a set of long-only target allocations — fractions in [0, 1] that sum to approximately 1.0 — for the whole portfolio. The AI MAY research and propose assets not currently in the universe (discovery is always enabled), which SHALL be added to the universe on a best-effort basis bounded by a configured maximum number of new assets per run. The system SHALL then re-weight the portfolio toward those targets: for each ticker it SHALL compare the currently held share count with the target share count implied by the allocation and the allocated capital, and apply the difference as a brokerage order — buying to increase a position, selling to reduce it, and fully selling any held position that is absent from the targets or given an allocation of ~0. Trivial fractional differences (less than one whole share) SHALL be skipped. The AI's research SHALL be cost-bounded per run by a configured maximum number of reasoning turns and a hard cap on the number of web searches. The rebalance SHALL be processed in the background and recorded as an AI-portfolio event and a session run.
 
 #### Scenario: Rebalance applies AI decisions
 
 - **WHEN** a rebalance runs for an active session
-- **THEN** the system SHALL close positions the AI marks sell/cover, open the AI's new positions within available buying power, record the trades and closed positions, and mark the event succeeded
+- **THEN** the system SHALL trade toward the AI's target allocations — buying under-weight holdings, selling over-weight holdings, and fully exiting holdings absent from the targets — record the trades and closed positions, update the portfolio's holdings to the resulting target set, and mark the event succeeded
 
 #### Scenario: Session not eligible
 

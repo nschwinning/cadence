@@ -47,7 +47,20 @@ describe('BuildAIPortfolioCard', () => {
     vi.clearAllMocks();
   });
 
-  it('starts a build, shows live progress, and updates to succeeded without manual refresh', async () => {
+  it('does not render a candidate-tickers input (the AI uses the whole universe)', () => {
+    renderWithClient(<BuildAIPortfolioCard />);
+
+    expect(screen.queryByLabelText('Candidate tickers')).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('Max positions')).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole('checkbox', { name: /Allow short positions/i }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole('checkbox', { name: /Allow the AI to add picks/i }),
+    ).not.toBeInTheDocument();
+  });
+
+  it('starts a build submitting only capital, risk profile, and rebalancing, and updates to succeeded without manual refresh', async () => {
     let status: AIEventStatus = 'running';
     mockedPost.mockResolvedValue({ data: { event_id: 'evt-1', status: 'queued' } });
     mockedGet.mockImplementation(() => Promise.resolve({ data: makeEvent(status) }));
@@ -55,21 +68,15 @@ describe('BuildAIPortfolioCard', () => {
 
     const { queryClient } = renderWithClient(<BuildAIPortfolioCard />);
 
-    await user.type(
-      screen.getByLabelText('Candidate tickers'),
-      'AAPL, MSFT',
-    );
     await user.click(screen.getByRole('button', { name: 'Build portfolio' }));
 
     // Running mode appears from the polled status, no user action needed.
     expect(await screen.findByText('Building portfolio…')).toBeInTheDocument();
-    expect(mockedPost).toHaveBeenCalledWith(
-      '/api/v1/ai-portfolio/build',
-      expect.objectContaining({
-        tickers: ['AAPL', 'MSFT'],
-        daily_rebalancing: false,
-      }),
-    );
+    expect(mockedPost).toHaveBeenCalledWith('/api/v1/ai-portfolio/build', {
+      allocated_capital: 100000,
+      risk_profile: 'balanced',
+      daily_rebalancing: false,
+    });
 
     // Backend advances the event to terminal; force the poll's refetch (jsdom
     // does not fire the background interval) — the UI reacts on its own.
@@ -89,7 +96,6 @@ describe('BuildAIPortfolioCard', () => {
 
     renderWithClient(<BuildAIPortfolioCard />);
 
-    await user.type(screen.getByLabelText('Candidate tickers'), 'AAPL MSFT');
     await user.click(
       screen.getByRole('checkbox', { name: /Enroll in daily rebalancing/i }),
     );

@@ -326,16 +326,15 @@ class ClosedPositionListResponse(BaseModel):
 
 
 class AIPortfolioBuildRequest(BaseModel):
-    """Request body for building an AI-managed portfolio."""
+    """Request body for building an AI-managed portfolio.
 
-    tickers: list[str] = Field(
-        ..., min_length=2, description="Candidate stock tickers (at least two)"
-    )
+    The build allocates over the entire current asset universe (with bounded
+    discovery of new assets), so no candidate ticker list or per-asset/position
+    caps are accepted.
+    """
+
     allocated_capital: float = Field(default=100000.0, ge=1000)
     risk_profile: str = Field(default="balanced")
-    allow_new_picks: bool = Field(default=False)
-    allow_short: bool = Field(default=False)
-    max_stock_count: int = Field(default=8, ge=2, le=10)
     daily_rebalancing: bool = Field(
         default=False,
         description="Enroll this session in automatic daily rebalancing.",

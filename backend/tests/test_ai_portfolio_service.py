@@ -1,23 +1,30 @@
-"""Service tests for the AI-portfolio build and rebalance flows (stub broker)."""
+"""Service tests for the AI-portfolio build and rebalance flows (stub broker).
+
+Builds and rebalances now operate over the full asset universe with bounded
+discovery, so these tests seed a universe first and inject a fake market-data
+provider for discovery-adds. No network is touched.
+"""
 
 from __future__ import annotations
 
+from datetime import date
+
 import pytest
 from sqlalchemy.orm import Session
-from tests.fakes import FakeAIPortfolioAgent
+from tests.fakes import FakeAIPortfolioAgent, FakeMarketDataProvider
 
 from cadence.ai_portfolio import service
 from cadence.ai_portfolio.agent import (
     AIPortfolioBuildResult,
     AIPortfolioStock,
     AIRebalanceResult,
-    ExistingHoldingEvaluation,
-    PositionSide,
-    RebalanceAction,
+    AITargetAllocation,
 )
 from cadence.ai_portfolio.constants import EventStatus, EventType
 from cadence.ai_portfolio.errors import AIPortfolioValidationError
 from cadence.ai_portfolio.service import AIBuildParams
+from cadence.assets import service as assets_service
+from cadence.assets.market_data import AssetInfo, HistoryBar
 from cadence.broker.stub import StubBroker
 from cadence.paper_trading import service as paper_service
 from cadence.paper_trading.constants import ScheduleMode
@@ -29,26 +36,48 @@ class _ClosedBroker(StubBroker):
         return False
 
 
-def _build_result() -> AIPortfolioBuildResult:
+def _provider() -> FakeMarketDataProvider:
+    """A market-data provider yielding one eligible-by-default asset profile."""
+    return FakeMarketDataProvider(
+        info=AssetInfo(
+            company_name="Co",
+            exchange="XETRA",
+            currency="EUR",
+            price=50.0,
+            market_cap=5_000_000_000.0,
+            quote_type="EQUITY",
+            sector_key="technology",
+            country="Germany",
+        ),
+        history=[
+            HistoryBar(date=date(2005, 1, 1), close=50.0, volume=1_000_000.0),
+            HistoryBar(date=date(2024, 1, 1), close=50.0, volume=1_000_000.0),
+        ],
+    )
+
+
+def _seed_universe(db_session: Session, *tickers: str) -> FakeMarketDataProvider:
+    """Add the given tickers to the universe; return the provider used."""
+    provider = _provider()
+    for ticker in tickers:
+        assets_service.add_asset(db_session, ticker, provider)
+    return provider
+
+
+def _build_result(*tickers: str) -> AIPortfolioBuildResult:
+    picks = tickers or ("AAPL", "MSFT")
+    weight = round(1.0 / len(picks), 4)
     return AIPortfolioBuildResult(
         portfolio_name="AI Growth",
         stocks=[
             AIPortfolioStock(
-                ticker="AAPL",
-                company_name="Apple",
-                side=PositionSide.LONG,
-                allocation_pct=0.5,
+                ticker=t,
+                company_name=t,
+                allocation_pct=weight,
                 investment_thesis="strong",
                 confidence=0.8,
-            ),
-            AIPortfolioStock(
-                ticker="MSFT",
-                company_name="Microsoft",
-                side=PositionSide.LONG,
-                allocation_pct=0.5,
-                investment_thesis="cloud",
-                confidence=0.9,
-            ),
+            )
+            for t in picks
         ],
         overall_thesis="tech",
         risk_assessment="concentration",
@@ -56,7 +85,7 @@ def _build_result() -> AIPortfolioBuildResult:
 
 
 def _params(**kw: object) -> AIBuildParams:
-    base: dict[str, object] = {"tickers": ["AAPL", "MSFT"], "allocated_capital": 100_000.0}
+    base: dict[str, object] = {"allocated_capital": 100_000.0}
     base.update(kw)
     return AIBuildParams(**base)  # type: ignore[arg-type]
 
@@ -66,19 +95,20 @@ def _params(**kw: object) -> AIBuildParams:
 # --------------------------------------------------------------------------- #
 
 
-def test_create_build_event_rejects_too_few_tickers(db_session: Session) -> None:
+def test_create_build_event_rejects_empty_universe(db_session: Session) -> None:
     with pytest.raises(AIPortfolioValidationError):
-        service.create_build_event(db_session, _params(tickers=["AAPL"]))
+        service.create_build_event(db_session, _params())
 
 
 def test_run_build_event_success_creates_portfolio_and_session(
     db_session: Session,
 ) -> None:
-    agent = FakeAIPortfolioAgent(build_result=_build_result())
+    provider = _seed_universe(db_session, "AAPL", "MSFT")
+    agent = FakeAIPortfolioAgent(build_result=_build_result("AAPL", "MSFT"))
     broker = StubBroker()
     event = service.create_build_event(db_session, _params(daily_rebalancing=True))
 
-    service.run_build_event(db_session, event.id, agent, broker)
+    service.run_build_event(db_session, event.id, agent, broker, provider)
 
     refreshed = service.get_event(db_session, event.id)
     assert refreshed.status == EventStatus.SUCCEEDED.value
@@ -86,8 +116,14 @@ def test_run_build_event_success_creates_portfolio_and_session(
     assert refreshed.session_id is not None
     assert refreshed.portfolio_id is not None
 
+    # The agent received the full enriched universe as candidates.
+    assert agent.build_calls
+    candidate_tickers = {c["ticker"] for c in agent.build_calls[0]["candidates"]}
+    assert candidate_tickers == {"AAPL", "MSFT"}
+
     portfolio = portfolios_service.get_portfolio(db_session, refreshed.portfolio_id)
     assert portfolio.source == "ai_managed"
+    assert portfolio.max_allocation_pct == 1.0
     assert set(portfolio.stocks) == {"AAPL", "MSFT"}
 
     session_row = paper_service.get_session(db_session, refreshed.session_id)
@@ -97,14 +133,36 @@ def test_run_build_event_success_creates_portfolio_and_session(
     trades = paper_service.get_session_trades(db_session, refreshed.session_id, limit=100)
     assert {t.ticker for t in trades} == {"AAPL", "MSFT"}
 
+    runs = paper_service.get_session_runs(db_session, refreshed.session_id, limit=10)
+    assert len(runs) == 1
+
+
+def test_run_build_event_discovers_and_adds_new_asset(db_session: Session) -> None:
+    provider = _seed_universe(db_session, "AAPL", "MSFT")
+    # The agent proposes a ticker (NVDA) that is not in the universe.
+    agent = FakeAIPortfolioAgent(build_result=_build_result("AAPL", "MSFT", "NVDA"))
+    event = service.create_build_event(db_session, _params())
+
+    service.run_build_event(db_session, event.id, agent, StubBroker(), provider)
+
+    refreshed = service.get_event(db_session, event.id)
+    assert refreshed.status == EventStatus.SUCCEEDED.value
+
+    universe = {a.ticker for a in assets_service.list_assets(db_session)}
+    assert "NVDA" in universe  # discovered ticker added to the universe
+
+    portfolio = portfolios_service.get_portfolio(db_session, refreshed.portfolio_id)
+    assert set(portfolio.stocks) == {"AAPL", "MSFT", "NVDA"}
+
 
 def test_run_build_event_manual_schedule_when_not_enrolled(
     db_session: Session,
 ) -> None:
-    agent = FakeAIPortfolioAgent(build_result=_build_result())
+    provider = _seed_universe(db_session, "AAPL", "MSFT")
+    agent = FakeAIPortfolioAgent(build_result=_build_result("AAPL", "MSFT"))
     event = service.create_build_event(db_session, _params(daily_rebalancing=False))
 
-    service.run_build_event(db_session, event.id, agent, StubBroker())
+    service.run_build_event(db_session, event.id, agent, StubBroker(), provider)
 
     refreshed = service.get_event(db_session, event.id)
     session_row = paper_service.get_session(db_session, refreshed.session_id)
@@ -112,10 +170,11 @@ def test_run_build_event_manual_schedule_when_not_enrolled(
 
 
 def test_run_build_event_failure_marks_event_failed(db_session: Session) -> None:
+    provider = _seed_universe(db_session, "AAPL", "MSFT")
     agent = FakeAIPortfolioAgent(build_error=RuntimeError("agent boom"))
     event = service.create_build_event(db_session, _params())
 
-    service.run_build_event(db_session, event.id, agent, StubBroker())
+    service.run_build_event(db_session, event.id, agent, StubBroker(), provider)
 
     refreshed = service.get_event(db_session, event.id)
     assert refreshed.status == EventStatus.FAILED.value
@@ -127,25 +186,33 @@ def test_run_build_event_failure_marks_event_failed(db_session: Session) -> None
 # --------------------------------------------------------------------------- #
 
 
-def _seed_session(db_session: Session, broker: StubBroker) -> tuple[object, object]:
-    agent = FakeAIPortfolioAgent(build_result=_build_result())
-    build_event = service.create_build_event(db_session, _params(daily_rebalancing=True))
-    service.run_build_event(db_session, build_event.id, agent, broker)
+def _seed_session(
+    db_session: Session,
+    broker: StubBroker,
+    provider: FakeMarketDataProvider,
+) -> tuple[object, object]:
+    """Build a 3-holding AI session (AAPL, MSFT, NVDA) and return (session, portfolio)."""
+    agent = FakeAIPortfolioAgent(build_result=_build_result("AAPL", "MSFT", "NVDA"))
+    build_event = service.create_build_event(
+        db_session, _params(allocated_capital=50_000.0, daily_rebalancing=True)
+    )
+    service.run_build_event(db_session, build_event.id, agent, broker, provider)
     event = service.get_event(db_session, build_event.id)
     return event.session_id, event.portfolio_id
 
 
 def test_run_rebalance_event_market_closed_is_skipped(db_session: Session) -> None:
+    provider = _seed_universe(db_session, "AAPL", "MSFT")
     broker = _ClosedBroker()
-    session_id, _ = _seed_session(db_session, broker)
+    session_id, _ = _seed_session(db_session, broker, provider)
 
     rebalance = FakeAIPortfolioAgent(
         rebalance_result=AIRebalanceResult(
-            evaluation_summary="x", existing_holdings=[], portfolio_health="healthy"
+            evaluation_summary="x", target_allocations=[], portfolio_health="healthy"
         )
     )
     rb_event = service.create_rebalance_event(db_session, session_id)
-    service.run_rebalance_event(db_session, rb_event.id, rebalance, broker)
+    service.run_rebalance_event(db_session, rb_event.id, rebalance, broker, provider)
 
     refreshed = service.get_event(db_session, rb_event.id)
     assert refreshed.status == EventStatus.SKIPPED.value
@@ -153,29 +220,33 @@ def test_run_rebalance_event_market_closed_is_skipped(db_session: Session) -> No
     assert rebalance.rebalance_calls == []
 
     runs = paper_service.get_session_runs(db_session, session_id, limit=100)
-    assert any(
-        r.details and r.details[0].get("skipped") for r in runs
-    )
+    assert any(r.details and r.details[0].get("skipped") for r in runs)
 
 
-def test_run_rebalance_event_hold_succeeds(db_session: Session) -> None:
+def test_run_rebalance_event_trades_toward_targets_and_updates_stocks(
+    db_session: Session,
+) -> None:
+    provider = _seed_universe(db_session, "AAPL", "MSFT")
     broker = StubBroker()
-    session_id, _ = _seed_session(db_session, broker)
+    session_id, portfolio_id = _seed_session(db_session, broker, provider)
 
+    # Target only AAPL + MSFT -> NVDA is exited; end-state holdings drop NVDA.
     rebalance = FakeAIPortfolioAgent(
         rebalance_result=AIRebalanceResult(
             evaluation_summary="steady",
-            existing_holdings=[
-                ExistingHoldingEvaluation(
+            target_allocations=[
+                AITargetAllocation(
                     ticker="AAPL",
-                    action=RebalanceAction.HOLD,
-                    reasoning="keep",
+                    company_name="Apple",
+                    allocation_pct=0.5,
+                    investment_thesis="keep",
                     confidence=0.9,
                 ),
-                ExistingHoldingEvaluation(
+                AITargetAllocation(
                     ticker="MSFT",
-                    action=RebalanceAction.HOLD,
-                    reasoning="keep",
+                    company_name="Microsoft",
+                    allocation_pct=0.5,
+                    investment_thesis="keep",
                     confidence=0.9,
                 ),
             ],
@@ -183,16 +254,30 @@ def test_run_rebalance_event_hold_succeeds(db_session: Session) -> None:
         )
     )
     rb_event = service.create_rebalance_event(db_session, session_id)
-    service.run_rebalance_event(db_session, rb_event.id, rebalance, broker)
+    service.run_rebalance_event(db_session, rb_event.id, rebalance, broker, provider)
 
     refreshed = service.get_event(db_session, rb_event.id)
     assert refreshed.status == EventStatus.SUCCEEDED.value
     assert rebalance.rebalance_calls  # agent consulted while market open
+    # The agent received the full universe as candidates.
+    assert {c["ticker"] for c in rebalance.rebalance_calls[0]["candidates"]} == {
+        "AAPL",
+        "MSFT",
+        "NVDA",
+    }
+
+    # NVDA fully exited -> a closed position recorded, and stocks updated.
+    closed = paper_service.get_closed_positions(db_session, session_id, limit=100)
+    assert any(c.ticker == "NVDA" for c in closed)
+
+    portfolio = portfolios_service.get_portfolio(db_session, portfolio_id)
+    assert set(portfolio.stocks) == {"AAPL", "MSFT"}
 
 
 def test_get_inflight_rebalance_event(db_session: Session) -> None:
+    provider = _seed_universe(db_session, "AAPL", "MSFT")
     broker = StubBroker()
-    session_id, _ = _seed_session(db_session, broker)
+    session_id, _ = _seed_session(db_session, broker, provider)
 
     assert service.get_inflight_rebalance_event(db_session, session_id) is None
     rb_event = service.create_rebalance_event(db_session, session_id)

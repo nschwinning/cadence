@@ -29,6 +29,7 @@ from cadence.ai_portfolio.agent import AIPortfolioAgent
 from cadence.ai_portfolio.constants import TERMINAL_STATUSES, EventStatus
 from cadence.ai_portfolio.models import AIPortfolioEvent
 from cadence.ai_portfolio.service import AIBuildParams
+from cadence.assets.market_data import MarketDataProvider
 from cadence.broker.base import Broker
 from cadence.database import SessionLocal
 
@@ -77,11 +78,14 @@ class AIPortfolioJobRunner:
         params: AIBuildParams,
         agent: AIPortfolioAgent,
         broker: Broker,
+        provider: MarketDataProvider,
     ) -> AIPortfolioEvent:
         """Create and submit a build event; return it (validation errors propagate)."""
         with self._lock:
             event = service.create_build_event(session, params)
-            future = self._executor.submit(self._job_build, event.id, agent, broker)
+            future = self._executor.submit(
+                self._job_build, event.id, agent, broker, provider
+            )
             self._active[event.id] = future
         return event
 
@@ -92,6 +96,7 @@ class AIPortfolioJobRunner:
         session_id: uuid.UUID,
         agent: AIPortfolioAgent,
         broker: Broker,
+        provider: MarketDataProvider,
     ) -> tuple[AIPortfolioEvent, bool]:
         """Create and submit a rebalance event, or return the in-flight one.
 
@@ -107,7 +112,9 @@ class AIPortfolioJobRunner:
                 return existing, False
 
             event = service.create_rebalance_event(session, session_id)
-            future = self._executor.submit(self._job_rebalance, event.id, agent, broker)
+            future = self._executor.submit(
+                self._job_rebalance, event.id, agent, broker, provider
+            )
             self._active[event.id] = future
         return event, True
 
@@ -135,16 +142,24 @@ class AIPortfolioJobRunner:
         return False
 
     def _job_build(
-        self, event_id: uuid.UUID, agent: AIPortfolioAgent, broker: Broker
+        self,
+        event_id: uuid.UUID,
+        agent: AIPortfolioAgent,
+        broker: Broker,
+        provider: MarketDataProvider,
     ) -> None:
         with self._session_factory() as session:
-            service.run_build_event(session, event_id, agent, broker)
+            service.run_build_event(session, event_id, agent, broker, provider)
 
     def _job_rebalance(
-        self, event_id: uuid.UUID, agent: AIPortfolioAgent, broker: Broker
+        self,
+        event_id: uuid.UUID,
+        agent: AIPortfolioAgent,
+        broker: Broker,
+        provider: MarketDataProvider,
     ) -> None:
         with self._session_factory() as session:
-            service.run_rebalance_event(session, event_id, agent, broker)
+            service.run_rebalance_event(session, event_id, agent, broker, provider)
 
     def _prune_locked(self) -> None:
         """Drop finished futures from the active map."""

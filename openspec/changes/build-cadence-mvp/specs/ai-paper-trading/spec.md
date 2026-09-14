@@ -25,17 +25,27 @@ The system SHALL access the brokerage through a single abstraction exposing acco
 
 ### Requirement: Build an AI portfolio and execute it as paper trades
 
-The system SHALL accept a request to build an AI portfolio from a set of candidate tickers and an amount of capital to allocate, with options for risk profile, whether the AI may pick beyond the candidates, whether short positions are allowed, a maximum number of holdings, and whether the portfolio is enrolled in daily rebalancing. The request SHALL be processed in the background and SHALL return immediately with an event identifier for polling. Execution SHALL: ask the AI for target holdings and allocations, create a portfolio and a paper-trading session, size each position from the allocated capital and a current quote, submit the corresponding orders through the brokerage, and record each executed trade and a run summary.
+The system SHALL accept a request to build an AI portfolio over the entire current asset universe and an amount of capital to allocate, with options for risk profile and whether the portfolio is enrolled in daily rebalancing. The request SHALL NOT accept a candidate ticker list or per-position allocation caps. The AI SHALL be given every asset in the universe (enriched with name, sector, category, and eligibility) as candidates, MAY research and propose assets not currently in the universe (discovery is always enabled), and SHALL produce long-only target holdings whose allocations are fractions in [0, 1] that sum to approximately 1.0 (an allocation of ~0 excludes a holding). Newly discovered tickers SHALL be added to the universe on a best-effort basis, bounded by a configured maximum number of new assets per run; if an add fails the ticker SHALL still be eligible for the portfolio. The request SHALL be processed in the background and SHALL return immediately with an event identifier for polling. Execution SHALL: ask the AI for target holdings and allocations, create a portfolio and a paper-trading session, size each position from the allocated capital and a current quote, submit the corresponding buy orders through the brokerage, and record each executed trade and a run summary. The AI's research SHALL be cost-bounded per run by a configured maximum number of reasoning turns and a hard cap on the number of web searches.
 
 #### Scenario: Queue a build
 
-- **WHEN** a client requests an AI portfolio build with at least two candidate tickers
+- **WHEN** a client requests an AI portfolio build while the asset universe is non-empty
 - **THEN** the system SHALL create a build event, start background processing, and respond with the event id and a running status
+
+#### Scenario: Empty universe rejected
+
+- **WHEN** a client requests an AI portfolio build while the asset universe is empty
+- **THEN** the system SHALL reject the request rather than starting a build
 
 #### Scenario: Build executes
 
 - **WHEN** the background build runs
-- **THEN** the system SHALL create the portfolio and session, place the sized orders via the brokerage, record the executed trades and a run entry, and mark the build event succeeded (or partial if some orders could not be placed)
+- **THEN** the system SHALL create the portfolio and session, place the sized buy orders via the brokerage, record the executed trades and a run entry, and mark the build event succeeded (or partial if some orders could not be placed)
+
+#### Scenario: AI discovers a new asset
+
+- **WHEN** the AI proposes a holding whose ticker is not in the current universe
+- **THEN** the system SHALL attempt to add that asset to the universe (up to the configured per-run limit) and SHALL still include the ticker in the portfolio and its trades even if the add fails
 
 #### Scenario: Position too small to trade
 

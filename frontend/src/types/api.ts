@@ -362,15 +362,40 @@ export type AIEventStatus =
   | 'failed'
   | 'skipped';
 
-/** Request body for `POST /api/v1/ai-portfolio/build`. */
+/**
+ * Request body for `POST /api/v1/ai-portfolio/build`. Every build allocates
+ * across the app's ENTIRE asset universe automatically — the AI decides each
+ * asset's weight (long-only, no caps) and may research and add new assets — so
+ * callers no longer supply tickers or a position count. Backend defaults:
+ * `allocated_capital` 100000, `risk_profile` "balanced", `daily_rebalancing`
+ * false.
+ */
 export interface AIPortfolioBuildRequest {
-  tickers: string[];
   allocated_capital?: number;
   risk_profile?: string;
-  allow_new_picks?: boolean;
-  allow_short?: boolean;
-  max_stock_count?: number;
   daily_rebalancing?: boolean;
+}
+
+/**
+ * One AI-chosen target weight in a rebalance result. `allocation_pct` is the
+ * target share of capital (long-only); `confidence` is the AI's conviction.
+ */
+export interface AITargetAllocation {
+  ticker: string;
+  company_name: string;
+  allocation_pct: number;
+  investment_thesis: string;
+  confidence: number;
+}
+
+/**
+ * The `result_payload` of a rebalance event: the AI's narrative evaluation, the
+ * new target allocations to re-weight toward, and an overall health assessment.
+ */
+export interface AIRebalanceResultPayload {
+  evaluation_summary: string;
+  target_allocations: AITargetAllocation[];
+  portfolio_health: string;
 }
 
 /** Accepted (202) response for a queued build. */

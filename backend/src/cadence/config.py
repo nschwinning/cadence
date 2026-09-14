@@ -62,6 +62,16 @@ class Settings(BaseSettings):
     # Model id the AI portfolio manager runs on.
     AI_PORTFOLIO_MODEL: str = "gpt-5-mini"
 
+    # Cost controls bounding the AI portfolio build/rebalance runs. These cap the
+    # number of expensive LLM/tool interactions per job so a single run cannot run
+    # away with turns, web searches, or newly-discovered assets.
+    #: Hard SDK-enforced turn cap per agent run (bounds tool-call loops).
+    AI_PORTFOLIO_MAX_TURNS: int = 8
+    #: Hard cap on web searches per agent run (enforced in the web_search tool).
+    AI_PORTFOLIO_MAX_WEB_SEARCHES: int = 6
+    #: Cap on assets the agent may discover and add beyond the current universe.
+    AI_PORTFOLIO_MAX_NEW_ASSETS: int = 5
+
     # Shared secret guarding the daily-rebalance trigger. The cron sidecar sends
     # it in the ``X-Cron-Token`` header; the endpoint rejects any request whose
     # header does not match. Empty (the default) means no valid token exists, so

@@ -1,14 +1,20 @@
-"""Router tests for /api/v1/ai-portfolio using fakes via dependency override."""
+"""Router tests for /api/v1/ai-portfolio using fakes via dependency override.
+
+Builds now allocate over the whole asset universe (no ticker list in the
+request), so each build test seeds a universe first and overrides the
+market-data provider dependency with an in-memory fake (no network).
+"""
 
 from __future__ import annotations
 
 from collections.abc import Iterator
 from contextlib import contextmanager
+from datetime import date
 
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
-from tests.fakes import FakeAIPortfolioAgent, ManualExecutor
+from tests.fakes import FakeAIPortfolioAgent, FakeMarketDataProvider, ManualExecutor
 
 from cadence.ai_portfolio.agent import (
     AIPortfolioBuildResult,
@@ -22,9 +28,36 @@ from cadence.api.routers.ai_portfolio import (
     get_ai_job_runner,
     get_ai_portfolio_agent,
 )
+from cadence.api.routers.assets import get_market_data_provider
+from cadence.assets import service as assets_service
+from cadence.assets.market_data import AssetInfo, HistoryBar
 from cadence.broker import get_broker
 from cadence.broker.stub import StubBroker
 from cadence.config import settings
+
+
+def _provider() -> FakeMarketDataProvider:
+    return FakeMarketDataProvider(
+        info=AssetInfo(
+            company_name="Co",
+            exchange="XETRA",
+            currency="EUR",
+            price=50.0,
+            market_cap=5_000_000_000.0,
+            quote_type="EQUITY",
+            sector_key="technology",
+            country="Germany",
+        ),
+        history=[
+            HistoryBar(date=date(2005, 1, 1), close=50.0, volume=1_000_000.0),
+            HistoryBar(date=date(2024, 1, 1), close=50.0, volume=1_000_000.0),
+        ],
+    )
+
+
+def _seed_universe(db_session: Session, provider: FakeMarketDataProvider) -> None:
+    for ticker in ("AAPL", "MSFT"):
+        assets_service.add_asset(db_session, ticker, provider)
 
 
 def _build_result() -> AIPortfolioBuildResult:
@@ -56,7 +89,7 @@ def _build_result() -> AIPortfolioBuildResult:
 def _rebalance_result() -> AIRebalanceResult:
     return AIRebalanceResult(
         evaluation_summary="steady",
-        existing_holdings=[],
+        target_allocations=[],
         portfolio_health="healthy",
     )
 
@@ -67,6 +100,7 @@ def _wire(
     *,
     broker: StubBroker | None = None,
     agent: FakeAIPortfolioAgent | None = None,
+    provider: FakeMarketDataProvider | None = None,
 ) -> tuple[AIPortfolioJobRunner, StubBroker]:
     @contextmanager
     def factory() -> Iterator[Session]:
@@ -76,9 +110,11 @@ def _wire(
     fake_agent = agent or FakeAIPortfolioAgent(
         build_result=_build_result(), rebalance_result=_rebalance_result()
     )
+    fake_provider = provider or _provider()
     runner = AIPortfolioJobRunner(session_factory=factory, executor=executor)
     app.dependency_overrides[get_ai_portfolio_agent] = lambda: fake_agent
     app.dependency_overrides[get_broker] = lambda: shared_broker
+    app.dependency_overrides[get_market_data_provider] = lambda: fake_provider
     app.dependency_overrides[get_ai_job_runner] = lambda: runner
     return runner, shared_broker
 
@@ -87,11 +123,12 @@ def test_build_returns_202_and_status_poll(
     client: TestClient, db_session: Session
 ) -> None:
     executor = ManualExecutor()
+    _seed_universe(db_session, _provider())
     _wire(db_session, executor)
 
     resp = client.post(
         "/api/v1/ai-portfolio/build",
-        json={"tickers": ["AAPL", "MSFT"], "allocated_capital": 100000},
+        json={"allocated_capital": 100000},
     )
     assert resp.status_code == 202
     event_id = resp.json()["event_id"]
@@ -107,14 +144,10 @@ def test_build_returns_202_and_status_poll(
     assert body["portfolio_id"] is not None
 
 
-def test_build_rejects_too_few_tickers(
-    client: TestClient, db_session: Session
-) -> None:
+def test_build_rejects_empty_universe(client: TestClient, db_session: Session) -> None:
+    # No assets seeded -> the universe is empty -> the build is rejected (422).
     _wire(db_session, ManualExecutor())
-    resp = client.post(
-        "/api/v1/ai-portfolio/build", json={"tickers": ["AAPL"]}
-    )
-    # min_length=2 on the request schema -> 422 at validation.
+    resp = client.post("/api/v1/ai-portfolio/build", json={"allocated_capital": 100000})
     assert resp.status_code == 422
 
 
@@ -133,7 +166,6 @@ def _build_session(client: TestClient, executor: ManualExecutor) -> str:
     resp = client.post(
         "/api/v1/ai-portfolio/build",
         json={
-            "tickers": ["AAPL", "MSFT"],
             "allocated_capital": 100000,
             "daily_rebalancing": True,
         },
@@ -148,6 +180,7 @@ def test_session_rebalance_and_events_listing(
     client: TestClient, db_session: Session
 ) -> None:
     executor = ManualExecutor()
+    _seed_universe(db_session, _provider())
     _wire(db_session, executor)
     session_id = _build_session(client, executor)
 
@@ -166,6 +199,7 @@ def test_session_rebalance_skips_when_already_running(
     client: TestClient, db_session: Session
 ) -> None:
     executor = ManualExecutor()  # deferred: first rebalance stays queued/inflight
+    _seed_universe(db_session, _provider())
     _wire(db_session, executor)
     session_id = _build_session(client, executor)
 
@@ -250,6 +284,7 @@ def test_rebalance_daily_fans_out_to_enrolled_sessions(
 ) -> None:
     monkeypatch.setattr(settings, "REBALANCE_CRON_TOKEN", "secret")
     executor = ManualExecutor(run_immediately=True)
+    _seed_universe(db_session, _provider())
     _wire(db_session, executor)
     session_id = _build_session(client, executor)
 

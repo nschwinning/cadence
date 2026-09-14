@@ -160,17 +160,11 @@ class FakeAIPortfolioAgent:
         self,
         candidates: list[dict[str, Any]],
         risk_profile: str,
-        allow_new_picks: bool,
-        allow_short: bool,
-        max_stock_count: int,
     ) -> AIPortfolioBuildResult:
         self.build_calls.append(
             {
                 "candidates": candidates,
                 "risk_profile": risk_profile,
-                "allow_new_picks": allow_new_picks,
-                "allow_short": allow_short,
-                "max_stock_count": max_stock_count,
             }
         )
         if self._build_error is not None:
@@ -183,14 +177,12 @@ class FakeAIPortfolioAgent:
         holdings: list[dict[str, Any]],
         account_summary: dict[str, Any],
         candidates: list[dict[str, Any]],
-        allow_short: bool,
     ) -> AIRebalanceResult:
         self.rebalance_calls.append(
             {
                 "holdings": holdings,
                 "account_summary": account_summary,
                 "candidates": candidates,
-                "allow_short": allow_short,
             }
         )
         if self._rebalance_error is not None:

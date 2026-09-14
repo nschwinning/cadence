@@ -36,7 +36,10 @@ const session: PaperTradingSession = {
   schedule_mode: 'DAILY_REBALANCING',
 };
 
-function makeEvent(status: AIEventStatus): AIPortfolioEvent {
+function makeEvent(
+  status: AIEventStatus,
+  result_payload: AIPortfolioEvent['result_payload'] = null,
+): AIPortfolioEvent {
   return {
     id: 'evt-1',
     session_id: 's1',
@@ -44,7 +47,7 @@ function makeEvent(status: AIEventStatus): AIPortfolioEvent {
     event_type: 'rebalance',
     status,
     request_payload: null,
-    result_payload: null,
+    result_payload,
     actions_taken: null,
     error: null,
     duration_ms: null,
@@ -52,6 +55,27 @@ function makeEvent(status: AIEventStatus): AIPortfolioEvent {
     updated_at: '2026-09-14T00:00:00Z',
   };
 }
+
+const REBALANCE_RESULT = {
+  evaluation_summary: 'Rotated toward higher-conviction names.',
+  portfolio_health: 'Healthy and well diversified.',
+  target_allocations: [
+    {
+      ticker: 'AAPL',
+      company_name: 'Apple Inc.',
+      allocation_pct: 0.6,
+      investment_thesis: 'Durable franchise.',
+      confidence: 0.9,
+    },
+    {
+      ticker: 'MSFT',
+      company_name: 'Microsoft Corp.',
+      allocation_pct: 0.4,
+      investment_thesis: 'Cloud growth.',
+      confidence: 0.85,
+    },
+  ],
+};
 
 /** Route the mocked GETs by URL to the right fixture. */
 function installGet(eventStatus: () => AIEventStatus) {
@@ -63,7 +87,13 @@ function installGet(eventStatus: () => AIEventStatus) {
       return Promise.resolve({ data: [] });
     }
     if (url.includes('/build/status/')) {
-      return Promise.resolve({ data: makeEvent(eventStatus()) });
+      const status = eventStatus();
+      return Promise.resolve({
+        data: makeEvent(
+          status,
+          status === 'succeeded' ? REBALANCE_RESULT : null,
+        ),
+      });
     }
     // trades / runs / positions
     return Promise.resolve({ data: { items: [], total: 0 } });
@@ -136,5 +166,14 @@ describe('PaperTradingSessionPage', () => {
     expect(
       await screen.findByText('Rebalance succeeded'),
     ).toBeInTheDocument();
+
+    // The new rebalance payload (summary, health, target weights) is rendered.
+    expect(
+      screen.getByText('Rotated toward higher-conviction names.'),
+    ).toBeInTheDocument();
+    expect(screen.getByText(/Healthy and well diversified/)).toBeInTheDocument();
+    expect(screen.getByText('Target allocations')).toBeInTheDocument();
+    expect(screen.getByText('60.0%')).toBeInTheDocument();
+    expect(screen.getByText('40.0%')).toBeInTheDocument();
   });
 });

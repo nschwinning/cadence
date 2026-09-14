@@ -27,7 +27,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from cadence.ai_portfolio.agent import AIPortfolioAgent, RebalanceAction
+from cadence.ai_portfolio.agent import AIPortfolioAgent
 from cadence.ai_portfolio.constants import (
     AI_STRATEGY_KEY,
     EventStatus,
@@ -39,8 +39,12 @@ from cadence.ai_portfolio.errors import (
 )
 from cadence.ai_portfolio.executor import AIPortfolioExecutor, TradeResult
 from cadence.ai_portfolio.models import AIPortfolioEvent
+from cadence.assets import service as assets_service
+from cadence.assets.market_data import MarketDataProvider
+from cadence.assets.models import Asset
 from cadence.broker.base import Broker
 from cadence.broker.models import OrderSide, Position
+from cadence.config import settings
 from cadence.paper_trading import service as paper_service
 from cadence.paper_trading.constants import RunStatus, ScheduleMode
 from cadence.portfolios import service as portfolios_service
@@ -53,36 +57,28 @@ _VALID_RISK_PROFILES = {profile.value for profile in RiskProfile}
 
 @dataclass(frozen=True)
 class AIBuildParams:
-    """Inputs for a build job, persisted on the event's ``request_payload``."""
+    """Inputs for a build job, persisted on the event's ``request_payload``.
 
-    tickers: list[str]
+    The build allocates over the entire current asset universe (with bounded
+    discovery), so no ticker list or per-asset/position caps are accepted.
+    """
+
     allocated_capital: float = 100000.0
     risk_profile: str = "balanced"
-    allow_new_picks: bool = False
-    allow_short: bool = False
-    max_stock_count: int = 8
     daily_rebalancing: bool = False
 
     def to_payload(self) -> dict[str, Any]:
         return {
-            "tickers": list(self.tickers),
             "allocated_capital": self.allocated_capital,
             "risk_profile": self.risk_profile,
-            "allow_new_picks": self.allow_new_picks,
-            "allow_short": self.allow_short,
-            "max_stock_count": self.max_stock_count,
             "daily_rebalancing": self.daily_rebalancing,
         }
 
     @classmethod
     def from_payload(cls, payload: dict[str, Any]) -> AIBuildParams:
         return cls(
-            tickers=list(payload.get("tickers", [])),
             allocated_capital=float(payload.get("allocated_capital", 100000.0)),
             risk_profile=str(payload.get("risk_profile", "balanced")),
-            allow_new_picks=bool(payload.get("allow_new_picks", False)),
-            allow_short=bool(payload.get("allow_short", False)),
-            max_stock_count=int(payload.get("max_stock_count", 8)),
             daily_rebalancing=bool(payload.get("daily_rebalancing", False)),
         )
 
@@ -116,26 +112,21 @@ def list_session_events(
 def create_build_event(session: Session, params: AIBuildParams) -> AIPortfolioEvent:
     """Validate the request and insert a queued build event; return it.
 
-    Raises:
-        AIPortfolioValidationError: if fewer than two distinct tickers are given.
-    """
-    normalized = _normalize_tickers(params.tickers)
-    if len(normalized) < 2:
-        raise AIPortfolioValidationError("at least two distinct tickers are required")
+    The build allocates over the entire asset universe, so the only validation is
+    that the universe is non-empty.
 
-    stored = AIBuildParams(
-        tickers=normalized,
-        allocated_capital=params.allocated_capital,
-        risk_profile=params.risk_profile,
-        allow_new_picks=params.allow_new_picks,
-        allow_short=params.allow_short,
-        max_stock_count=params.max_stock_count,
-        daily_rebalancing=params.daily_rebalancing,
-    )
+    Raises:
+        AIPortfolioValidationError: if the asset universe is empty.
+    """
+    if not assets_service.list_assets(session, limit=1):
+        raise AIPortfolioValidationError(
+            "asset universe is empty; add assets before building"
+        )
+
     event = AIPortfolioEvent(
         event_type=EventType.BUILD.value,
         status=EventStatus.QUEUED.value,
-        request_payload=stored.to_payload(),
+        request_payload=params.to_payload(),
     )
     session.add(event)
     session.commit()
@@ -187,8 +178,14 @@ def run_build_event(
     event_id: uuid.UUID,
     agent: AIPortfolioAgent,
     broker: Broker,
+    provider: MarketDataProvider,
 ) -> None:
-    """Drive a queued build event to a terminal status."""
+    """Drive a queued build event to a terminal status.
+
+    The agent allocates over the full current asset universe and may discover a
+    bounded number of new assets; discovered tickers are added to the universe
+    best-effort via ``provider``.
+    """
     t0 = time.monotonic()
     event = get_event(session, event_id)
     event.status = EventStatus.RUNNING.value
@@ -196,19 +193,17 @@ def run_build_event(
 
     try:
         params = AIBuildParams.from_payload(event.request_payload or {})
-        candidates = _candidates_from_tickers(params.tickers)
+        universe = assets_service.list_assets(session)
+        candidates = _candidates_from_universe(universe)
 
-        result = agent.build(
-            candidates=candidates,
-            risk_profile=params.risk_profile,
-            allow_new_picks=params.allow_new_picks,
-            allow_short=params.allow_short,
-            max_stock_count=params.max_stock_count,
-        )
+        result = agent.build(candidates=candidates, risk_profile=params.risk_profile)
         agent_output = result.model_dump(mode="json")
 
         stock_tickers = _normalize_tickers([s.ticker for s in result.stocks])
-        n_stocks = len(stock_tickers)
+        universe_tickers = {a.ticker for a in universe}
+        discovered = [t for t in stock_tickers if t not in universe_tickers]
+        _add_discovered_assets(session, discovered, provider)
+
         portfolio = portfolios_service.create_portfolio(
             session,
             name=result.portfolio_name,
@@ -216,7 +211,7 @@ def run_build_event(
             source=PortfolioSource.AI_MANAGED,
             description=result.overall_thesis[:500],
             risk_profile=_risk_profile(params.risk_profile),
-            max_allocation_pct=round(1.0 / n_stocks, 2) if n_stocks > 0 else 1.0,
+            max_allocation_pct=1.0,
             source_run_id=str(event.id),
         )
 
@@ -236,8 +231,6 @@ def run_build_event(
         session_row.session_metadata = {
             "session_type": "ai_managed",
             "risk_profile": params.risk_profile,
-            "allow_short": params.allow_short,
-            "allow_new_picks": params.allow_new_picks,
             "build_event_id": str(event.id),
             "portfolio_id": str(portfolio.id),
         }
@@ -299,11 +292,14 @@ def run_rebalance_event(
     event_id: uuid.UUID,
     agent: AIPortfolioAgent,
     broker: Broker,
+    provider: MarketDataProvider,
 ) -> None:
     """Drive a queued rebalance event to a terminal status.
 
     When the market is closed the job is a no-op: a ``skipped`` run is recorded
-    (no orders) and the event is marked ``skipped``.
+    (no orders) and the event is marked ``skipped``. Otherwise the agent returns
+    desired end-state target weights across the full universe (with bounded
+    discovery), and the executor trades the deltas toward those weights.
     """
     t0 = time.monotonic()
     event = get_event(session, event_id)
@@ -316,8 +312,6 @@ def run_rebalance_event(
         session_id = event.session_id
         session_row = paper_service.get_session(session, session_id)
         portfolio = portfolios_service.get_portfolio(session, session_row.portfolio_id)
-        meta = session_row.session_metadata or {}
-        allow_short = bool(meta.get("allow_short", False))
 
         # Market-open guard: closed => record a skipped run and event, no orders.
         if not broker.is_market_open():
@@ -347,45 +341,45 @@ def run_rebalance_event(
         positions = {pos.symbol: pos for pos in broker.get_positions()}
         account = broker.get_account_info()
 
+        universe = assets_service.list_assets(session)
+        candidates = _candidates_from_universe(universe)
         holdings = _build_holdings(portfolio.stocks, positions)
         account_summary = {
             "portfolio_value": account.portfolio_value,
             "cash_available": account.buying_power,
             "total_unrealized_pnl": account.unrealized_pnl,
         }
-        held = {h["ticker"] for h in holdings}
-        candidates = [
-            c for c in _candidates_from_tickers(portfolio.stocks) if c["ticker"] not in held
-        ]
 
         result = agent.rebalance(
             holdings=holdings,
             account_summary=account_summary,
             candidates=candidates,
-            allow_short=allow_short,
         )
         agent_output = result.model_dump(mode="json")
 
+        # Best-effort add of any discovered target ticker not yet in the universe.
+        universe_tickers = {a.ticker for a in universe}
+        target_tickers = _normalize_tickers(
+            [t.ticker for t in result.target_allocations]
+        )
+        discovered = [t for t in target_tickers if t not in universe_tickers]
+        _add_discovered_assets(session, discovered, provider)
+
         executor = AIPortfolioExecutor(broker, session_row.allocated_capital)
         trade_results = executor.execute_rebalance(
-            evaluations=result.existing_holdings,
-            new_recs=result.new_recommendations,
+            targets=result.target_allocations,
             current_positions=positions,
         )
 
-        executed, realized_pnl, new_stock_list = _apply_rebalance_trades(
-            session, session_id, portfolio.stocks, trade_results, positions
+        executed, realized_pnl = _apply_rebalance_trades(
+            session, session_id, trade_results, positions
         )
 
-        actionable = sum(
-            1 for e in result.existing_holdings if e.action != RebalanceAction.HOLD
-        ) + len(result.new_recommendations)
         paper_service.record_session_run(
             session,
             session_id=session_id,
-            signals_scanned=len(result.existing_holdings)
-            + len(result.new_recommendations),
-            signals_actionable=actionable,
+            signals_scanned=len(candidates),
+            signals_actionable=executed,
             orders_executed=executed,
             orders_skipped=0,
             details=[tr.to_dict() for tr in trade_results],
@@ -397,10 +391,16 @@ def run_rebalance_event(
             session, session_id, trades_delta=executed, pnl_delta=realized_pnl
         )
 
-        if new_stock_list and set(new_stock_list) != set(portfolio.stocks):
-            portfolios_service.update_portfolio_stocks(
-                session, portfolio.id, new_stock_list
-            )
+        # End-state holdings are the targets with a non-trivial weight.
+        end_state = sorted(
+            {
+                _normalize_tickers([t.ticker])[0]
+                for t in result.target_allocations
+                if t.allocation_pct > 0 and t.ticker.strip()
+            }
+        )
+        if end_state and set(end_state) != set(portfolio.stocks):
+            portfolios_service.update_portfolio_stocks(session, portfolio.id, end_state)
 
         all_executed = all(tr.executed for tr in trade_results)
         status = EventStatus.SUCCEEDED if all_executed else EventStatus.PARTIAL
@@ -423,19 +423,52 @@ def run_rebalance_event(
 # Helpers
 # --------------------------------------------------------------------------- #
 
-#: Executor trade side -> broker order action stored on the paper trade. Opens are
-#: labelled by direction (long/short) and closes by intent (sell/cover); the trade
-#: row's ``side`` column should carry the plain order action instead.
+#: Executor trade side -> broker order action stored on the paper trade. The
+#: flows are long-only: "long" is a buy (open/increase), "sell" a reduce/close.
 _ORDER_ACTION = {
     "long": OrderSide.BUY,
-    "cover": OrderSide.BUY,
-    "short": OrderSide.SELL,
     "sell": OrderSide.SELL,
 }
 
 
 def _order_action(side: str) -> OrderSide:
     return _ORDER_ACTION.get(side, OrderSide.BUY)
+
+
+def _candidates_from_universe(assets: list[Asset]) -> list[dict[str, Any]]:
+    """Build the enriched candidate records the agent reasons over from the universe."""
+    return [
+        {
+            "ticker": asset.ticker,
+            "company_name": asset.name or asset.ticker,
+            "sector": asset.sector or "unknown",
+            "category": asset.category,
+            "is_eligible": asset.is_eligible,
+        }
+        for asset in assets
+    ]
+
+
+def _add_discovered_assets(
+    session: Session,
+    discovered: list[str],
+    provider: MarketDataProvider,
+) -> list[str]:
+    """Best-effort add of newly-proposed tickers to the universe (capped).
+
+    Adds at most :data:`settings.AI_PORTFOLIO_MAX_NEW_ASSETS` tickers. Any add that
+    fails (unknown ticker, market data unavailable, duplicate) is logged and
+    skipped — the ticker is still traded and included in the portfolio.
+    """
+    added: list[str] = []
+    for ticker in discovered[: settings.AI_PORTFOLIO_MAX_NEW_ASSETS]:
+        try:
+            assets_service.add_asset(session, ticker, provider)
+            added.append(ticker)
+        except Exception as exc:  # noqa: BLE001 - discovery-add is best-effort
+            session.rollback()
+            logger.warning("AI discovery: could not add %s: %s", ticker, exc)
+    return added
 
 
 def _normalize_tickers(tickers: list[str]) -> list[str]:
@@ -453,23 +486,6 @@ def _normalize_tickers(tickers: list[str]) -> list[str]:
 
 def _risk_profile(value: str) -> RiskProfile | None:
     return RiskProfile(value) if value in _VALID_RISK_PROFILES else None
-
-
-def _candidates_from_tickers(tickers: list[str]) -> list[dict[str, Any]]:
-    """Build minimal candidate records the agent reasons over from raw tickers."""
-    candidates: list[dict[str, Any]] = []
-    for ticker in _normalize_tickers(tickers):
-        candidates.append(
-            {
-                "ticker": ticker,
-                "company_name": ticker,
-                "sector": "Unknown",
-                "reason": "Provided candidate",
-                "investment_thesis": "",
-                "confidence": 0.5,
-            }
-        )
-    return candidates
 
 
 def _build_holdings(
@@ -526,23 +542,26 @@ def _record_trades(
 def _apply_rebalance_trades(
     session: Session,
     session_id: uuid.UUID,
-    portfolio_stocks: list[str],
     trade_results: list[TradeResult],
     positions: dict[str, Position],
-) -> tuple[int, float, list[str]]:
-    """Record rebalance trades + closed positions; return (executed, pnl, stocks)."""
+) -> tuple[int, float]:
+    """Record rebalance trades + closed positions; return (executed, realized_pnl).
+
+    Sells (side ``"sell"``) that reduce or close a long position record a closed
+    position for the sold quantity with its realized P&L. The end-state ticker list
+    is derived from the AI targets by the caller, so no add/remove bookkeeping is
+    done here.
+    """
     executed = 0
     realized_pnl_total = 0.0
-    new_stock_list = list(portfolio_stocks)
 
     # First-entry date per ticker from this session's own opening trades, so a
-    # closed position gets a sensible holding period. Opening trades carry a
-    # signal_type ending in "_long"/"_short".
+    # closed position gets a sensible holding period. Opening/increasing trades
+    # carry a signal_type ending in "_long".
     prior_trades = paper_service.get_session_trades(session, session_id, limit=1_000_000)
     first_entry_date: dict[str, datetime] = {}
     for t in sorted(prior_trades, key=lambda tr: tr.executed_at):
-        opens = t.signal_type.endswith("_long") or t.signal_type.endswith("_short")
-        if opens and t.ticker not in first_entry_date:
+        if t.signal_type.endswith("_long") and t.ticker not in first_entry_date:
             first_entry_date[t.ticker] = t.executed_at
 
     now = datetime.now(tz=UTC)
@@ -564,19 +583,18 @@ def _apply_rebalance_trades(
         )
         executed += 1
 
-        # A sell/cover closes an existing position; record realized P&L. `positions`
+        # A sell reduces/closes an existing long; record realized P&L. `positions`
         # was captured before execution, so avg_cost is the entry price.
-        if tr.side in ("sell", "cover"):
+        if tr.side == "sell":
             pos = positions.get(tr.ticker)
             if pos is not None:
                 entry_price = pos.avg_cost or 0.0
                 exit_price = tr.filled_price or tr.price or entry_price
-                signed_qty = tr.shares if tr.side == "sell" else -tr.shares
                 closed = paper_service.record_closed_position(
                     session,
                     session_id=session_id,
                     ticker=tr.ticker,
-                    quantity=signed_qty,
+                    quantity=tr.shares,
                     entry_price=entry_price,
                     exit_price=exit_price,
                     entry_date=first_entry_date.get(tr.ticker, now),
@@ -584,12 +602,7 @@ def _apply_rebalance_trades(
                 )
                 realized_pnl_total += closed.realized_pnl
 
-        if tr.side in ("sell", "cover") and tr.ticker in new_stock_list:
-            new_stock_list.remove(tr.ticker)
-        elif tr.side in ("long", "short") and tr.ticker not in new_stock_list:
-            new_stock_list.append(tr.ticker)
-
-    return executed, realized_pnl_total, new_stock_list
+    return executed, realized_pnl_total
 
 
 def _finish_event(
