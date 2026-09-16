@@ -146,6 +146,7 @@ class PaperTrade(Base):
     __table_args__ = (
         Index("idx_paper_trades_session", "session_id"),
         Index("idx_paper_trades_executed", "executed_at"),
+        Index("idx_paper_trades_ai_event", "ai_portfolio_event_id"),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(
@@ -157,6 +158,14 @@ class PaperTrade(Base):
         UUID(as_uuid=True),
         ForeignKey("paper_trading_sessions.id", ondelete="CASCADE"),
         nullable=False,
+    )
+    # The AI build/rebalance event that produced this trade, when applicable.
+    # Nullable: non-AI strategies and legacy rows leave it empty. SET NULL on
+    # event deletion so a trade outlives the audit row that referenced it.
+    ai_portfolio_event_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("ai_portfolio_events.id", ondelete="SET NULL"),
+        nullable=True,
     )
     ticker: Mapped[str] = mapped_column(Text, nullable=False)
     # Trade direction, from the broker vocabulary (buy/sell).
@@ -236,6 +245,7 @@ class ClosedPosition(Base):
     __tablename__ = "closed_positions"
     __table_args__ = (
         Index("idx_closed_positions_session", "session_id", "exit_date"),
+        Index("idx_closed_positions_ai_event", "ai_portfolio_event_id"),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(
@@ -247,6 +257,13 @@ class ClosedPosition(Base):
         UUID(as_uuid=True),
         ForeignKey("paper_trading_sessions.id", ondelete="CASCADE"),
         nullable=False,
+    )
+    # The AI rebalance event that closed this position, when applicable. Nullable
+    # (non-AI strategies / legacy rows leave it empty); SET NULL on event delete.
+    ai_portfolio_event_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("ai_portfolio_events.id", ondelete="SET NULL"),
+        nullable=True,
     )
     ticker: Mapped[str] = mapped_column(Text, nullable=False)
     # Signed: positive for a long, negative for a short.

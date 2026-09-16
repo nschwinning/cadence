@@ -144,10 +144,16 @@ def record_trade(
     order_status: OrderStatus = OrderStatus.FILLED,
     filled_price: float | None = None,
     filled_at: datetime | None = None,
+    ai_portfolio_event_id: uuid.UUID | None = None,
 ) -> PaperTrade:
-    """Record a paper trade (fill). ``notional`` is derived as ``quantity * price``."""
+    """Record a paper trade (fill). ``notional`` is derived as ``quantity * price``.
+
+    ``ai_portfolio_event_id`` links the trade to the AI run that produced it; it is
+    left NULL for non-AI strategies.
+    """
     trade = PaperTrade(
         session_id=session_id,
+        ai_portfolio_event_id=ai_portfolio_event_id,
         ticker=ticker,
         side=side.value,
         quantity=quantity,
@@ -258,11 +264,13 @@ def record_closed_position(
     exit_price: float,
     entry_date: datetime,
     exit_date: datetime,
+    ai_portfolio_event_id: uuid.UUID | None = None,
 ) -> ClosedPosition:
     """Record a closed position, deriving realized P&L, return, and holding days.
 
     ``quantity`` is signed: positive for a long, negative for a short. Return is
     derived over the absolute cost basis so the sign stays correct for both.
+    ``ai_portfolio_event_id`` links the closure to the AI run that produced it.
     """
     realized_pnl = (exit_price - entry_price) * quantity
     cost_basis = entry_price * abs(quantity)
@@ -271,6 +279,7 @@ def record_closed_position(
 
     position = ClosedPosition(
         session_id=session_id,
+        ai_portfolio_event_id=ai_portfolio_event_id,
         ticker=ticker,
         quantity=quantity,
         entry_price=entry_price,
@@ -311,3 +320,27 @@ def count_closed_positions(session: Session, session_id: uuid.UUID) -> int:
         .where(ClosedPosition.session_id == session_id)
     )
     return session.execute(stmt).scalar_one()
+
+
+def get_trades_by_event(
+    session: Session, event_id: uuid.UUID
+) -> list[PaperTrade]:
+    """Return the trades an AI run opened (earliest first, as executed)."""
+    stmt = (
+        select(PaperTrade)
+        .where(PaperTrade.ai_portfolio_event_id == event_id)
+        .order_by(PaperTrade.executed_at.asc(), PaperTrade.id.asc())
+    )
+    return list(session.execute(stmt).scalars())
+
+
+def get_closed_positions_by_event(
+    session: Session, event_id: uuid.UUID
+) -> list[ClosedPosition]:
+    """Return the positions an AI run closed (earliest exit first)."""
+    stmt = (
+        select(ClosedPosition)
+        .where(ClosedPosition.ai_portfolio_event_id == event_id)
+        .order_by(ClosedPosition.exit_date.asc(), ClosedPosition.id.asc())
+    )
+    return list(session.execute(stmt).scalars())

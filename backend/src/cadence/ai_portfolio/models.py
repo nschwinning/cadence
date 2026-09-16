@@ -46,7 +46,8 @@ class AIPortfolioEvent(Base):
     only after the agent succeeds, so they are stamped mid-job; a delete of either
     parent nulls the link (``SET NULL``) rather than losing the audit row.
     ``request_payload`` captures the job's inputs, ``result_payload`` the agent's
-    structured output, and ``actions_taken`` the per-ticker trade results.
+    structured output, ``actions_taken`` the per-ticker trade results, and
+    ``research`` the run's web-search transcript (query + results per search).
     """
 
     __tablename__ = "ai_portfolio_events"
@@ -86,6 +87,9 @@ class AIPortfolioEvent(Base):
     actions_taken: Mapped[list[dict[str, Any]] | None] = mapped_column(
         JSONB, nullable=True
     )
+    # The run's research transcript: one entry per web search the agent performed
+    # ({query, results, error}), captured for later review of the AI's reasoning.
+    research: Mapped[list[dict[str, Any]] | None] = mapped_column(JSONB, nullable=True)
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
     duration_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
     created_at: Mapped[datetime] = mapped_column(

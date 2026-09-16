@@ -6,6 +6,7 @@ from collections.abc import Callable
 from concurrent.futures import Future
 from typing import Any
 
+from cadence.agents.tools import note_web_search
 from cadence.ai_portfolio.agent import AIPortfolioBuildResult, AIRebalanceResult
 from cadence.assets.market_data import AssetDetailData, AssetInfo, HistoryBar
 from cadence.broker.models import AssetClass, BrokerAsset
@@ -148,6 +149,13 @@ class FakeAIPortfolioAgent:
     Set ``build_error``/``rebalance_error`` to drive failure paths. ``build_calls``
     and ``rebalance_calls`` record the keyword arguments of each call so tests can
     assert the service passed flags (risk profile, allow_short, ...) through.
+
+    ``research_queries`` simulates the agent doing web searches: each entry is
+    emitted via :func:`note_web_search` when ``build``/``rebalance`` runs, so — since
+    the service wraps the agent call in ``record_web_searches()`` — the run's
+    research transcript is captured exactly as it would be with the real agent. The
+    emission happens BEFORE any configured error is raised, mirroring how research
+    performed mid-run survives a later failure.
     """
 
     def __init__(
@@ -157,13 +165,22 @@ class FakeAIPortfolioAgent:
         rebalance_result: AIRebalanceResult | None = None,
         build_error: Exception | None = None,
         rebalance_error: Exception | None = None,
+        research_queries: list[str] | None = None,
     ) -> None:
         self._build_result = build_result
         self._rebalance_result = rebalance_result
         self._build_error = build_error
         self._rebalance_error = rebalance_error
+        self._research_queries = research_queries or []
         self.build_calls: list[dict[str, Any]] = []
         self.rebalance_calls: list[dict[str, Any]] = []
+
+    def _emit_research(self) -> None:
+        """Record each configured query as a web search on the active recorder."""
+        for query in self._research_queries:
+            note_web_search(
+                query, {"organic_results": [{"title": f"result for {query}"}]}
+            )
 
     def build(
         self,
@@ -176,6 +193,7 @@ class FakeAIPortfolioAgent:
                 "risk_profile": risk_profile,
             }
         )
+        self._emit_research()
         if self._build_error is not None:
             raise self._build_error
         assert self._build_result is not None, "FakeAIPortfolioAgent has no build_result"
@@ -194,6 +212,7 @@ class FakeAIPortfolioAgent:
                 "candidates": candidates,
             }
         )
+        self._emit_research()
         if self._rebalance_error is not None:
             raise self._rebalance_error
         assert (

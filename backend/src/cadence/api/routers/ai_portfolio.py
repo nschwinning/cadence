@@ -20,7 +20,11 @@ from cadence.ai_portfolio.background import (
     AIPortfolioJobRunner,
     default_job_runner,
 )
-from cadence.ai_portfolio.constants import AI_STRATEGY_KEY
+from cadence.ai_portfolio.constants import (
+    AI_STRATEGY_KEY,
+    EventStatus,
+    EventType,
+)
 from cadence.ai_portfolio.errors import (
     AIPortfolioValidationError,
     EventNotFoundError,
@@ -33,7 +37,11 @@ from cadence.api.schemas import (
     AIPortfolioBuildRequest,
     AIPortfolioBuildResponse,
     AIPortfolioEventRead,
+    AIPortfolioRunDetail,
+    AIPortfolioRunListResponse,
     AIRebalanceResponse,
+    ClosedPositionRead,
+    PaperTradeRead,
 )
 from cadence.assets.market_data import MarketDataProvider
 from cadence.broker import get_broker
@@ -224,6 +232,55 @@ def list_session_events(
         AIPortfolioEventRead.model_validate(event)
         for event in ai_service.list_session_events(db, session_id, limit=limit)
     ]
+
+
+@router.get("/runs", response_model=AIPortfolioRunListResponse)
+def list_ai_runs_endpoint(
+    db: DbSession,
+    event_type: Annotated[EventType | None, Query()] = None,
+    run_status: Annotated[EventStatus | None, Query(alias="status")] = None,
+    limit: Annotated[int, Query(ge=1, le=100)] = 50,
+    offset: Annotated[int, Query(ge=0)] = 0,
+) -> AIPortfolioRunListResponse:
+    """List AI runs across all sessions, newest first (the Runs history page)."""
+    from cadence.ai_portfolio import service as ai_service
+
+    events = ai_service.list_ai_runs(
+        db,
+        event_type=event_type,
+        status=run_status,
+        limit=limit,
+        offset=offset,
+    )
+    total = ai_service.count_ai_runs(db, event_type=event_type, status=run_status)
+    return AIPortfolioRunListResponse(
+        items=[AIPortfolioEventRead.model_validate(e) for e in events],
+        total=total,
+    )
+
+
+@router.get("/runs/{event_id}", response_model=AIPortfolioRunDetail)
+def get_ai_run_detail(
+    event_id: uuid.UUID,
+    db: DbSession,
+) -> AIPortfolioRunDetail:
+    """Return one AI run with the trades it opened and the positions it closed."""
+    from cadence.ai_portfolio import service as ai_service
+
+    try:
+        event = ai_service.get_event(db, event_id)
+    except EventNotFoundError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)
+        ) from exc
+
+    trades = paper_service.get_trades_by_event(db, event_id)
+    closed = paper_service.get_closed_positions_by_event(db, event_id)
+    return AIPortfolioRunDetail(
+        event=AIPortfolioEventRead.model_validate(event),
+        trades=[PaperTradeRead.model_validate(t) for t in trades],
+        closed_positions=[ClosedPositionRead.model_validate(c) for c in closed],
+    )
 
 
 def _require_eligible_session(db: Session, session_id: uuid.UUID) -> None:

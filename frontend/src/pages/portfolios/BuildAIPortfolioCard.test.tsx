@@ -25,6 +25,7 @@ function makeEvent(status: AIEventStatus): AIPortfolioEvent {
     request_payload: null,
     result_payload: null,
     actions_taken: null,
+    research: null,
     error: null,
     duration_ms: null,
     created_at: '2026-09-14T00:00:00Z',

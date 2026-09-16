@@ -572,3 +572,129 @@ def test_get_inflight_rebalance_event(db_session: Session) -> None:
     inflight = service.get_inflight_rebalance_event(db_session, session_id)
     assert inflight is not None
     assert inflight.id == rb_event.id
+
+
+# --------------------------------------------------------------------------- #
+# Audit trail: run ↔ trade/position links and research persistence
+# --------------------------------------------------------------------------- #
+
+
+def test_run_build_event_stamps_event_id_and_persists_research(
+    db_session: Session,
+) -> None:
+    provider = _seed_universe(db_session, "AAPL", "MSFT")
+    agent = FakeAIPortfolioAgent(
+        build_result=_build_result("AAPL", "MSFT"),
+        research_queries=["AAPL outlook", "MSFT outlook"],
+    )
+    event = service.create_build_event(db_session, _params())
+
+    service.run_build_event(db_session, event.id, agent, StubBroker(), provider)
+
+    refreshed = service.get_event(db_session, event.id)
+    assert refreshed.status == EventStatus.SUCCEEDED.value
+    # The research transcript is persisted on the event.
+    assert refreshed.research is not None
+    assert [r["query"] for r in refreshed.research] == [
+        "AAPL outlook",
+        "MSFT outlook",
+    ]
+
+    # Every opening trade references the run that produced it.
+    trades = paper_service.get_trades_by_event(db_session, event.id)
+    assert {t.ticker for t in trades} == {"AAPL", "MSFT"}
+    assert all(t.ai_portfolio_event_id == event.id for t in trades)
+
+
+def test_run_build_event_persists_partial_research_on_failure(
+    db_session: Session,
+) -> None:
+    # The agent researches, then fails: the research captured before the failure
+    # must still be persisted on the (failed) event.
+    provider = _seed_universe(db_session, "AAPL", "MSFT")
+    agent = FakeAIPortfolioAgent(
+        build_error=RuntimeError("agent boom"),
+        research_queries=["searched before crash"],
+    )
+    event = service.create_build_event(db_session, _params())
+
+    service.run_build_event(db_session, event.id, agent, StubBroker(), provider)
+
+    refreshed = service.get_event(db_session, event.id)
+    assert refreshed.status == EventStatus.FAILED.value
+    assert refreshed.research is not None
+    assert [r["query"] for r in refreshed.research] == ["searched before crash"]
+
+
+def test_run_rebalance_event_stamps_event_id_on_trades_and_closed_positions(
+    db_session: Session,
+) -> None:
+    provider = _seed_universe(db_session, "AAPL", "MSFT")
+    broker = StubBroker()
+    session_id, _ = _seed_session(db_session, broker, provider)
+
+    rebalance = _rebalance_to_aapl_msft()
+    rebalance._research_queries = ["market check"]  # emit one research entry
+    rb_event = service.create_rebalance_event(db_session, session_id)
+    service.run_rebalance_event(db_session, rb_event.id, rebalance, broker, provider)
+
+    refreshed = service.get_event(db_session, rb_event.id)
+    assert refreshed.status == EventStatus.SUCCEEDED.value
+    assert refreshed.research is not None
+    assert [r["query"] for r in refreshed.research] == ["market check"]
+
+    # NVDA exit -> a closed position linked to this rebalance event.
+    closed = paper_service.get_closed_positions_by_event(db_session, rb_event.id)
+    assert any(c.ticker == "NVDA" for c in closed)
+    assert all(c.ai_portfolio_event_id == rb_event.id for c in closed)
+
+    # Opening trades from the rebalance also reference the event.
+    trades = paper_service.get_trades_by_event(db_session, rb_event.id)
+    assert trades
+    assert all(t.ai_portfolio_event_id == rb_event.id for t in trades)
+
+
+def test_skipped_rebalance_records_no_research(db_session: Session) -> None:
+    provider = _seed_universe(db_session, "AAPL", "MSFT")
+    broker = _ClosedBroker()
+    session_id, _ = _seed_session(db_session, broker, provider)
+
+    rebalance = FakeAIPortfolioAgent(
+        rebalance_result=AIRebalanceResult(
+            evaluation_summary="x", target_allocations=[], portfolio_health="healthy"
+        ),
+        research_queries=["should never run"],
+    )
+    rb_event = service.create_rebalance_event(db_session, session_id)
+    service.run_rebalance_event(db_session, rb_event.id, rebalance, broker, provider)
+
+    refreshed = service.get_event(db_session, rb_event.id)
+    assert refreshed.status == EventStatus.SKIPPED.value
+    # The agent was never consulted, so no research was captured.
+    assert rebalance.rebalance_calls == []
+    assert refreshed.research is None
+
+
+def test_list_and_count_ai_runs_across_sessions(db_session: Session) -> None:
+    provider = _seed_universe(db_session, "AAPL", "MSFT")
+    broker = StubBroker()
+    session_id, _ = _seed_session(db_session, broker, provider)  # one build event
+    rb_event = service.create_rebalance_event(db_session, session_id)
+    service.run_rebalance_event(
+        db_session, rb_event.id, _rebalance_to_aapl_msft(), broker, provider
+    )
+
+    # Both the build and the rebalance are listed, newest first.
+    runs = service.list_ai_runs(db_session)
+    assert len(runs) == 2
+    assert runs[0].created_at >= runs[1].created_at
+    assert service.count_ai_runs(db_session) == 2
+
+    # Filter by event type.
+    builds = service.list_ai_runs(db_session, event_type=EventType.BUILD)
+    assert [e.event_type for e in builds] == [EventType.BUILD.value]
+    assert service.count_ai_runs(db_session, event_type=EventType.REBALANCE) == 1
+
+    # Filter by status.
+    succeeded = service.count_ai_runs(db_session, status=EventStatus.SUCCEEDED)
+    assert succeeded == 2

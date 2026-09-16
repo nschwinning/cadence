@@ -43,6 +43,19 @@ _web_search_budget: contextvars.ContextVar[int | None] = contextvars.ContextVar(
 #: Message returned by the tool once the budget is exhausted (no SerpAPI call).
 BUDGET_EXHAUSTED_MESSAGE = "web search budget exhausted — do not search again"
 
+#: Per-run research log. When a list is installed (via :func:`record_web_searches`),
+#: every :func:`web_search` appends a ``{query, results, error}`` entry so the run's
+#: research can be persisted for later review. ``None`` means "not recording".
+#: A ``ContextVar`` so it follows the async task tree of a single agent run.
+#:
+#: The recorder only ever *appends* to the shared list (it never rebinds the var),
+#: so — unlike the budget, which must be installed inside the run — a recorder
+#: installed OUTSIDE ``asyncio.run`` is still seen by tool calls inside it: child
+#: task contexts inherit the same list object.
+_web_search_log: contextvars.ContextVar[list[dict[str, Any]] | None] = (
+    contextvars.ContextVar("web_search_log", default=None)
+)
+
 
 @contextmanager
 def web_search_budget(n: int) -> Iterator[None]:
@@ -57,6 +70,37 @@ def web_search_budget(n: int) -> Iterator[None]:
         yield
     finally:
         _web_search_budget.reset(token)
+
+
+@contextmanager
+def record_web_searches() -> Iterator[list[dict[str, Any]]]:
+    """Install a per-run web-search recorder, yielding the growing research log.
+
+    Each :func:`web_search` performed within the context appends a
+    ``{query, results, error}`` entry (via :func:`note_web_search`). The yielded
+    list is the live log: it is bound at ``with`` entry and keeps accumulating, so
+    a caller can persist whatever research was captured even if the enclosed run
+    later raises.
+    """
+    log: list[dict[str, Any]] = []
+    token = _web_search_log.set(log)
+    try:
+        yield log
+    finally:
+        _web_search_log.reset(token)
+
+
+def note_web_search(
+    query: str, results: dict[str, Any] | None, *, error: str | None = None
+) -> None:
+    """Append a research entry to the active recorder, if one is installed.
+
+    A no-op when no :func:`record_web_searches` recorder is active, so the tool
+    (and test fakes) can call it unconditionally.
+    """
+    log = _web_search_log.get()
+    if log is not None:
+        log.append({"query": query, "results": results, "error": error})
 
 
 def _compact(source: dict[str, Any], keys: tuple[str, ...]) -> dict[str, Any]:
@@ -106,6 +150,7 @@ async def _run_web_search(query: str) -> dict[str, Any]:
     remaining = _web_search_budget.get()
     if remaining is not None:
         if remaining <= 0:
+            note_web_search(query, None, error=BUDGET_EXHAUSTED_MESSAGE)
             return {"error": BUDGET_EXHAUSTED_MESSAGE}
         _web_search_budget.set(remaining - 1)
 
@@ -131,10 +176,12 @@ async def _run_web_search(query: str) -> dict[str, Any]:
         return _trim_serp_payload(raw)
 
     loop = asyncio.get_event_loop()
-    return await asyncio.wait_for(
+    trimmed = await asyncio.wait_for(
         loop.run_in_executor(None, _search),
         timeout=SEARCH_TIMEOUT_SECONDS,
     )
+    note_web_search(query, trimmed, error=trimmed.get("error"))
+    return trimmed
 
 
 @function_tool(

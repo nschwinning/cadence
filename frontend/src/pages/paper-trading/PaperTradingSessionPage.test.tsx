@@ -50,6 +50,7 @@ function makeEvent(
     request_payload: null,
     result_payload,
     actions_taken: null,
+    research: null,
     error: null,
     duration_ms: null,
     created_at: '2026-09-14T00:00:00Z',
@@ -182,6 +183,7 @@ describe('PaperTradingSessionPage', () => {
     const cryptoTrade: PaperTrade = {
       id: 'trade-1',
       session_id: 's1',
+      ai_portfolio_event_id: null,
       ticker: 'BTCUSD',
       side: 'buy',
       quantity: 0.05123456,

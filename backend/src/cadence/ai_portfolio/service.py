@@ -24,9 +24,10 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from cadence.agents.tools import record_web_searches
 from cadence.ai_portfolio.agent import AIPortfolioAgent
 from cadence.ai_portfolio.constants import (
     AI_STRATEGY_KEY,
@@ -111,6 +112,44 @@ def list_session_events(
     return list(session.execute(stmt).scalars())
 
 
+def list_ai_runs(
+    session: Session,
+    *,
+    event_type: EventType | None = None,
+    status: EventStatus | None = None,
+    limit: int = 50,
+    offset: int = 0,
+) -> list[AIPortfolioEvent]:
+    """List AI runs across all sessions, newest first, for the Runs history.
+
+    Optionally filtered by ``event_type`` (build/rebalance) and ``status``.
+    Paginated via ``limit``/``offset`` (pair with :func:`count_ai_runs`).
+    """
+    stmt = select(AIPortfolioEvent).order_by(
+        AIPortfolioEvent.created_at.desc(), AIPortfolioEvent.id.desc()
+    )
+    if event_type is not None:
+        stmt = stmt.where(AIPortfolioEvent.event_type == event_type.value)
+    if status is not None:
+        stmt = stmt.where(AIPortfolioEvent.status == status.value)
+    return list(session.execute(stmt.limit(limit).offset(offset)).scalars())
+
+
+def count_ai_runs(
+    session: Session,
+    *,
+    event_type: EventType | None = None,
+    status: EventStatus | None = None,
+) -> int:
+    """Count AI runs across all sessions, with the same optional filters."""
+    stmt = select(func.count()).select_from(AIPortfolioEvent)
+    if event_type is not None:
+        stmt = stmt.where(AIPortfolioEvent.event_type == event_type.value)
+    if status is not None:
+        stmt = stmt.where(AIPortfolioEvent.status == status.value)
+    return session.execute(stmt).scalar_one()
+
+
 def create_build_event(session: Session, params: AIBuildParams) -> AIPortfolioEvent:
     """Validate the request and insert a queued build event; return it.
 
@@ -193,12 +232,18 @@ def run_build_event(
     event.status = EventStatus.RUNNING.value
     session.commit()
 
+    # Bound at ``with`` entry so any research captured before a mid-run failure is
+    # still persisted on the (failed) event.
+    research: list[dict[str, Any]] = []
     try:
         params = AIBuildParams.from_payload(event.request_payload or {})
         universe = assets_service.list_assets(session)
         candidates = _candidates_from_universe(universe)
 
-        result = agent.build(candidates=candidates, risk_profile=params.risk_profile)
+        with record_web_searches() as research:
+            result = agent.build(
+                candidates=candidates, risk_profile=params.risk_profile
+            )
         agent_output = result.model_dump(mode="json")
 
         stock_tickers = _normalize_tickers([s.ticker for s in result.stocks])
@@ -250,7 +295,11 @@ def run_build_event(
         )
 
         executed = _record_trades(
-            session, session_row.id, trade_results, signal_prefix="ai_build"
+            session,
+            session_row.id,
+            trade_results,
+            signal_prefix="ai_build",
+            event_id=event.id,
         )
         paper_service.record_session_run(
             session,
@@ -277,6 +326,7 @@ def run_build_event(
             result_payload=agent_output,
             actions_taken=[tr.to_dict() for tr in trade_results],
             duration_ms=_elapsed_ms(t0),
+            research=research,
         )
         logger.info(
             "AI portfolio build %s completed: %s/%s trades executed",
@@ -287,7 +337,13 @@ def run_build_event(
     except Exception as exc:  # noqa: BLE001 - persisted as the event's failure reason
         session.rollback()
         logger.error("AI portfolio build %s failed: %s", event_id, exc)
-        _fail_event(session, event_id, str(exc) or exc.__class__.__name__, _elapsed_ms(t0))
+        _fail_event(
+            session,
+            event_id,
+            str(exc) or exc.__class__.__name__,
+            _elapsed_ms(t0),
+            research=research,
+        )
 
 
 # --------------------------------------------------------------------------- #
@@ -320,6 +376,9 @@ def run_rebalance_event(
     event.status = EventStatus.RUNNING.value
     session.commit()
 
+    # Bound at ``with`` entry (below) so research captured before a mid-run failure
+    # is still persisted on the (failed) event; stays empty on the skip path.
+    research: list[dict[str, Any]] = []
     try:
         if event.session_id is None:
             raise ValueError("rebalance event has no session")
@@ -373,11 +432,12 @@ def run_rebalance_event(
             "total_unrealized_pnl": account.unrealized_pnl,
         }
 
-        result = agent.rebalance(
-            holdings=holdings,
-            account_summary=account_summary,
-            candidates=candidates,
-        )
+        with record_web_searches() as research:
+            result = agent.rebalance(
+                holdings=holdings,
+                account_summary=account_summary,
+                candidates=candidates,
+            )
         agent_output = result.model_dump(mode="json")
 
         # Best-effort add of any discovered target ticker not yet in the universe.
@@ -400,7 +460,7 @@ def run_rebalance_event(
         )
 
         executed, realized_pnl = _apply_rebalance_trades(
-            session, session_id, trade_results, positions
+            session, session_id, trade_results, positions, event_id=event.id
         )
 
         paper_service.record_session_run(
@@ -439,6 +499,7 @@ def run_rebalance_event(
             result_payload=agent_output,
             actions_taken=[tr.to_dict() for tr in trade_results],
             duration_ms=_elapsed_ms(t0),
+            research=research,
         )
         logger.info("AI rebalance %s completed: %s trades executed", event.id, executed)
 
@@ -455,7 +516,13 @@ def run_rebalance_event(
     except Exception as exc:  # noqa: BLE001 - persisted as the event's failure reason
         session.rollback()
         logger.error("AI rebalance %s failed: %s", event_id, exc)
-        _fail_event(session, event_id, str(exc) or exc.__class__.__name__, _elapsed_ms(t0))
+        _fail_event(
+            session,
+            event_id,
+            str(exc) or exc.__class__.__name__,
+            _elapsed_ms(t0),
+            research=research,
+        )
         if notifier is not None:
             _notify_safely(
                 notifier,
@@ -634,6 +701,7 @@ def _record_trades(
     trade_results: list[TradeResult],
     *,
     signal_prefix: str,
+    event_id: uuid.UUID,
 ) -> int:
     """Persist each executed trade; return how many were executed."""
     executed = 0
@@ -651,6 +719,7 @@ def _record_trades(
             order_id=tr.order_id,
             order_status=tr.order_status,
             filled_price=tr.filled_price,
+            ai_portfolio_event_id=event_id,
         )
         executed += 1
     return executed
@@ -661,6 +730,8 @@ def _apply_rebalance_trades(
     session_id: uuid.UUID,
     trade_results: list[TradeResult],
     positions: dict[str, Position],
+    *,
+    event_id: uuid.UUID,
 ) -> tuple[int, float]:
     """Record rebalance trades + closed positions; return (executed, realized_pnl).
 
@@ -697,6 +768,7 @@ def _apply_rebalance_trades(
             order_id=tr.order_id,
             order_status=tr.order_status,
             filled_price=tr.filled_price,
+            ai_portfolio_event_id=event_id,
         )
         executed += 1
 
@@ -716,6 +788,7 @@ def _apply_rebalance_trades(
                     exit_price=exit_price,
                     entry_date=first_entry_date.get(tr.ticker, now),
                     exit_date=now,
+                    ai_portfolio_event_id=event_id,
                 )
                 realized_pnl_total += closed.realized_pnl
 
@@ -730,24 +803,37 @@ def _finish_event(
     result_payload: dict[str, Any] | None,
     actions_taken: list[dict[str, Any]],
     duration_ms: int,
+    research: list[dict[str, Any]] | None = None,
 ) -> None:
     event.status = status.value
     event.result_payload = result_payload
     event.actions_taken = actions_taken
     event.duration_ms = duration_ms
+    if research:
+        event.research = research
     session.commit()
 
 
 def _fail_event(
-    session: Session, event_id: uuid.UUID, error: str, duration_ms: int
+    session: Session,
+    event_id: uuid.UUID,
+    error: str,
+    duration_ms: int,
+    research: list[dict[str, Any]] | None = None,
 ) -> None:
-    """Best-effort transition of an event to ``failed`` with a reason."""
+    """Best-effort transition of an event to ``failed`` with a reason.
+
+    Any research captured before the failure is persisted so a failed run is still
+    reviewable.
+    """
     event = session.get(AIPortfolioEvent, event_id)
     if event is None:
         return
     event.status = EventStatus.FAILED.value
     event.error = error
     event.duration_ms = duration_ms
+    if research:
+        event.research = research
     session.commit()
 
 

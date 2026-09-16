@@ -251,6 +251,7 @@ class PaperTradeRead(BaseModel):
 
     id: uuid.UUID
     session_id: uuid.UUID
+    ai_portfolio_event_id: uuid.UUID | None
     ticker: str
     side: str
     quantity: float
@@ -303,6 +304,7 @@ class ClosedPositionRead(BaseModel):
 
     id: uuid.UUID
     session_id: uuid.UUID
+    ai_portfolio_event_id: uuid.UUID | None
     ticker: str
     quantity: float
     entry_price: float
@@ -378,10 +380,30 @@ class AIPortfolioEventRead(BaseModel):
     request_payload: dict[str, Any] | None
     result_payload: dict[str, Any] | None
     actions_taken: list[dict[str, Any]] | None
+    research: list[dict[str, Any]] | None
     error: str | None
     duration_ms: int | None
     created_at: datetime
     updated_at: datetime
+
+
+class AIPortfolioRunListResponse(BaseModel):
+    """A page of AI runs (build + rebalance events) plus the matching total."""
+
+    items: list[AIPortfolioEventRead]
+    total: int
+
+
+class AIPortfolioRunDetail(BaseModel):
+    """One AI run with the trades it opened and the positions it closed.
+
+    The event carries the run's reasoning (``result_payload``) and research
+    transcript; ``trades``/``closed_positions`` are the orders it produced.
+    """
+
+    event: AIPortfolioEventRead
+    trades: list[PaperTradeRead]
+    closed_positions: list[ClosedPositionRead]
 
 
 # --------------------------------------------------------------------------- #

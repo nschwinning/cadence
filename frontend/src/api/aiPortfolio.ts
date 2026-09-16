@@ -6,8 +6,18 @@ import type {
   AIPortfolioBuildRequest,
   AIPortfolioBuildResponse,
   AIPortfolioEvent,
+  AIPortfolioRunDetail,
+  AIPortfolioRunListResponse,
   AIRebalanceResponse,
 } from '../types/api';
+
+/** Optional filters for the AI runs history list. */
+export interface AIRunsQuery {
+  eventType?: 'build' | 'rebalance';
+  status?: AIEventStatus;
+  limit?: number;
+  offset?: number;
+}
 
 /** How often (ms) to poll an in-progress build/rebalance event. */
 const POLL_INTERVAL_MS = 1500;
@@ -33,6 +43,9 @@ export const aiPortfolioKeys = {
     ['ai-portfolio', 'build-status', eventId] as const,
   sessionEvents: (sessionId: string) =>
     ['ai-portfolio', 'session', sessionId, 'events'] as const,
+  runs: (query: AIRunsQuery) => ['ai-portfolio', 'runs', query] as const,
+  runDetail: (eventId: string) =>
+    ['ai-portfolio', 'runs', 'detail', eventId] as const,
 };
 
 /**
@@ -90,6 +103,37 @@ export async function listSessionEvents(
   return data;
 }
 
+/** Fetch a page of AI runs (build + rebalance events), newest first. */
+export async function listAIRuns(
+  query: AIRunsQuery = {},
+): Promise<AIPortfolioRunListResponse> {
+  const { data } = await apiClient.get<AIPortfolioRunListResponse>(
+    '/api/v1/ai-portfolio/runs',
+    {
+      params: {
+        event_type: query.eventType,
+        status: query.status,
+        limit: query.limit,
+        offset: query.offset,
+      },
+    },
+  );
+  return data;
+}
+
+/**
+ * Fetch one AI run with the trades it opened and positions it closed. Rejects
+ * with the axios error (404 unknown event) so callers can surface a message.
+ */
+export async function getAIRunDetail(
+  eventId: string,
+): Promise<AIPortfolioRunDetail> {
+  const { data } = await apiClient.get<AIPortfolioRunDetail>(
+    `/api/v1/ai-portfolio/runs/${encodeURIComponent(eventId)}`,
+  );
+  return data;
+}
+
 /** Mutation queuing an AI portfolio build. */
 export function useBuildAIPortfolio() {
   return useMutation<
@@ -143,5 +187,22 @@ export function useSessionEvents(sessionId: string) {
     queryKey: aiPortfolioKeys.sessionEvents(sessionId),
     queryFn: () => listSessionEvents(sessionId),
     enabled: sessionId.length > 0,
+  });
+}
+
+/** React Query hook listing AI runs across all sessions, newest first. */
+export function useAIRuns(query: AIRunsQuery = {}) {
+  return useQuery<AIPortfolioRunListResponse>({
+    queryKey: aiPortfolioKeys.runs(query),
+    queryFn: () => listAIRuns(query),
+  });
+}
+
+/** React Query hook fetching one AI run's detail; disabled while `eventId` is null. */
+export function useAIRunDetail(eventId: string | null) {
+  return useQuery<AIPortfolioRunDetail>({
+    queryKey: aiPortfolioKeys.runDetail(eventId ?? ''),
+    queryFn: () => getAIRunDetail(eventId as string),
+    enabled: typeof eventId === 'string' && eventId.length > 0,
   });
 }

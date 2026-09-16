@@ -287,6 +287,8 @@ export interface PaperTradingSessionListResponse {
 export interface PaperTrade {
   id: string;
   session_id: string;
+  /** The AI run (build/rebalance event) that opened this trade; null for non-AI. */
+  ai_portfolio_event_id: string | null;
   ticker: string;
   side: string;
   quantity: number;
@@ -331,6 +333,8 @@ export interface SessionRunListResponse {
 export interface ClosedPosition {
   id: string;
   session_id: string;
+  /** The AI rebalance event that closed this position; null for non-AI. */
+  ai_portfolio_event_id: string | null;
   ticker: string;
   quantity: number;
   entry_price: number;
@@ -436,10 +440,42 @@ export interface AIPortfolioEvent {
   request_payload: Record<string, unknown> | null;
   result_payload: Record<string, unknown> | null;
   actions_taken: Record<string, unknown>[] | null;
+  /**
+   * The run's research transcript: one entry per web search the agent performed.
+   * Null when the run did no research (or on legacy rows before capture existed).
+   */
+  research: AIResearchEntry[] | null;
   error: string | null;
   duration_ms: number | null;
   created_at: string;
   updated_at: string;
+}
+
+/**
+ * One web search the agent performed during a run: the `query` it issued, the
+ * trimmed `results` payload (null when the search errored or was budget-capped),
+ * and an `error` message when the search did not return usable results.
+ */
+export interface AIResearchEntry {
+  query: string;
+  results: Record<string, unknown> | null;
+  error: string | null;
+}
+
+/** A page of AI runs plus the matching total. Mirrors `AIPortfolioRunListResponse`. */
+export interface AIPortfolioRunListResponse {
+  items: AIPortfolioEvent[];
+  total: number;
+}
+
+/**
+ * One AI run with the trades it opened and the positions it closed. Mirrors the
+ * backend `AIPortfolioRunDetail` schema for `GET /ai-portfolio/runs/{event_id}`.
+ */
+export interface AIPortfolioRunDetail {
+  event: AIPortfolioEvent;
+  trades: PaperTrade[];
+  closed_positions: ClosedPosition[];
 }
 
 // --------------------------------------------------------------------------- //

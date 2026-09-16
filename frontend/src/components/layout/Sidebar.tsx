@@ -4,6 +4,7 @@ import { DashboardIcon } from '../icons/DashboardIcon';
 import { AssetsIcon } from '../icons/AssetsIcon';
 import { PortfoliosIcon } from '../icons/PortfoliosIcon';
 import { PaperTradingIcon } from '../icons/PaperTradingIcon';
+import { RunsIcon } from '../icons/RunsIcon';
 
 interface SidebarProps {
   /** Whether the off-canvas sidebar is open (narrow viewports only). */
@@ -29,6 +30,7 @@ const NAV_ITEMS: NavItem[] = [
     label: 'Paper Trading',
     icon: <PaperTradingIcon className="h-5 w-5" />,
   },
+  { to: '/runs', label: 'Runs', icon: <RunsIcon className="h-5 w-5" /> },
 ];
 
 /**

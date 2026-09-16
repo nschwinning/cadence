@@ -242,6 +242,62 @@ def test_session_rebalance_unknown_session_404(
 
 
 # --------------------------------------------------------------------------- #
+# Runs history + detail
+# --------------------------------------------------------------------------- #
+
+
+def test_list_runs_and_detail(client: TestClient, db_session: Session) -> None:
+    executor = ManualExecutor()
+    _seed_universe(db_session, _provider())
+    # Give the agent research so the persisted transcript is exercised end-to-end.
+    agent = FakeAIPortfolioAgent(
+        build_result=_build_result(),
+        rebalance_result=_rebalance_result(),
+        research_queries=["AAPL earnings"],
+    )
+    _wire(db_session, executor, agent=agent)
+    _build_session(client, executor)
+
+    # The runs list returns the build event with its research count.
+    listing = client.get("/api/v1/ai-portfolio/runs")
+    assert listing.status_code == 200
+    body = listing.json()
+    assert body["total"] == 1
+    run = body["items"][0]
+    assert run["event_type"] == "build"
+    assert run["research"] == [
+        {
+            "query": "AAPL earnings",
+            "results": {"organic_results": [{"title": "result for AAPL earnings"}]},
+            "error": None,
+        }
+    ]
+
+    # The detail endpoint returns the run with the trades it opened.
+    detail = client.get(f"/api/v1/ai-portfolio/runs/{run['id']}")
+    assert detail.status_code == 200
+    detail_body = detail.json()
+    assert detail_body["event"]["id"] == run["id"]
+    opened = {t["ticker"] for t in detail_body["trades"]}
+    assert opened == {"AAPL", "MSFT"}
+    assert all(t["ai_portfolio_event_id"] == run["id"] for t in detail_body["trades"])
+    assert detail_body["closed_positions"] == []
+
+    # Filtering by a non-matching type yields an empty page.
+    rebalances = client.get("/api/v1/ai-portfolio/runs", params={"event_type": "rebalance"})
+    assert rebalances.status_code == 200
+    assert rebalances.json()["total"] == 0
+
+
+def test_run_detail_unknown_event_404(client: TestClient, db_session: Session) -> None:
+    _wire(db_session, ManualExecutor())
+    resp = client.get(
+        "/api/v1/ai-portfolio/runs/00000000-0000-0000-0000-000000000000"
+    )
+    assert resp.status_code == 404
+
+
+# --------------------------------------------------------------------------- #
 # Daily fan-out + cron token guard
 # --------------------------------------------------------------------------- #
 

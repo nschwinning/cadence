@@ -7,6 +7,8 @@ import { PortfoliosPage } from './pages/portfolios/PortfoliosPage';
 import { PortfolioDetailPage } from './pages/portfolios/PortfolioDetailPage';
 import { PaperTradingPage } from './pages/paper-trading/PaperTradingPage';
 import { PaperTradingSessionPage } from './pages/paper-trading/PaperTradingSessionPage';
+import { RunsPage } from './pages/runs/RunsPage';
+import { RunDetailPage } from './pages/runs/RunDetailPage';
 
 export function App() {
   return (
@@ -19,6 +21,8 @@ export function App() {
         <Route path="portfolios/:id" element={<PortfolioDetailPage />} />
         <Route path="paper-trading" element={<PaperTradingPage />} />
         <Route path="paper-trading/:id" element={<PaperTradingSessionPage />} />
+        <Route path="runs" element={<RunsPage />} />
+        <Route path="runs/:id" element={<RunDetailPage />} />
       </Route>
     </Routes>
   );
