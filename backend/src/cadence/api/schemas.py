@@ -370,6 +370,24 @@ class SessionValueHistoryResponse(BaseModel):
     total: int
 
 
+class PaperTradingSessionKpisRead(BaseModel):
+    """A session's live performance KPIs.
+
+    ``current_value`` is the live net asset value; ``realised_pnl`` the cumulative
+    realised P&L; ``unrealised_pnl`` the live mark-to-market on open positions;
+    ``total_return`` the absolute gain/loss versus allocated capital and
+    ``total_return_pct`` the same as a fraction; ``sharpe_ratio`` is ``None`` until
+    the session has accumulated enough daily history.
+    """
+
+    current_value: float
+    realised_pnl: float
+    unrealised_pnl: float
+    total_return: float
+    total_return_pct: float
+    sharpe_ratio: float | None
+
+
 class AIDailySnapshotResponse(BaseModel):
     """Result of the daily snapshot fan-out: how many sessions were snapshotted."""
 

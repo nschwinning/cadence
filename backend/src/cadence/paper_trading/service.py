@@ -8,7 +8,9 @@ service functions operating on a SQLAlchemy :class:`Session`.
 from __future__ import annotations
 
 import logging
+import statistics
 import uuid
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from typing import Any
@@ -19,7 +21,10 @@ from sqlalchemy.orm import Session
 
 from cadence.broker.base import Broker
 from cadence.broker.models import OrderSide, OrderStatus
+from cadence.config import settings
 from cadence.paper_trading.constants import (
+    SHARPE_MIN_RETURNS,
+    SHARPE_TRADING_DAYS_PER_YEAR,
     TERMINAL_ORDER_STATUSES,
     RunStatus,
     ScheduleMode,
@@ -657,12 +662,15 @@ class SessionValuation:
     ``total_value`` is the session's equity (``allocated_capital + realized
     total_pnl + unrealized P&L`` of the ledger positions); ``positions_value`` is
     the market value of the held positions and ``cash_value`` the remainder.
-    ``positions`` is the per-holding breakdown persisted on the snapshot.
+    ``unrealized_pnl`` is the summed mark-to-market gain/loss on the open
+    positions. ``positions`` is the per-holding breakdown persisted on the
+    snapshot.
     """
 
     total_value: float
     cash_value: float
     positions_value: float
+    unrealized_pnl: float
     positions: list[dict[str, Any]]
 
 
@@ -732,6 +740,7 @@ def compute_session_value(
         total_value=total_value,
         cash_value=cash_value,
         positions_value=positions_value,
+        unrealized_pnl=unrealized_total,
         positions=positions,
     )
 
@@ -826,3 +835,85 @@ def list_value_snapshots(
         .order_by(SessionValueSnapshot.snapshot_date.asc())
     )
     return list(session.execute(stmt).scalars())
+
+
+# --------------------------------------------------------------------------- #
+# Session KPIs (live valuation + Sharpe)
+# --------------------------------------------------------------------------- #
+
+
+def sharpe_ratio(
+    returns: Sequence[float], *, risk_free: float = 0.0
+) -> float | None:
+    """Annualised Sharpe ratio of a per-period return series, or ``None``.
+
+    ``returns`` are per-period (daily) fractional returns; ``risk_free`` is the
+    per-period risk-free rate subtracted from each. The ratio is
+    ``mean(excess) / stdev(returns) × √SHARPE_TRADING_DAYS_PER_YEAR`` using the
+    sample standard deviation. Returns ``None`` when there are fewer than
+    :data:`SHARPE_MIN_RETURNS` observations or the returns have zero standard
+    deviation (a flat series has no risk-adjusted signal and would divide by
+    zero).
+    """
+    if len(returns) < SHARPE_MIN_RETURNS:
+        return None
+    stdev = statistics.stdev(returns)
+    if stdev == 0:
+        return None
+    mean_excess = statistics.fmean(returns) - risk_free
+    return float(mean_excess / stdev * (SHARPE_TRADING_DAYS_PER_YEAR**0.5))
+
+
+@dataclass(frozen=True)
+class SessionKpis:
+    """A session's headline performance KPIs at request time.
+
+    ``current_value`` is the live net asset value; ``realised_pnl`` the session's
+    cumulative realised P&L; ``unrealised_pnl`` the live mark-to-market on open
+    positions; ``total_return`` the absolute gain/loss versus allocated capital
+    (``current_value − allocated_capital``) and ``total_return_pct`` the same as a
+    fraction of allocated capital; ``sharpe_ratio`` the annualised Sharpe of the
+    daily NAV series, or ``None`` until enough history exists.
+    """
+
+    current_value: float
+    realised_pnl: float
+    unrealised_pnl: float
+    total_return: float
+    total_return_pct: float
+    sharpe_ratio: float | None
+
+
+def session_kpis(
+    session: Session,
+    *,
+    session_id: uuid.UUID,
+    broker: Broker,
+) -> SessionKpis:
+    """Compute a session's live performance KPIs (404 via ``SessionNotFoundError``).
+
+    Marks the session's open positions to market via ``broker`` for the live
+    figures, reads the cumulative realised P&L from the session row, derives the
+    absolute and fractional total return against allocated capital, and computes
+    the Sharpe ratio from the session's ordered daily-return snapshots. The
+    risk-free rate is the configured annual rate converted to a per-day rate.
+    """
+    session_row = get_session(session, session_id)
+    valuation = compute_session_value(session, session_id=session_id, broker=broker)
+
+    allocated = session_row.allocated_capital
+    total_return = valuation.total_value - allocated
+    total_return_pct = total_return / allocated if allocated > 0 else 0.0
+
+    snapshots = list_value_snapshots(session, session_id=session_id)
+    daily_returns = [snap.daily_pnl_pct for snap in snapshots]
+    daily_risk_free = settings.SHARPE_RISK_FREE_RATE / SHARPE_TRADING_DAYS_PER_YEAR
+
+    return SessionKpis(
+        current_value=valuation.total_value,
+        realised_pnl=session_row.total_pnl,
+        unrealised_pnl=valuation.unrealized_pnl,
+        total_return=total_return,
+        total_return_pct=total_return_pct,
+        sharpe_ratio=sharpe_ratio(daily_returns, risk_free=daily_risk_free),
+    )

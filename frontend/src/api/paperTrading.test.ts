@@ -63,6 +63,15 @@ describe('paperTradingKeys factory', () => {
       'order-sync',
     ]);
   });
+
+  it('builds the kpis key', () => {
+    expect(paperTradingKeys.kpis('sess-1')).toEqual([
+      'paper-trading',
+      'session',
+      'sess-1',
+      'kpis',
+    ]);
+  });
 });
 
 describe('isTerminalOrderStatus', () => {

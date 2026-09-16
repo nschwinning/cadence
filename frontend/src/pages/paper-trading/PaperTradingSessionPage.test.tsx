@@ -12,6 +12,7 @@ import type {
   AIPortfolioEvent,
   PaperTrade,
   PaperTradingSession,
+  PaperTradingSessionKpis,
 } from '../../types/api';
 
 vi.mock('../../api/client', () => ({
@@ -80,11 +81,26 @@ const REBALANCE_RESULT = {
   ],
 };
 
+const KPIS: PaperTradingSessionKpis = {
+  current_value: 102500,
+  realised_pnl: 750,
+  unrealised_pnl: -200,
+  total_return: 2500,
+  total_return_pct: 0.025,
+  sharpe_ratio: null,
+};
+
 /** Route the mocked GETs by URL to the right fixture. */
-function installGet(eventStatus: () => AIEventStatus) {
+function installGet(
+  eventStatus: () => AIEventStatus,
+  kpis: PaperTradingSessionKpis = KPIS,
+) {
   mockedGet.mockImplementation((url: string) => {
     if (url.endsWith('/paper-trading/sessions')) {
       return Promise.resolve({ data: { items: [session], total: 1 } });
+    }
+    if (url.endsWith('/kpis')) {
+      return Promise.resolve({ data: kpis });
     }
     if (url.includes('/ai-portfolio/sessions/') && url.endsWith('/events')) {
       return Promise.resolve({ data: [] });
@@ -147,6 +163,35 @@ describe('PaperTradingSessionPage', () => {
     expect(screen.getByRole('heading', { name: 'Runs' })).toBeInTheDocument();
   });
 
+  it('renders the KPI tiles, colours P&L by sign, and shows the Sharpe fallback', async () => {
+    installGet(() => 'running');
+
+    renderPage(<PaperTradingSessionPage />);
+
+    // Current value tile.
+    expect(await screen.findByText('€102,500.00')).toBeInTheDocument();
+    // Realised P&L is positive -> green.
+    const realised = screen.getByText('€750.00');
+    expect(realised).toHaveClass('text-emerald-700');
+    // Unrealised P&L is negative -> red.
+    const unrealised = screen.getByText('-€200.00');
+    expect(unrealised).toHaveClass('text-red-700');
+    // Total return shows the money amount and a percentage hint.
+    expect(screen.getByText('€2,500.00')).toHaveClass('text-emerald-700');
+    expect(screen.getByText('2.50%')).toBeInTheDocument();
+    // Sharpe is null -> fallback copy.
+    expect(screen.getByText('Not yet available')).toBeInTheDocument();
+  });
+
+  it('shows the computed Sharpe ratio when available', async () => {
+    installGet(() => 'running', { ...KPIS, sharpe_ratio: 1.234 });
+
+    renderPage(<PaperTradingSessionPage />);
+
+    expect(await screen.findByText('1.23')).toBeInTheDocument();
+    expect(screen.queryByText('Not yet available')).not.toBeInTheDocument();
+  });
+
   it('triggers a rebalance and reflects terminal feedback without manual refresh', async () => {
     let status: AIEventStatus = 'running';
     installGet(() => status);
@@ -203,6 +248,9 @@ describe('PaperTradingSessionPage', () => {
       if (url.endsWith('/paper-trading/sessions')) {
         return Promise.resolve({ data: { items: [stopped], total: 1 } });
       }
+      if (url.endsWith('/kpis')) {
+        return Promise.resolve({ data: KPIS });
+      }
       if (url.includes('/ai-portfolio/sessions/') && url.endsWith('/events')) {
         return Promise.resolve({ data: [] });
       }
@@ -233,6 +281,9 @@ describe('PaperTradingSessionPage', () => {
     mockedGet.mockImplementation((url: string) => {
       if (url.endsWith('/paper-trading/sessions')) {
         return Promise.resolve({ data: { items: [archived], total: 1 } });
+      }
+      if (url.endsWith('/kpis')) {
+        return Promise.resolve({ data: KPIS });
       }
       if (url.includes('/ai-portfolio/sessions/') && url.endsWith('/events')) {
         return Promise.resolve({ data: [] });
@@ -292,6 +343,9 @@ describe('PaperTradingSessionPage', () => {
       }
       if (url.includes('/ai-portfolio/sessions/') && url.endsWith('/events')) {
         return Promise.resolve({ data: [] });
+      }
+      if (url.endsWith('/kpis')) {
+        return Promise.resolve({ data: KPIS });
       }
       if (url.includes('/trades')) {
         return Promise.resolve({ data: { items: [cryptoTrade], total: 1 } });

@@ -13,3 +13,23 @@ const quantityFormatter = new Intl.NumberFormat(undefined, {
 export function formatQuantity(value: number): string {
   return quantityFormatter.format(value);
 }
+
+/** Format a monetary value as EUR with two fraction digits (e.g. `-€1,234.50`). */
+const currencyFormatter = new Intl.NumberFormat(undefined, {
+  style: 'currency',
+  currency: 'EUR',
+  maximumFractionDigits: 2,
+});
+
+export function formatCurrency(value: number): string {
+  return currencyFormatter.format(value);
+}
+
+/**
+ * Format a fraction as a percentage string (e.g. `0.032` -> `3.20%`). Negative
+ * and zero values format naturally (`-1.50%`, `0.00%`); callers convey gain/loss
+ * colour separately.
+ */
+export function formatPercent(value: number, fractionDigits = 2): string {
+  return `${(value * 100).toFixed(fractionDigits)}%`;
+}

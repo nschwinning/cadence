@@ -56,3 +56,13 @@ TERMINAL_ORDER_STATUSES = frozenset(
         OrderStatus.REJECTED.value,
     }
 )
+
+#: Trading days per year used to annualise the daily-return Sharpe ratio
+#: (``sharpe × √252``). The conventional US-equity trading-day count.
+SHARPE_TRADING_DAYS_PER_YEAR = 252
+
+#: Minimum number of daily returns a session needs before its Sharpe ratio is
+#: reported. Below this the sample is too small to be meaningful, so the ratio is
+#: withheld (``None``) and the UI shows "not yet available". ~20 ≈ one trading
+#: month.
+SHARPE_MIN_RETURNS = 20

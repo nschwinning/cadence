@@ -14,7 +14,7 @@ from sqlalchemy.orm import Session
 
 from cadence.api.app import app
 from cadence.broker import get_broker
-from cadence.broker.models import AssetClass, Order, OrderSide, OrderStatus
+from cadence.broker.models import AssetClass, Order, OrderSide, OrderStatus, Quote
 from cadence.broker.stub import StubBroker
 from cadence.paper_trading import service
 from cadence.paper_trading.constants import SessionStatus
@@ -116,7 +116,7 @@ def test_status_filter(client: TestClient, db_session: Session) -> None:
 
 def test_unknown_session_returns_404(client: TestClient) -> None:
     unknown = uuid.uuid4()
-    for suffix in ("trades", "runs", "positions", "value-history"):
+    for suffix in ("trades", "runs", "positions", "value-history", "kpis"):
         resp = client.get(
             f"/api/v1/paper-trading/sessions/{unknown}/{suffix}"
         )
@@ -260,3 +260,56 @@ def test_value_history_ascending(client: TestClient, db_session: Session) -> Non
     # The snapshot fields are exposed on each item.
     first = body["items"][0]
     assert {"total_value", "cash_value", "positions_value", "daily_pnl"} <= first.keys()
+
+
+class _QuoteBroker:
+    """Broker double pricing configured tickers, for the live KPI endpoint."""
+
+    def __init__(self, prices: dict[str, float]) -> None:
+        self._prices = prices
+
+    def get_quotes(self, symbols: list[str]) -> dict[str, Quote]:
+        return {
+            sym: Quote(symbol=sym, bid=p, ask=p, last=p)
+            for sym, p in self._prices.items()
+            if sym in symbols
+        }
+
+
+def test_session_kpis_returns_live_figures(
+    client: TestClient, db_session: Session
+) -> None:
+    portfolio = portfolios_service.create_portfolio(
+        db_session, name="AI", stocks=["AAPL"]
+    )
+    sess = service.create_session(
+        db_session, portfolio_id=portfolio.id, strategy_key="ai_kpis"
+    )
+    service.apply_fill_to_ledger(
+        db_session,
+        session_id=sess.id,
+        ticker="AAPL",
+        side=OrderSide.BUY,
+        shares=10,
+        price=100.0,
+    )
+    app.dependency_overrides[get_broker] = lambda: _QuoteBroker({"AAPL": 120.0})
+
+    resp = client.get(f"/api/v1/paper-trading/sessions/{sess.id}/kpis")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert set(body) == {
+        "current_value",
+        "realised_pnl",
+        "unrealised_pnl",
+        "total_return",
+        "total_return_pct",
+        "sharpe_ratio",
+    }
+    assert body["current_value"] == 100_200.0
+    assert body["realised_pnl"] == 0.0
+    assert body["unrealised_pnl"] == 200.0
+    assert body["total_return"] == 200.0
+    assert body["total_return_pct"] == 200.0 / 100_000.0
+    # No daily snapshots yet -> Sharpe withheld.
+    assert body["sharpe_ratio"] is None

@@ -16,12 +16,18 @@ from cadence.broker.models import (
     Quote,
 )
 from cadence.paper_trading import service
-from cadence.paper_trading.constants import RunStatus, ScheduleMode, SessionStatus
+from cadence.paper_trading.constants import (
+    SHARPE_MIN_RETURNS,
+    RunStatus,
+    ScheduleMode,
+    SessionStatus,
+)
 from cadence.paper_trading.errors import (
     DuplicateSessionError,
     SessionNotArchivableError,
     SessionNotFoundError,
 )
+from cadence.paper_trading.models import SessionValueSnapshot
 from cadence.portfolios import service as portfolios_service
 from cadence.portfolios.models import Portfolio
 
@@ -782,3 +788,120 @@ def test_snapshot_row_validates_into_read_schema(db_session: Session) -> None:
     assert read.snapshot_date == date(2026, 1, 5)
     assert read.total_value == pytest.approx(100_200.0)
     assert read.positions[0]["ticker"] == "AAPL"
+
+
+def test_compute_value_surfaces_unrealized_pnl(db_session: Session) -> None:
+    sess = _ai_session(db_session)
+    _buy(db_session, sess.id, "AAPL", 10, 100.0)  # +20/share -> +200
+    _buy(db_session, sess.id, "MSFT", 5, 50.0)  # -10/share -> -50
+    valuation = service.compute_session_value(
+        db_session,
+        session_id=sess.id,
+        broker=_QuoteBroker({"AAPL": 120.0, "MSFT": 40.0}),
+    )
+    # Top-level unrealised P&L equals the sum of the per-position marks.
+    per_position = sum(p["unrealized_pnl"] for p in valuation.positions)
+    assert valuation.unrealized_pnl == pytest.approx(150.0)
+    assert valuation.unrealized_pnl == pytest.approx(per_position)
+
+
+# --------------------------------------------------------------------------- #
+# Sharpe ratio (pure helper)
+# --------------------------------------------------------------------------- #
+
+
+def test_sharpe_ratio_known_series() -> None:
+    returns = [0.01] * 10 + [0.02] * 10  # 20 observations, non-zero variance
+    assert service.sharpe_ratio(returns) == pytest.approx(46.417669, abs=1e-4)
+
+
+def test_sharpe_ratio_none_below_minimum() -> None:
+    returns = [0.01, -0.01] * ((SHARPE_MIN_RETURNS - 1) // 2)
+    assert len(returns) < SHARPE_MIN_RETURNS
+    assert service.sharpe_ratio(returns) is None
+
+
+def test_sharpe_ratio_none_when_flat() -> None:
+    # Enough observations but zero standard deviation -> no signal, no divide-by-zero.
+    assert service.sharpe_ratio([0.01] * SHARPE_MIN_RETURNS) is None
+
+
+def test_sharpe_ratio_excess_over_risk_free() -> None:
+    returns = [0.01] * 10 + [0.02] * 10
+    # A positive risk-free rate lowers the numerator, hence the ratio.
+    assert service.sharpe_ratio(returns, risk_free=0.001) < service.sharpe_ratio(
+        returns
+    )
+
+
+# --------------------------------------------------------------------------- #
+# Session KPIs
+# --------------------------------------------------------------------------- #
+
+
+def _add_snapshot(
+    db_session: Session, session_id: object, day: date, daily_pnl_pct: float
+) -> None:
+    """Insert a minimal value snapshot carrying a daily return for Sharpe tests."""
+    db_session.add(
+        SessionValueSnapshot(
+            session_id=session_id,
+            snapshot_date=day,
+            total_value=0.0,
+            cash_value=0.0,
+            positions_value=0.0,
+            daily_pnl=0.0,
+            daily_pnl_pct=daily_pnl_pct,
+            positions=[],
+        )
+    )
+    db_session.commit()
+
+
+def test_session_kpis_live_figures_and_total_return(db_session: Session) -> None:
+    sess = _ai_session(db_session)
+    _buy(db_session, sess.id, "AAPL", 10, 100.0)  # +20/share -> +200 unrealised
+    kpis = service.session_kpis(
+        db_session, session_id=sess.id, broker=_QuoteBroker({"AAPL": 120.0})
+    )
+    assert kpis.current_value == pytest.approx(100_200.0)
+    assert kpis.realised_pnl == pytest.approx(0.0)
+    assert kpis.unrealised_pnl == pytest.approx(200.0)
+    # Total return, absolute and fractional, vs the 100k allocated capital.
+    assert kpis.total_return == pytest.approx(200.0)
+    assert kpis.total_return == pytest.approx(kpis.realised_pnl + kpis.unrealised_pnl)
+    assert kpis.total_return_pct == pytest.approx(200.0 / 100_000.0)
+    # No snapshots yet -> Sharpe not yet available.
+    assert kpis.sharpe_ratio is None
+
+
+def test_session_kpis_sharpe_none_until_enough_history(db_session: Session) -> None:
+    sess = _ai_session(db_session)
+    base = date(2026, 1, 1)
+    for i in range(SHARPE_MIN_RETURNS - 1):  # one short of the minimum
+        _add_snapshot(db_session, sess.id, base + timedelta(days=i), 0.01 + 0.001 * i)
+    kpis = service.session_kpis(
+        db_session, session_id=sess.id, broker=_QuoteBroker({})
+    )
+    assert kpis.sharpe_ratio is None
+
+
+def test_session_kpis_sharpe_from_snapshot_series(db_session: Session) -> None:
+    sess = _ai_session(db_session)
+    base = date(2026, 1, 1)
+    returns = [0.01] * 10 + [0.02] * 10
+    for i, ret in enumerate(returns):
+        _add_snapshot(db_session, sess.id, base + timedelta(days=i), ret)
+    kpis = service.session_kpis(
+        db_session, session_id=sess.id, broker=_QuoteBroker({})
+    )
+    assert kpis.sharpe_ratio == pytest.approx(46.417669, abs=1e-4)
+
+
+def test_session_kpis_unknown_session_raises(db_session: Session) -> None:
+    import uuid
+
+    with pytest.raises(SessionNotFoundError):
+        service.session_kpis(
+            db_session, session_id=uuid.uuid4(), broker=_QuoteBroker({})
+        )

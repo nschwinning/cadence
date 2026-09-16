@@ -65,6 +65,12 @@ class Settings(BaseSettings):
     # Docker end-to-end smoke or local dev without Alpaca credentials.
     ALPACA_STUB: bool = False
 
+    # Annual risk-free rate used when computing a paper-trading session's Sharpe
+    # ratio (as a decimal fraction, e.g. 0.04 for 4%). Defaults to 0, which is a
+    # common simplification for a paper-trading dashboard; raise it to measure
+    # excess return over a non-zero benchmark.
+    SHARPE_RISK_FREE_RATE: float = 0.0
+
     # Model id the AI portfolio manager runs on.
     AI_PORTFOLIO_MODEL: str = "gpt-5-mini"
 

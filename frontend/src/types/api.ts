@@ -396,6 +396,17 @@ export interface SessionValueHistoryResponse {
   total: number;
 }
 
+/** A session's live performance KPIs. Mirrors `PaperTradingSessionKpisRead`. */
+export interface PaperTradingSessionKpis {
+  current_value: number;
+  realised_pnl: number;
+  unrealised_pnl: number;
+  total_return: number;
+  total_return_pct: number;
+  /** Null until the session has enough daily history to compute it. */
+  sharpe_ratio: number | null;
+}
+
 // --------------------------------------------------------------------------- //
 // AI-managed portfolio
 // --------------------------------------------------------------------------- //

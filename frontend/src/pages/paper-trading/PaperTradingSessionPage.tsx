@@ -6,6 +6,7 @@ import {
   useSessionRuns,
   useSessionPositions,
   useSessionOrderSync,
+  useSessionKpis,
 } from '../../api/paperTrading';
 import { useSessionEvents } from '../../api/aiPortfolio';
 import {
@@ -24,7 +25,8 @@ import {
   ArchiveFeedback,
 } from './SessionArchiveCard';
 import { SessionValueChart } from './SessionValueChart';
-import { formatQuantity } from '../../lib/format';
+import { StatTile } from '../../components/dashboard/StatTile';
+import { formatCurrency, formatPercent, formatQuantity } from '../../lib/format';
 import type {
   AIPortfolioEvent,
   ClosedPosition,
@@ -471,6 +473,60 @@ function SessionHeader({
   );
 }
 
+/** A P&L figure coloured green/red/neutral by sign. */
+function PnlValue({ value }: { value: number }) {
+  return <span className={pnlClass(value)}>{formatCurrency(value)}</span>;
+}
+
+/** Live performance KPI tiles: value, realised/unrealised P&L, total return, Sharpe. */
+function KpiRow({ sessionId }: { sessionId: string }) {
+  const { data, isPending, isError } = useSessionKpis(sessionId);
+
+  if (isPending || isError || !data) {
+    return (
+      <div
+        role={isError ? 'alert' : 'status'}
+        aria-live="polite"
+        className="rounded-lg border border-slate-200 bg-white p-6 text-slate-500 shadow-sm"
+      >
+        {isError ? 'Could not load performance KPIs.' : 'Loading performance…'}
+      </div>
+    );
+  }
+
+  const sharpe =
+    data.sharpe_ratio === null ? 'Not yet available' : data.sharpe_ratio.toFixed(2);
+
+  return (
+    <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-5">
+      <StatTile label="Current value" value={formatCurrency(data.current_value)} />
+      <StatTile label="Realised P&L" value={<PnlValue value={data.realised_pnl} />} />
+      <StatTile
+        label="Unrealised P&L"
+        value={<PnlValue value={data.unrealised_pnl} />}
+      />
+      <StatTile
+        label="Total return"
+        value={<PnlValue value={data.total_return} />}
+        hint={
+          <span className={pnlClass(data.total_return_pct)}>
+            {formatPercent(data.total_return_pct)}
+          </span>
+        }
+      />
+      <StatTile
+        label="Sharpe ratio"
+        value={sharpe}
+        hint={
+          data.sharpe_ratio === null
+            ? 'Needs more daily history'
+            : 'Annualised, from daily NAV'
+        }
+      />
+    </div>
+  );
+}
+
 export function PaperTradingSessionPage() {
   const { id = '' } = useParams<{ id: string }>();
   // The list endpoint is the source of session summary data; find this session.
@@ -488,6 +544,7 @@ export function PaperTradingSessionPage() {
     <section className="flex flex-col gap-6">
       <BackLink />
       <SessionHeader session={session} sessionId={id} />
+      <KpiRow sessionId={id} />
       <SessionValueChart sessionId={id} />
       <EventsPanel sessionId={id} />
       <TradesPanel sessionId={id} />

@@ -6,6 +6,7 @@ import type {
   PaperTradeListResponse,
   PaperTradeReconcileResult,
   PaperTradingSession,
+  PaperTradingSessionKpis,
   PaperTradingSessionListResponse,
   SessionRunListResponse,
   SessionStatus,
@@ -46,6 +47,8 @@ export const paperTradingKeys = {
     ['paper-trading', 'session', sessionId, 'positions'] as const,
   valueHistory: (sessionId: string) =>
     ['paper-trading', 'session', sessionId, 'value-history'] as const,
+  kpis: (sessionId: string) =>
+    ['paper-trading', 'session', sessionId, 'kpis'] as const,
   orderSync: (sessionId: string) =>
     ['paper-trading', 'session', sessionId, 'order-sync'] as const,
 };
@@ -145,6 +148,16 @@ export async function listSessionValueHistory(
   return data;
 }
 
+/** Fetch a session's live performance KPIs (value marked to market on load). */
+export async function getSessionKpis(
+  sessionId: string,
+): Promise<PaperTradingSessionKpis> {
+  const { data } = await apiClient.get<PaperTradingSessionKpis>(
+    `/api/v1/paper-trading/sessions/${encodeURIComponent(sessionId)}/kpis`,
+  );
+  return data;
+}
+
 /** React Query hook listing paper-trading sessions. */
 export function useSessions(
   params: SessionsListParams = DEFAULT_SESSIONS_PARAMS,
@@ -187,6 +200,15 @@ export function useSessionValueHistory(sessionId: string) {
   return useQuery<SessionValueHistoryResponse>({
     queryKey: paperTradingKeys.valueHistory(sessionId),
     queryFn: () => listSessionValueHistory(sessionId),
+    enabled: sessionId.length > 0,
+  });
+}
+
+/** React Query hook fetching a session's live performance KPIs. */
+export function useSessionKpis(sessionId: string) {
+  return useQuery<PaperTradingSessionKpis>({
+    queryKey: paperTradingKeys.kpis(sessionId),
+    queryFn: () => getSessionKpis(sessionId),
     enabled: sessionId.length > 0,
   });
 }

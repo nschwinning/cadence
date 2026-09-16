@@ -19,6 +19,7 @@ from cadence.api.schemas import (
     PaperTradeListResponse,
     PaperTradeRead,
     PaperTradeReconcileRead,
+    PaperTradingSessionKpisRead,
     PaperTradingSessionListResponse,
     PaperTradingSessionRead,
     SessionRunListResponse,
@@ -198,6 +199,35 @@ def list_session_positions(
     ]
     total = service.count_closed_positions(db, session_id)
     return ClosedPositionListResponse(items=items, total=total)
+
+
+@router.get(
+    "/sessions/{session_id}/kpis",
+    response_model=PaperTradingSessionKpisRead,
+)
+def get_session_kpis(
+    session_id: uuid.UUID, db: DbSession, broker: BrokerDep
+) -> PaperTradingSessionKpisRead:
+    """Return a session's live performance KPIs (404 if unknown).
+
+    Marks the session's open positions to market via the broker on each call, so
+    the current value and unrealised P&L reflect current quotes rather than the
+    last stored snapshot.
+    """
+    try:
+        kpis = service.session_kpis(db, session_id=session_id, broker=broker)
+    except SessionNotFoundError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)
+        ) from exc
+    return PaperTradingSessionKpisRead(
+        current_value=kpis.current_value,
+        realised_pnl=kpis.realised_pnl,
+        unrealised_pnl=kpis.unrealised_pnl,
+        total_return=kpis.total_return,
+        total_return_pct=kpis.total_return_pct,
+        sharpe_ratio=kpis.sharpe_ratio,
+    )
 
 
 @router.get(
