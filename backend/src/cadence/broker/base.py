@@ -15,6 +15,7 @@ from typing import Protocol, runtime_checkable
 from cadence.broker.models import (
     AccountInfo,
     AssetClass,
+    BrokerAsset,
     Order,
     OrderType,
     Position,
@@ -60,6 +61,17 @@ class Broker(Protocol):
 
     def get_position(self, symbol: str) -> Position | None:
         """Return the position for ``symbol`` or ``None`` if flat."""
+        ...
+
+    # Asset reference data
+    def get_asset(
+        self, symbol: str, asset_class: AssetClass = ...
+    ) -> BrokerAsset | None:
+        """Look up a tradable instrument by canonical ``symbol``.
+
+        Returns the broker's :class:`BrokerAsset` (including its canonical symbol
+        and tradability), or ``None`` if the broker does not list ``symbol``.
+        """
         ...
 
     # Market data

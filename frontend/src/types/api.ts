@@ -74,6 +74,11 @@ export interface Asset {
   id: number;
   ticker: string;
   name: string | null;
+  /**
+   * The brokerage's canonical symbol, captured at add time (e.g. `AAPL`,
+   * `BTC/USD`). Null on legacy rows added before tradability verification.
+   */
+  alpaca_symbol: string | null;
   category: AssetCategory;
   sector: Sector | null;
   exchange: string | null;

@@ -18,6 +18,27 @@ MIN_MARKET_CAP_EUR = 1_000_000_000
 # Minimum available price history in years (at least).
 MIN_HISTORY_YEARS = 5
 
+# ---------------------------------------------------------------------------- #
+# Crypto-specific thresholds
+#
+# Crypto is evaluated against a different profile than equities (see
+# ``evaluation.py``):
+#   * Per-unit price is meaningless for crypto — it depends on token supply, not
+#     value — so crypto is NOT evaluated on price at all (no crypto price floor).
+#   * Crypto is a young asset class, so a shorter minimum history is required.
+#   * Market-cap and liquidity floors are raised to reflect the market's higher
+#     typical volumes and to filter thinner coins.
+# ---------------------------------------------------------------------------- #
+
+# Minimum average daily turnover for crypto over the trailing window (at least).
+MIN_CRYPTO_AVG_DAILY_TURNOVER_EUR = 10_000_000
+
+# Minimum crypto market capitalization (strictly greater than).
+MIN_CRYPTO_MARKET_CAP_EUR = 2_000_000_000
+
+# Minimum available crypto price history in years (at least).
+MIN_CRYPTO_HISTORY_YEARS = 1
+
 # Trailing window (in trading sessions) over which average daily turnover is
 # computed; roughly three calendar months.
 TURNOVER_WINDOW_TRADING_DAYS = 63

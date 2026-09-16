@@ -32,6 +32,7 @@ from cadence.ai_portfolio.service import AIBuildParams
 from cadence.assets.market_data import MarketDataProvider
 from cadence.broker.base import Broker
 from cadence.database import SessionLocal
+from cadence.notify.base import Notifier
 
 SessionFactory = Callable[[], AbstractContextManager[Session]]
 
@@ -97,6 +98,7 @@ class AIPortfolioJobRunner:
         agent: AIPortfolioAgent,
         broker: Broker,
         provider: MarketDataProvider,
+        notifier: Notifier | None = None,
     ) -> tuple[AIPortfolioEvent, bool]:
         """Create and submit a rebalance event, or return the in-flight one.
 
@@ -104,6 +106,10 @@ class AIPortfolioJobRunner:
         for the session, that event is returned with ``started=False`` and no new
         event is created (per-session concurrency guard). A guard event whose
         worker has died is reaped first, so a fresh rebalance can proceed.
+
+        ``notifier`` is optional and threaded to the run: the daily cron endpoint
+        supplies one so daily outcomes are pushed; the manual endpoint leaves it
+        ``None`` so manual rebalances never notify.
         """
         with self._lock:
             self._prune_locked()
@@ -113,7 +119,7 @@ class AIPortfolioJobRunner:
 
             event = service.create_rebalance_event(session, session_id)
             future = self._executor.submit(
-                self._job_rebalance, event.id, agent, broker, provider
+                self._job_rebalance, event.id, agent, broker, provider, notifier
             )
             self._active[event.id] = future
         return event, True
@@ -157,9 +163,12 @@ class AIPortfolioJobRunner:
         agent: AIPortfolioAgent,
         broker: Broker,
         provider: MarketDataProvider,
+        notifier: Notifier | None = None,
     ) -> None:
         with self._session_factory() as session:
-            service.run_rebalance_event(session, event_id, agent, broker, provider)
+            service.run_rebalance_event(
+                session, event_id, agent, broker, provider, notifier=notifier
+            )
 
     def _prune_locked(self) -> None:
         """Drop finished futures from the active map."""

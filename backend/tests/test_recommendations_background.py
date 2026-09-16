@@ -8,6 +8,7 @@ from datetime import date
 
 from sqlalchemy.orm import Session
 from tests.fakes import (
+    FakeBroker,
     FakeMarketDataProvider,
     FakeRecommenderAgent,
     ManualExecutor,
@@ -40,6 +41,10 @@ def _provider() -> FakeMarketDataProvider:
     )
 
 
+def _broker() -> FakeBroker:
+    return FakeBroker()
+
+
 def _runner(db_session: Session, executor: ManualExecutor) -> RecommendationJobRunner:
     @contextmanager
     def factory() -> Iterator[Session]:
@@ -58,7 +63,12 @@ def test_start_run_returns_before_completion(db_session: Session) -> None:
     )
 
     run, started = runner.start_run(
-        db_session, count=1, categories=["stock"], agent=agent, provider=_provider()
+        db_session,
+        count=1,
+        categories=["stock"],
+        agent=agent,
+        provider=_provider(),
+        broker=_broker(),
     )
 
     # The job has been submitted but not yet run: still queued.
@@ -77,10 +87,20 @@ def test_single_run_guard_returns_inflight(db_session: Session) -> None:
     agent = FakeRecommenderAgent(candidates=[], tool_call_count=0)
 
     first, first_started = runner.start_run(
-        db_session, count=1, categories=["stock"], agent=agent, provider=_provider()
+        db_session,
+        count=1,
+        categories=["stock"],
+        agent=agent,
+        provider=_provider(),
+        broker=_broker(),
     )
     second, second_started = runner.start_run(
-        db_session, count=2, categories=["etf"], agent=agent, provider=_provider()
+        db_session,
+        count=2,
+        categories=["etf"],
+        agent=agent,
+        provider=_provider(),
+        broker=_broker(),
     )
 
     assert first_started is True
@@ -106,6 +126,7 @@ def test_status_reaps_dead_worker(db_session: Session) -> None:
         run_id,
         FakeRecommenderAgent(),
         _provider(),
+        _broker(),
     )
     crashing._active[run_id] = future
 

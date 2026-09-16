@@ -20,13 +20,9 @@ from pydantic import BaseModel, Field
 from cadence.agents import build_agent
 from cadence.agents.tools import web_search
 from cadence.assets import constants as asset_constants
+from cadence.config import settings
 from cadence.recommendations.composition import UniverseComposition
-
-#: Hard ceiling on the agent's wall-clock runtime (search + reasoning).
-AGENT_TIMEOUT_SECONDS = 180
-
-#: Cap on agent turns, bounding tool-call loops.
-AGENT_MAX_TURNS = 20
+from cadence.recommendations.errors import RecommendationAgentError
 
 _AGENT_NAME = "AssetRecommenderAgent"
 
@@ -259,10 +255,18 @@ class OpenAIRecommenderAgent:
             output_type=RecommendationOutput,
             tools=[web_search],
         )
-        result = await asyncio.wait_for(
-            Runner.run(agent, prompt, max_turns=AGENT_MAX_TURNS),
-            timeout=AGENT_TIMEOUT_SECONDS,
-        )
+        timeout = settings.RECOMMENDER_AGENT_TIMEOUT_SECONDS
+        try:
+            result = await asyncio.wait_for(
+                Runner.run(agent, prompt, max_turns=settings.RECOMMENDER_MAX_TURNS),
+                timeout=timeout,
+            )
+        except TimeoutError as exc:
+            raise RecommendationAgentError(
+                f"The recommender timed out after {timeout}s while researching "
+                "candidates. Try requesting fewer assets, or raise "
+                "RECOMMENDER_AGENT_TIMEOUT_SECONDS."
+            ) from exc
         output: RecommendationOutput = result.final_output
         tool_call_count = sum(
             1 for item in result.new_items if isinstance(item, ToolCallItem)

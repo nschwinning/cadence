@@ -6,11 +6,35 @@ import pytest
 
 from cadence.broker import Broker, StubBroker, get_broker
 from cadence.broker.base import OrderError
-from cadence.broker.models import OrderStatus
+from cadence.broker.models import AssetClass, OrderStatus
 
 
 def test_stub_satisfies_broker_protocol() -> None:
     assert isinstance(StubBroker(), Broker)
+
+
+def test_get_asset_returns_tradable_for_plain_equity() -> None:
+    asset = StubBroker().get_asset("AAPL")
+    assert asset is not None
+    assert asset.symbol == "AAPL"
+    assert asset.asset_class == AssetClass.EQUITY
+    assert asset.tradable is True
+    assert asset.fractionable is False
+
+
+def test_get_asset_crypto_uses_slash_symbol_and_is_fractionable() -> None:
+    asset = StubBroker().get_asset("BTC-USD", AssetClass.CRYPTO)
+    assert asset is not None
+    assert asset.symbol == "BTC/USD"
+    assert asset.asset_class == AssetClass.CRYPTO
+    assert asset.tradable is True
+    assert asset.fractionable is True
+
+
+@pytest.mark.parametrize("symbol", ["BAYN.DE", "AIR.PA", "SHEL.L"])
+def test_get_asset_returns_none_for_dotted_equity(symbol: str) -> None:
+    # The stub mirrors Alpaca not listing foreign equities (exchange suffix).
+    assert StubBroker().get_asset(symbol) is None
 
 
 def test_deterministic_quotes_are_stable() -> None:

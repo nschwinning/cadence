@@ -40,6 +40,8 @@ from cadence.broker import get_broker
 from cadence.broker.base import Broker
 from cadence.config import settings
 from cadence.database import get_db
+from cadence.notify import get_notifier
+from cadence.notify.base import Notifier
 from cadence.paper_trading import service as paper_service
 from cadence.paper_trading.constants import ScheduleMode, SessionStatus
 from cadence.paper_trading.errors import SessionNotFoundError
@@ -83,6 +85,7 @@ Agent = Annotated[AIPortfolioAgent, Depends(get_ai_portfolio_agent)]
 JobRunner = Annotated[AIPortfolioJobRunner, Depends(get_ai_job_runner)]
 BrokerDep = Annotated[Broker, Depends(get_broker)]
 Provider = Annotated[MarketDataProvider, Depends(get_market_data_provider)]
+NotifierDep = Annotated[Notifier, Depends(get_notifier)]
 
 
 @router.post(
@@ -169,12 +172,15 @@ def rebalance_daily(
     broker: BrokerDep,
     provider: Provider,
     job_runner: JobRunner,
+    notifier: NotifierDep,
     _token: Annotated[None, Depends(require_valid_cron_token)],
 ) -> AIDailyRebalanceResponse:
     """Rebalance every active session enrolled in daily rebalancing.
 
     Guarded by the ``X-Cron-Token`` header. Each enrolled session's rebalance runs
-    as a background job; sessions already rebalancing are skipped.
+    as a background job; sessions already rebalancing are skipped. A ``notifier``
+    is threaded to each job so executed rebalances (and failures) are pushed —
+    this is what distinguishes the daily path from the silent manual trigger.
     """
     sessions = paper_service.list_sessions(db, status=SessionStatus.ACTIVE, limit=500)
     targets = [
@@ -188,7 +194,7 @@ def rebalance_daily(
     skipped: list[uuid.UUID] = []
     for session_row in targets:
         _event, started = job_runner.start_rebalance(
-            db, session_row.id, agent, broker, provider
+            db, session_row.id, agent, broker, provider, notifier=notifier
         )
         if started:
             triggered.append(session_row.id)

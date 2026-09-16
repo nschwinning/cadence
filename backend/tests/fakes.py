@@ -8,6 +8,8 @@ from typing import Any
 
 from cadence.ai_portfolio.agent import AIPortfolioBuildResult, AIRebalanceResult
 from cadence.assets.market_data import AssetDetailData, AssetInfo, HistoryBar
+from cadence.broker.models import AssetClass, BrokerAsset
+from cadence.broker.stub import StubBroker
 from cadence.recommendations.agent import (
     EligibilityCriteria,
     RecommendationCandidate,
@@ -198,6 +200,79 @@ class FakeAIPortfolioAgent:
             self._rebalance_result is not None
         ), "FakeAIPortfolioAgent has no rebalance_result"
         return self._rebalance_result
+
+
+class FakeBroker(StubBroker):
+    """A :class:`StubBroker` with tunable asset-lookup behavior for add-time tests.
+
+    Inherits the stub's full trading behavior and overrides only ``get_asset`` so
+    tests can drive the authoritative tradability check:
+
+    - ``not_tradable``: symbols returned as listed but *not* tradable.
+    - ``not_found``: symbols the broker does not list at all (→ ``None``).
+    - ``connection_error``: when set, every ``get_asset`` raises it, simulating an
+      unconfigured/unreachable Alpaca (the hard-require 503 path).
+
+    ``get_asset_calls`` records each ``(symbol, asset_class)`` for assertions.
+    Symbols are compared case-insensitively. Without any knob set, behavior matches
+    :class:`StubBroker` (tradable, dotted equities rejected).
+    """
+
+    def __init__(
+        self,
+        *,
+        not_tradable: set[str] | None = None,
+        not_found: set[str] | None = None,
+        connection_error: ConnectionError | None = None,
+        initial_cash: float = 100_000.0,
+    ) -> None:
+        super().__init__(initial_cash=initial_cash)
+        self._not_tradable = {s.upper() for s in (not_tradable or set())}
+        self._not_found = {s.upper() for s in (not_found or set())}
+        self._connection_error = connection_error
+        self.get_asset_calls: list[tuple[str, AssetClass]] = []
+
+    def get_asset(
+        self, symbol: str, asset_class: AssetClass = AssetClass.EQUITY
+    ) -> BrokerAsset | None:
+        self.get_asset_calls.append((symbol, asset_class))
+        if self._connection_error is not None:
+            raise self._connection_error
+        key = symbol.upper()
+        if key in self._not_found:
+            return None
+        base = super().get_asset(symbol, asset_class)
+        if base is None:
+            return None
+        if key in self._not_tradable:
+            return BrokerAsset(
+                symbol=base.symbol,
+                asset_class=base.asset_class,
+                tradable=False,
+                fractionable=base.fractionable,
+            )
+        return base
+
+
+class RecordingNotifier:
+    """A :class:`~cadence.notify.base.Notifier` that records every send.
+
+    Each call appends ``(message, title)`` to :attr:`sent` so tests can assert
+    what a rebalance pushed. ``raises=True`` makes :meth:`send` raise, exercising
+    the service's best-effort guard (a broken notifier must not fail a rebalance).
+    ``result`` is the value returned on a normal (non-raising) send.
+    """
+
+    def __init__(self, *, raises: bool = False, result: bool = True) -> None:
+        self._raises = raises
+        self._result = result
+        self.sent: list[tuple[str, str | None]] = []
+
+    def send(self, message: str, *, title: str | None = None) -> bool:
+        self.sent.append((message, title))
+        if self._raises:
+            raise RuntimeError("notifier boom")
+        return self._result
 
 
 class ManualExecutor:

@@ -22,6 +22,8 @@ from sqlalchemy.orm import Session
 from cadence.ai_portfolio import models as _ai_portfolio_models  # noqa: F401
 from cadence.api.app import app
 from cadence.assets import models as _assets_models  # noqa: F401
+from cadence.broker import Broker, get_broker
+from cadence.broker.stub import StubBroker
 from cadence.config import settings
 from cadence.database import Base, get_db
 from cadence.paper_trading import models as _paper_trading_models  # noqa: F401
@@ -90,12 +92,22 @@ def db_session(test_engine: Engine) -> Iterator[Session]:
 
 @pytest.fixture
 def client(db_session: Session) -> Iterator[TestClient]:
-    """TestClient whose ``get_db`` yields the transactional session."""
+    """TestClient whose ``get_db`` yields the transactional session.
+
+    The brokerage is stubbed by default (offline, deterministic) so add-time
+    tradability lookups succeed without Alpaca credentials. Tests that need a
+    different broker (e.g. an unconfigured one that 503s) override
+    ``get_broker`` themselves.
+    """
 
     def override_get_db() -> Iterator[Session]:
         yield db_session
 
+    def override_get_broker() -> Broker:
+        return StubBroker()
+
     app.dependency_overrides[get_db] = override_get_db
+    app.dependency_overrides[get_broker] = override_get_broker
     try:
         with TestClient(app) as test_client:
             yield test_client

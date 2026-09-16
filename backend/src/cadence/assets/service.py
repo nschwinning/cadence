@@ -15,16 +15,19 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import InstrumentedAttribute, Session
 from sqlalchemy.sql.expression import ColumnElement, UnaryExpression
 
-from cadence.assets.category import SUPPORTED_CATEGORIES
+from cadence.assets.category import SUPPORTED_CATEGORIES, AssetCategory
 from cadence.assets.errors import (
     AssetNotFoundError,
     DuplicateAssetError,
     UnsupportedCategoryError,
+    UntradeableTickerError,
 )
 from cadence.assets.evaluation import EvaluationResult, evaluate
 from cadence.assets.market_data import HistoryBar, MarketDataProvider
 from cadence.assets.metrics import derive_metrics
 from cadence.assets.models import Asset, AssetDailySnapshot
+from cadence.broker.base import Broker
+from cadence.broker.models import AssetClass
 
 
 def normalize_ticker(ticker: str) -> str:
@@ -36,8 +39,13 @@ def add_asset(
     session: Session,
     ticker: str,
     provider: MarketDataProvider,
+    broker: Broker,
 ) -> Asset:
-    """Fetch, classify, convert, evaluate, and persist an asset.
+    """Fetch, classify, convert, verify tradability, evaluate, and persist an asset.
+
+    Tradability is authoritative: the asset is looked up on the brokerage
+    (``broker``) and rejected unless the broker lists it as tradable. The broker's
+    canonical symbol is stored on the row so trading never has to reconstruct it.
 
     Raises:
         DuplicateAssetError: if the (normalized) ticker already exists.
@@ -45,6 +53,10 @@ def add_asset(
         MarketDataUnavailableError: on provider/FX failure (nothing persisted).
         UnsupportedCategoryError: if the instrument's category is not tradeable
             (only stock and crypto are supported); nothing is persisted.
+        UntradeableTickerError: if the brokerage does not list the asset as
+            tradable (e.g. a non-US listing like ``BAYN.DE``); nothing persisted.
+        broker.ConnectionError: if the brokerage is unreachable/unconfigured;
+            nothing is persisted (the caller surfaces this as unavailable).
     """
     normalized = normalize_ticker(ticker)
 
@@ -66,11 +78,27 @@ def add_asset(
             f"{derived.category.value!r}; only stock and crypto are supported"
         )
 
-    result = evaluate(derived.metrics)
+    # Authoritative tradability check: confirm the brokerage lists the asset and
+    # capture its canonical symbol. A missing/untradable asset is rejected before
+    # persistence so no untradeable row ever enters the universe.
+    asset_class = (
+        AssetClass.CRYPTO
+        if derived.category == AssetCategory.CRYPTO
+        else AssetClass.EQUITY
+    )
+    broker_asset = broker.get_asset(normalized, asset_class)
+    if broker_asset is None or not broker_asset.tradable:
+        raise UntradeableTickerError(
+            f"Asset {normalized!r} is not tradable on Alpaca; "
+            "use its US listing/ADR instead"
+        )
+
+    result = evaluate(derived.metrics, derived.category)
 
     asset = Asset(
         ticker=normalized,
         name=derived.name,
+        alpaca_symbol=broker_asset.symbol,
         category=derived.category.value,
         sector=derived.sector.value if derived.sector else None,
         exchange=derived.exchange,

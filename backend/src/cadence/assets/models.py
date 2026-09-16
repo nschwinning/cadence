@@ -48,6 +48,13 @@ class Asset(Base):
         String, unique=True, index=True, nullable=False
     )
     name: Mapped[str | None] = mapped_column(String, nullable=True)
+    # The brokerage's (Alpaca) canonical symbol for this asset, captured and
+    # verified at add time (e.g. ``BRK.B`` for yfinance ``BRK-B``, ``BTC/USD``
+    # for ``BTC-USD``). Nullable so any pre-existing rows remain valid; every new
+    # asset populates it (add is rejected unless Alpaca confirms tradability).
+    alpaca_symbol: Mapped[str | None] = mapped_column(
+        String, nullable=True, index=True
+    )
     category: Mapped[str] = mapped_column(
         SQLEnum(AssetCategory, native_enum=False, values_callable=lambda enum: [
             member.value for member in enum

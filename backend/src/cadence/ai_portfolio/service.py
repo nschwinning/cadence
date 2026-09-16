@@ -46,6 +46,7 @@ from cadence.assets.models import Asset
 from cadence.broker.base import Broker
 from cadence.broker.models import AssetClass, OrderSide, Position
 from cadence.config import settings
+from cadence.notify.base import Notifier
 from cadence.paper_trading import service as paper_service
 from cadence.paper_trading.constants import RunStatus, ScheduleMode
 from cadence.portfolios import service as portfolios_service
@@ -203,7 +204,7 @@ def run_build_event(
         stock_tickers = _normalize_tickers([s.ticker for s in result.stocks])
         universe_tickers = {a.ticker for a in universe}
         discovered = [t for t in stock_tickers if t not in universe_tickers]
-        _add_discovered_assets(session, discovered, provider)
+        _add_discovered_assets(session, discovered, provider, broker)
 
         portfolio = portfolios_service.create_portfolio(
             session,
@@ -300,6 +301,7 @@ def run_rebalance_event(
     agent: AIPortfolioAgent,
     broker: Broker,
     provider: MarketDataProvider,
+    notifier: Notifier | None = None,
 ) -> None:
     """Drive a queued rebalance event to a terminal status.
 
@@ -307,6 +309,11 @@ def run_rebalance_event(
     (no orders) and the event is marked ``skipped``. Otherwise the agent returns
     desired end-state target weights across the full universe (with bounded
     discovery), and the executor trades the deltas toward those weights.
+
+    ``notifier`` is optional: the daily cron path supplies one so an executed
+    rebalance (or a failure) is pushed to the user; manual rebalances leave it
+    ``None`` and stay silent. Sending is best-effort — a notifier that fails or
+    raises never affects the rebalance outcome (see :func:`_notify_safely`).
     """
     t0 = time.monotonic()
     event = get_event(session, event_id)
@@ -379,7 +386,7 @@ def run_rebalance_event(
             [t.ticker for t in result.target_allocations]
         )
         discovered = [t for t in target_tickers if t not in universe_tickers]
-        _add_discovered_assets(session, discovered, provider)
+        _add_discovered_assets(session, discovered, provider, broker)
 
         # Rebuild the class map so any discovered crypto target is classified.
         asset_classes = _asset_class_map(assets_service.list_assets(session))
@@ -434,10 +441,29 @@ def run_rebalance_event(
             duration_ms=_elapsed_ms(t0),
         )
         logger.info("AI rebalance %s completed: %s trades executed", event.id, executed)
+
+        # Notify only when the daily path supplied a notifier and orders actually
+        # went out; a run that executed nothing is not worth a push.
+        if notifier is not None and executed > 0:
+            _notify_safely(
+                notifier,
+                title=f"Cadence: {portfolio.name} rebalanced",
+                message=_rebalance_success_message(
+                    portfolio.name, trade_results, realized_pnl
+                ),
+            )
     except Exception as exc:  # noqa: BLE001 - persisted as the event's failure reason
         session.rollback()
         logger.error("AI rebalance %s failed: %s", event_id, exc)
         _fail_event(session, event_id, str(exc) or exc.__class__.__name__, _elapsed_ms(t0))
+        if notifier is not None:
+            _notify_safely(
+                notifier,
+                title="Cadence: daily rebalance failed",
+                message=(
+                    f"Rebalance {event_id} failed: {str(exc) or exc.__class__.__name__}"
+                ),
+            )
 
 
 # --------------------------------------------------------------------------- #
@@ -454,6 +480,39 @@ _ORDER_ACTION = {
 
 def _order_action(side: str) -> OrderSide:
     return _ORDER_ACTION.get(side, OrderSide.BUY)
+
+
+def _notify_safely(notifier: Notifier, *, title: str, message: str) -> None:
+    """Send a notification, swallowing any failure.
+
+    The :class:`Notifier` contract already forbids raising, but this guards the
+    call site defensively so a misbehaving implementation can never turn a
+    successful rebalance into a failure.
+    """
+    try:
+        notifier.send(message, title=title)
+    except Exception:
+        # Notifications are strictly best-effort: a broken notifier must never
+        # turn a successful (or already-failed) rebalance into something worse.
+        logger.warning("rebalance notification failed", exc_info=True)
+
+
+def _rebalance_success_message(
+    portfolio_name: str,
+    trade_results: list[TradeResult],
+    realized_pnl: float,
+) -> str:
+    """Build the push body for an executed rebalance: per-order lines + P&L."""
+    lines = [f"{portfolio_name}: rebalanced"]
+    for tr in trade_results:
+        if not tr.executed:
+            continue
+        action = _order_action(tr.side).value.upper()
+        price = tr.filled_price if tr.filled_price is not None else tr.price
+        at = f" @ ${price:,.2f}" if price is not None else ""
+        lines.append(f"{action} {tr.shares:g} {tr.ticker}{at}")
+    lines.append(f"Realized P&L: ${realized_pnl:,.2f}")
+    return "\n".join(lines)
 
 
 def _asset_class_map(assets: list[Asset]) -> dict[str, AssetClass]:
@@ -509,17 +568,19 @@ def _add_discovered_assets(
     session: Session,
     discovered: list[str],
     provider: MarketDataProvider,
+    broker: Broker,
 ) -> list[str]:
     """Best-effort add of newly-proposed tickers to the universe (capped).
 
     Adds at most :data:`settings.AI_PORTFOLIO_MAX_NEW_ASSETS` tickers. Any add that
-    fails (unknown ticker, market data unavailable, duplicate) is logged and
-    skipped — the ticker is still traded and included in the portfolio.
+    fails (unknown ticker, market data unavailable, duplicate, or not tradable on
+    the brokerage) is logged and skipped — the ticker is still traded and included
+    in the portfolio.
     """
     added: list[str] = []
     for ticker in discovered[: settings.AI_PORTFOLIO_MAX_NEW_ASSETS]:
         try:
-            assets_service.add_asset(session, ticker, provider)
+            assets_service.add_asset(session, ticker, provider, broker)
             added.append(ticker)
         except Exception as exc:  # noqa: BLE001 - discovery-add is best-effort
             session.rollback()

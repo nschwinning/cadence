@@ -14,6 +14,7 @@ import contextlib
 import logging
 from datetime import datetime
 from typing import Any, Protocol, cast
+from urllib.parse import quote
 
 import requests
 
@@ -21,6 +22,7 @@ from cadence.broker.base import BrokerError, ConnectionError, OrderError
 from cadence.broker.models import (
     AccountInfo,
     AssetClass,
+    BrokerAsset,
     Order,
     OrderSide,
     OrderStatus,
@@ -161,6 +163,47 @@ class AlpacaBroker:
         if not pos:
             return None
         return self._parse_position(pos)
+
+    # Asset reference data ------------------------------------------------
+    def get_asset(
+        self, symbol: str, asset_class: AssetClass = AssetClass.EQUITY
+    ) -> BrokerAsset | None:
+        """Look up an asset on Alpaca; return ``None`` if it is not listed.
+
+        The canonical ``symbol`` is translated to Alpaca's format (and URL-encoded
+        so a crypto ``BTC/USD`` slash survives) before hitting
+        ``GET /v2/assets/{symbol}``. A missing asset (404, surfaced as
+        :class:`OrderError`) yields ``None``; connection/config failures propagate.
+        """
+        alpaca_symbol = to_alpaca_symbol(symbol, asset_class)
+        try:
+            data = self._request(
+                "GET", f"/v2/assets/{quote(alpaca_symbol, safe='')}"
+            )
+        except OrderError:
+            return None
+        if not data:
+            return None
+        return self._parse_asset(data)
+
+    @staticmethod
+    def _parse_asset(data: dict[str, Any]) -> BrokerAsset:
+        cls = (
+            AssetClass.CRYPTO
+            if str(data.get("class", "")).lower() == "crypto"
+            else AssetClass.EQUITY
+        )
+        tradable = bool(data.get("tradable")) and (
+            data.get("status", "active") == "active"
+        )
+        return BrokerAsset(
+            symbol=data.get("symbol", ""),
+            asset_class=cls,
+            tradable=tradable,
+            fractionable=bool(data.get("fractionable")),
+            exchange=data.get("exchange"),
+            name=data.get("name"),
+        )
 
     # Orders --------------------------------------------------------------
     def submit_order(self, order: Order) -> Order:

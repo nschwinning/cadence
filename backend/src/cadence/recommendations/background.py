@@ -19,6 +19,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from cadence.assets.market_data import MarketDataProvider
+from cadence.broker.base import Broker
 from cadence.database import SessionLocal
 from cadence.recommendations.agent import RecommenderAgent
 from cadence.recommendations.constants import TERMINAL_PHASES, RunPhase
@@ -68,6 +69,7 @@ class RecommendationJobRunner:
         categories: list[str],
         agent: RecommenderAgent,
         provider: MarketDataProvider,
+        broker: Broker,
     ) -> tuple[RecommendationRun, bool]:
         """Create and submit a run, or return the in-flight one.
 
@@ -81,7 +83,9 @@ class RecommendationJobRunner:
                 return get_run(session, inflight_id), False
 
             run_id = create_run(session, count, categories)
-            future = self._executor.submit(self._job, run_id, agent, provider)
+            future = self._executor.submit(
+                self._job, run_id, agent, provider, broker
+            )
             self._active[run_id] = future
 
         return get_run(session, run_id), True
@@ -105,9 +109,10 @@ class RecommendationJobRunner:
         run_id: int,
         agent: RecommenderAgent,
         provider: MarketDataProvider,
+        broker: Broker,
     ) -> None:
         with self._session_factory() as session:
-            execute_run(session, run_id, agent, provider)
+            execute_run(session, run_id, agent, provider, broker)
 
     def _inflight_locked(self) -> int | None:
         """Return the id of a still-running job, pruning finished ones."""

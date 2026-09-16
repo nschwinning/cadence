@@ -6,7 +6,7 @@ from datetime import date
 
 import pytest
 from sqlalchemy.orm import Session
-from tests.fakes import FakeMarketDataProvider, FakeRecommenderAgent
+from tests.fakes import FakeBroker, FakeMarketDataProvider, FakeRecommenderAgent
 
 from cadence.assets import service as assets_service
 from cadence.assets.market_data import AssetInfo, HistoryBar
@@ -57,6 +57,10 @@ def _eligible_provider_with_profile() -> FakeMarketDataProvider:
             HistoryBar(date=date(2024, 1, 1), close=50.0, volume=1_000_000.0),
         ],
     )
+
+
+def _broker() -> FakeBroker:
+    return FakeBroker()
 
 
 def _agent(tickers: list[str], tool_call_count: int = 2) -> FakeRecommenderAgent:
@@ -114,7 +118,7 @@ def test_execute_run_completes_and_records_prompt_and_tool_calls(
     run_id = service.create_run(db_session, count=1, categories=["stock"])
     agent = _agent(["AAA"], tool_call_count=4)
 
-    service.execute_run(db_session, run_id, agent, _eligible_provider())
+    service.execute_run(db_session, run_id, agent, _eligible_provider(), _broker())
 
     run = service.get_run(db_session, run_id)
     assert run.status == RunPhase.COMPLETED.value
@@ -129,12 +133,14 @@ def test_execute_run_prompt_reflects_universe_composition(
     # The recommender now snapshots the real universe composition (via the
     # dashboard aggregation). Seeding a technology/Germany asset means the
     # recorded prompt carries that composition so the agent is steered with it.
-    assets_service.add_asset(db_session, "SEED", _eligible_provider_with_profile())
+    assets_service.add_asset(
+        db_session, "SEED", _eligible_provider_with_profile(), _broker()
+    )
 
     run_id = service.create_run(db_session, count=1, categories=["stock"])
     agent = _agent(["AAA"])
 
-    service.execute_run(db_session, run_id, agent, _eligible_provider())
+    service.execute_run(db_session, run_id, agent, _eligible_provider(), _broker())
 
     run = service.get_run(db_session, run_id)
     assert run.prompt is not None
@@ -159,7 +165,7 @@ def test_ineligible_candidate_not_persisted_and_recorded(
     run_id = service.create_run(db_session, count=2, categories=["stock"])
     agent = _agent(["BAD"])
 
-    service.execute_run(db_session, run_id, agent, _ineligible_provider())
+    service.execute_run(db_session, run_id, agent, _ineligible_provider(), _broker())
 
     run = service.get_run(db_session, run_id)
     assert run.status == RunPhase.COMPLETED.value
@@ -171,15 +177,34 @@ def test_ineligible_candidate_not_persisted_and_recorded(
 
 
 def test_duplicate_candidate_recorded_as_skipped(db_session: Session) -> None:
-    assets_service.add_asset(db_session, "DUP", _eligible_provider())
+    assets_service.add_asset(db_session, "DUP", _eligible_provider(), _broker())
 
     run_id = service.create_run(db_session, count=2, categories=["stock"])
     agent = _agent(["DUP"])
-    service.execute_run(db_session, run_id, agent, _eligible_provider())
+    service.execute_run(db_session, run_id, agent, _eligible_provider(), _broker())
 
     run = service.get_run(db_session, run_id)
     outcomes = {r["ticker"]: r["outcome"] for r in run.results}
     assert outcomes["DUP"] == CandidateOutcome.SKIPPED_DUPLICATE.value
+
+
+def test_untradeable_candidate_recorded_as_error_run_completes(
+    db_session: Session,
+) -> None:
+    # A foreign-listed candidate the agent proposes must be recorded as an error
+    # and skipped — not fail the whole run — while good candidates still get added.
+    run_id = service.create_run(db_session, count=2, categories=["stock"])
+    agent = _agent(["BAYN.DE", "GOOD"])
+
+    service.execute_run(db_session, run_id, agent, _eligible_provider(), _broker())
+
+    run = service.get_run(db_session, run_id)
+    assert run.status == RunPhase.COMPLETED.value
+    outcomes = {r["ticker"]: r["outcome"] for r in run.results}
+    assert outcomes["BAYN.DE"] == CandidateOutcome.ERROR.value
+    assert outcomes["GOOD"] == CandidateOutcome.ADDED.value
+    assert "BAYN.DE" not in _tickers(db_session)
+    assert "GOOD" in _tickers(db_session)
 
 
 def test_execute_run_passes_existing_tickers_as_exclusions(
@@ -187,11 +212,11 @@ def test_execute_run_passes_existing_tickers_as_exclusions(
 ) -> None:
     # Seed the universe; the recommender must be told to exclude those tickers
     # (and the recorded prompt must list them) so it stops re-proposing them.
-    assets_service.add_asset(db_session, "SEED", _eligible_provider())
+    assets_service.add_asset(db_session, "SEED", _eligible_provider(), _broker())
 
     run_id = service.create_run(db_session, count=1, categories=["stock"])
     agent = _agent(["NEW"])
-    service.execute_run(db_session, run_id, agent, _eligible_provider())
+    service.execute_run(db_session, run_id, agent, _eligible_provider(), _broker())
 
     assert agent.exclude_calls == [["SEED"]]
     run = service.get_run(db_session, run_id)
@@ -208,7 +233,7 @@ def test_added_assets_capped_at_requested_count(db_session: Session) -> None:
     agent = _agent(["AAA", "BBB", "CCC", "DDD"])
 
     before = _tickers(db_session)
-    service.execute_run(db_session, run_id, agent, _eligible_provider())
+    service.execute_run(db_session, run_id, agent, _eligible_provider(), _broker())
 
     run = service.get_run(db_session, run_id)
     added = [
@@ -229,12 +254,12 @@ def test_failed_run_records_reason_and_keeps_prior_assets(
     db_session: Session,
 ) -> None:
     # A pre-existing asset must survive a later failing run.
-    assets_service.add_asset(db_session, "KEEP", _eligible_provider())
+    assets_service.add_asset(db_session, "KEEP", _eligible_provider(), _broker())
 
     run_id = service.create_run(db_session, count=2, categories=["stock"])
     agent = FakeRecommenderAgent(error=RuntimeError("agent exploded"))
 
-    service.execute_run(db_session, run_id, agent, _eligible_provider())
+    service.execute_run(db_session, run_id, agent, _eligible_provider(), _broker())
 
     run = service.get_run(db_session, run_id)
     assert run.status == RunPhase.FAILED.value

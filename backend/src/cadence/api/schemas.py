@@ -56,6 +56,7 @@ class AssetRead(BaseModel):
     id: int
     ticker: str
     name: str | None
+    alpaca_symbol: str | None = None
     category: str
     sector: str | None
     exchange: str | None

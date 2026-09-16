@@ -6,10 +6,16 @@ constructed with the Pydantic ``output_type``.
 
 from __future__ import annotations
 
+import asyncio
+
+import pytest
+
 from cadence.agents import build_agent
 from cadence.agents.tools import web_search
+from cadence.recommendations import agent as agent_module
 from cadence.recommendations.agent import (
     EligibilityCriteria,
+    OpenAIRecommenderAgent,
     RecommendationOutput,
     build_recommendation_prompt,
     default_eligibility_criteria,
@@ -18,6 +24,7 @@ from cadence.recommendations.composition import (
     CompositionEntry,
     UniverseComposition,
 )
+from cadence.recommendations.errors import RecommendationAgentError
 
 
 def _criteria() -> EligibilityCriteria:
@@ -128,6 +135,37 @@ def test_default_criteria_match_asset_constants() -> None:
     assert criteria.min_avg_daily_turnover_eur == c.MIN_AVG_DAILY_TURNOVER_EUR
     assert criteria.min_market_cap_eur == c.MIN_MARKET_CAP_EUR
     assert criteria.min_history_years == c.MIN_HISTORY_YEARS
+
+
+def test_recommend_raises_clear_error_on_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A run that exceeds the timeout surfaces an actionable error, not the bare
+    empty-string ``TimeoutError`` that ``asyncio`` raises."""
+
+    class _NeverFinishes:
+        @staticmethod
+        async def run(*args: object, **kwargs: object) -> object:
+            await asyncio.sleep(1)
+            raise AssertionError("should have timed out")  # pragma: no cover
+
+    monkeypatch.setattr(agent_module, "Runner", _NeverFinishes)
+    monkeypatch.setattr(
+        agent_module.settings, "RECOMMENDER_AGENT_TIMEOUT_SECONDS", 0
+    )
+
+    with pytest.raises(RecommendationAgentError) as excinfo:
+        OpenAIRecommenderAgent().recommend(
+            categories=["stock"],
+            count=3,
+            criteria=_criteria(),
+            composition=_empty_composition(),
+            exclude_tickers=[],
+        )
+
+    message = str(excinfo.value)
+    assert "timed out" in message
+    assert "RECOMMENDER_AGENT_TIMEOUT_SECONDS" in message
 
 
 def test_recommender_agent_uses_pydantic_output_type() -> None:

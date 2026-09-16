@@ -6,7 +6,7 @@ from datetime import date
 
 import pytest
 from sqlalchemy.orm import Session
-from tests.fakes import FakeMarketDataProvider
+from tests.fakes import FakeBroker, FakeMarketDataProvider
 
 from cadence.assets import service
 from cadence.assets.category import AssetCategory
@@ -16,6 +16,7 @@ from cadence.assets.errors import (
     MarketDataUnavailableError,
     UnknownTickerError,
     UnsupportedCategoryError,
+    UntradeableTickerError,
 )
 from cadence.assets.market_data import AssetDetailData, AssetInfo, HistoryBar
 from cadence.assets.models import Asset, AssetDailySnapshot
@@ -38,13 +39,14 @@ def _detail_provider(
     return provider
 
 
+def _broker(**kwargs: object) -> FakeBroker:
+    """A broker whose asset lookup succeeds by default (see :class:`FakeBroker`)."""
+    return FakeBroker(**kwargs)  # type: ignore[arg-type]
+
+
 def _count_snapshots(db_session: Session, asset_id: int) -> int:
     return len(
-        [
-            row
-            for row in db_session.query(AssetDailySnapshot).all()
-            if row.asset_id == asset_id
-        ]
+        [row for row in db_session.query(AssetDailySnapshot).all() if row.asset_id == asset_id]
     )
 
 
@@ -80,7 +82,7 @@ def _eligible_provider(
 
 
 def test_add_asset_success_persists_and_normalizes(db_session: Session) -> None:
-    asset = service.add_asset(db_session, "  tsco ", _eligible_provider())
+    asset = service.add_asset(db_session, "  tsco ", _eligible_provider(), _broker())
 
     assert asset.id is not None
     assert asset.ticker == "TSCO"
@@ -108,6 +110,7 @@ def test_add_asset_persists_company_profile_fields(db_session: Session) -> None:
             employees=164_000,
             website="https://apple.com",
         ),
+        _broker(),
     )
 
     assert asset.country == "United States"
@@ -120,7 +123,7 @@ def test_add_asset_missing_company_profile_fields_stored_as_none(
     db_session: Session,
 ) -> None:
     # Provider omits the profile fields -> stored as NULL, add still succeeds.
-    asset = service.add_asset(db_session, "NOCO", _eligible_provider())
+    asset = service.add_asset(db_session, "NOCO", _eligible_provider(), _broker())
 
     assert asset.country is None
     assert asset.city is None
@@ -135,6 +138,7 @@ def test_add_asset_classifies_crypto(db_session: Session) -> None:
         db_session,
         "BTC-USD",
         _eligible_provider(quote_type="CRYPTOCURRENCY", sector_key=None),
+        _broker(),
     )
 
     assert asset.ticker == "BTC-USD"
@@ -147,23 +151,22 @@ def test_add_asset_classifies_crypto(db_session: Session) -> None:
 
 
 @pytest.mark.parametrize("quote_type", ["ETF", "MUTUALFUND", "SOMETHINGELSE"])
-def test_add_asset_rejects_unsupported_category(
-    db_session: Session, quote_type: str
-) -> None:
+def test_add_asset_rejects_unsupported_category(db_session: Session, quote_type: str) -> None:
     # Only stock and crypto are tradeable; anything else is rejected before
     # persistence so no untradeable row ever enters the universe.
     with pytest.raises(UnsupportedCategoryError):
-        service.add_asset(db_session, "NOPE", _eligible_provider(quote_type=quote_type))
+        service.add_asset(db_session, "NOPE", _eligible_provider(quote_type=quote_type), _broker())
 
     assert service.list_assets(db_session) == []
 
 
 def test_add_asset_accepts_stock_and_crypto(db_session: Session) -> None:
-    service.add_asset(db_session, "STK", _eligible_provider(quote_type="EQUITY"))
+    service.add_asset(db_session, "STK", _eligible_provider(quote_type="EQUITY"), _broker())
     service.add_asset(
         db_session,
         "BTC-USD",
         _eligible_provider(quote_type="CRYPTOCURRENCY", sector_key=None),
+        _broker(),
     )
 
     categories = {a.ticker: a.category for a in service.list_assets(db_session)}
@@ -173,11 +176,83 @@ def test_add_asset_accepts_stock_and_crypto(db_session: Session) -> None:
     }
 
 
+@pytest.mark.parametrize("ticker", ["BAYN.DE", "air.pa", "SHEL.L"])
+def test_add_asset_rejects_non_us_listing(db_session: Session, ticker: str) -> None:
+    # Alpaca cannot trade foreign listings (exchange-suffixed tickers); the
+    # authoritative broker lookup rejects them and nothing is persisted. The
+    # default FakeBroker mirrors Alpaca by not listing dotted equities.
+    provider = _eligible_provider()
+    with pytest.raises(UntradeableTickerError):
+        service.add_asset(db_session, ticker, provider, _broker())
+
+    assert service.list_assets(db_session) == []
+
+
+def test_add_asset_stores_alpaca_symbol_on_success(db_session: Session) -> None:
+    # The broker's canonical symbol is captured on the row so trading never has
+    # to reconstruct it. For a plain US equity it equals the ticker.
+    asset = service.add_asset(db_session, "AAPL", _eligible_provider(), _broker())
+
+    assert asset.alpaca_symbol == "AAPL"
+
+
+def test_add_asset_stores_alpaca_symbol_for_crypto(db_session: Session) -> None:
+    # Crypto is stored with Alpaca's slash form (BTC-USD -> BTC/USD).
+    asset = service.add_asset(
+        db_session,
+        "BTC-USD",
+        _eligible_provider(quote_type="CRYPTOCURRENCY", sector_key=None),
+        _broker(),
+    )
+
+    assert asset.alpaca_symbol == "BTC/USD"
+
+
+def test_add_asset_rejects_when_broker_does_not_list_asset(
+    db_session: Session,
+) -> None:
+    # The broker returns None (Alpaca has no such asset) -> rejected, no persist.
+    provider = _eligible_provider()
+    with pytest.raises(UntradeableTickerError):
+        service.add_asset(db_session, "GHOST", provider, _broker(not_found={"GHOST"}))
+
+    assert service.list_assets(db_session) == []
+
+
+def test_add_asset_rejects_when_broker_lists_asset_as_not_tradable(
+    db_session: Session,
+) -> None:
+    # The broker lists the asset but marks it not tradable -> rejected, no persist.
+    provider = _eligible_provider()
+    with pytest.raises(UntradeableTickerError):
+        service.add_asset(db_session, "HALT", provider, _broker(not_tradable={"HALT"}))
+
+    assert service.list_assets(db_session) == []
+
+
+def test_add_asset_propagates_broker_connection_error(
+    db_session: Session,
+) -> None:
+    # An unconfigured/unreachable broker surfaces as ConnectionError; nothing is
+    # persisted (the API layer maps this to 503 — see test_assets_api).
+    provider = _eligible_provider()
+    with pytest.raises(ConnectionError):
+        service.add_asset(
+            db_session,
+            "AAPL",
+            provider,
+            _broker(connection_error=ConnectionError("Alpaca not configured")),
+        )
+
+    assert service.list_assets(db_session) == []
+
+
 def test_add_asset_persists_sector_for_equity(db_session: Session) -> None:
     asset = service.add_asset(
         db_session,
         "BANK",
         _eligible_provider(sector_key="financial-services"),
+        _broker(),
     )
 
     assert asset.sector == "financial-services"
@@ -191,16 +266,17 @@ def test_add_asset_sector_null_when_provider_reports_none(
         db_session,
         "BTC-USD",
         _eligible_provider(quote_type="CRYPTOCURRENCY", sector_key=None),
+        _broker(),
     )
 
     assert asset.sector is None
 
 
 def test_add_asset_duplicate_raises(db_session: Session) -> None:
-    service.add_asset(db_session, "DUP", _eligible_provider())
+    service.add_asset(db_session, "DUP", _eligible_provider(), _broker())
 
     with pytest.raises(DuplicateAssetError):
-        service.add_asset(db_session, "dup", _eligible_provider())
+        service.add_asset(db_session, "dup", _eligible_provider(), _broker())
 
 
 def test_add_asset_unknown_ticker_raises_and_no_persist(
@@ -209,7 +285,7 @@ def test_add_asset_unknown_ticker_raises_and_no_persist(
     provider = FakeMarketDataProvider(info_error=UnknownTickerError("no data"))
 
     with pytest.raises(UnknownTickerError):
-        service.add_asset(db_session, "NOPE", provider)
+        service.add_asset(db_session, "NOPE", provider, _broker())
 
     assert service.list_assets(db_session) == []
 
@@ -231,7 +307,7 @@ def test_add_asset_provider_failure_no_partial_persist(
     )
 
     with pytest.raises(MarketDataUnavailableError):
-        service.add_asset(db_session, "FLKY", provider)
+        service.add_asset(db_session, "FLKY", provider, _broker())
 
     assert service.list_assets(db_session) == []
 
@@ -239,7 +315,7 @@ def test_add_asset_provider_failure_no_partial_persist(
 def test_list_assets_pagination_and_default_order(db_session: Session) -> None:
     # Insert out of order to prove the default sort is ticker asc, not insert order.
     for ticker in ("CCC", "AAA", "DDD", "BBB"):
-        service.add_asset(db_session, ticker, _eligible_provider())
+        service.add_asset(db_session, ticker, _eligible_provider(), _broker())
 
     # Default order is ticker ascending, bounded page.
     page1 = service.list_assets(db_session, limit=2, offset=0)
@@ -254,7 +330,7 @@ def test_list_assets_pagination_and_default_order(db_session: Session) -> None:
 
 def test_list_assets_sort_ticker_direction(db_session: Session) -> None:
     for ticker in ("BBB", "AAA", "CCC"):
-        service.add_asset(db_session, ticker, _eligible_provider())
+        service.add_asset(db_session, ticker, _eligible_provider(), _broker())
 
     asc = service.list_assets(db_session, sort="ticker", direction="asc")
     assert [a.ticker for a in asc] == ["AAA", "BBB", "CCC"]
@@ -264,9 +340,9 @@ def test_list_assets_sort_ticker_direction(db_session: Session) -> None:
 
 
 def test_list_assets_sort_by_name(db_session: Session) -> None:
-    service.add_asset(db_session, "AAA", _eligible_provider(company_name="Charlie"))
-    service.add_asset(db_session, "BBB", _eligible_provider(company_name="Alpha"))
-    service.add_asset(db_session, "CCC", _eligible_provider(company_name="Bravo"))
+    service.add_asset(db_session, "AAA", _eligible_provider(company_name="Charlie"), _broker())
+    service.add_asset(db_session, "BBB", _eligible_provider(company_name="Alpha"), _broker())
+    service.add_asset(db_session, "CCC", _eligible_provider(company_name="Bravo"), _broker())
 
     asc = service.list_assets(db_session, sort="name", direction="asc")
     assert [a.name for a in asc] == ["Alpha", "Bravo", "Charlie"]
@@ -276,8 +352,8 @@ def test_list_assets_sort_by_name(db_session: Session) -> None:
 
 
 def test_list_assets_sort_by_name_puts_nulls_last(db_session: Session) -> None:
-    service.add_asset(db_session, "AAA", _eligible_provider(company_name="Alpha"))
-    service.add_asset(db_session, "BBB", _eligible_provider(company_name="Bravo"))
+    service.add_asset(db_session, "AAA", _eligible_provider(company_name="Alpha"), _broker())
+    service.add_asset(db_session, "BBB", _eligible_provider(company_name="Bravo"), _broker())
     # An asset with no instrument name must sort last regardless of direction.
     db_session.add(
         Asset(
@@ -299,10 +375,8 @@ def test_list_assets_sort_by_name_puts_nulls_last(db_session: Session) -> None:
 
 
 def test_list_assets_filter_by_category(db_session: Session) -> None:
-    service.add_asset(db_session, "STK", _eligible_provider(quote_type="EQUITY"))
-    service.add_asset(
-        db_session, "BTC", _eligible_provider(quote_type="CRYPTOCURRENCY")
-    )
+    service.add_asset(db_session, "STK", _eligible_provider(quote_type="EQUITY"), _broker())
+    service.add_asset(db_session, "BTC", _eligible_provider(quote_type="CRYPTOCURRENCY"), _broker())
     # A legacy ETF row (etf is no longer addable via add_asset, but pre-existing
     # rows must still be filterable). Insert it directly to exercise the filter.
     db_session.add(
@@ -330,37 +404,26 @@ def test_list_assets_filter_by_category(db_session: Session) -> None:
 
 def test_list_assets_filter_by_sector(db_session: Session) -> None:
     service.add_asset(
-        db_session, "BANK", _eligible_provider(sector_key="financial-services")
+        db_session, "BANK", _eligible_provider(sector_key="financial-services"), _broker()
     )
-    service.add_asset(
-        db_session, "CHIP", _eligible_provider(sector_key="technology")
-    )
-    service.add_asset(
-        db_session, "DRUG", _eligible_provider(sector_key="healthcare")
-    )
+    service.add_asset(db_session, "CHIP", _eligible_provider(sector_key="technology"), _broker())
+    service.add_asset(db_session, "DRUG", _eligible_provider(sector_key="healthcare"), _broker())
     # Null-sector asset must never match a positive sector filter.
     service.add_asset(
-        db_session, "COIN", _eligible_provider(quote_type="CRYPTOCURRENCY")
+        db_session, "COIN", _eligible_provider(quote_type="CRYPTOCURRENCY"), _broker()
     )
 
-    only_fin = service.list_assets(
-        db_session, sectors=["financial-services"]
-    )
+    only_fin = service.list_assets(db_session, sectors=["financial-services"])
     assert [a.ticker for a in only_fin] == ["BANK"]
 
-    fin_or_tech = service.list_assets(
-        db_session, sectors=["financial-services", "technology"]
-    )
+    fin_or_tech = service.list_assets(db_session, sectors=["financial-services", "technology"])
     assert sorted(a.ticker for a in fin_or_tech) == ["BANK", "CHIP"]
 
     # Empty/None sectors means all (including the null-sector row).
     assert len(service.list_assets(db_session, sectors=[])) == 4
     assert len(service.list_assets(db_session, sectors=None)) == 4
     # A positive sector filter excludes the null-sector row.
-    assert all(
-        a.ticker != "COIN"
-        for a in service.list_assets(db_session, sectors=["technology"])
-    )
+    assert all(a.ticker != "COIN" for a in service.list_assets(db_session, sectors=["technology"]))
 
 
 def test_list_assets_sector_composes_with_category_and_search(
@@ -374,6 +437,7 @@ def test_list_assets_sector_composes_with_category_and_search(
             company_name="Apex Bank",
             sector_key="financial-services",
         ),
+        _broker(),
     )
     service.add_asset(
         db_session,
@@ -383,6 +447,7 @@ def test_list_assets_sector_composes_with_category_and_search(
             company_name="Apex Chips",
             sector_key="technology",
         ),
+        _broker(),
     )
     # A legacy ETF row inserted directly (etf is no longer addable) so the
     # category-narrowing assertion still has a non-stock match to exclude.
@@ -426,34 +491,31 @@ def test_count_assets_matches_category_and_search_compose(
         db_session,
         "STKA",
         _eligible_provider(quote_type="EQUITY", company_name="Apex"),
+        _broker(),
     )
     service.add_asset(
         db_session,
         "STKB",
         _eligible_provider(quote_type="EQUITY", company_name="Zenith"),
+        _broker(),
     )
     service.add_asset(
         db_session,
         "BTC",
         _eligible_provider(quote_type="CRYPTOCURRENCY", company_name="Apex Coin"),
+        _broker(),
     )
 
     assert service.count_assets(db_session) == 3
     assert service.count_assets(db_session, categories=["stock"]) == 2
     assert service.count_assets(db_session, categories=["fund"]) == 0
     # Search AND category compose: "apex" matches STKA and BTC, category narrows to stock.
-    assert (
-        service.count_assets(db_session, search="apex", categories=["stock"]) == 1
-    )
+    assert service.count_assets(db_session, search="apex", categories=["stock"]) == 1
 
 
 def test_list_assets_search_by_ticker_or_name(db_session: Session) -> None:
-    service.add_asset(
-        db_session, "TSCO", _eligible_provider(company_name="Tesco PLC")
-    )
-    service.add_asset(
-        db_session, "AAPL", _eligible_provider(company_name="Apple Inc.")
-    )
+    service.add_asset(db_session, "TSCO", _eligible_provider(company_name="Tesco PLC"), _broker())
+    service.add_asset(db_session, "AAPL", _eligible_provider(company_name="Apple Inc."), _broker())
 
     by_ticker = service.list_assets(db_session, search="tsc")
     assert [a.ticker for a in by_ticker] == ["TSCO"]
@@ -464,7 +526,7 @@ def test_list_assets_search_by_ticker_or_name(db_session: Session) -> None:
 
 def test_count_assets_matches_filter(db_session: Session) -> None:
     for ticker in ("AMZN", "AAPL", "MSFT"):
-        service.add_asset(db_session, ticker, _eligible_provider())
+        service.add_asset(db_session, ticker, _eligible_provider(), _broker())
 
     assert service.count_assets(db_session) == 3
     assert service.count_assets(db_session, search="a") == 2  # AMZN, AAPL
@@ -472,7 +534,7 @@ def test_count_assets_matches_filter(db_session: Session) -> None:
 
 
 def test_delete_asset_returns_existence(db_session: Session) -> None:
-    asset = service.add_asset(db_session, "DEL", _eligible_provider())
+    asset = service.add_asset(db_session, "DEL", _eligible_provider(), _broker())
 
     assert service.delete_asset(db_session, asset.id) is True
     assert service.delete_asset(db_session, asset.id) is False
@@ -486,12 +548,10 @@ def test_get_asset_detail_unknown_ticker_raises(db_session: Session) -> None:
 def test_get_asset_detail_cache_miss_fetches_and_stores(
     db_session: Session,
 ) -> None:
-    asset = service.add_asset(db_session, "DTL", _eligible_provider())
+    asset = service.add_asset(db_session, "DTL", _eligible_provider(), _broker())
     provider = _detail_provider()
 
-    result = service.get_asset_detail(
-        db_session, "dtl", provider, today=date(2026, 8, 29)
-    )
+    result = service.get_asset_detail(db_session, "dtl", provider, today=date(2026, 8, 29))
 
     assert provider.detail_calls == 1
     assert result.asset.id == asset.id
@@ -520,6 +580,7 @@ def test_get_asset_detail_sources_profile_from_asset_and_volumes_from_snapshot(
             employees=164_000,
             website="https://apple.com",
         ),
+        _broker(),
     )
     provider = _detail_provider()
     provider._detail = AssetDetailData(
@@ -555,12 +616,10 @@ def test_get_asset_detail_absent_profile_and_volumes_are_none(
 ) -> None:
     # Provider omits the profile fields at add time and the volumes at fetch
     # time: the asset's profile and the snapshot's volumes are all NULL.
-    service.add_asset(db_session, "NULLCO", _eligible_provider())
+    service.add_asset(db_session, "NULLCO", _eligible_provider(), _broker())
     provider = _detail_provider()
 
-    result = service.get_asset_detail(
-        db_session, "NULLCO", provider, today=date(2026, 8, 29)
-    )
+    result = service.get_asset_detail(db_session, "NULLCO", provider, today=date(2026, 8, 29))
 
     assert result.asset.country is None
     assert result.asset.city is None
@@ -573,7 +632,7 @@ def test_get_asset_detail_absent_profile_and_volumes_are_none(
 def test_get_asset_detail_cache_hit_does_not_call_provider(
     db_session: Session,
 ) -> None:
-    asset = service.add_asset(db_session, "HIT", _eligible_provider())
+    asset = service.add_asset(db_session, "HIT", _eligible_provider(), _broker())
     provider = _detail_provider()
     today = date(2026, 8, 29)
 
@@ -590,13 +649,11 @@ def test_get_asset_detail_cache_hit_does_not_call_provider(
 def test_get_asset_detail_new_day_fetches_fresh_snapshot(
     db_session: Session,
 ) -> None:
-    asset = service.add_asset(db_session, "DAY", _eligible_provider())
+    asset = service.add_asset(db_session, "DAY", _eligible_provider(), _broker())
     provider = _detail_provider()
 
     service.get_asset_detail(db_session, "DAY", provider, today=date(2026, 8, 28))
-    result = service.get_asset_detail(
-        db_session, "DAY", provider, today=date(2026, 8, 29)
-    )
+    result = service.get_asset_detail(db_session, "DAY", provider, today=date(2026, 8, 29))
 
     assert provider.detail_calls == 2
     assert result.snapshot.snapshot_date == date(2026, 8, 29)
@@ -606,22 +663,18 @@ def test_get_asset_detail_new_day_fetches_fresh_snapshot(
 def test_get_asset_detail_fetch_fails_no_today_row_raises_and_no_persist(
     db_session: Session,
 ) -> None:
-    asset = service.add_asset(db_session, "ERR", _eligible_provider())
+    asset = service.add_asset(db_session, "ERR", _eligible_provider(), _broker())
 
     # An older-day snapshot exists but must NOT be served on a fresh-fetch fail.
     ok_provider = _detail_provider()
-    service.get_asset_detail(
-        db_session, "ERR", ok_provider, today=date(2026, 8, 27)
-    )
+    service.get_asset_detail(db_session, "ERR", ok_provider, today=date(2026, 8, 27))
     assert _count_snapshots(db_session, asset.id) == 1
 
     failing = _eligible_provider()
     failing._detail_error = MarketDataUnavailableError("detail down")
 
     with pytest.raises(MarketDataUnavailableError):
-        service.get_asset_detail(
-            db_session, "ERR", failing, today=date(2026, 8, 29)
-        )
+        service.get_asset_detail(db_session, "ERR", failing, today=date(2026, 8, 29))
 
     # No new row for today; the older row is untouched.
     assert _count_snapshots(db_session, asset.id) == 1

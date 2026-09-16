@@ -57,7 +57,7 @@ def _provider() -> FakeMarketDataProvider:
 
 def _seed_universe(db_session: Session, provider: FakeMarketDataProvider) -> None:
     for ticker in ("AAPL", "MSFT"):
-        assets_service.add_asset(db_session, ticker, provider)
+        assets_service.add_asset(db_session, ticker, provider, StubBroker())
 
 
 def _build_result() -> AIPortfolioBuildResult:

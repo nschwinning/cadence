@@ -287,3 +287,92 @@ def test_parse_equity_position_symbol_unchanged() -> None:
 
     positions = broker.get_positions()
     assert positions[0].symbol == "AAPL"
+
+
+def test_get_asset_parses_tradable_equity() -> None:
+    asset_response = {
+        "symbol": "AAPL",
+        "class": "us_equity",
+        "exchange": "NASDAQ",
+        "name": "Apple Inc. Common Stock",
+        "status": "active",
+        "tradable": True,
+        "fractionable": True,
+    }
+    broker, session = _make_broker({("GET", "/v2/assets/AAPL"): asset_response})
+
+    asset = broker.get_asset("AAPL")
+
+    assert asset is not None
+    assert asset.symbol == "AAPL"
+    assert asset.asset_class == AssetClass.EQUITY
+    assert asset.tradable is True
+    assert asset.fractionable is True
+    assert asset.exchange == "NASDAQ"
+    assert session.calls[0]["url"].endswith("/v2/assets/AAPL")
+
+
+def test_get_asset_crypto_url_encodes_slash_symbol() -> None:
+    asset_response = {
+        "symbol": "BTC/USD",
+        "class": "crypto",
+        "status": "active",
+        "tradable": True,
+        "fractionable": True,
+    }
+    # to_alpaca_symbol turns BTC-USD into BTC/USD; the slash must be percent-encoded.
+    broker, session = _make_broker(
+        {("GET", "/v2/assets/BTC%2FUSD"): asset_response}
+    )
+
+    asset = broker.get_asset("BTC-USD", AssetClass.CRYPTO)
+
+    assert asset is not None
+    assert asset.symbol == "BTC/USD"
+    assert asset.asset_class == AssetClass.CRYPTO
+    assert asset.tradable is True
+    assert session.calls[0]["url"].endswith("/v2/assets/BTC%2FUSD")
+
+
+def test_get_asset_inactive_asset_is_not_tradable() -> None:
+    asset_response = {
+        "symbol": "OLDCO",
+        "class": "us_equity",
+        "status": "inactive",
+        "tradable": True,
+        "fractionable": False,
+    }
+    broker, _ = _make_broker({("GET", "/v2/assets/OLDCO"): asset_response})
+
+    asset = broker.get_asset("OLDCO")
+
+    assert asset is not None
+    assert asset.tradable is False
+
+
+def test_get_asset_missing_returns_none() -> None:
+    import requests
+
+    class NotFoundResponse:
+        text = "{}"
+
+        def raise_for_status(self) -> None:
+            raise requests.exceptions.HTTPError("404 Not Found")
+
+        def json(self) -> Any:
+            return {}
+
+    class NotFoundSession:
+        def __init__(self) -> None:
+            self.calls: list[dict[str, Any]] = []
+
+        def request(self, method: str, url: str, **kwargs: Any) -> NotFoundResponse:
+            self.calls.append({"method": method, "url": url, **kwargs})
+            return NotFoundResponse()
+
+    session = NotFoundSession()
+    broker = AlpacaBroker(
+        api_key="k", secret_key="s", paper=True, session=session
+    )
+
+    assert broker.get_asset("GHOST") is None

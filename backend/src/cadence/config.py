@@ -48,6 +48,12 @@ class Settings(BaseSettings):
     # Intended for the Docker end-to-end smoke and local development; leave off
     # in production so the real agent runs and missing keys fail cleanly.
     RECOMMENDER_STUB: bool = False
+    #: Wall-clock ceiling (seconds) for a single recommender agent run (search +
+    #: reasoning). The agent verifies each candidate via web search, so a run that
+    #: proposes many candidates needs headroom; raise this if runs time out.
+    RECOMMENDER_AGENT_TIMEOUT_SECONDS: int = 300
+    #: Hard SDK-enforced turn cap per recommender run (bounds tool-call loops).
+    RECOMMENDER_MAX_TURNS: int = 24
 
     # Alpaca paper-trading credentials/config. Keys are optional so the app boots
     # without them; a rebalance run fails cleanly when a required key is missing.
@@ -78,6 +84,12 @@ class Settings(BaseSettings):
     # every trigger is rejected — the rebalance must be explicitly enabled by
     # configuring a non-empty token.
     REBALANCE_CRON_TOKEN: str = ""
+
+    # Pushover push notifications (optional). Used to notify on daily-rebalance
+    # outcomes. Both are optional: when either is empty, notifications are
+    # silently disabled and the app still boots and rebalances normally.
+    PUSHOVER_USER: str = ""
+    PUSHOVER_TOKEN: str = ""
 
     @field_validator("CORS_ORIGINS", mode="before")
     @classmethod

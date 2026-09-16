@@ -33,6 +33,7 @@ const apple: Asset = {
   id: 1,
   ticker: 'AAPL',
   name: 'Apple Inc.',
+  alpaca_symbol: 'AAPL',
   category: 'stock',
   sector: 'technology',
   exchange: 'NASDAQ',
@@ -118,6 +119,48 @@ describe('AssetsPage', () => {
     expect(screen.queryByLabelText('Filter by ETF')).not.toBeInTheDocument();
     expect(screen.queryByLabelText('Filter by Fund')).not.toBeInTheDocument();
     expect(screen.queryByLabelText('Filter by Other')).not.toBeInTheDocument();
+  });
+
+  it('labels failed criteria from each asset\'s own thresholds (crypto vs stock)', async () => {
+    const ineligibleStock: Asset = {
+      ...apple,
+      id: 10,
+      ticker: 'TINY',
+      name: 'Tiny Stock',
+      is_eligible: false,
+      criteria_results: [
+        { name: 'market_cap', passed: false, value: 5, threshold: 1_000_000_000 },
+        { name: 'history', passed: false, value: 2, threshold: 5 },
+      ],
+    };
+    const ineligibleCrypto: Asset = {
+      ...bitcoin,
+      id: 11,
+      ticker: 'NEWCOIN',
+      name: 'New Coin',
+      is_eligible: false,
+      criteria_results: [
+        { name: 'market_cap', passed: false, value: 5, threshold: 2_000_000_000 },
+        { name: 'avg_daily_turnover', passed: false, value: 5, threshold: 10_000_000 },
+        { name: 'history', passed: false, value: 0.5, threshold: 1 },
+      ],
+    };
+    mockedGet.mockResolvedValue(page([ineligibleStock, ineligibleCrypto]));
+
+    renderWithClient(<AssetsPage />);
+
+    const stockRow = (await screen.findByText('Tiny Stock')).closest('tr');
+    expect(
+      within(stockRow as HTMLElement).getByText('Not eligible'),
+    ).toHaveAttribute('title', 'Failed: Market cap > €1.0B, History ≥ 5 years');
+
+    const cryptoRow = screen.getByText('New Coin').closest('tr');
+    expect(
+      within(cryptoRow as HTMLElement).getByText('Not eligible'),
+    ).toHaveAttribute(
+      'title',
+      'Failed: Market cap > €2.0B, Avg daily turnover ≥ €10.0M, History ≥ 1 year',
+    );
   });
 
   it('surfaces a specific message when adding a duplicate ticker (409)', async () => {

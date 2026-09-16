@@ -16,6 +16,8 @@ from cadence.assets.errors import (
     UnknownTickerError,
 )
 from cadence.assets.market_data import AssetDetailData, AssetInfo, HistoryBar
+from cadence.broker import get_broker
+from cadence.broker.stub import StubBroker
 
 _EXPECTED_CRITERIA = {"price", "avg_daily_turnover", "market_cap", "history"}
 
@@ -119,6 +121,7 @@ def test_create_asset_success(client: TestClient) -> None:
         "id",
         "ticker",
         "name",
+        "alpaca_symbol",
         "category",
         "sector",
         "exchange",
@@ -130,6 +133,9 @@ def test_create_asset_success(client: TestClient) -> None:
         "criteria_results",
         "created_at",
     }
+    # The broker's canonical symbol is captured at add time; for a US equity it
+    # equals the ticker.
+    assert body["alpaca_symbol"] == "AAPL"
     # Sector is present and null-safe: this eligible provider reports no sector.
     assert body["sector"] is None
     names = {c["name"] for c in body["criteria_results"]}
@@ -320,6 +326,42 @@ def test_create_asset_rejects_unsupported_category(client: TestClient) -> None:
     # Nothing persisted.
     listing = client.get("/api/v1/assets")
     assert all(a["ticker"] != "ETFX" for a in listing.json()["items"])
+
+
+def test_create_asset_rejects_non_us_listing(client: TestClient) -> None:
+    _use_provider(_eligible_provider(quote_type="EQUITY"))
+
+    response = client.post("/api/v1/assets", json={"ticker": "BAYN.DE"})
+    assert response.status_code == 422
+    assert "Alpaca" in response.json()["detail"]
+
+    # Nothing persisted.
+    listing = client.get("/api/v1/assets")
+    assert all(a["ticker"] != "BAYN.DE" for a in listing.json()["items"])
+
+
+def test_create_asset_unconfigured_broker_returns_503(client: TestClient) -> None:
+    # Tradability is hard-required: if the brokerage is unconfigured/unreachable
+    # (get_broker raises ConnectionError), the add is unavailable, not a client
+    # error. The app-level handler maps it to 503 even though the failure occurs
+    # while FastAPI resolves the broker dependency.
+    _use_provider(_eligible_provider())
+
+    def _unconfigured_broker() -> object:
+        raise ConnectionError("Alpaca credentials are not configured")
+
+    app.dependency_overrides[get_broker] = _unconfigured_broker
+    try:
+        response = client.post("/api/v1/assets", json={"ticker": "AAPL"})
+    finally:
+        # Restore the stub broker installed by the client fixture.
+        app.dependency_overrides[get_broker] = lambda: StubBroker()
+
+    assert response.status_code == 503
+
+    # Nothing persisted.
+    listing = client.get("/api/v1/assets")
+    assert all(a["ticker"] != "AAPL" for a in listing.json()["items"])
 
 
 def test_list_assets_filter_by_sector(client: TestClient) -> None:

@@ -11,7 +11,11 @@ from datetime import date
 
 import pytest
 from sqlalchemy.orm import Session
-from tests.fakes import FakeAIPortfolioAgent, FakeMarketDataProvider
+from tests.fakes import (
+    FakeAIPortfolioAgent,
+    FakeMarketDataProvider,
+    RecordingNotifier,
+)
 
 from cadence.ai_portfolio import service
 from cadence.ai_portfolio.agent import (
@@ -103,7 +107,7 @@ def _seed_universe(db_session: Session, *tickers: str) -> FakeMarketDataProvider
     """Add the given tickers to the universe; return the provider used."""
     provider = _provider()
     for ticker in tickers:
-        assets_service.add_asset(db_session, ticker, provider)
+        assets_service.add_asset(db_session, ticker, provider, StubBroker())
     return provider
 
 
@@ -324,7 +328,7 @@ def test_run_rebalance_event_trades_toward_targets_and_updates_stocks(
 
 def test_run_build_event_routes_crypto_by_asset_class(db_session: Session) -> None:
     eq_provider = _seed_universe(db_session, "AAPL")
-    assets_service.add_asset(db_session, "BTC-USD", _crypto_provider())
+    assets_service.add_asset(db_session, "BTC-USD", _crypto_provider(), StubBroker())
 
     agent = FakeAIPortfolioAgent(build_result=_build_result("AAPL", "BTC-USD"))
     broker = _RecordingBroker()
@@ -341,7 +345,7 @@ def test_run_build_event_routes_crypto_by_asset_class(db_session: Session) -> No
 
 def test_run_rebalance_event_closed_market_trades_crypto(db_session: Session) -> None:
     eq_provider = _seed_universe(db_session, "AAPL")
-    assets_service.add_asset(db_session, "BTC-USD", _crypto_provider())
+    assets_service.add_asset(db_session, "BTC-USD", _crypto_provider(), StubBroker())
 
     broker = _ClosedBroker()
     # Build a session holding AAPL + BTC-USD (build has no market guard).
@@ -417,6 +421,145 @@ def test_run_rebalance_event_closed_market_equity_only_is_skipped(
     refreshed = service.get_event(db_session, rb_event.id)
     assert refreshed.status == EventStatus.SKIPPED.value
     assert rebalance.rebalance_calls == []
+
+
+# --------------------------------------------------------------------------- #
+# Daily-rebalance notifications
+# --------------------------------------------------------------------------- #
+
+
+def _rebalance_to_aapl_msft() -> FakeAIPortfolioAgent:
+    """A rebalance agent targeting AAPL+MSFT (exits NVDA), so orders execute."""
+    return FakeAIPortfolioAgent(
+        rebalance_result=AIRebalanceResult(
+            evaluation_summary="steady",
+            target_allocations=[
+                AITargetAllocation(
+                    ticker="AAPL",
+                    company_name="Apple",
+                    allocation_pct=0.5,
+                    investment_thesis="keep",
+                    confidence=0.9,
+                ),
+                AITargetAllocation(
+                    ticker="MSFT",
+                    company_name="Microsoft",
+                    allocation_pct=0.5,
+                    investment_thesis="keep",
+                    confidence=0.9,
+                ),
+            ],
+            portfolio_health="healthy",
+        )
+    )
+
+
+def test_run_rebalance_event_notifies_on_executed_orders(db_session: Session) -> None:
+    provider = _seed_universe(db_session, "AAPL", "MSFT")
+    broker = StubBroker()
+    session_id, _ = _seed_session(db_session, broker, provider)
+    notifier = RecordingNotifier()
+
+    rb_event = service.create_rebalance_event(db_session, session_id)
+    service.run_rebalance_event(
+        db_session,
+        rb_event.id,
+        _rebalance_to_aapl_msft(),
+        broker,
+        provider,
+        notifier=notifier,
+    )
+
+    refreshed = service.get_event(db_session, rb_event.id)
+    assert refreshed.status == EventStatus.SUCCEEDED.value
+    assert len(notifier.sent) == 1
+    message, title = notifier.sent[0]
+    assert "rebalanced" in title
+    # NVDA is exited -> a SELL line names it; realized P&L is reported.
+    assert "SELL" in message
+    assert "NVDA" in message
+    assert "Realized P&L" in message
+
+
+def test_run_rebalance_event_notifies_on_failure(db_session: Session) -> None:
+    provider = _seed_universe(db_session, "AAPL", "MSFT")
+    broker = StubBroker()
+    session_id, _ = _seed_session(db_session, broker, provider)
+    notifier = RecordingNotifier()
+
+    rebalance = FakeAIPortfolioAgent(rebalance_error=RuntimeError("rebalance boom"))
+    rb_event = service.create_rebalance_event(db_session, session_id)
+    service.run_rebalance_event(
+        db_session, rb_event.id, rebalance, broker, provider, notifier=notifier
+    )
+
+    refreshed = service.get_event(db_session, rb_event.id)
+    assert refreshed.status == EventStatus.FAILED.value
+    assert len(notifier.sent) == 1
+    message, title = notifier.sent[0]
+    assert "failed" in title
+    assert "boom" in message
+
+
+def test_run_rebalance_event_silent_on_market_closed_skip(db_session: Session) -> None:
+    provider = _seed_universe(db_session, "AAPL", "MSFT")
+    broker = _ClosedBroker()
+    session_id, _ = _seed_session(db_session, broker, provider)
+    notifier = RecordingNotifier()
+
+    rebalance = FakeAIPortfolioAgent(
+        rebalance_result=AIRebalanceResult(
+            evaluation_summary="x", target_allocations=[], portfolio_health="healthy"
+        )
+    )
+    rb_event = service.create_rebalance_event(db_session, session_id)
+    service.run_rebalance_event(
+        db_session, rb_event.id, rebalance, broker, provider, notifier=notifier
+    )
+
+    refreshed = service.get_event(db_session, rb_event.id)
+    assert refreshed.status == EventStatus.SKIPPED.value
+    # A skipped run (nothing executed) must not push a notification.
+    assert notifier.sent == []
+
+
+def test_run_rebalance_event_notifier_failure_does_not_fail_rebalance(
+    db_session: Session,
+) -> None:
+    provider = _seed_universe(db_session, "AAPL", "MSFT")
+    broker = StubBroker()
+    session_id, _ = _seed_session(db_session, broker, provider)
+    notifier = RecordingNotifier(raises=True)
+
+    rb_event = service.create_rebalance_event(db_session, session_id)
+    service.run_rebalance_event(
+        db_session,
+        rb_event.id,
+        _rebalance_to_aapl_msft(),
+        broker,
+        provider,
+        notifier=notifier,
+    )
+
+    refreshed = service.get_event(db_session, rb_event.id)
+    # The notifier raised, but the rebalance still succeeded.
+    assert refreshed.status == EventStatus.SUCCEEDED.value
+    assert len(notifier.sent) == 1
+
+
+def test_run_rebalance_event_no_notifier_is_silent(db_session: Session) -> None:
+    # Manual path: no notifier supplied -> no notification, no error.
+    provider = _seed_universe(db_session, "AAPL", "MSFT")
+    broker = StubBroker()
+    session_id, _ = _seed_session(db_session, broker, provider)
+
+    rb_event = service.create_rebalance_event(db_session, session_id)
+    service.run_rebalance_event(
+        db_session, rb_event.id, _rebalance_to_aapl_msft(), broker, provider
+    )
+
+    refreshed = service.get_event(db_session, rb_event.id)
+    assert refreshed.status == EventStatus.SUCCEEDED.value
 
 
 def test_get_inflight_rebalance_event(db_session: Session) -> None:

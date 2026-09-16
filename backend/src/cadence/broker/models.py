@@ -64,6 +64,25 @@ class TimeInForce(str, Enum):
     FOK = "fok"  # Fill or kill
 
 
+@dataclass(frozen=True)
+class BrokerAsset:
+    """A brokerage's view of a tradable instrument.
+
+    Returned by :meth:`~cadence.broker.base.Broker.get_asset` when the broker
+    lists the instrument. ``symbol`` is the broker's canonical symbol (Alpaca
+    form, e.g. ``BRK.B`` / ``BTC/USD``) — the assets domain stores it so trading
+    no longer has to reconstruct it. ``tradable`` reflects whether orders can be
+    routed right now; ``fractionable`` whether fractional quantities are allowed.
+    """
+
+    symbol: str
+    asset_class: AssetClass
+    tradable: bool
+    fractionable: bool = False
+    exchange: str | None = None
+    name: str | None = None
+
+
 @dataclass
 class Order:
     """Represents a trading order and its fill state."""

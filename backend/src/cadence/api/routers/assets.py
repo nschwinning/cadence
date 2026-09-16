@@ -22,12 +22,14 @@ from cadence.assets.errors import (
     MarketDataUnavailableError,
     UnknownTickerError,
     UnsupportedCategoryError,
+    UntradeableTickerError,
 )
 from cadence.assets.market_data import (
     MarketDataProvider,
     YFinanceMarketDataProvider,
 )
 from cadence.assets.sector import Sector
+from cadence.broker import Broker, get_broker
 from cadence.database import get_db
 
 router = APIRouter(prefix="/assets", tags=["assets"])
@@ -40,6 +42,7 @@ def get_market_data_provider() -> MarketDataProvider:
 
 DbSession = Annotated[Session, Depends(get_db)]
 Provider = Annotated[MarketDataProvider, Depends(get_market_data_provider)]
+BrokerDep = Annotated[Broker, Depends(get_broker)]
 
 
 @router.post("", response_model=AssetRead, status_code=status.HTTP_201_CREATED)
@@ -47,15 +50,24 @@ def create_asset(
     payload: AssetCreate,
     db: DbSession,
     provider: Provider,
+    broker: BrokerDep,
 ) -> AssetRead:
-    """Add an asset by ticker: enrich, classify, evaluate, and persist."""
+    """Add an asset by ticker: enrich, classify, verify tradability, and persist.
+
+    A brokerage :class:`ConnectionError` (unconfigured/unreachable Alpaca) is
+    handled globally and returned as 503; see ``create_app``.
+    """
     try:
-        asset = service.add_asset(db, payload.ticker, provider)
+        asset = service.add_asset(db, payload.ticker, provider, broker)
     except DuplicateAssetError as exc:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT, detail=str(exc)
         ) from exc
-    except (UnknownTickerError, UnsupportedCategoryError) as exc:
+    except (
+        UnknownTickerError,
+        UnsupportedCategoryError,
+        UntradeableTickerError,
+    ) as exc:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
         ) from exc

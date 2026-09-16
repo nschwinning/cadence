@@ -12,7 +12,7 @@ from datetime import date
 
 from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
-from tests.fakes import FakeMarketDataProvider
+from tests.fakes import FakeBroker, FakeMarketDataProvider
 
 from cadence.assets import service as assets_service
 from cadence.assets.market_data import AssetInfo, HistoryBar
@@ -48,21 +48,34 @@ def _provider(
     )
 
 
+def _broker() -> FakeBroker:
+    return FakeBroker()
+
+
 def _seed_universe(db_session: Session) -> None:
     """Seed four assets: three eligible (varied category/sector) + one ineligible."""
-    assets_service.add_asset(db_session, "TECH", _provider(sector_key="technology"))
     assets_service.add_asset(
-        db_session, "FIN", _provider(sector_key="financial-services", country="USA")
+        db_session, "TECH", _provider(sector_key="technology"), _broker()
+    )
+    assets_service.add_asset(
+        db_session,
+        "FIN",
+        _provider(sector_key="financial-services", country="USA"),
+        _broker(),
     )
     # A crypto asset has no sector; still eligible.
     assets_service.add_asset(
         db_session,
         "BTC-USD",
         _provider(quote_type="CRYPTOCURRENCY", sector_key=None, country="Ireland"),
+        _broker(),
     )
     # Below the market-cap threshold -> ineligible, but still stored.
     assets_service.add_asset(
-        db_session, "SMALL", _provider(sector_key="technology", market_cap=100_000_000.0)
+        db_session,
+        "SMALL",
+        _provider(sector_key="technology", market_cap=100_000_000.0),
+        _broker(),
     )
 
 

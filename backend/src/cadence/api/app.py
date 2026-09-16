@@ -5,8 +5,9 @@ from __future__ import annotations
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request, status
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 
 from cadence.ai_portfolio.background import cleanup_orphaned_events_on_startup
 from cadence.api.routers import (
@@ -50,6 +51,23 @@ def create_app() -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
+
+    @app.exception_handler(ConnectionError)
+    async def _broker_unavailable(
+        request: Request, exc: ConnectionError
+    ) -> JSONResponse:
+        """Map a brokerage transport/config failure to 503.
+
+        The broker (Alpaca) raises ``ConnectionError`` when it is unconfigured or
+        unreachable — including while FastAPI resolves ``Depends(get_broker)``,
+        before the endpoint body runs — so an app-level handler is the only place
+        that reliably catches it. Tradability is hard-required, so an add that
+        cannot reach the broker is unavailable, not a client error.
+        """
+        return JSONResponse(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            content={"detail": str(exc) or "Brokerage is unavailable"},
+        )
 
     # Health is unprefixed; resource routers mount under /api/v1.
     app.include_router(health_router)

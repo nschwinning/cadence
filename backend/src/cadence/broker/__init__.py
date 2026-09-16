@@ -19,6 +19,7 @@ from cadence.broker.base import (
 from cadence.broker.models import (
     AccountInfo,
     AssetClass,
+    BrokerAsset,
     Order,
     OrderSide,
     OrderStatus,
@@ -36,6 +37,7 @@ __all__ = [
     "AlpacaBroker",
     "AssetClass",
     "Broker",
+    "BrokerAsset",
     "BrokerError",
     "ConnectionError",
     "Order",

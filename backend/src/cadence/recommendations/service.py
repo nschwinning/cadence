@@ -20,9 +20,12 @@ from cadence.assets.errors import (
     DuplicateAssetError,
     MarketDataUnavailableError,
     UnknownTickerError,
+    UnsupportedCategoryError,
+    UntradeableTickerError,
 )
 from cadence.assets.market_data import MarketDataProvider
 from cadence.assets.service import add_asset, delete_asset, list_assets
+from cadence.broker.base import Broker
 from cadence.dashboard.service import get_universe_composition
 from cadence.recommendations.agent import (
     RecommenderAgent,
@@ -111,12 +114,15 @@ def execute_run(
     run_id: int,
     agent: RecommenderAgent,
     provider: MarketDataProvider,
+    broker: Broker,
 ) -> None:
     """Drive a queued run to a terminal phase.
 
     Advances ``searching`` → ``validating`` → ``completed``. On any failure the
     run is marked ``failed`` with a readable reason; assets added before the
-    failure are left intact and no partially-formed asset remains.
+    failure are left intact and no partially-formed asset remains. A broker
+    ``ConnectionError`` is systemic (Alpaca unconfigured/unreachable) and fails
+    the whole run rather than being swallowed per-candidate.
     """
     run = get_run(session, run_id)
     try:
@@ -150,6 +156,7 @@ def execute_run(
         outcomes = _validate_and_add(
             session,
             provider,
+            broker,
             candidates=[c.ticker for c in result.output.candidates],
             limit=run.requested_count,
         )
@@ -164,6 +171,7 @@ def execute_run(
 def _validate_and_add(
     session: Session,
     provider: MarketDataProvider,
+    broker: Broker,
     candidates: list[str],
     limit: int,
 ) -> list[dict[str, str | None]]:
@@ -181,11 +189,18 @@ def _validate_and_add(
         if added >= limit:
             break
         try:
-            asset = add_asset(session, ticker, provider)
+            asset = add_asset(session, ticker, provider, broker)
         except DuplicateAssetError:
             outcomes.append(_outcome(ticker, CandidateOutcome.SKIPPED_DUPLICATE))
             continue
-        except (UnknownTickerError, MarketDataUnavailableError) as exc:
+        except (
+            UnknownTickerError,
+            MarketDataUnavailableError,
+            UnsupportedCategoryError,
+            UntradeableTickerError,
+        ) as exc:
+            # A single bad candidate (unknown, untradeable, or wrong category)
+            # is recorded and skipped — it must not fail the whole run.
             outcomes.append(
                 _outcome(ticker, CandidateOutcome.ERROR, str(exc) or type(exc).__name__)
             )

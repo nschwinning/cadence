@@ -27,5 +27,13 @@ class UnsupportedCategoryError(AssetError):
     """The instrument's category is not tradeable (only stock and crypto are)."""
 
 
+class UntradeableTickerError(AssetError):
+    """The brokerage (Alpaca) does not list the asset as tradable.
+
+    Typically a non-US listing (e.g. ``BAYN.DE``) that Alpaca cannot route orders
+    for; the US listing/ADR should be used instead.
+    """
+
+
 class AssetNotFoundError(AssetError):
     """No asset with the requested ticker exists in the stored universe."""

@@ -16,6 +16,7 @@ from cadence.broker.base import OrderError
 from cadence.broker.models import (
     AccountInfo,
     AssetClass,
+    BrokerAsset,
     Order,
     OrderSide,
     OrderStatus,
@@ -24,6 +25,7 @@ from cadence.broker.models import (
     Quote,
     TimeInForce,
 )
+from cadence.broker.symbols import to_alpaca_symbol
 
 DEFAULT_CASH = 100_000.0
 
@@ -90,6 +92,28 @@ class StubBroker:
             pos.update_market_value(_deterministic_price(symbol))
             return pos
         return None
+
+    # Asset reference data ------------------------------------------------
+    def get_asset(
+        self, symbol: str, asset_class: AssetClass = AssetClass.EQUITY
+    ) -> BrokerAsset | None:
+        """Simulate an Alpaca asset lookup without any network access.
+
+        Every symbol is treated as tradable except an **equity** whose Alpaca
+        symbol carries an exchange suffix (a ``.``, e.g. ``BAYN.DE``) — Alpaca
+        does not list foreign equities, so this returns ``None`` for them. This
+        keeps the offline stub / Docker smoke rejecting non-US listings without
+        real credentials. Crypto is always fractionable.
+        """
+        alpaca_symbol = to_alpaca_symbol(symbol, asset_class)
+        if asset_class == AssetClass.EQUITY and "." in alpaca_symbol:
+            return None
+        return BrokerAsset(
+            symbol=alpaca_symbol,
+            asset_class=asset_class,
+            tradable=True,
+            fractionable=asset_class == AssetClass.CRYPTO,
+        )
 
     # Market data ---------------------------------------------------------
     def get_quote(

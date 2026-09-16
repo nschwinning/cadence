@@ -14,6 +14,7 @@ from sqlalchemy.orm import Session
 
 from cadence.api.schemas import RecommendationRunCreate, RecommendationRunRead
 from cadence.assets.market_data import MarketDataProvider, YFinanceMarketDataProvider
+from cadence.broker import Broker, get_broker
 from cadence.config import settings
 from cadence.database import get_db
 from cadence.recommendations import service
@@ -55,6 +56,7 @@ def get_job_runner() -> RecommendationJobRunner:
 DbSession = Annotated[Session, Depends(get_db)]
 Agent = Annotated[RecommenderAgent, Depends(get_recommender_agent)]
 Provider = Annotated[MarketDataProvider, Depends(get_market_data_provider)]
+BrokerDep = Annotated[Broker, Depends(get_broker)]
 JobRunner = Annotated[RecommendationJobRunner, Depends(get_job_runner)]
 
 
@@ -68,9 +70,15 @@ def create_recommendation_run(
     db: DbSession,
     agent: Agent,
     provider: Provider,
+    broker: BrokerDep,
     job_runner: JobRunner,
 ) -> RecommendationRunRead:
-    """Queue a recommendation run and return it immediately (202)."""
+    """Queue a recommendation run and return it immediately (202).
+
+    Resolving ``broker`` here (rather than inside the background job) means an
+    unconfigured/unreachable Alpaca surfaces as 503 at request time via the
+    app-level ``ConnectionError`` handler, before the run is queued.
+    """
     try:
         run, _started = job_runner.start_run(
             db,
@@ -78,6 +86,7 @@ def create_recommendation_run(
             categories=payload.categories,
             agent=agent,
             provider=provider,
+            broker=broker,
         )
     except RecommendationValidationError as exc:
         raise HTTPException(

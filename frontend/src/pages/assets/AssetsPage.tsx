@@ -20,18 +20,9 @@ import type {
   AssetCategory,
   AssetSortDirection,
   AssetSortField,
-  CriterionName,
   CriterionResult,
   Sector,
 } from '../../types/api';
-
-/** Human-readable label per eligibility criterion (used in the failed-criteria tooltip). */
-const CRITERION_LABELS: Record<CriterionName, string> = {
-  price: 'Price > €5',
-  avg_daily_turnover: 'Avg daily turnover ≥ €2M',
-  market_cap: 'Market cap > €1B',
-  history: 'History ≥ 5 years',
-};
 
 /** Format a EUR monetary value compactly (e.g. €1.2B, €3.4M, €5.00). `null` → "—". */
 function formatEur(value: number | null): string {
@@ -49,14 +40,42 @@ function formatYears(value: number | null): string {
   return `${value.toFixed(1)} yrs`;
 }
 
+/**
+ * Human-readable label for a failed eligibility criterion, built from the
+ * criterion's own `threshold`. Deriving the label from the actual threshold (not
+ * a hardcoded string) keeps it correct across categories — crypto uses different
+ * market-cap, turnover, and history floors than stocks, and no price criterion.
+ */
+function criterionLabel(c: CriterionResult): string {
+  switch (c.name) {
+    case 'price':
+      return `Price > ${formatEur(c.threshold)}`;
+    case 'avg_daily_turnover':
+      return `Avg daily turnover ≥ ${formatEur(c.threshold)}`;
+    case 'market_cap':
+      return `Market cap > ${formatEur(c.threshold)}`;
+    case 'history':
+      return `History ≥ ${c.threshold} ${c.threshold === 1 ? 'year' : 'years'}`;
+    default:
+      return c.name;
+  }
+}
+
 /** Map an axios error from POST /assets to a user-facing message. */
 function addErrorMessage(error: unknown): string {
   if (axios.isAxiosError(error)) {
     switch (error.response?.status) {
       case 409:
         return 'That asset already exists in your universe.';
-      case 422:
-        return 'Unknown ticker — the symbol could not be resolved.';
+      case 422: {
+        // 422 now covers several distinct reasons (unknown ticker, unsupported
+        // category, non-US listing that Alpaca can't trade). Prefer the API's
+        // specific reason, falling back to the generic unknown-ticker message.
+        const detail = error.response?.data?.detail;
+        return typeof detail === 'string' && detail
+          ? detail
+          : 'Unknown ticker — the symbol could not be resolved.';
+      }
       case 503:
         return 'The market-data provider is unavailable right now. Please try again later.';
       default:
@@ -78,9 +97,7 @@ function EligibilityBadge({ asset }: { asset: Asset }) {
     );
   }
 
-  const failedLabels = failed
-    .map((c: CriterionResult) => CRITERION_LABELS[c.name])
-    .join(', ');
+  const failedLabels = failed.map(criterionLabel).join(', ');
   const tooltip = failedLabels ? `Failed: ${failedLabels}` : 'Not eligible';
 
   return (
