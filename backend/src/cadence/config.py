@@ -71,6 +71,13 @@ class Settings(BaseSettings):
     # excess return over a non-zero benchmark.
     SHARPE_RISK_FREE_RATE: float = 0.0
 
+    # Fixed transaction cost charged on every executed paper trade (in USD, per
+    # trade, regardless of side). Modeled so reported performance reflects a real
+    # broker's per-fill cost and the AI rebalancer avoids churning small positions.
+    # Applied at the single point where a trade is recorded and accumulated on the
+    # session; set to 0 to disable.
+    TRANSACTION_COST_USD: float = 1.0
+
     # Model id the AI portfolio manager runs on.
     AI_PORTFOLIO_MODEL: str = "gpt-5-mini"
 

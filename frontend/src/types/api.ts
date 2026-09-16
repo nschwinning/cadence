@@ -403,6 +403,8 @@ export interface PaperTradingSessionKpis {
   current_value: number;
   realised_pnl: number;
   unrealised_pnl: number;
+  /** Cumulative per-trade transaction cost charged to date. */
+  total_fees: number;
   total_return: number;
   total_return_pct: number;
   /** Null until the session has enough daily history to compute it. */

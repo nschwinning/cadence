@@ -449,6 +449,37 @@ def test_get_rebalance_prompt_by_version_raises_when_unknown(
         service.get_rebalance_prompt_by_version(db_session, 12345)
 
 
+def _load_migration(filename: str) -> object:
+    """Import a migration module by filename from ``backend/migrations/versions``."""
+    import importlib.util
+    from pathlib import Path
+
+    path = (
+        Path(__file__).resolve().parents[1] / "migrations" / "versions" / filename
+    )
+    spec = importlib.util.spec_from_file_location(filename[:-3], path)
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_rebalance_prompt_v2_seed_describes_transaction_cost() -> None:
+    # The shipped version-2 seed must inform the agent of the per-trade cost and
+    # keep version 1's input template verbatim (only the instructions change).
+    v1 = _load_migration("a1d4e7c2b9f8_add_rebalance_prompt_table.py")
+    v2 = _load_migration("d4b7e2f9a1c6_add_total_fees_and_rebalance_prompt_v2.py")
+
+    instructions = v2._V2_INSTRUCTIONS.lower()
+    assert "transaction cost" in instructions
+    assert "churn" in instructions
+    # Runtime placeholders are preserved so the renderer still fills them.
+    assert "{max_new_assets}" in v2._V2_INSTRUCTIONS
+    assert "{max_web_searches}" in v2._V2_INSTRUCTIONS
+    # Input template is unchanged from version 1.
+    assert v2._V2_INPUT_TEMPLATE == v1._SEED_INPUT_TEMPLATE
+
+
 def test_get_active_rebalance_prompt_raises_when_empty(db_session: Session) -> None:
     db_session.query(RebalancePrompt).delete()
     db_session.flush()

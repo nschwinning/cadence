@@ -15,6 +15,7 @@ from cadence.broker.models import (
     OrderStatus,
     Quote,
 )
+from cadence.config import settings
 from cadence.paper_trading import service
 from cadence.paper_trading.constants import (
     SHARPE_MIN_RETURNS,
@@ -89,6 +90,27 @@ def test_record_trade_derives_notional(db_session: Session) -> None:
     assert trade.side == OrderSide.BUY.value
     assert trade.order_status == OrderStatus.FILLED.value
     assert service.count_session_trades(db_session, sess.id) == 1
+
+
+def test_record_trade_charges_transaction_fee(db_session: Session) -> None:
+    portfolio = _portfolio(db_session)
+    sess = service.create_session(
+        db_session, portfolio_id=portfolio.id, strategy_key="s", rebalance_prompt_version=1)
+    # A fresh session starts fee-free.
+    assert sess.total_fees == pytest.approx(0.0)
+    for _ in range(2):
+        service.record_trade(
+            db_session,
+            session_id=sess.id,
+            ticker="AAPL",
+            side=OrderSide.BUY,
+            quantity=1,
+            price=10.0,
+            signal_type="entry",
+        )
+    # Every recorded trade charges the flat per-trade cost onto the session.
+    refreshed = service.get_session(db_session, sess.id)
+    assert refreshed.total_fees == pytest.approx(2 * settings.TRANSACTION_COST_USD)
 
 
 def test_record_run(db_session: Session) -> None:
@@ -857,6 +879,32 @@ def test_session_kpis_live_figures_and_total_return(db_session: Session) -> None
     assert kpis.total_return_pct == pytest.approx(200.0 / 100_000.0)
     # No snapshots yet -> Sharpe not yet available.
     assert kpis.sharpe_ratio is None
+
+
+def test_session_kpis_net_of_fees_and_gross_realised(db_session: Session) -> None:
+    sess = _ai_session(db_session)
+    _buy(db_session, sess.id, "AAPL", 10, 100.0)  # +20/share -> +200 unrealised
+    # Two executed trades accrue transaction fees on the session.
+    for _ in range(2):
+        service.record_trade(
+            db_session,
+            session_id=sess.id,
+            ticker="AAPL",
+            side=OrderSide.BUY,
+            quantity=1,
+            price=10.0,
+            signal_type="entry",
+        )
+    fees = 2 * settings.TRANSACTION_COST_USD
+    kpis = service.session_kpis(
+        db_session, session_id=sess.id, broker=_QuoteBroker({"AAPL": 120.0})
+    )
+    # Current value is net of fees; total_fees is surfaced.
+    assert kpis.total_fees == pytest.approx(fees)
+    assert kpis.current_value == pytest.approx(100_200.0 - fees)
+    assert kpis.total_return == pytest.approx(200.0 - fees)
+    # Realised P&L stays gross (fees are tracked separately, not folded in).
+    assert kpis.realised_pnl == pytest.approx(0.0)
 
 
 def test_session_kpis_sharpe_none_until_enough_history(db_session: Session) -> None:

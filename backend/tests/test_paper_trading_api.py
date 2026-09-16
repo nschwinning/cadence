@@ -298,10 +298,13 @@ def test_session_kpis_returns_live_figures(
         "current_value",
         "realised_pnl",
         "unrealised_pnl",
+        "total_fees",
         "total_return",
         "total_return_pct",
         "sharpe_ratio",
     }
+    # Ledger buy above did not go through record_trade, so no fees accrued.
+    assert body["total_fees"] == 0.0
     assert body["current_value"] == 100_200.0
     assert body["realised_pnl"] == 0.0
     assert body["unrealised_pnl"] == 200.0

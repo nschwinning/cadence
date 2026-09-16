@@ -225,6 +225,11 @@ def record_trade(
 
     ``ai_portfolio_event_id`` links the trade to the AI run that produced it; it is
     left NULL for non-AI strategies.
+
+    Recording a trade also charges the session a flat transaction cost
+    (``settings.TRANSACTION_COST_USD``) into its cumulative ``total_fees``. This is
+    the single choke point for persisting a trade, so every executed fill is
+    charged and skipped orders (never recorded) are correctly free.
     """
     trade = PaperTrade(
         session_id=session_id,
@@ -241,6 +246,9 @@ def record_trade(
         filled_at=filled_at,
     )
     session.add(trade)
+    # Charge the flat per-trade transaction cost onto the owning session.
+    row = get_session(session, session_id)
+    row.total_fees = row.total_fees + settings.TRANSACTION_COST_USD
     session.commit()
     session.refresh(trade)
     return trade
@@ -687,9 +695,10 @@ def compute_session_value(
 ) -> SessionValuation:
     """Value a session by marking its ledger positions to market.
 
-    ``total_value = allocated_capital + realized total_pnl + Σ(market_value −
-    cost_basis)`` over the session's open ledger positions, where ``market_value``
-    is priced from ``broker.get_quotes``. A position whose quote can't be fetched
+    ``total_value = allocated_capital + realized total_pnl − total_fees +
+    Σ(market_value − cost_basis)`` over the session's open ledger positions, where
+    ``market_value`` is priced from ``broker.get_quotes`` and ``total_fees`` is the
+    cumulative per-trade transaction cost. A position whose quote can't be fetched
     (missing symbol or a quote with no usable price) is valued at its ledger
     ``avg_cost`` and the gap logged, so one bad quote never sinks the snapshot. A
     session with no open positions yields an all-cash valuation.
@@ -738,7 +747,10 @@ def compute_session_value(
         )
 
     total_value = (
-        session_row.allocated_capital + session_row.total_pnl + unrealized_total
+        session_row.allocated_capital
+        + session_row.total_pnl
+        - session_row.total_fees
+        + unrealized_total
     )
     cash_value = total_value - positions_value
     return SessionValuation(
@@ -873,17 +885,20 @@ def sharpe_ratio(
 class SessionKpis:
     """A session's headline performance KPIs at request time.
 
-    ``current_value`` is the live net asset value; ``realised_pnl`` the session's
-    cumulative realised P&L; ``unrealised_pnl`` the live mark-to-market on open
-    positions; ``total_return`` the absolute gain/loss versus allocated capital
-    (``current_value − allocated_capital``) and ``total_return_pct`` the same as a
-    fraction of allocated capital; ``sharpe_ratio`` the annualised Sharpe of the
-    daily NAV series, or ``None`` until enough history exists.
+    ``current_value`` is the live net asset value (net of fees); ``realised_pnl``
+    the session's cumulative gross realised P&L; ``unrealised_pnl`` the live
+    mark-to-market on open positions; ``total_fees`` the cumulative per-trade
+    transaction cost charged to date; ``total_return`` the absolute gain/loss versus
+    allocated capital (``current_value − allocated_capital``) and
+    ``total_return_pct`` the same as a fraction of allocated capital;
+    ``sharpe_ratio`` the annualised Sharpe of the daily NAV series, or ``None``
+    until enough history exists.
     """
 
     current_value: float
     realised_pnl: float
     unrealised_pnl: float
+    total_fees: float
     total_return: float
     total_return_pct: float
     sharpe_ratio: float | None
@@ -918,6 +933,7 @@ def session_kpis(
         current_value=valuation.total_value,
         realised_pnl=session_row.total_pnl,
         unrealised_pnl=valuation.unrealized_pnl,
+        total_fees=session_row.total_fees,
         total_return=total_return,
         total_return_pct=total_return_pct,
         sharpe_ratio=sharpe_ratio(daily_returns, risk_free=daily_risk_free),

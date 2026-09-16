@@ -479,7 +479,7 @@ function PnlValue({ value }: { value: number }) {
   return <span className={pnlClass(value)}>{formatCurrency(value)}</span>;
 }
 
-/** Live performance KPI tiles: value, realised/unrealised P&L, total return, Sharpe. */
+/** Live performance KPI tiles: value, realised/unrealised P&L, fees, total return, Sharpe. */
 function KpiRow({ sessionId }: { sessionId: string }) {
   const { data, isPending, isError } = useSessionKpis(sessionId);
 
@@ -499,12 +499,17 @@ function KpiRow({ sessionId }: { sessionId: string }) {
     data.sharpe_ratio === null ? 'Not yet available' : data.sharpe_ratio.toFixed(2);
 
   return (
-    <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-5">
+    <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-6">
       <StatTile label="Current value" value={formatCurrency(data.current_value)} />
       <StatTile label="Realised P&L" value={<PnlValue value={data.realised_pnl} />} />
       <StatTile
         label="Unrealised P&L"
         value={<PnlValue value={data.unrealised_pnl} />}
+      />
+      <StatTile
+        label="Transaction fees"
+        value={formatCurrency(data.total_fees)}
+        hint="$1 per executed trade"
       />
       <StatTile
         label="Total return"

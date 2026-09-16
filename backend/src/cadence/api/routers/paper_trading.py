@@ -224,6 +224,7 @@ def get_session_kpis(
         current_value=kpis.current_value,
         realised_pnl=kpis.realised_pnl,
         unrealised_pnl=kpis.unrealised_pnl,
+        total_fees=kpis.total_fees,
         total_return=kpis.total_return,
         total_return_pct=kpis.total_return_pct,
         sharpe_ratio=kpis.sharpe_ratio,

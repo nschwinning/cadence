@@ -115,6 +115,13 @@ class PaperTradingSession(Base):
     total_pnl: Mapped[float] = mapped_column(
         Float, nullable=False, server_default="0"
     )
+    # Cumulative transaction fees charged on this session's executed trades (a flat
+    # per-trade cost). Kept separate from ``total_pnl`` so realised P&L stays gross;
+    # valuation nets this out. Non-nullable, defaults to 0, backfilled to 0 for
+    # pre-existing sessions (fees apply going forward only).
+    total_fees: Mapped[float] = mapped_column(
+        Float, nullable=False, default=0.0, server_default="0"
+    )
     # Column name kept as ``metadata`` (faithful to trading-bot); the Python
     # attribute is renamed because ``metadata`` is reserved on the declarative base.
     session_metadata: Mapped[dict[str, Any] | None] = mapped_column(

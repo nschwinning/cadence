@@ -86,6 +86,7 @@ const KPIS: PaperTradingSessionKpis = {
   current_value: 102500,
   realised_pnl: 750,
   unrealised_pnl: -200,
+  total_fees: 12,
   total_return: 2500,
   total_return_pct: 0.025,
   sharpe_ratio: null,
@@ -180,6 +181,9 @@ describe('PaperTradingSessionPage', () => {
     // Total return shows the money amount and a percentage hint.
     expect(screen.getByText('$2,500.00')).toHaveClass('text-emerald-700');
     expect(screen.getByText('2.50%')).toBeInTheDocument();
+    // Transaction fees tile shows the cumulative cost.
+    expect(screen.getByText('Transaction fees')).toBeInTheDocument();
+    expect(screen.getByText('$12.00')).toBeInTheDocument();
     // Sharpe is null -> fallback copy.
     expect(screen.getByText('Not yet available')).toBeInTheDocument();
   });
