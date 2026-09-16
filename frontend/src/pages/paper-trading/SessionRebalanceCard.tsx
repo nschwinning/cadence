@@ -116,7 +116,13 @@ function RebalanceResult({
   );
 }
 
-export function SessionRebalanceCard({ sessionId }: { sessionId: string }) {
+/**
+ * State + handlers for the rebalance action, shared between the header button
+ * (upper-right corner) and the full-width feedback rendered below it. Call once
+ * per session and pass the result to {@link RebalanceButton} and
+ * {@link RebalanceFeedback} so both read the same live status.
+ */
+export function useRebalanceAction(sessionId: string) {
   const rebalance = useRebalanceSession(sessionId);
   const [eventId, setEventId] = useState<string | null>(null);
 
@@ -125,6 +131,7 @@ export function SessionRebalanceCard({ sessionId }: { sessionId: string }) {
   const status = event?.status;
   const terminal = status ? isTerminalEventStatus(status) : false;
   const running = eventId !== null && !terminal;
+  const busy = rebalance.isPending || running;
 
   const handleRebalance = () => {
     rebalance.mutate(undefined, {
@@ -132,32 +139,55 @@ export function SessionRebalanceCard({ sessionId }: { sessionId: string }) {
     });
   };
 
-  return (
-    <div className="rounded-lg border border-slate-200 bg-white p-6 shadow-sm">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div>
-          <h2 className="text-lg font-semibold text-slate-900">
-            AI rebalance
-          </h2>
-          <p className="mt-1 text-sm text-slate-500">
-            Ask the AI manager to review and rebalance this session now.
-          </p>
-        </div>
-        <button
-          type="button"
-          onClick={handleRebalance}
-          disabled={rebalance.isPending || running}
-          aria-busy={rebalance.isPending || running}
-          className="rounded bg-emerald-500 px-4 py-2 font-medium text-white hover:bg-emerald-600 disabled:cursor-not-allowed disabled:opacity-50"
-        >
-          {rebalance.isPending || running ? 'Rebalancing…' : 'Rebalance now'}
-        </button>
-      </div>
+  const showResult =
+    eventId !== null &&
+    terminal &&
+    Boolean(event) &&
+    status !== undefined &&
+    status !== 'queued' &&
+    status !== 'running';
+  const hasFeedback = rebalance.isError || running || showResult;
 
+  return {
+    rebalance,
+    eventId,
+    event,
+    status,
+    running,
+    busy,
+    showResult,
+    hasFeedback,
+    handleRebalance,
+  };
+}
+
+export type RebalanceAction = ReturnType<typeof useRebalanceAction>;
+
+/** The "Rebalance now" trigger, sized to sit in the session header's corner. */
+export function RebalanceButton({ action }: { action: RebalanceAction }) {
+  const { busy, handleRebalance } = action;
+  return (
+    <button
+      type="button"
+      onClick={handleRebalance}
+      disabled={busy}
+      aria-busy={busy}
+      className="rounded bg-emerald-500 px-4 py-2 font-medium text-white hover:bg-emerald-600 disabled:cursor-not-allowed disabled:opacity-50"
+    >
+      {busy ? 'Rebalancing…' : 'Rebalance now'}
+    </button>
+  );
+}
+
+/** Error / in-progress / terminal-result feedback for a triggered rebalance. */
+export function RebalanceFeedback({ action }: { action: RebalanceAction }) {
+  const { rebalance, event, status, running, showResult } = action;
+  return (
+    <>
       {rebalance.isError && (
         <p
           role="alert"
-          className="mt-3 rounded border border-red-300 bg-red-50 px-3 py-2 text-sm text-red-800"
+          className="rounded border border-red-300 bg-red-50 px-3 py-2 text-sm text-red-800"
         >
           {rebalanceErrorMessage(rebalance.error)}
         </p>
@@ -168,7 +198,7 @@ export function SessionRebalanceCard({ sessionId }: { sessionId: string }) {
           role="status"
           aria-live="polite"
           aria-atomic="true"
-          className="mt-3 flex items-center gap-2 text-sm font-medium text-slate-600"
+          className="flex items-center gap-2 text-sm font-medium text-slate-600"
         >
           <span
             aria-hidden="true"
@@ -185,33 +215,24 @@ export function SessionRebalanceCard({ sessionId }: { sessionId: string }) {
         </div>
       )}
 
-      {eventId !== null &&
-        terminal &&
-        event &&
-        status &&
-        status !== 'queued' &&
-        status !== 'running' && (
-          <div
-            role="alert"
-            className={`mt-3 rounded border px-3 py-2 text-sm ${TERMINAL_META[status].className}`}
-          >
-            <p className="font-semibold">{TERMINAL_META[status].label}</p>
-            {event.error && (
-              <p className="mt-1 whitespace-pre-wrap break-words">
-                {event.error}
-              </p>
-            )}
-            {event.actions_taken && event.actions_taken.length > 0 && (
-              <p className="mt-1">
-                {event.actions_taken.length} order
-                {event.actions_taken.length === 1 ? '' : 's'} placed.
-              </p>
-            )}
-            <RebalanceResult result={parseRebalanceResult(event.result_payload)} />
-          </div>
-        )}
-    </div>
+      {showResult && event && status && status !== 'queued' && status !== 'running' && (
+        <div
+          role="alert"
+          className={`rounded border px-3 py-2 text-sm ${TERMINAL_META[status].className}`}
+        >
+          <p className="font-semibold">{TERMINAL_META[status].label}</p>
+          {event.error && (
+            <p className="mt-1 whitespace-pre-wrap break-words">{event.error}</p>
+          )}
+          {event.actions_taken && event.actions_taken.length > 0 && (
+            <p className="mt-1">
+              {event.actions_taken.length} order
+              {event.actions_taken.length === 1 ? '' : 's'} placed.
+            </p>
+          )}
+          <RebalanceResult result={parseRebalanceResult(event.result_payload)} />
+        </div>
+      )}
+    </>
   );
 }
-
-export default SessionRebalanceCard;

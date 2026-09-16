@@ -131,7 +131,13 @@ describe('PaperTradingSessionPage', () => {
     expect(
       await screen.findByRole('heading', { name: 'ai-momentum' }),
     ).toBeInTheDocument();
-    expect(screen.getByText('AI rebalance')).toBeInTheDocument();
+    // The rebalance + close actions sit in the header's upper-right corner.
+    expect(
+      screen.getByRole('button', { name: 'Rebalance now' }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole('button', { name: 'Close portfolio' }),
+    ).toBeInTheDocument();
     expect(screen.getByRole('heading', { name: 'AI events' })).toBeInTheDocument();
     expect(screen.getByRole('heading', { name: 'Trades' })).toBeInTheDocument();
     expect(

@@ -6,8 +6,16 @@ import {
   useSessionPositions,
 } from '../../api/paperTrading';
 import { useSessionEvents } from '../../api/aiPortfolio';
-import { SessionRebalanceCard } from './SessionRebalanceCard';
-import { SessionCloseCard } from './SessionCloseCard';
+import {
+  useRebalanceAction,
+  RebalanceButton,
+  RebalanceFeedback,
+} from './SessionRebalanceCard';
+import {
+  useCloseAction,
+  CloseButton,
+  CloseFeedback,
+} from './SessionCloseCard';
 import { SessionValueChart } from './SessionValueChart';
 import { formatQuantity } from '../../lib/format';
 import type {
@@ -362,25 +370,58 @@ function EventsPanel({ sessionId }: { sessionId: string }) {
   );
 }
 
-function SessionHeader({ session }: { session: PaperTradingSession | undefined }) {
+function SessionHeader({
+  session,
+  sessionId,
+}: {
+  session: PaperTradingSession | undefined;
+  sessionId: string;
+}) {
+  // Action state lives here so the buttons can sit in the header's upper-right
+  // corner while their feedback (rebalance progress/result, close confirm
+  // dialog/summary) flows full-width below the facts.
+  const rebalance = useRebalanceAction(sessionId);
+  const close = useCloseAction(sessionId, session?.status);
+
+  const actions = (
+    <div className="flex flex-wrap items-center gap-2">
+      <RebalanceButton action={rebalance} />
+      <CloseButton action={close} />
+    </div>
+  );
+  const feedback =
+    rebalance.hasFeedback || close.hasFeedback ? (
+      <div className="mt-4 flex flex-col gap-3">
+        <RebalanceFeedback action={rebalance} />
+        <CloseFeedback action={close} />
+      </div>
+    ) : null;
+
   if (!session) {
     return (
-      <header className="flex flex-col gap-2">
-        <h1 className="text-2xl font-bold tracking-tight text-slate-900">
-          Session
-        </h1>
+      <header className="rounded-lg border border-slate-200 bg-white p-6 shadow-sm">
+        <div className="flex flex-wrap items-start justify-between gap-4">
+          <h1 className="text-2xl font-bold tracking-tight text-slate-900">
+            Session
+          </h1>
+          {actions}
+        </div>
+        {feedback}
       </header>
     );
   }
   return (
-    <header className="flex flex-col gap-3">
-      <div className="flex flex-wrap items-center gap-3">
-        <h1 className="text-2xl font-bold tracking-tight text-slate-900">
-          {session.strategy_key}
-        </h1>
-        <StatusBadge status={session.status} />
+    <header className="rounded-lg border border-slate-200 bg-white p-6 shadow-sm">
+      <div className="flex flex-wrap items-start justify-between gap-4">
+        <div className="flex flex-wrap items-center gap-3">
+          <h1 className="text-2xl font-bold tracking-tight text-slate-900">
+            {session.strategy_key}
+          </h1>
+          <StatusBadge status={session.status} />
+        </div>
+        {actions}
       </div>
-      <dl className="grid grid-cols-2 gap-4 sm:grid-cols-4">
+      <dl className="mt-4 grid grid-cols-2 gap-4 sm:grid-cols-4">
         <div>
           <dt className="text-xs font-semibold uppercase tracking-wide text-slate-500">
             Capital
@@ -410,6 +451,7 @@ function SessionHeader({ session }: { session: PaperTradingSession | undefined }
           <dd className="text-sm text-slate-900">{ts(session.last_run_at)}</dd>
         </div>
       </dl>
+      {feedback}
     </header>
   );
 }
@@ -423,10 +465,8 @@ export function PaperTradingSessionPage() {
   return (
     <section className="flex flex-col gap-6">
       <BackLink />
-      <SessionHeader session={session} />
+      <SessionHeader session={session} sessionId={id} />
       <SessionValueChart sessionId={id} />
-      <SessionRebalanceCard sessionId={id} />
-      <SessionCloseCard sessionId={id} status={session?.status} />
       <EventsPanel sessionId={id} />
       <TradesPanel sessionId={id} />
       <PositionsPanel sessionId={id} />

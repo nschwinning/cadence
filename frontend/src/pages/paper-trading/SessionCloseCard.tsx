@@ -40,7 +40,7 @@ function CloseResult({ result }: { result: AIPortfolioRunDetail }) {
   return (
     <div
       role="alert"
-      className="mt-3 rounded border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-800"
+      className="rounded border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-800"
     >
       <p className="font-semibold">Portfolio closed</p>
       <p className="mt-1">
@@ -62,18 +62,12 @@ function CloseResult({ result }: { result: AIPortfolioRunDetail }) {
 }
 
 /**
- * Close-portfolio action for an AI-managed session: liquidates every open
- * position immediately and stops the session. Guarded behind an explicit confirm
- * step because it is irreversible. The button is only enabled for an active
- * session; a stopped/paused session shows a disabled note instead.
+ * State + handlers for the close action, shared between the header button
+ * (upper-right corner) and the full-width feedback (confirm dialog, errors,
+ * liquidation summary) rendered below it. Call once per session and pass the
+ * result to {@link CloseButton} and {@link CloseFeedback}.
  */
-export function SessionCloseCard({
-  sessionId,
-  status,
-}: {
-  sessionId: string;
-  status: string | undefined;
-}) {
+export function useCloseAction(sessionId: string, status: string | undefined) {
   const close = useCloseSession(sessionId);
   const [confirming, setConfirming] = useState(false);
   const isActive = status === 'active';
@@ -83,39 +77,67 @@ export function SessionCloseCard({
     close.mutate(undefined, { onSuccess: () => setConfirming(false) });
   };
 
-  return (
-    <div className="rounded-lg border border-slate-200 bg-white p-6 shadow-sm">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div>
-          <h2 className="text-lg font-semibold text-slate-900">
-            Close portfolio
-          </h2>
-          <p className="mt-1 text-sm text-slate-500">
-            Immediately sell all open positions and stop this portfolio. This
-            can&rsquo;t be undone.
-          </p>
-        </div>
-        {!confirming && !done && (
-          <button
-            type="button"
-            onClick={() => setConfirming(true)}
-            disabled={!isActive || close.isPending}
-            className="rounded border border-red-300 bg-white px-4 py-2 font-medium text-red-700 hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-50"
-          >
-            Close portfolio
-          </button>
-        )}
-      </div>
+  // The trigger is hidden once the user is confirming or the close is done.
+  const canTrigger = !confirming && !done;
+  const hasFeedback =
+    (!isActive && !done) ||
+    confirming ||
+    close.isError ||
+    (done && Boolean(close.data));
 
+  return {
+    close,
+    status,
+    confirming,
+    setConfirming,
+    isActive,
+    done,
+    canTrigger,
+    hasFeedback,
+    handleConfirm,
+  };
+}
+
+export type CloseAction = ReturnType<typeof useCloseAction>;
+
+/** The "Close portfolio" trigger, sized to sit in the session header's corner. */
+export function CloseButton({ action }: { action: CloseAction }) {
+  const { close, isActive, canTrigger, setConfirming } = action;
+  if (!canTrigger) return null;
+  return (
+    <button
+      type="button"
+      onClick={() => setConfirming(true)}
+      disabled={!isActive || close.isPending}
+      className="rounded border border-red-300 bg-white px-4 py-2 font-medium text-red-700 hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-50"
+    >
+      Close portfolio
+    </button>
+  );
+}
+
+/** Not-active note, confirm dialog, error, and liquidation summary. */
+export function CloseFeedback({ action }: { action: CloseAction }) {
+  const {
+    close,
+    status,
+    confirming,
+    setConfirming,
+    isActive,
+    done,
+    handleConfirm,
+  } = action;
+  return (
+    <>
       {!isActive && !done && (
-        <p className="mt-3 text-sm text-slate-500">
+        <p className="text-sm text-slate-500">
           Only an active portfolio can be closed
           {status ? ` (this one is ${status})` : ''}.
         </p>
       )}
 
       {confirming && (
-        <div className="mt-3 flex flex-col gap-3 rounded border border-red-200 bg-red-50 p-3">
+        <div className="flex flex-col gap-3 rounded border border-red-200 bg-red-50 p-3">
           <p className="text-sm text-red-800">
             This liquidates every open position at market and stops the
             portfolio. Are you sure?
@@ -145,13 +167,51 @@ export function SessionCloseCard({
       {close.isError && (
         <p
           role="alert"
-          className="mt-3 rounded border border-red-300 bg-red-50 px-3 py-2 text-sm text-red-800"
+          className="rounded border border-red-300 bg-red-50 px-3 py-2 text-sm text-red-800"
         >
           {closeErrorMessage(close.error)}
         </p>
       )}
 
       {done && close.data && <CloseResult result={close.data} />}
+    </>
+  );
+}
+
+/**
+ * Close-portfolio action for an AI-managed session: liquidates every open
+ * position immediately and stops the session. Guarded behind an explicit confirm
+ * step because it is irreversible. The button is only enabled for an active
+ * session; a stopped/paused session shows a disabled note instead. Composes the
+ * shared hook + button + feedback into a single self-contained card.
+ */
+export function SessionCloseCard({
+  sessionId,
+  status,
+}: {
+  sessionId: string;
+  status: string | undefined;
+}) {
+  const action = useCloseAction(sessionId, status);
+  return (
+    <div className="rounded-lg border border-slate-200 bg-white p-6 shadow-sm">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <h2 className="text-lg font-semibold text-slate-900">
+            Close portfolio
+          </h2>
+          <p className="mt-1 text-sm text-slate-500">
+            Immediately sell all open positions and stop this portfolio. This
+            can&rsquo;t be undone.
+          </p>
+        </div>
+        <CloseButton action={action} />
+      </div>
+      {action.hasFeedback && (
+        <div className="mt-3 flex flex-col gap-3">
+          <CloseFeedback action={action} />
+        </div>
+      )}
     </div>
   );
 }
