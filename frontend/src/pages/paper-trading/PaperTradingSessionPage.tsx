@@ -460,6 +460,14 @@ function SessionHeader({
           </dt>
           <dd className="text-sm text-slate-900">{ts(session.last_run_at)}</dd>
         </div>
+        <div>
+          <dt className="text-xs font-semibold uppercase tracking-wide text-slate-500">
+            Prompt version
+          </dt>
+          <dd className="text-sm text-slate-900">
+            v{session.rebalance_prompt_version}
+          </dd>
+        </div>
       </dl>
       {feedback}
     </header>

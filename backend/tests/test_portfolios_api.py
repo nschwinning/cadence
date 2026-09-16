@@ -106,8 +106,7 @@ def test_archive_portfolio_with_active_session_conflicts(
     )
     portfolio_id = created.json()["id"]
     paper_service.create_session(
-        db_session, portfolio_id=uuid.UUID(portfolio_id), strategy_key="active"
-    )
+        db_session, portfolio_id=uuid.UUID(portfolio_id), strategy_key="active", rebalance_prompt_version=1)
     resp = client.post(f"/api/v1/portfolios/{portfolio_id}/archive")
     assert resp.status_code == 409
 

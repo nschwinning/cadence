@@ -33,6 +33,7 @@ const session: PaperTradingSession = {
   session_metadata: null,
   schedule_mode: 'DAILY_REBALANCING',
   archived_at: null,
+  rebalance_prompt_version: 1,
 };
 
 function renderWithClient(ui: ReactNode) {

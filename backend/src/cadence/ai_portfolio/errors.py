@@ -21,3 +21,7 @@ class EventNotFoundError(AIPortfolioError):
 
 class SessionNotEligibleError(AIPortfolioError):
     """The session cannot be rebalanced (not AI-managed, or not active)."""
+
+
+class RebalancePromptNotFoundError(AIPortfolioError):
+    """No rebalance prompt version exists in the database to run against."""

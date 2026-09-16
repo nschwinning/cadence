@@ -101,3 +101,29 @@ class AIPortfolioEvent(Base):
         onupdate=func.now(),
         nullable=False,
     )
+
+
+class RebalancePrompt(Base):
+    """A versioned prompt for the AI rebalance agent.
+
+    Append-only: each edit inserts a new row with a higher ``version``; the
+    **active** prompt is the row with the highest version (no ``is_active`` flag to
+    keep in sync). ``instructions`` is the agent's system-instructions template and
+    ``input_template`` the per-run input template; both keep ``{name}`` placeholders
+    (the reasoning/discovery caps on the instructions; the risk profile, holdings,
+    account summary, and candidate universe on the input) that the agent fills at
+    run time. Version 1 is seeded by migration with the prompt in use at that time,
+    so behavior is unchanged on first deploy.
+    """
+
+    __tablename__ = "rebalance_prompt"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    version: Mapped[int] = mapped_column(
+        Integer, nullable=False, unique=True, index=True
+    )
+    instructions: Mapped[str] = mapped_column(Text, nullable=False)
+    input_template: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )

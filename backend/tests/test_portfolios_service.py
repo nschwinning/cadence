@@ -122,8 +122,7 @@ def _session(
     status: SessionStatus | None = None,
 ) -> None:
     sess = paper_service.create_session(
-        db_session, portfolio_id=portfolio_id, strategy_key=strategy_key
-    )
+        db_session, portfolio_id=portfolio_id, strategy_key=strategy_key, rebalance_prompt_version=1)
     if status is not None:
         paper_service.update_session_status(db_session, sess.id, status)
 

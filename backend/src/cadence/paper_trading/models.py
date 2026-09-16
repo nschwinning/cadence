@@ -132,6 +132,12 @@ class PaperTradingSession(Base):
     archived_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True, index=True
     )
+    # The rebalance-prompt version frozen onto this session at build time. Every
+    # rebalance for the session uses this pinned version rather than whatever is
+    # active later, so adding a newer prompt version never changes an already-built
+    # session's behavior. Non-nullable: set on every build and backfilled for
+    # pre-existing sessions by the migration.
+    rebalance_prompt_version: Mapped[int] = mapped_column(Integer, nullable=False)
 
     trades: Mapped[list[PaperTrade]] = relationship(
         back_populates="session",

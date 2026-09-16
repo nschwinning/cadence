@@ -38,10 +38,11 @@ from cadence.ai_portfolio.constants import (
 from cadence.ai_portfolio.errors import (
     AIPortfolioValidationError,
     EventNotFoundError,
+    RebalancePromptNotFoundError,
     SessionNotEligibleError,
 )
 from cadence.ai_portfolio.executor import AIPortfolioExecutor, TradeResult
-from cadence.ai_portfolio.models import AIPortfolioEvent
+from cadence.ai_portfolio.models import AIPortfolioEvent, RebalancePrompt
 from cadence.assets import service as assets_service
 from cadence.assets.category import AssetCategory, AssetScope, scope_categories
 from cadence.assets.market_data import MarketDataProvider
@@ -291,10 +292,14 @@ def run_build_event(
             if params.daily_rebalancing
             else ScheduleMode.MANUAL
         )
+        # Freeze the currently active rebalance-prompt version onto the session so
+        # every rebalance for it uses this version, regardless of later prompt edits.
+        frozen_prompt_version = get_active_rebalance_prompt(session).version
         session_row = paper_service.create_session(
             session,
             portfolio_id=portfolio.id,
             strategy_key=AI_STRATEGY_KEY,
+            rebalance_prompt_version=frozen_prompt_version,
             allocated_capital=params.allocated_capital,
             max_allocation_pct=portfolio.max_allocation_pct,
             schedule_mode=schedule_mode,
@@ -374,6 +379,43 @@ def run_build_event(
 # --------------------------------------------------------------------------- #
 # Rebalance flow
 # --------------------------------------------------------------------------- #
+
+
+def get_active_rebalance_prompt(session: Session) -> RebalancePrompt:
+    """Return the active rebalance prompt: the row with the highest ``version``.
+
+    The prompt is stored append-only and versioned (see :class:`RebalancePrompt`);
+    "active" is simply the latest version. Migration seeds version 1, so a row
+    normally always exists.
+
+    Raises:
+        RebalancePromptNotFoundError: if no prompt version has been persisted.
+    """
+    stmt = select(RebalancePrompt).order_by(RebalancePrompt.version.desc()).limit(1)
+    prompt = session.execute(stmt).scalars().first()
+    if prompt is None:
+        raise RebalancePromptNotFoundError(
+            "no rebalance prompt is configured; seed version 1 before rebalancing"
+        )
+    return prompt
+
+
+def get_rebalance_prompt_by_version(session: Session, version: int) -> RebalancePrompt:
+    """Return the rebalance prompt pinned at ``version``.
+
+    Used to resolve a session's frozen rebalance-prompt version so every rebalance
+    for that session uses the same prompt, regardless of later prompt edits.
+
+    Raises:
+        RebalancePromptNotFoundError: if no prompt with that version exists.
+    """
+    stmt = select(RebalancePrompt).where(RebalancePrompt.version == version)
+    prompt = session.execute(stmt).scalars().first()
+    if prompt is None:
+        raise RebalancePromptNotFoundError(
+            f"rebalance prompt version {version} not found"
+        )
+    return prompt
 
 
 def run_rebalance_event(
@@ -480,12 +522,20 @@ def run_rebalance_event(
             "total_unrealized_pnl": account.unrealized_pnl,
         }
 
+        # Use the prompt version frozen onto the session at build time, not
+        # whatever is active now, so newer prompt versions never change an
+        # already-built session's behavior.
+        prompt = get_rebalance_prompt_by_version(
+            session, session_row.rebalance_prompt_version
+        )
         with record_web_searches() as research:
             result = agent.rebalance(
                 holdings=holdings,
                 account_summary=account_summary,
                 candidates=candidates,
                 risk_profile=risk_profile,
+                instructions=prompt.instructions,
+                input_template=prompt.input_template,
             )
         agent_output = result.model_dump(mode="json")
 

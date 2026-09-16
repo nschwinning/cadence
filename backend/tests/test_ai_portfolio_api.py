@@ -263,8 +263,7 @@ def test_session_rebalance_non_eligible_rejected(
         db_session, name="Manual", stocks=["AAPL"]
     )
     session_row = paper_service.create_session(
-        db_session, portfolio_id=portfolio.id, strategy_key="momentum"
-    )
+        db_session, portfolio_id=portfolio.id, strategy_key="momentum", rebalance_prompt_version=1)
     resp = client.post(
         f"/api/v1/ai-portfolio/sessions/{session_row.id}/rebalance"
     )
@@ -323,6 +322,8 @@ def test_list_runs_and_detail(client: TestClient, db_session: Session) -> None:
     assert opened == {"AAPL", "MSFT"}
     assert all(t["ai_portfolio_event_id"] == run["id"] for t in detail_body["trades"])
     assert detail_body["closed_positions"] == []
+    # The run detail surfaces the prompt version frozen on its session.
+    assert detail_body["rebalance_prompt_version"] == 1
 
     # Filtering by a non-matching type yields an empty page.
     rebalances = client.get("/api/v1/ai-portfolio/runs", params={"event_type": "rebalance"})
@@ -389,8 +390,7 @@ def test_close_non_eligible_session_rejected(
         db_session, name="Manual", stocks=["AAPL"]
     )
     session_row = paper_service.create_session(
-        db_session, portfolio_id=portfolio.id, strategy_key="momentum"
-    )
+        db_session, portfolio_id=portfolio.id, strategy_key="momentum", rebalance_prompt_version=1)
     resp = client.post(f"/api/v1/ai-portfolio/sessions/{session_row.id}/close")
     assert resp.status_code == 409
 
@@ -468,8 +468,7 @@ def test_reconcile_daily_aggregates_across_sessions(
         db_session, name="P", stocks=["AAPL"]
     )
     sess = paper_service.create_session(
-        db_session, portfolio_id=portfolio.id, strategy_key="recon"
-    )
+        db_session, portfolio_id=portfolio.id, strategy_key="recon", rebalance_prompt_version=1)
     paper_service.record_trade(
         db_session,
         session_id=sess.id,
@@ -511,11 +510,9 @@ def test_reconcile_daily_one_failing_session_does_not_abort(
         db_session, name="P", stocks=["AAPL"]
     )
     bad = paper_service.create_session(
-        db_session, portfolio_id=portfolio.id, strategy_key="bad"
-    )
+        db_session, portfolio_id=portfolio.id, strategy_key="bad", rebalance_prompt_version=1)
     good = paper_service.create_session(
-        db_session, portfolio_id=portfolio.id, strategy_key="good"
-    )
+        db_session, portfolio_id=portfolio.id, strategy_key="good", rebalance_prompt_version=1)
 
     real_reconcile = paper_service.reconcile_session_orders
 

@@ -41,8 +41,7 @@ def _portfolio(db_session: Session) -> Portfolio:
 def test_create_session_defaults(db_session: Session) -> None:
     portfolio = _portfolio(db_session)
     sess = service.create_session(
-        db_session, portfolio_id=portfolio.id, strategy_key="momentum"
-    )
+        db_session, portfolio_id=portfolio.id, strategy_key="momentum", rebalance_prompt_version=1)
     assert sess.id is not None
     assert sess.portfolio_id == portfolio.id
     assert sess.status == SessionStatus.ACTIVE.value
@@ -55,12 +54,10 @@ def test_create_session_defaults(db_session: Session) -> None:
 def test_duplicate_portfolio_strategy_raises(db_session: Session) -> None:
     portfolio = _portfolio(db_session)
     service.create_session(
-        db_session, portfolio_id=portfolio.id, strategy_key="momentum"
-    )
+        db_session, portfolio_id=portfolio.id, strategy_key="momentum", rebalance_prompt_version=1)
     with pytest.raises(DuplicateSessionError):
         service.create_session(
-            db_session, portfolio_id=portfolio.id, strategy_key="momentum"
-        )
+            db_session, portfolio_id=portfolio.id, strategy_key="momentum", rebalance_prompt_version=1)
 
 
 def test_get_and_not_found(db_session: Session) -> None:
@@ -68,8 +65,7 @@ def test_get_and_not_found(db_session: Session) -> None:
 
     portfolio = _portfolio(db_session)
     sess = service.create_session(
-        db_session, portfolio_id=portfolio.id, strategy_key="s"
-    )
+        db_session, portfolio_id=portfolio.id, strategy_key="s", rebalance_prompt_version=1)
     assert service.get_session(db_session, sess.id).id == sess.id
     with pytest.raises(SessionNotFoundError):
         service.get_session(db_session, uuid.uuid4())
@@ -78,8 +74,7 @@ def test_get_and_not_found(db_session: Session) -> None:
 def test_record_trade_derives_notional(db_session: Session) -> None:
     portfolio = _portfolio(db_session)
     sess = service.create_session(
-        db_session, portfolio_id=portfolio.id, strategy_key="s"
-    )
+        db_session, portfolio_id=portfolio.id, strategy_key="s", rebalance_prompt_version=1)
     trade = service.record_trade(
         db_session,
         session_id=sess.id,
@@ -99,8 +94,7 @@ def test_record_trade_derives_notional(db_session: Session) -> None:
 def test_record_run(db_session: Session) -> None:
     portfolio = _portfolio(db_session)
     sess = service.create_session(
-        db_session, portfolio_id=portfolio.id, strategy_key="s"
-    )
+        db_session, portfolio_id=portfolio.id, strategy_key="s", rebalance_prompt_version=1)
     run = service.record_session_run(
         db_session,
         session_id=sess.id,
@@ -123,8 +117,7 @@ def test_record_run(db_session: Session) -> None:
 def test_record_closed_position_computes_pnl(db_session: Session) -> None:
     portfolio = _portfolio(db_session)
     sess = service.create_session(
-        db_session, portfolio_id=portfolio.id, strategy_key="s"
-    )
+        db_session, portfolio_id=portfolio.id, strategy_key="s", rebalance_prompt_version=1)
     entry = datetime(2026, 1, 1, tzinfo=UTC)
     exit_ = entry + timedelta(days=10)
     pos = service.record_closed_position(
@@ -146,8 +139,7 @@ def test_record_closed_position_computes_pnl(db_session: Session) -> None:
 def test_update_last_run_and_status(db_session: Session) -> None:
     portfolio = _portfolio(db_session)
     sess = service.create_session(
-        db_session, portfolio_id=portfolio.id, strategy_key="s"
-    )
+        db_session, portfolio_id=portfolio.id, strategy_key="s", rebalance_prompt_version=1)
     updated = service.update_session_last_run(
         db_session, sess.id, trades_delta=3, pnl_delta=42.5
     )
@@ -164,11 +156,9 @@ def test_update_last_run_and_status(db_session: Session) -> None:
 def test_list_sessions_filter_by_status(db_session: Session) -> None:
     portfolio = _portfolio(db_session)
     active = service.create_session(
-        db_session, portfolio_id=portfolio.id, strategy_key="a"
-    )
+        db_session, portfolio_id=portfolio.id, strategy_key="a", rebalance_prompt_version=1)
     stopped = service.create_session(
-        db_session, portfolio_id=portfolio.id, strategy_key="b"
-    )
+        db_session, portfolio_id=portfolio.id, strategy_key="b", rebalance_prompt_version=1)
     service.update_session_status(db_session, stopped.id, SessionStatus.STOPPED)
 
     active_ids = [
@@ -186,8 +176,7 @@ def test_list_sessions_filter_by_status(db_session: Session) -> None:
 def _stopped_session(db_session: Session, strategy_key: str = "s") -> object:
     portfolio = _portfolio(db_session)
     sess = service.create_session(
-        db_session, portfolio_id=portfolio.id, strategy_key=strategy_key
-    )
+        db_session, portfolio_id=portfolio.id, strategy_key=strategy_key, rebalance_prompt_version=1)
     return service.update_session_status(
         db_session, sess.id, SessionStatus.STOPPED
     )
@@ -204,8 +193,7 @@ def test_archive_stopped_session_sets_timestamp(db_session: Session) -> None:
 def test_archive_rejects_active_or_paused(db_session: Session) -> None:
     portfolio = _portfolio(db_session)
     active = service.create_session(
-        db_session, portfolio_id=portfolio.id, strategy_key="a"
-    )
+        db_session, portfolio_id=portfolio.id, strategy_key="a", rebalance_prompt_version=1)
     with pytest.raises(SessionNotArchivableError):
         service.archive_session(db_session, active.id)
 
@@ -253,8 +241,7 @@ def test_archive_unknown_session_raises(db_session: Session) -> None:
 def _ledger_session(db_session: Session) -> object:
     portfolio = _portfolio(db_session)
     return service.create_session(
-        db_session, portfolio_id=portfolio.id, strategy_key="ledger"
-    )
+        db_session, portfolio_id=portfolio.id, strategy_key="ledger", rebalance_prompt_version=1)
 
 
 def test_apply_fill_to_ledger_opens_and_averages_up(db_session: Session) -> None:
@@ -328,11 +315,9 @@ def test_apply_fill_to_ledger_partial_sell_then_full_exit(db_session: Session) -
 def test_list_open_positions_scoped_to_session(db_session: Session) -> None:
     portfolio = _portfolio(db_session)
     a = service.create_session(
-        db_session, portfolio_id=portfolio.id, strategy_key="a"
-    )
+        db_session, portfolio_id=portfolio.id, strategy_key="a", rebalance_prompt_version=1)
     b = service.create_session(
-        db_session, portfolio_id=portfolio.id, strategy_key="b"
-    )
+        db_session, portfolio_id=portfolio.id, strategy_key="b", rebalance_prompt_version=1)
     service.apply_fill_to_ledger(
         db_session, session_id=a.id, ticker="AAPL", side=OrderSide.BUY,
         shares=5, price=50.0,
@@ -625,8 +610,7 @@ def _ai_session(db_session: Session) -> object:
         db_session,
         portfolio_id=portfolio.id,
         strategy_key="ai_buy_hold",
-        allocated_capital=100_000.0,
-    )
+        allocated_capital=100_000.0, rebalance_prompt_version=1)
 
 
 def _buy(db_session: Session, session_id: object, ticker: str, qty: float, price: float) -> None:

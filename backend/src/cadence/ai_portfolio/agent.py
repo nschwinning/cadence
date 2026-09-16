@@ -134,29 +134,20 @@ Discovery and cost controls:
 """
 
 
-def _rebalance_instructions() -> str:
-    return f"""
-You are a portfolio manager reviewing an existing LONG-ONLY buy-and-hold portfolio.
-Given the current holdings, account summary, and the full candidate universe, decide the
-desired END-STATE target weights for the portfolio and return them as target_allocations.
+def _render(template: str, **values: str) -> str:
+    """Fill ``{name}`` placeholders in ``template`` by explicit token replacement.
 
-Requirements:
-- All positions are LONG; never propose short positions
-- Return desired end-state target weights (allocation_pct in 0.0-1.0) per ticker
-- allocation_pct values across all target_allocations must sum to approximately 1.0
-- Any asset that should be EXITED must be omitted (or given a ~0 target weight)
-- Be conservative: buy-and-hold means holding through normal volatility, so only
-  change weights materially when there are real, evidence-based reasons
-- Use the web_search tool to check latest news and fundamentals
-- Candidates may include crypto assets (shown via their ``category``); crypto uses
-  yfinance-style tickers like ``BTC-USD`` and trades 24/7. Weight any crypto
-  according to the portfolio's risk profile.
-
-Discovery and cost controls:
-- You may include assets NOT in the current holdings or universe if compelling.
-- You may discover at most {settings.AI_PORTFOLIO_MAX_NEW_ASSETS} assets beyond the universe.
-- Perform at most {settings.AI_PORTFOLIO_MAX_WEB_SEARCHES} web searches total across this task; batch your research.
-"""
+    Deliberately not ``str.format``: the rebalance input embeds JSON blobs and a
+    prompt version may contain literal ``{``/``}``; explicit replacement is
+    brace-safe and only touches the known keys. The rebalance instructions and
+    input templates are stored versioned in the database (see
+    :class:`cadence.ai_portfolio.models.RebalancePrompt`); this renders them with
+    the run's values exactly as the previous hardcoded f-strings did.
+    """
+    rendered = template
+    for key, value in values.items():
+        rendered = rendered.replace("{" + key + "}", value)
+    return rendered
 
 
 def _build_portfolio_input(
@@ -175,29 +166,20 @@ Candidate universe (JSON):
 
 
 def _build_rebalance_input(
+    input_template: str,
     holdings: list[dict[str, Any]],
     account_summary: dict[str, Any],
     candidates: list[dict[str, Any]],
     risk_profile: str,
 ) -> str:
-    holdings_json = json.dumps(holdings, indent=2)
-    account_json = json.dumps(account_summary, indent=2)
-    candidates_json = json.dumps(candidates, indent=2)
-    return f"""
-Review this portfolio and return the desired end-state target weights (target_allocations)
-for a {risk_profile} long-only buy-and-hold portfolio.
-All positions are long only. Weights across all targets must sum to approximately 1.0.
-Omit (or set to ~0) any asset that should be exited.
-
-Current Holdings:
-{holdings_json}
-
-Account Summary:
-{account_json}
-
-Candidate universe (JSON):
-{candidates_json}
-"""
+    """Render the versioned rebalance ``input_template`` with the run's values."""
+    return _render(
+        input_template,
+        risk_profile=risk_profile,
+        holdings_json=json.dumps(holdings, indent=2),
+        account_json=json.dumps(account_summary, indent=2),
+        candidates_json=json.dumps(candidates, indent=2),
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -242,15 +224,25 @@ def rebalance_ai_portfolio(
     holdings: list[dict[str, Any]],
     account_summary: dict[str, Any],
     candidates: list[dict[str, Any]],
-    risk_profile: str = "balanced",
+    risk_profile: str,
+    instructions: str,
+    input_template: str,
 ) -> AIRebalanceResult:
-    """Run the rebalance agent and return its validated :class:`AIRebalanceResult`."""
+    """Run the rebalance agent and return its validated :class:`AIRebalanceResult`.
+
+    ``instructions`` and ``input_template`` are the active versioned prompt loaded
+    from the database by the caller; both may carry ``{name}`` placeholders that
+    are filled here (the reasoning/discovery caps on the instructions; the run
+    values on the input template).
+    """
     return asyncio.run(
         _run_rebalance(
             holdings=holdings,
             account_summary=account_summary,
             candidates=candidates,
             risk_profile=risk_profile,
+            instructions=instructions,
+            input_template=input_template,
         )
     )
 
@@ -260,10 +252,16 @@ async def _run_rebalance(
     account_summary: dict[str, Any],
     candidates: list[dict[str, Any]],
     risk_profile: str,
+    instructions: str,
+    input_template: str,
 ) -> AIRebalanceResult:
     agent = build_agent(
         name="AIRebalanceEvaluatorAgent",
-        instructions=_rebalance_instructions(),
+        instructions=_render(
+            instructions,
+            max_new_assets=str(settings.AI_PORTFOLIO_MAX_NEW_ASSETS),
+            max_web_searches=str(settings.AI_PORTFOLIO_MAX_WEB_SEARCHES),
+        ),
         output_type=AIRebalanceResult,
         tools=[web_search],
         model=settings.AI_PORTFOLIO_MODEL,
@@ -274,7 +272,7 @@ async def _run_rebalance(
             Runner.run(
                 agent,
                 _build_rebalance_input(
-                    holdings, account_summary, candidates, risk_profile
+                    input_template, holdings, account_summary, candidates, risk_profile
                 ),
                 max_turns=settings.AI_PORTFOLIO_MAX_TURNS,
             ),
@@ -312,8 +310,14 @@ class AIPortfolioAgent(Protocol):
         account_summary: dict[str, Any],
         candidates: list[dict[str, Any]],
         risk_profile: str,
+        instructions: str,
+        input_template: str,
     ) -> AIRebalanceResult:
-        """Return the agent's structured rebalance target weights."""
+        """Return the agent's structured rebalance target weights.
+
+        ``instructions``/``input_template`` are the active versioned prompt the
+        caller loaded from the database (both may carry ``{name}`` placeholders).
+        """
         ...
 
 
@@ -333,10 +337,14 @@ class OpenAIAIPortfolioAgent:
         account_summary: dict[str, Any],
         candidates: list[dict[str, Any]],
         risk_profile: str,
+        instructions: str,
+        input_template: str,
     ) -> AIRebalanceResult:
         return rebalance_ai_portfolio(
             holdings=holdings,
             account_summary=account_summary,
             candidates=candidates,
             risk_profile=risk_profile,
+            instructions=instructions,
+            input_template=input_template,
         )

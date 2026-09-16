@@ -72,6 +72,34 @@ def test_engine() -> Iterator[Engine]:
         engine.dispose()
 
 
+def _seed_rebalance_prompt(session: Session) -> None:
+    """Seed the active rebalance prompt, mirroring production's migration seed.
+
+    In production the ``rebalance_prompt`` table always holds version 1 (seeded by
+    migration); the test schema is built from the ORM models with no migrations, so
+    seed it here for every DB-backed test. Seeded inside the test's rolled-back
+    transaction. Tests exercising the empty-table path clear it explicitly.
+    """
+    from cadence.ai_portfolio.models import RebalancePrompt
+
+    session.add(
+        RebalancePrompt(
+            version=1,
+            instructions=(
+                "Rebalance instructions (test seed). "
+                "caps: {max_new_assets}/{max_web_searches}"
+            ),
+            input_template=(
+                "Rebalance {risk_profile} portfolio.\n"
+                "Holdings:\n{holdings_json}\n"
+                "Account:\n{account_json}\n"
+                "Candidates:\n{candidates_json}\n"
+            ),
+        )
+    )
+    session.flush()
+
+
 @pytest.fixture
 def db_session(test_engine: Engine) -> Iterator[Session]:
     """A session bound to a rolled-back outer transaction (savepoint mode)."""
@@ -82,6 +110,7 @@ def db_session(test_engine: Engine) -> Iterator[Session]:
         join_transaction_mode="create_savepoint",
         expire_on_commit=False,
     )
+    _seed_rebalance_prompt(session)
     try:
         yield session
     finally:

@@ -211,6 +211,7 @@ def close_session_endpoint(
         event=AIPortfolioEventRead.model_validate(event),
         trades=[PaperTradeRead.model_validate(t) for t in trades],
         closed_positions=[ClosedPositionRead.model_validate(c) for c in closed],
+        rebalance_prompt_version=_resolve_prompt_version(db, event.session_id),
     )
 
 
@@ -381,7 +382,20 @@ def get_ai_run_detail(
         event=AIPortfolioEventRead.model_validate(event),
         trades=[PaperTradeRead.model_validate(t) for t in trades],
         closed_positions=[ClosedPositionRead.model_validate(c) for c in closed],
+        rebalance_prompt_version=_resolve_prompt_version(db, event.session_id),
     )
+
+
+def _resolve_prompt_version(
+    db: Session, session_id: uuid.UUID | None
+) -> int | None:
+    """The rebalance-prompt version frozen on the run's session, or None if it has none."""
+    if session_id is None:
+        return None
+    try:
+        return paper_service.get_session(db, session_id).rebalance_prompt_version
+    except SessionNotFoundError:
+        return None
 
 
 def _require_eligible_session(db: Session, session_id: uuid.UUID) -> None:

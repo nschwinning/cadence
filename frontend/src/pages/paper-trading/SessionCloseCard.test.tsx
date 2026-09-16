@@ -56,6 +56,7 @@ const RUN_DETAIL: AIPortfolioRunDetail = {
   },
   trades: [],
   closed_positions: [closedPosition('AAPL', 250), closedPosition('MSFT', -50)],
+  rebalance_prompt_version: 1,
 };
 
 function renderCard(ui: ReactNode) {

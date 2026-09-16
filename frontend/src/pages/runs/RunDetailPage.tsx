@@ -479,7 +479,13 @@ function ClosedPositionsCard({ positions }: { positions: ClosedPosition[] }) {
   );
 }
 
-function RunHeader({ event }: { event: AIPortfolioEvent }) {
+function RunHeader({
+  event,
+  promptVersion,
+}: {
+  event: AIPortfolioEvent;
+  promptVersion: number | null;
+}) {
   return (
     <header className="flex flex-col gap-3">
       <div className="flex flex-wrap items-center gap-3">
@@ -518,6 +524,14 @@ function RunHeader({ event }: { event: AIPortfolioEvent }) {
             ) : (
               '—'
             )}
+          </dd>
+        </div>
+        <div>
+          <dt className="text-xs font-semibold uppercase tracking-wide text-slate-500">
+            Prompt version
+          </dt>
+          <dd className="text-sm text-slate-900">
+            {promptVersion === null ? '—' : `v${promptVersion}`}
           </dd>
         </div>
         <div>
@@ -565,7 +579,10 @@ export function RunDetailPage() {
 
       {!isPending && !isError && data && (
         <>
-          <RunHeader event={data.event} />
+          <RunHeader
+            event={data.event}
+            promptVersion={data.rebalance_prompt_version}
+          />
           <Reasoning event={data.event} />
           <ResearchCard research={data.event.research} />
           <TradesCard trades={data.trades} />

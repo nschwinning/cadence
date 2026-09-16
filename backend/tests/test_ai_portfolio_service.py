@@ -27,8 +27,10 @@ from cadence.ai_portfolio.agent import (
 from cadence.ai_portfolio.constants import EventStatus, EventType
 from cadence.ai_portfolio.errors import (
     AIPortfolioValidationError,
+    RebalancePromptNotFoundError,
     SessionNotEligibleError,
 )
+from cadence.ai_portfolio.models import RebalancePrompt
 from cadence.ai_portfolio.service import AIBuildParams
 from cadence.assets import service as assets_service
 from cadence.assets.market_data import AssetInfo, HistoryBar
@@ -318,6 +320,142 @@ def test_run_rebalance_event_market_closed_is_skipped(db_session: Session) -> No
     assert any(r.details and r.details[0].get("skipped") for r in runs)
 
 
+def _flat_rebalance_result() -> AIRebalanceResult:
+    return AIRebalanceResult(
+        evaluation_summary="ok",
+        target_allocations=[
+            AITargetAllocation(
+                ticker="AAPL",
+                company_name="Apple",
+                allocation_pct=1.0,
+                investment_thesis="keep",
+                confidence=0.9,
+            )
+        ],
+        portfolio_health="healthy",
+    )
+
+
+def test_get_active_rebalance_prompt_returns_highest_version(
+    db_session: Session,
+) -> None:
+    # conftest seeds version 1; a newer version supersedes it as the active prompt.
+    db_session.add(
+        RebalancePrompt(
+            version=2,
+            instructions="v2 instructions",
+            input_template="v2 input {risk_profile}",
+        )
+    )
+    db_session.flush()
+
+    active = service.get_active_rebalance_prompt(db_session)
+    assert active.version == 2
+    assert active.instructions == "v2 instructions"
+
+
+def test_run_build_event_freezes_active_prompt_version(db_session: Session) -> None:
+    # A higher version is active at build time, so the session must freeze it.
+    db_session.add(
+        RebalancePrompt(
+            version=7,
+            instructions="v7 instructions {max_new_assets}",
+            input_template="v7 input {risk_profile}",
+        )
+    )
+    db_session.flush()
+
+    provider = _seed_universe(db_session, "AAPL", "MSFT")
+    broker = StubBroker()
+    session_id, _ = _seed_session(db_session, broker, provider)
+
+    session_row = paper_service.get_session(db_session, session_id)
+    assert session_row.rebalance_prompt_version == 7
+
+
+def test_run_rebalance_event_uses_frozen_version(db_session: Session) -> None:
+    provider = _seed_universe(db_session, "AAPL", "MSFT")
+    broker = StubBroker()
+    # Build freezes the conftest-seeded active version (1) onto the session.
+    session_id, _ = _seed_session(db_session, broker, provider)
+    session_row = paper_service.get_session(db_session, session_id)
+    assert session_row.rebalance_prompt_version == 1
+
+    # A newer version becomes active AFTER the build; the frozen v1 must still win.
+    db_session.add(
+        RebalancePrompt(
+            version=99,
+            instructions="ACTIVE instructions {max_new_assets}",
+            input_template="ACTIVE input {risk_profile} {candidates_json}",
+        )
+    )
+    db_session.flush()
+
+    rebalance = FakeAIPortfolioAgent(rebalance_result=_flat_rebalance_result())
+    rb_event = service.create_rebalance_event(db_session, session_id)
+    service.run_rebalance_event(db_session, rb_event.id, rebalance, broker, provider)
+
+    assert rebalance.rebalance_calls
+    call = rebalance.rebalance_calls[0]
+    # The service passes the session's FROZEN (v1, conftest seed) templates through,
+    # not the now-active v99; placeholder rendering happens inside the real agent.
+    assert call["instructions"].startswith("Rebalance instructions (test seed).")
+    assert call["input_template"].startswith("Rebalance {risk_profile} portfolio.")
+
+
+def test_run_rebalance_event_fails_when_frozen_version_missing(
+    db_session: Session,
+) -> None:
+    provider = _seed_universe(db_session, "AAPL", "MSFT")
+    broker = StubBroker()
+    session_id, _ = _seed_session(db_session, broker, provider)
+
+    # Delete the session's frozen prompt version so it can no longer be resolved,
+    # even though other versions may exist.
+    frozen = paper_service.get_session(db_session, session_id).rebalance_prompt_version
+    db_session.query(RebalancePrompt).filter_by(version=frozen).delete()
+    db_session.flush()
+
+    rebalance = FakeAIPortfolioAgent(rebalance_result=_flat_rebalance_result())
+    rb_event = service.create_rebalance_event(db_session, session_id)
+    service.run_rebalance_event(db_session, rb_event.id, rebalance, broker, provider)
+
+    refreshed = service.get_event(db_session, rb_event.id)
+    assert refreshed.status == EventStatus.FAILED.value
+    assert "prompt" in (refreshed.error or "").lower()
+    # The agent is never consulted without a resolvable prompt.
+    assert rebalance.rebalance_calls == []
+
+
+def test_get_rebalance_prompt_by_version_returns_row(db_session: Session) -> None:
+    db_session.add(
+        RebalancePrompt(
+            version=5,
+            instructions="v5 instructions",
+            input_template="v5 input {risk_profile}",
+        )
+    )
+    db_session.flush()
+
+    prompt = service.get_rebalance_prompt_by_version(db_session, 5)
+    assert prompt.version == 5
+    assert prompt.instructions == "v5 instructions"
+
+
+def test_get_rebalance_prompt_by_version_raises_when_unknown(
+    db_session: Session,
+) -> None:
+    with pytest.raises(RebalancePromptNotFoundError):
+        service.get_rebalance_prompt_by_version(db_session, 12345)
+
+
+def test_get_active_rebalance_prompt_raises_when_empty(db_session: Session) -> None:
+    db_session.query(RebalancePrompt).delete()
+    db_session.flush()
+    with pytest.raises(RebalancePromptNotFoundError):
+        service.get_active_rebalance_prompt(db_session)
+
+
 def test_run_rebalance_event_trades_toward_targets_and_updates_stocks(
     db_session: Session,
 ) -> None:
@@ -529,8 +667,7 @@ def test_close_session_rejects_non_ai_session(db_session: Session) -> None:
         db_session, name="Manual", stocks=["AAPL"]
     )
     session_row = paper_service.create_session(
-        db_session, portfolio_id=portfolio.id, strategy_key="momentum"
-    )
+        db_session, portfolio_id=portfolio.id, strategy_key="momentum", rebalance_prompt_version=1)
     with pytest.raises(SessionNotEligibleError):
         service.close_session(db_session, session_row.id, StubBroker())
 
@@ -1094,8 +1231,7 @@ def _held_ai_session(
         db_session,
         portfolio_id=portfolio.id,
         strategy_key="ai_buy_hold",
-        allocated_capital=100_000.0,
-    )
+        allocated_capital=100_000.0, rebalance_prompt_version=1)
     paper_service.apply_fill_to_ledger(
         db_session,
         session_id=sess.id,
@@ -1120,8 +1256,7 @@ def test_snapshot_all_sessions_targets_only_active_ai(db_session: Session) -> No
     paper_service.create_session(
         db_session,
         portfolio_id=non_ai_portfolio.id,
-        strategy_key="momentum",
-    )
+        strategy_key="momentum", rebalance_prompt_version=1)
 
     # A stopped AI session must be ignored (not active).
     stopped = _held_ai_session(db_session, "AI Retired", "TSLA")

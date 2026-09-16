@@ -37,6 +37,7 @@ const session: PaperTradingSession = {
   session_metadata: null,
   schedule_mode: 'DAILY_REBALANCING',
   archived_at: null,
+  rebalance_prompt_version: 1,
 };
 
 function makeEvent(
@@ -229,6 +230,16 @@ describe('PaperTradingSessionPage', () => {
     expect(screen.getByText('Target allocations')).toBeInTheDocument();
     expect(screen.getByText('60.0%')).toBeInTheDocument();
     expect(screen.getByText('40.0%')).toBeInTheDocument();
+  });
+
+  it('shows the frozen rebalance-prompt version', async () => {
+    installGet(() => 'running');
+
+    renderPage(<PaperTradingSessionPage />);
+    await screen.findByRole('heading', { name: 'ai-momentum' });
+
+    expect(screen.getByText('Prompt version')).toBeInTheDocument();
+    expect(screen.getByText('v1')).toBeInTheDocument();
   });
 
   it('shows no archive control for an active session', async () => {

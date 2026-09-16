@@ -94,6 +94,7 @@ const detail: AIPortfolioRunDetail = {
       holding_days: 13,
     },
   ],
+  rebalance_prompt_version: 3,
 };
 
 function renderPage(ui: ReactNode, path = '/runs/evt-1') {
@@ -146,6 +147,10 @@ describe('RunDetailPage', () => {
     expect(
       screen.getByText('Allocation $500 too small for price $950.00'),
     ).toBeInTheDocument();
+
+    // The frozen rebalance-prompt version used for this run.
+    expect(screen.getByText('Prompt version')).toBeInTheDocument();
+    expect(screen.getByText('v3')).toBeInTheDocument();
   });
 
   it('surfaces an error when the run cannot be loaded', async () => {

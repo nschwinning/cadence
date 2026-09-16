@@ -238,6 +238,8 @@ class PaperTradingSessionRead(BaseModel):
     session_metadata: dict[str, Any] | None
     schedule_mode: str
     archived_at: datetime | None
+    # The rebalance-prompt version frozen onto this session at build time.
+    rebalance_prompt_version: int
 
 
 class PaperTradingSessionListResponse(BaseModel):
@@ -492,6 +494,9 @@ class AIPortfolioRunDetail(BaseModel):
     event: AIPortfolioEventRead
     trades: list[PaperTradeRead]
     closed_positions: list[ClosedPositionRead]
+    # The rebalance-prompt version frozen onto the run's session, when it has one.
+    # Null for an event with no session (e.g. a build that failed before creating it).
+    rebalance_prompt_version: int | None = None
 
 
 # --------------------------------------------------------------------------- #

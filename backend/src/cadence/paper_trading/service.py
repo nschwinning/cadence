@@ -60,11 +60,15 @@ def create_session(
     *,
     portfolio_id: uuid.UUID,
     strategy_key: str,
+    rebalance_prompt_version: int,
     allocated_capital: float = DEFAULT_ALLOCATED_CAPITAL,
     max_allocation_pct: float = 1.0,
     schedule_mode: ScheduleMode = ScheduleMode.SCHEDULED,
 ) -> PaperTradingSession:
     """Create a paper-trading session for a ``(portfolio, strategy)`` pair.
+
+    ``rebalance_prompt_version`` freezes the rebalance-prompt version this session
+    will always use; callers pass the version that is active at build time.
 
     Raises:
         DuplicateSessionError: if a session already exists for the same
@@ -77,6 +81,7 @@ def create_session(
         allocated_capital=allocated_capital,
         max_allocation_pct=max_allocation_pct,
         schedule_mode=schedule_mode.value,
+        rebalance_prompt_version=rebalance_prompt_version,
     )
     session.add(row)
     try:

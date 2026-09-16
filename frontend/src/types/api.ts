@@ -277,6 +277,8 @@ export interface PaperTradingSession {
   session_metadata: Record<string, unknown> | null;
   schedule_mode: string;
   archived_at: string | null;
+  /** The rebalance-prompt version frozen onto this session at build time. */
+  rebalance_prompt_version: number;
 }
 
 /** A list of paper-trading sessions plus the matching total. */
@@ -533,6 +535,8 @@ export interface AIPortfolioRunDetail {
   event: AIPortfolioEvent;
   trades: PaperTrade[];
   closed_positions: ClosedPosition[];
+  /** The rebalance-prompt version frozen on the run's session, or null if it has none. */
+  rebalance_prompt_version: number | null;
 }
 
 // --------------------------------------------------------------------------- //

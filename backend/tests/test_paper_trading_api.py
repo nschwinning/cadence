@@ -36,8 +36,7 @@ def _seed(db_session: Session) -> uuid.UUID:
         db_session, name="P", stocks=["AAPL"]
     )
     sess = service.create_session(
-        db_session, portfolio_id=portfolio.id, strategy_key="momentum"
-    )
+        db_session, portfolio_id=portfolio.id, strategy_key="momentum", rebalance_prompt_version=1)
     service.record_trade(
         db_session,
         session_id=sess.id,
@@ -70,7 +69,9 @@ def test_list_sessions(client: TestClient, db_session: Session) -> None:
     assert resp.status_code == 200
     body = resp.json()
     assert body["total"] >= 1
-    assert any(item["id"] == str(session_id) for item in body["items"])
+    item = next(item for item in body["items"] if item["id"] == str(session_id))
+    # The frozen rebalance-prompt version is exposed on the read model.
+    assert item["rebalance_prompt_version"] == 1
 
 
 def test_read_back_trades_runs_positions(
@@ -128,8 +129,7 @@ def _stopped_session_id(db_session: Session, strategy_key: str = "arch") -> uuid
         db_session, name="P", stocks=["AAPL"]
     )
     sess = service.create_session(
-        db_session, portfolio_id=portfolio.id, strategy_key=strategy_key
-    )
+        db_session, portfolio_id=portfolio.id, strategy_key=strategy_key, rebalance_prompt_version=1)
     service.update_session_status(db_session, sess.id, SessionStatus.STOPPED)
     return sess.id
 
@@ -169,8 +169,7 @@ def test_archive_non_stopped_session_conflicts(
         db_session, name="P", stocks=["AAPL"]
     )
     sess = service.create_session(
-        db_session, portfolio_id=portfolio.id, strategy_key="active"
-    )
+        db_session, portfolio_id=portfolio.id, strategy_key="active", rebalance_prompt_version=1)
     resp = client.post(f"/api/v1/paper-trading/sessions/{sess.id}/archive")
     assert resp.status_code == 409
 
@@ -196,8 +195,7 @@ def test_reconcile_session_returns_counts_and_refreshed_trades(
         db_session, name="P", stocks=["AAPL"]
     )
     sess = service.create_session(
-        db_session, portfolio_id=portfolio.id, strategy_key="recon"
-    )
+        db_session, portfolio_id=portfolio.id, strategy_key="recon", rebalance_prompt_version=1)
     service.record_trade(
         db_session,
         session_id=sess.id,
@@ -242,8 +240,7 @@ def test_value_history_ascending(client: TestClient, db_session: Session) -> Non
         db_session, name="AI", stocks=["AAPL"]
     )
     sess = service.create_session(
-        db_session, portfolio_id=portfolio.id, strategy_key="ai_buy_hold"
-    )
+        db_session, portfolio_id=portfolio.id, strategy_key="ai_buy_hold", rebalance_prompt_version=1)
     broker = StubBroker()
     # Record out of order; the endpoint must return them oldest date first.
     for day in (date(2026, 1, 6), date(2026, 1, 4), date(2026, 1, 5)):
@@ -283,8 +280,7 @@ def test_session_kpis_returns_live_figures(
         db_session, name="AI", stocks=["AAPL"]
     )
     sess = service.create_session(
-        db_session, portfolio_id=portfolio.id, strategy_key="ai_kpis"
-    )
+        db_session, portfolio_id=portfolio.id, strategy_key="ai_kpis", rebalance_prompt_version=1)
     service.apply_fill_to_ledger(
         db_session,
         session_id=sess.id,
