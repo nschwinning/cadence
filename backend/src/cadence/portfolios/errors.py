@@ -17,3 +17,7 @@ class PortfolioValidationError(PortfolioError):
 
 class PortfolioNotFoundError(PortfolioError):
     """No portfolio with the requested id exists."""
+
+
+class PortfolioNotArchivableError(PortfolioError):
+    """The portfolio cannot be archived while it has an active or paused session."""

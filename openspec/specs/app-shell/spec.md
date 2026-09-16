@@ -89,3 +89,60 @@ consistent with the page's other panels.
 
 - **WHEN** the session's value history is loading or fails to load
 - **THEN** the view SHALL show a loading or error state instead of the chart
+
+### Requirement: Archive controls for sessions and portfolios
+
+The UI SHALL let a user archive and unarchive paper-trading sessions and portfolios.
+The session list, the session detail view, and the portfolio list SHALL each offer an
+archive action for eligible items and an unarchive action for archived items. The
+session archive action SHALL be available only for a stopped session. Archived items
+SHALL be hidden from the default session and portfolio lists, and each list SHALL
+provide a "Show archived" toggle that reveals archived items and visibly marks them as
+archived. After archiving or unarchiving, the affected list SHALL reflect the change
+without requiring a manual page reload.
+
+#### Scenario: Archive a stopped session from the UI
+
+- **WHEN** a user invokes the archive action on a stopped session
+- **THEN** the UI SHALL archive the session and remove it from the default session
+  list
+
+#### Scenario: Show and unarchive archived items
+
+- **WHEN** a user enables the "Show archived" toggle on the session or portfolio list
+- **THEN** the UI SHALL display archived items marked as archived and SHALL offer an
+  unarchive action that restores an item to the default list
+
+#### Scenario: Archive action limited to eligible items
+
+- **WHEN** a user views a session that is active or paused, or a portfolio that has an
+  active or paused session
+- **THEN** the UI SHALL NOT offer an enabled archive action for that item
+
+### Requirement: Session detail syncs order state until terminal
+
+When a user opens a paper-trading session's detail view, the UI SHALL request a
+reconciliation of that session's order state so that displayed order statuses reflect
+the latest broker information rather than only what was known at submission. While any
+of the session's orders is in a non-terminal status, the UI SHALL keep refreshing the
+session's order state on a recurring interval, and it SHALL stop refreshing once every
+order has reached a terminal status. Reconciled statuses, fill prices, and updated
+position values SHALL become visible without requiring a manual page reload.
+
+#### Scenario: Reconcile on opening the session detail view
+
+- **WHEN** a user opens a session's detail view
+- **THEN** the UI SHALL request reconciliation of that session's orders and SHALL
+  display the resulting order statuses and fills
+
+#### Scenario: Poll while orders are non-terminal
+
+- **WHEN** the session's detail view is open and at least one order is in a
+  non-terminal status
+- **THEN** the UI SHALL continue refreshing the session's order state on a recurring
+  interval and reflect updates without a manual reload
+
+#### Scenario: Stop polling once all orders are terminal
+
+- **WHEN** every order in the open session has reached a terminal status
+- **THEN** the UI SHALL stop the recurring refresh

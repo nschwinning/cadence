@@ -231,6 +231,7 @@ export interface Portfolio {
   risk_profile: string | null;
   source_run_id: string | null;
   created_at: string;
+  archived_at: string | null;
 }
 
 /** A list of stored portfolios plus the matching total. */
@@ -275,6 +276,7 @@ export interface PaperTradingSession {
   total_pnl: number;
   session_metadata: Record<string, unknown> | null;
   schedule_mode: string;
+  archived_at: string | null;
 }
 
 /** A list of paper-trading sessions plus the matching total. */
@@ -306,6 +308,16 @@ export interface PaperTrade {
 export interface PaperTradeListResponse {
   items: PaperTrade[];
   total: number;
+}
+
+/** Result of reconciling one session's non-terminal orders. Mirrors `PaperTradeReconcileRead`. */
+export interface PaperTradeReconcileResult {
+  trades_seen: number;
+  trades_reconciled: number;
+  trades_filled: number;
+  trades_basis_corrected: number;
+  /** The session's trades refreshed after reconciliation. */
+  trades: PaperTrade[];
 }
 
 /** A record of a single session run. Mirrors `SessionRunRead`. */

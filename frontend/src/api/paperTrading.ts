@@ -1,17 +1,32 @@
-import { useQuery } from '@tanstack/react-query';
+import { useEffect } from 'react';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { apiClient } from './client';
 import type {
   ClosedPositionListResponse,
   PaperTradeListResponse,
+  PaperTradeReconcileResult,
+  PaperTradingSession,
   PaperTradingSessionListResponse,
   SessionRunListResponse,
   SessionStatus,
   SessionValueHistoryResponse,
 } from '../types/api';
 
+/** How often the order-sync poll re-reconciles while a trade is still open. */
+const POLL_INTERVAL_MS = 1500;
+
+/** Order statuses that will never change again (mirrors the backend terminal set). */
+const TERMINAL_ORDER_STATUSES = new Set(['filled', 'cancelled', 'rejected']);
+
+/** Whether an order status is terminal, so reconciliation can stop polling. */
+export function isTerminalOrderStatus(status: string): boolean {
+  return TERMINAL_ORDER_STATUSES.has(status);
+}
+
 /** Parameters that identify a paper-trading sessions list query. */
 export interface SessionsListParams {
   status?: SessionStatus;
+  includeArchived?: boolean;
   limit: number;
 }
 
@@ -31,17 +46,55 @@ export const paperTradingKeys = {
     ['paper-trading', 'session', sessionId, 'positions'] as const,
   valueHistory: (sessionId: string) =>
     ['paper-trading', 'session', sessionId, 'value-history'] as const,
+  orderSync: (sessionId: string) =>
+    ['paper-trading', 'session', sessionId, 'order-sync'] as const,
 };
 
 /** Fetch paper-trading sessions (most recently updated first) plus the total. */
 export async function listSessions(
   params: SessionsListParams = DEFAULT_SESSIONS_PARAMS,
 ): Promise<PaperTradingSessionListResponse> {
-  const query: Record<string, string | number> = { limit: params.limit };
+  const query: Record<string, string | number | boolean> = {
+    limit: params.limit,
+  };
   if (params.status) query.status = params.status;
+  if (params.includeArchived) query.include_archived = true;
   const { data } = await apiClient.get<PaperTradingSessionListResponse>(
     '/api/v1/paper-trading/sessions',
     { params: query },
+  );
+  return data;
+}
+
+/** Archive a stopped session. Rejects with the axios error (404/409). */
+export async function archiveSession(
+  sessionId: string,
+): Promise<PaperTradingSession> {
+  const { data } = await apiClient.post<PaperTradingSession>(
+    `/api/v1/paper-trading/sessions/${encodeURIComponent(sessionId)}/archive`,
+    {},
+  );
+  return data;
+}
+
+/** Restore an archived session. Rejects with the axios error (404). */
+export async function unarchiveSession(
+  sessionId: string,
+): Promise<PaperTradingSession> {
+  const { data } = await apiClient.post<PaperTradingSession>(
+    `/api/v1/paper-trading/sessions/${encodeURIComponent(sessionId)}/unarchive`,
+    {},
+  );
+  return data;
+}
+
+/** Reconcile a session's non-terminal orders; returns counts + refreshed trades. */
+export async function reconcileSession(
+  sessionId: string,
+): Promise<PaperTradeReconcileResult> {
+  const { data } = await apiClient.post<PaperTradeReconcileResult>(
+    `/api/v1/paper-trading/sessions/${encodeURIComponent(sessionId)}/reconcile`,
+    {},
   );
   return data;
 }
@@ -135,5 +188,68 @@ export function useSessionValueHistory(sessionId: string) {
     queryKey: paperTradingKeys.valueHistory(sessionId),
     queryFn: () => listSessionValueHistory(sessionId),
     enabled: sessionId.length > 0,
+  });
+}
+
+/**
+ * Reconcile a session's orders on mount, then poll every {@link POLL_INTERVAL_MS}
+ * until every returned trade reaches a terminal status. Each reconcile that
+ * updates at least one trade invalidates the session's trades, positions, and
+ * value-history queries so their panels reflect the new fills. Disabled while
+ * `sessionId` is empty.
+ */
+export function useSessionOrderSync(sessionId: string) {
+  const queryClient = useQueryClient();
+  const query = useQuery<PaperTradeReconcileResult>({
+    queryKey: paperTradingKeys.orderSync(sessionId),
+    queryFn: () => reconcileSession(sessionId),
+    enabled: sessionId.length > 0,
+    refetchInterval: (q) => {
+      const trades = q.state.data?.trades;
+      if (trades === undefined) return POLL_INTERVAL_MS;
+      const anyOpen = trades.some(
+        (trade) => !isTerminalOrderStatus(trade.order_status),
+      );
+      return anyOpen ? POLL_INTERVAL_MS : false;
+    },
+  });
+
+  const reconciled = query.data?.trades_reconciled;
+  const updatedAt = query.dataUpdatedAt;
+  useEffect(() => {
+    if (!reconciled) return;
+    queryClient.invalidateQueries({
+      queryKey: paperTradingKeys.trades(sessionId),
+    });
+    queryClient.invalidateQueries({
+      queryKey: paperTradingKeys.positions(sessionId),
+    });
+    queryClient.invalidateQueries({
+      queryKey: paperTradingKeys.valueHistory(sessionId),
+    });
+  }, [reconciled, updatedAt, queryClient, sessionId]);
+
+  return query;
+}
+
+/** Mutation archiving a session; invalidates the sessions list on success. */
+export function useArchiveSession() {
+  const queryClient = useQueryClient();
+  return useMutation<PaperTradingSession, unknown, string>({
+    mutationFn: (sessionId: string) => archiveSession(sessionId),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: paperTradingKeys.all });
+    },
+  });
+}
+
+/** Mutation unarchiving a session; invalidates the sessions list on success. */
+export function useUnarchiveSession() {
+  const queryClient = useQueryClient();
+  return useMutation<PaperTradingSession, unknown, string>({
+    mutationFn: (sessionId: string) => unarchiveSession(sessionId),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: paperTradingKeys.all });
+    },
   });
 }

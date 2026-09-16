@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { render, screen, waitFor } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { MemoryRouter } from 'react-router-dom';
 import type { ReactNode } from 'react';
@@ -11,10 +12,11 @@ import type {
 } from '../../types/api';
 
 vi.mock('../../api/client', () => ({
-  apiClient: { get: vi.fn() },
+  apiClient: { get: vi.fn(), post: vi.fn() },
 }));
 
 const mockedGet = vi.mocked(apiClient.get);
+const mockedPost = vi.mocked(apiClient.post);
 
 const session: PaperTradingSession = {
   id: 's1',
@@ -30,11 +32,12 @@ const session: PaperTradingSession = {
   total_pnl: 1500,
   session_metadata: null,
   schedule_mode: 'DAILY_REBALANCING',
+  archived_at: null,
 };
 
 function renderWithClient(ui: ReactNode) {
   const queryClient = new QueryClient({
-    defaultOptions: { queries: { retry: false } },
+    defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
   });
   return render(
     <QueryClientProvider client={queryClient}>
@@ -71,5 +74,76 @@ describe('PaperTradingPage', () => {
     expect(
       await screen.findByText(/No paper-trading sessions yet/i),
     ).toBeInTheDocument();
+  });
+
+  it('toggling "Show archived" refetches with include_archived', async () => {
+    mockedGet.mockResolvedValue({ data: { items: [session], total: 1 } });
+    const user = userEvent.setup();
+
+    renderWithClient(<PaperTradingPage />);
+    await screen.findByRole('link', { name: 'ai-momentum' });
+
+    // The default list request omits the flag.
+    expect(mockedGet).toHaveBeenCalledWith(
+      '/api/v1/paper-trading/sessions',
+      { params: { limit: 50 } },
+    );
+
+    await user.click(screen.getByLabelText(/Show archived/i));
+
+    await waitFor(() => {
+      expect(mockedGet).toHaveBeenCalledWith(
+        '/api/v1/paper-trading/sessions',
+        { params: { limit: 50, include_archived: true } },
+      );
+    });
+  });
+
+  it('archives a stopped session via the row action and refetches the list', async () => {
+    const stopped: PaperTradingSession = {
+      ...session,
+      status: 'stopped',
+    };
+    mockedGet.mockResolvedValue({ data: { items: [stopped], total: 1 } });
+    mockedPost.mockResolvedValue({
+      data: { ...stopped, archived_at: '2026-09-16T00:00:00Z' },
+    });
+    const user = userEvent.setup();
+
+    renderWithClient(<PaperTradingPage />);
+    await screen.findByRole('link', { name: 'ai-momentum' });
+
+    await user.click(screen.getByRole('button', { name: 'Archive' }));
+
+    expect(mockedPost).toHaveBeenCalledWith(
+      '/api/v1/paper-trading/sessions/s1/archive',
+      {},
+    );
+    // Success invalidates the sessions list, triggering a refetch.
+    await waitFor(() => {
+      expect(mockedGet.mock.calls.length).toBeGreaterThan(1);
+    });
+  });
+
+  it('unarchives an archived session via the row action', async () => {
+    const archived: PaperTradingSession = {
+      ...session,
+      status: 'stopped',
+      archived_at: '2026-09-16T00:00:00Z',
+    };
+    mockedGet.mockResolvedValue({ data: { items: [archived], total: 1 } });
+    mockedPost.mockResolvedValue({ data: { ...archived, archived_at: null } });
+    const user = userEvent.setup();
+
+    renderWithClient(<PaperTradingPage />);
+    await screen.findByRole('link', { name: 'ai-momentum' });
+    expect(screen.getByText('Archived')).toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: 'Unarchive' }));
+
+    expect(mockedPost).toHaveBeenCalledWith(
+      '/api/v1/paper-trading/sessions/s1/unarchive',
+      {},
+    );
   });
 });

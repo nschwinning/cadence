@@ -9,6 +9,8 @@ from __future__ import annotations
 
 from enum import StrEnum
 
+from cadence.broker.models import OrderStatus
+
 
 class ScheduleMode(StrEnum):
     """How a paper-trading session is run automatically.
@@ -43,3 +45,14 @@ class RunStatus(StrEnum):
 #: convenience so the paper-trading layer has a single enums module.
 DEFAULT_ORDER_STATUS = "filled"
 DEFAULT_RUN_TRIGGER = "scheduled"
+
+#: Order statuses that will never change again, so reconciliation stops
+#: re-querying them. Mirrors :attr:`cadence.broker.models.Order.is_complete`;
+#: ``submitted``, ``pending``, and ``partially_filled`` remain non-terminal.
+TERMINAL_ORDER_STATUSES = frozenset(
+    {
+        OrderStatus.FILLED.value,
+        OrderStatus.CANCELLED.value,
+        OrderStatus.REJECTED.value,
+    }
+)

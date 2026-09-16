@@ -203,6 +203,7 @@ class PortfolioRead(BaseModel):
     risk_profile: str | None
     source_run_id: str | None
     created_at: datetime
+    archived_at: datetime | None
 
 
 class PortfolioListResponse(BaseModel):
@@ -235,6 +236,7 @@ class PaperTradingSessionRead(BaseModel):
     total_pnl: float
     session_metadata: dict[str, Any] | None
     schedule_mode: str
+    archived_at: datetime | None
 
 
 class PaperTradingSessionListResponse(BaseModel):
@@ -270,6 +272,27 @@ class PaperTradeListResponse(BaseModel):
 
     items: list[PaperTradeRead]
     total: int
+
+
+class PaperTradeReconcileRead(BaseModel):
+    """Result of reconciling one session's non-terminal orders.
+
+    Carries the per-run counts plus the session's refreshed trades so the client
+    can render the updated statuses without a second round-trip.
+    """
+
+    trades_seen: int
+    trades_reconciled: int
+    trades_filled: int
+    trades_basis_corrected: int
+    trades: list[PaperTradeRead]
+
+
+class AIDailyReconcileResponse(BaseModel):
+    """Aggregate result of the scheduled cross-session reconciliation."""
+
+    sessions_reconciled: int
+    trades_reconciled: int
 
 
 class SessionRunRead(BaseModel):

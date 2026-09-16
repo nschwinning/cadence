@@ -17,3 +17,7 @@ class SessionNotFoundError(PaperTradingError):
 
 class DuplicateSessionError(PaperTradingError):
     """A session already exists for this ``(portfolio_id, strategy_key)`` pair."""
+
+
+class SessionNotArchivableError(PaperTradingError):
+    """The session cannot be archived because it is not stopped."""

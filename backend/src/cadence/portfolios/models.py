@@ -79,3 +79,9 @@ class Portfolio(Base):
     # Free-form provenance link (e.g. a recommendation run id) for AI/recommended
     # portfolios; NULL for manually created ones.
     source_run_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # When set, the portfolio is soft-archived: hidden from the default listing but
+    # otherwise fully retained. NULL means active (not archived). Indexed so the
+    # default "not archived" filter stays cheap.
+    archived_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, index=True
+    )

@@ -1,5 +1,11 @@
+import { useState } from 'react';
 import { Link } from 'react-router-dom';
-import { useSessions } from '../../api/paperTrading';
+import {
+  DEFAULT_SESSIONS_PARAMS,
+  useArchiveSession,
+  useSessions,
+  useUnarchiveSession,
+} from '../../api/paperTrading';
 import type { PaperTradingSession } from '../../types/api';
 
 /** Format a EUR value with no fraction digits. */
@@ -28,6 +34,10 @@ function StatusBadge({ status }: { status: string }) {
 }
 
 function SessionRow({ session }: { session: PaperTradingSession }) {
+  const archive = useArchiveSession();
+  const unarchive = useUnarchiveSession();
+  const isArchived = session.archived_at !== null;
+  const busy = archive.isPending || unarchive.isPending;
   const pnlClass =
     session.total_pnl > 0
       ? 'text-emerald-700'
@@ -43,6 +53,11 @@ function SessionRow({ session }: { session: PaperTradingSession }) {
         >
           {session.strategy_key}
         </Link>
+        {isArchived && (
+          <span className="ml-2 inline-flex items-center rounded-full bg-slate-100 px-2 py-0.5 text-xs font-medium text-slate-500">
+            Archived
+          </span>
+        )}
       </td>
       <td className="px-4 py-3">
         <StatusBadge status={session.status} />
@@ -62,12 +77,39 @@ function SessionRow({ session }: { session: PaperTradingSession }) {
           ? new Date(session.last_run_at).toLocaleString()
           : '—'}
       </td>
+      <td className="px-4 py-3 text-right">
+        {isArchived ? (
+          <button
+            type="button"
+            onClick={() => unarchive.mutate(session.id)}
+            disabled={busy}
+            className="rounded border border-slate-300 px-2.5 py-1 text-xs font-medium text-slate-700 hover:bg-slate-100 disabled:opacity-50"
+          >
+            Unarchive
+          </button>
+        ) : session.status === 'stopped' ? (
+          <button
+            type="button"
+            onClick={() => archive.mutate(session.id)}
+            disabled={busy}
+            className="rounded border border-slate-300 px-2.5 py-1 text-xs font-medium text-slate-700 hover:bg-slate-100 disabled:opacity-50"
+          >
+            Archive
+          </button>
+        ) : (
+          <span className="text-slate-300">—</span>
+        )}
+      </td>
     </tr>
   );
 }
 
 export function PaperTradingPage() {
-  const { data, isPending, isError } = useSessions();
+  const [showArchived, setShowArchived] = useState(false);
+  const { data, isPending, isError } = useSessions({
+    ...DEFAULT_SESSIONS_PARAMS,
+    includeArchived: showArchived,
+  });
   const sessions = data?.items ?? [];
   const total = data?.total ?? 0;
 
@@ -78,11 +120,20 @@ export function PaperTradingPage() {
       </h1>
 
       <div className="rounded-lg border border-slate-200 bg-white shadow-sm">
-        <div className="flex items-baseline gap-3 border-b border-slate-200 p-4">
+        <div className="flex items-center gap-3 border-b border-slate-200 p-4">
           <h2 className="text-lg font-semibold text-slate-900">Sessions</h2>
           {!isPending && !isError && total > 0 && (
             <span className="text-sm text-slate-500">{total} total</span>
           )}
+          <label className="ml-auto flex items-center gap-2 text-sm text-slate-600">
+            <input
+              type="checkbox"
+              checked={showArchived}
+              onChange={(event) => setShowArchived(event.target.checked)}
+              className="h-4 w-4 rounded border-slate-300"
+            />
+            Show archived
+          </label>
         </div>
 
         {isPending && (
@@ -119,6 +170,7 @@ export function PaperTradingPage() {
                   <th className="px-4 py-3 text-right">Trades</th>
                   <th className="px-4 py-3 text-right">P&amp;L</th>
                   <th className="px-4 py-3">Last Run</th>
+                  <th className="px-4 py-3 text-right">Actions</th>
                 </tr>
               </thead>
               <tbody>

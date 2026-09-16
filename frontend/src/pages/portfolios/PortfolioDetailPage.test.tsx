@@ -23,6 +23,7 @@ const portfolio: Portfolio = {
   risk_profile: 'balanced',
   source_run_id: null,
   created_at: '2026-09-10T00:00:00Z',
+  archived_at: null,
 };
 
 function renderAt(path: string, ui: ReactNode) {

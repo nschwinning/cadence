@@ -9,6 +9,7 @@ guarded by a shared-secret ``X-Cron-Token`` header (empty config rejects all).
 from __future__ import annotations
 
 import hmac
+import logging
 import uuid
 from typing import Annotated
 
@@ -34,6 +35,7 @@ from cadence.ai_portfolio.service import AIBuildParams
 from cadence.api.routers.assets import get_market_data_provider
 from cadence.api.schemas import (
     AIDailyRebalanceResponse,
+    AIDailyReconcileResponse,
     AIDailySnapshotResponse,
     AIPortfolioBuildRequest,
     AIPortfolioBuildResponse,
@@ -55,6 +57,8 @@ from cadence.paper_trading import service as paper_service
 from cadence.paper_trading.constants import ScheduleMode, SessionStatus
 from cadence.paper_trading.errors import SessionNotFoundError
 from cadence.paper_trading.models import PaperTradingSession
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/ai-portfolio", tags=["ai-portfolio"])
 
@@ -250,6 +254,42 @@ def rebalance_daily(
         sessions_triggered=len(triggered),
         session_ids=triggered,
         skipped_already_running=skipped,
+    )
+
+
+@router.post("/reconcile-daily", response_model=AIDailyReconcileResponse)
+def reconcile_daily(
+    db: DbSession,
+    broker: BrokerDep,
+    _token: Annotated[None, Depends(require_valid_cron_token)],
+) -> AIDailyReconcileResponse:
+    """Reconcile non-terminal orders across every session against the broker.
+
+    Guarded by the ``X-Cron-Token`` header. Runs synchronously: for each session it
+    re-fetches non-terminal orders and updates their stored status/fill; one
+    session's failure is logged and skipped so the batch always completes. Returns
+    how many sessions were reconciled and how many trades were updated in total.
+    """
+    sessions = paper_service.list_sessions(db, include_archived=True, limit=500)
+
+    sessions_reconciled = 0
+    trades_reconciled = 0
+    for session_row in sessions:
+        try:
+            result = paper_service.reconcile_session_orders(
+                db, broker, session_row.id
+            )
+        except Exception:  # one bad session can't abort the batch
+            logger.warning(
+                "reconcile-daily: session %s failed", session_row.id, exc_info=True
+            )
+            continue
+        sessions_reconciled += 1
+        trades_reconciled += result.trades_reconciled
+
+    return AIDailyReconcileResponse(
+        sessions_reconciled=sessions_reconciled,
+        trades_reconciled=trades_reconciled,
     )
 
 

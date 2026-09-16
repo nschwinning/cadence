@@ -9,6 +9,7 @@ import type {
 /** Parameters that identify a portfolios list query. */
 export interface PortfoliosListParams {
   includeLegacy: boolean;
+  includeArchived?: boolean;
   limit: number;
 }
 
@@ -30,9 +31,32 @@ export const portfolioKeys = {
 export async function listPortfolios(
   params: PortfoliosListParams = DEFAULT_PORTFOLIOS_PARAMS,
 ): Promise<PortfolioListResponse> {
+  const query: Record<string, string | number | boolean> = {
+    include_legacy: params.includeLegacy,
+    limit: params.limit,
+  };
+  if (params.includeArchived) query.include_archived = true;
   const { data } = await apiClient.get<PortfolioListResponse>(
     '/api/v1/portfolios',
-    { params: { include_legacy: params.includeLegacy, limit: params.limit } },
+    { params: query },
+  );
+  return data;
+}
+
+/** Archive a portfolio. Rejects with the axios error (404/409). */
+export async function archivePortfolio(id: string): Promise<Portfolio> {
+  const { data } = await apiClient.post<Portfolio>(
+    `/api/v1/portfolios/${encodeURIComponent(id)}/archive`,
+    {},
+  );
+  return data;
+}
+
+/** Restore an archived portfolio. Rejects with the axios error (404). */
+export async function unarchivePortfolio(id: string): Promise<Portfolio> {
+  const { data } = await apiClient.post<Portfolio>(
+    `/api/v1/portfolios/${encodeURIComponent(id)}/unarchive`,
+    {},
   );
   return data;
 }
@@ -83,6 +107,28 @@ export function useCreatePortfolio() {
   const queryClient = useQueryClient();
   return useMutation<Portfolio, unknown, PortfolioCreate>({
     mutationFn: createPortfolio,
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: portfolioKeys.all });
+    },
+  });
+}
+
+/** Mutation archiving a portfolio; invalidates the list on success. */
+export function useArchivePortfolio() {
+  const queryClient = useQueryClient();
+  return useMutation<Portfolio, unknown, string>({
+    mutationFn: (id: string) => archivePortfolio(id),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: portfolioKeys.all });
+    },
+  });
+}
+
+/** Mutation unarchiving a portfolio; invalidates the list on success. */
+export function useUnarchivePortfolio() {
+  const queryClient = useQueryClient();
+  return useMutation<Portfolio, unknown, string>({
+    mutationFn: (id: string) => unarchivePortfolio(id),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: portfolioKeys.all });
     },

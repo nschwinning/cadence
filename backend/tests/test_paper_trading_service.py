@@ -8,11 +8,18 @@ import pytest
 from sqlalchemy.orm import Session
 
 from cadence.api.schemas import SessionValueSnapshotRead
-from cadence.broker.models import OrderSide, OrderStatus, Quote
+from cadence.broker.models import (
+    AssetClass,
+    Order,
+    OrderSide,
+    OrderStatus,
+    Quote,
+)
 from cadence.paper_trading import service
 from cadence.paper_trading.constants import RunStatus, ScheduleMode, SessionStatus
 from cadence.paper_trading.errors import (
     DuplicateSessionError,
+    SessionNotArchivableError,
     SessionNotFoundError,
 )
 from cadence.portfolios import service as portfolios_service
@@ -166,6 +173,73 @@ def test_list_sessions_filter_by_status(db_session: Session) -> None:
 
 
 # --------------------------------------------------------------------------- #
+# Archiving
+# --------------------------------------------------------------------------- #
+
+
+def _stopped_session(db_session: Session, strategy_key: str = "s") -> object:
+    portfolio = _portfolio(db_session)
+    sess = service.create_session(
+        db_session, portfolio_id=portfolio.id, strategy_key=strategy_key
+    )
+    return service.update_session_status(
+        db_session, sess.id, SessionStatus.STOPPED
+    )
+
+
+def test_archive_stopped_session_sets_timestamp(db_session: Session) -> None:
+    sess = _stopped_session(db_session)
+    archived = service.archive_session(db_session, sess.id)
+    assert archived.archived_at is not None
+    # Archiving does not change status.
+    assert archived.status == SessionStatus.STOPPED.value
+
+
+def test_archive_rejects_active_or_paused(db_session: Session) -> None:
+    portfolio = _portfolio(db_session)
+    active = service.create_session(
+        db_session, portfolio_id=portfolio.id, strategy_key="a"
+    )
+    with pytest.raises(SessionNotArchivableError):
+        service.archive_session(db_session, active.id)
+
+    service.update_session_status(db_session, active.id, SessionStatus.PAUSED)
+    with pytest.raises(SessionNotArchivableError):
+        service.archive_session(db_session, active.id)
+
+
+def test_unarchive_clears_timestamp(db_session: Session) -> None:
+    sess = _stopped_session(db_session)
+    service.archive_session(db_session, sess.id)
+    restored = service.unarchive_session(db_session, sess.id)
+    assert restored.archived_at is None
+
+
+def test_default_list_hides_archived(db_session: Session) -> None:
+    sess = _stopped_session(db_session)
+    service.archive_session(db_session, sess.id)
+
+    visible_ids = [s.id for s in service.list_sessions(db_session)]
+    assert sess.id not in visible_ids
+    assert service.count_sessions(db_session) == 0
+
+    with_archived = [
+        s.id for s in service.list_sessions(db_session, include_archived=True)
+    ]
+    assert sess.id in with_archived
+    assert service.count_sessions(db_session, include_archived=True) == 1
+
+
+def test_archive_unknown_session_raises(db_session: Session) -> None:
+    import uuid
+
+    with pytest.raises(SessionNotFoundError):
+        service.archive_session(db_session, uuid.uuid4())
+    with pytest.raises(SessionNotFoundError):
+        service.unarchive_session(db_session, uuid.uuid4())
+
+
+# --------------------------------------------------------------------------- #
 # Open-position ledger
 # --------------------------------------------------------------------------- #
 
@@ -295,6 +369,211 @@ def test_get_position_entry_basis_is_pre_sell(db_session: Session) -> None:
     assert opened_at == opened.opened_at
 
     assert service.get_position_entry_basis(db_session, sess.id, "NONE") is None
+
+
+# --------------------------------------------------------------------------- #
+# Order-status reconciliation
+# --------------------------------------------------------------------------- #
+
+
+class _OrderBroker:
+    """Broker double that returns pre-seeded orders keyed by order id.
+
+    ``orders`` maps order_id -> ``Order`` (the broker's current view). An order_id
+    mapped to ``None`` simulates an order the broker no longer knows about; an
+    order_id listed in ``raises`` makes ``get_order`` blow up for that id (the
+    transient-failure path).
+    """
+
+    def __init__(
+        self,
+        orders: dict[str, Order | None],
+        *,
+        raises: set[str] | None = None,
+    ) -> None:
+        self._orders = orders
+        self._raises = raises or set()
+
+    def get_order(self, order_id: str) -> Order | None:
+        if order_id in self._raises:
+            raise RuntimeError("get_order boom")
+        return self._orders.get(order_id)
+
+
+def _filled_order(
+    ticker: str,
+    side: OrderSide,
+    qty: float,
+    price: float,
+    *,
+    order_id: str,
+) -> Order:
+    return Order(
+        symbol=ticker,
+        side=side,
+        quantity=qty,
+        asset_class=AssetClass.EQUITY,
+        order_id=order_id,
+        status=OrderStatus.FILLED,
+        filled_quantity=qty,
+        filled_price=price,
+        filled_at=datetime(2026, 1, 2, tzinfo=UTC),
+    )
+
+
+def test_reconcile_updates_nonterminal_buy_to_filled(db_session: Session) -> None:
+    sess = _ai_session(db_session)
+    service.record_trade(
+        db_session,
+        session_id=sess.id,
+        ticker="AAPL",
+        side=OrderSide.BUY,
+        quantity=10,
+        price=100.0,
+        signal_type="entry",
+        order_id="o1",
+        order_status=OrderStatus.SUBMITTED,
+    )
+    broker = _OrderBroker(
+        {"o1": _filled_order("AAPL", OrderSide.BUY, 10, 100.0, order_id="o1")}
+    )
+    result = service.reconcile_session_orders(db_session, broker, sess.id)
+    assert result.trades_seen == 1
+    assert result.trades_reconciled == 1
+    assert result.trades_filled == 1
+
+    (trade,) = service.get_session_trades(db_session, sess.id)
+    assert trade.order_status == OrderStatus.FILLED.value
+    assert trade.filled_price == pytest.approx(100.0)
+    assert trade.filled_at is not None
+
+
+def test_reconcile_leaves_terminal_and_orderless_trades_untouched(
+    db_session: Session,
+) -> None:
+    sess = _ai_session(db_session)
+    # Already terminal — never re-queried.
+    service.record_trade(
+        db_session, session_id=sess.id, ticker="AAPL", side=OrderSide.BUY,
+        quantity=1, price=10.0, signal_type="entry", order_id="done",
+        order_status=OrderStatus.FILLED,
+    )
+    # No broker order id — nothing to reconcile against.
+    service.record_trade(
+        db_session, session_id=sess.id, ticker="MSFT", side=OrderSide.BUY,
+        quantity=1, price=20.0, signal_type="entry",
+        order_status=OrderStatus.SUBMITTED,
+    )
+    broker = _OrderBroker(
+        {"done": _filled_order("AAPL", OrderSide.BUY, 1, 999.0, order_id="done")}
+    )
+    result = service.reconcile_session_orders(db_session, broker, sess.id)
+    assert result.trades_seen == 0
+    assert result.trades_reconciled == 0
+
+
+def test_reconcile_skips_missing_or_failing_order_and_continues(
+    db_session: Session,
+) -> None:
+    sess = _ai_session(db_session)
+    service.record_trade(
+        db_session, session_id=sess.id, ticker="AAPL", side=OrderSide.BUY,
+        quantity=1, price=10.0, signal_type="entry", order_id="gone",
+        order_status=OrderStatus.SUBMITTED,
+    )
+    service.record_trade(
+        db_session, session_id=sess.id, ticker="MSFT", side=OrderSide.BUY,
+        quantity=1, price=20.0, signal_type="entry", order_id="boom",
+        order_status=OrderStatus.SUBMITTED,
+    )
+    service.record_trade(
+        db_session, session_id=sess.id, ticker="NVDA", side=OrderSide.BUY,
+        quantity=1, price=30.0, signal_type="entry", order_id="ok",
+        order_status=OrderStatus.SUBMITTED,
+    )
+    broker = _OrderBroker(
+        {
+            "gone": None,  # broker no longer knows this order
+            "ok": _filled_order("NVDA", OrderSide.BUY, 1, 30.0, order_id="ok"),
+        },
+        raises={"boom"},
+    )
+    result = service.reconcile_session_orders(db_session, broker, sess.id)
+    # All three seen; only the healthy one reconciled — the batch never aborts.
+    assert result.trades_seen == 3
+    assert result.trades_reconciled == 1
+    assert result.trades_filled == 1
+
+
+def test_reconcile_corrects_ledger_cost_basis_on_price_delta(
+    db_session: Session,
+) -> None:
+    sess = _ai_session(db_session)
+    # Open the ledger at the estimated fill price, then record the pending trade.
+    _buy(db_session, sess.id, "AAPL", 10, 100.0)
+    service.record_trade(
+        db_session, session_id=sess.id, ticker="AAPL", side=OrderSide.BUY,
+        quantity=10, price=100.0, signal_type="entry", order_id="o1",
+        order_status=OrderStatus.SUBMITTED,
+    )
+    # Broker reports the actual fill at 105 -> +5/share correction over 10 shares.
+    broker = _OrderBroker(
+        {"o1": _filled_order("AAPL", OrderSide.BUY, 10, 105.0, order_id="o1")}
+    )
+    result = service.reconcile_session_orders(db_session, broker, sess.id)
+    assert result.trades_basis_corrected == 1
+
+    entry = service.get_open_position(db_session, sess.id, "AAPL")
+    assert entry is not None
+    # avg_cost = 100 + (5 * 10) / 10 = 105.
+    assert entry.avg_cost == pytest.approx(105.0)
+
+
+def test_reconcile_equal_fill_price_is_noop_for_ledger(
+    db_session: Session,
+) -> None:
+    sess = _ai_session(db_session)
+    _buy(db_session, sess.id, "AAPL", 10, 100.0)
+    service.record_trade(
+        db_session, session_id=sess.id, ticker="AAPL", side=OrderSide.BUY,
+        quantity=10, price=100.0, signal_type="entry", order_id="o1",
+        order_status=OrderStatus.SUBMITTED,
+    )
+    broker = _OrderBroker(
+        {"o1": _filled_order("AAPL", OrderSide.BUY, 10, 100.0, order_id="o1")}
+    )
+    result = service.reconcile_session_orders(db_session, broker, sess.id)
+    assert result.trades_basis_corrected == 0
+    entry = service.get_open_position(db_session, sess.id, "AAPL")
+    assert entry is not None
+    assert entry.avg_cost == pytest.approx(100.0)
+
+
+def test_reconcile_price_delta_on_closed_position_skips_ledger(
+    db_session: Session,
+) -> None:
+    sess = _ai_session(db_session)
+    # A pending buy whose position never opened (or was already fully sold).
+    service.record_trade(
+        db_session, session_id=sess.id, ticker="AAPL", side=OrderSide.BUY,
+        quantity=10, price=100.0, signal_type="entry", order_id="o1",
+        order_status=OrderStatus.SUBMITTED,
+    )
+    broker = _OrderBroker(
+        {"o1": _filled_order("AAPL", OrderSide.BUY, 10, 105.0, order_id="o1")}
+    )
+    result = service.reconcile_session_orders(db_session, broker, sess.id)
+    # Trade still reconciled, but no open ledger entry to correct.
+    assert result.trades_reconciled == 1
+    assert result.trades_basis_corrected == 0
+    assert service.get_open_position(db_session, sess.id, "AAPL") is None
+
+
+def test_reconcile_unknown_session_raises(db_session: Session) -> None:
+    import uuid
+
+    with pytest.raises(SessionNotFoundError):
+        service.reconcile_session_orders(db_session, _OrderBroker({}), uuid.uuid4())
 
 
 # --------------------------------------------------------------------------- #

@@ -2,12 +2,17 @@
 
 from __future__ import annotations
 
+import uuid
+
 import pytest
 from sqlalchemy.orm import Session
 
+from cadence.paper_trading import service as paper_service
+from cadence.paper_trading.constants import SessionStatus
 from cadence.portfolios import service
 from cadence.portfolios.constants import PortfolioSource, RiskProfile
 from cadence.portfolios.errors import (
+    PortfolioNotArchivableError,
     PortfolioNotFoundError,
     PortfolioValidationError,
 )
@@ -102,3 +107,87 @@ def test_update_stocks(db_session: Session) -> None:
 
     with pytest.raises(PortfolioValidationError):
         service.update_portfolio_stocks(db_session, created.id, ["", "  "])
+
+
+# --------------------------------------------------------------------------- #
+# Archiving
+# --------------------------------------------------------------------------- #
+
+
+def _session(
+    db_session: Session,
+    portfolio_id: uuid.UUID,
+    *,
+    strategy_key: str,
+    status: SessionStatus | None = None,
+) -> None:
+    sess = paper_service.create_session(
+        db_session, portfolio_id=portfolio_id, strategy_key=strategy_key
+    )
+    if status is not None:
+        paper_service.update_session_status(db_session, sess.id, status)
+
+
+def test_archive_portfolio_with_no_sessions(db_session: Session) -> None:
+    portfolio = service.create_portfolio(db_session, name="P", stocks=["AAPL"])
+    archived = service.archive_portfolio(db_session, portfolio.id)
+    assert archived.archived_at is not None
+
+
+def test_archive_portfolio_with_only_stopped_sessions(
+    db_session: Session,
+) -> None:
+    portfolio = service.create_portfolio(db_session, name="P", stocks=["AAPL"])
+    _session(
+        db_session, portfolio.id, strategy_key="s", status=SessionStatus.STOPPED
+    )
+    archived = service.archive_portfolio(db_session, portfolio.id)
+    assert archived.archived_at is not None
+
+
+def test_archive_portfolio_rejected_with_active_session(
+    db_session: Session,
+) -> None:
+    portfolio = service.create_portfolio(db_session, name="P", stocks=["AAPL"])
+    _session(db_session, portfolio.id, strategy_key="active")
+    with pytest.raises(PortfolioNotArchivableError):
+        service.archive_portfolio(db_session, portfolio.id)
+
+
+def test_archive_portfolio_rejected_with_paused_session(
+    db_session: Session,
+) -> None:
+    portfolio = service.create_portfolio(db_session, name="P", stocks=["AAPL"])
+    _session(
+        db_session, portfolio.id, strategy_key="p", status=SessionStatus.PAUSED
+    )
+    with pytest.raises(PortfolioNotArchivableError):
+        service.archive_portfolio(db_session, portfolio.id)
+
+
+def test_unarchive_portfolio_clears_timestamp(db_session: Session) -> None:
+    portfolio = service.create_portfolio(db_session, name="P", stocks=["AAPL"])
+    service.archive_portfolio(db_session, portfolio.id)
+    restored = service.unarchive_portfolio(db_session, portfolio.id)
+    assert restored.archived_at is None
+
+
+def test_default_portfolio_list_hides_archived(db_session: Session) -> None:
+    portfolio = service.create_portfolio(db_session, name="P", stocks=["AAPL"])
+    service.archive_portfolio(db_session, portfolio.id)
+
+    visible_ids = [p.id for p in service.list_portfolios(db_session)]
+    assert portfolio.id not in visible_ids
+
+    with_archived = [
+        p.id
+        for p in service.list_portfolios(db_session, include_archived=True)
+    ]
+    assert portfolio.id in with_archived
+
+
+def test_archive_unknown_portfolio_raises(db_session: Session) -> None:
+    with pytest.raises(PortfolioNotFoundError):
+        service.archive_portfolio(db_session, uuid.uuid4())
+    with pytest.raises(PortfolioNotFoundError):
+        service.unarchive_portfolio(db_session, uuid.uuid4())

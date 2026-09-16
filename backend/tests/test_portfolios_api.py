@@ -2,7 +2,12 @@
 
 from __future__ import annotations
 
+import uuid
+
 from fastapi.testclient import TestClient
+from sqlalchemy.orm import Session
+
+from cadence.paper_trading import service as paper_service
 
 
 def test_create_valid(client: TestClient) -> None:
@@ -67,3 +72,49 @@ def test_get_unknown_returns_404(client: TestClient) -> None:
 def test_get_malformed_id_returns_422(client: TestClient) -> None:
     resp = client.get("/api/v1/portfolios/not-a-uuid")
     assert resp.status_code == 422
+
+
+def test_archive_and_unarchive_portfolio(client: TestClient) -> None:
+    created = client.post(
+        "/api/v1/portfolios", json={"name": "P", "stocks": ["AAPL"]}
+    )
+    portfolio_id = created.json()["id"]
+
+    archived = client.post(f"/api/v1/portfolios/{portfolio_id}/archive")
+    assert archived.status_code == 200
+    assert archived.json()["archived_at"] is not None
+
+    default = client.get("/api/v1/portfolios")
+    assert all(item["id"] != portfolio_id for item in default.json()["items"])
+    with_archived = client.get(
+        "/api/v1/portfolios", params={"include_archived": "true"}
+    )
+    assert any(
+        item["id"] == portfolio_id for item in with_archived.json()["items"]
+    )
+
+    restored = client.post(f"/api/v1/portfolios/{portfolio_id}/unarchive")
+    assert restored.status_code == 200
+    assert restored.json()["archived_at"] is None
+
+
+def test_archive_portfolio_with_active_session_conflicts(
+    client: TestClient, db_session: Session
+) -> None:
+    created = client.post(
+        "/api/v1/portfolios", json={"name": "P", "stocks": ["AAPL"]}
+    )
+    portfolio_id = created.json()["id"]
+    paper_service.create_session(
+        db_session, portfolio_id=uuid.UUID(portfolio_id), strategy_key="active"
+    )
+    resp = client.post(f"/api/v1/portfolios/{portfolio_id}/archive")
+    assert resp.status_code == 409
+
+
+def test_archive_unknown_portfolio_404(client: TestClient) -> None:
+    unknown = uuid.uuid4()
+    assert client.post(f"/api/v1/portfolios/{unknown}/archive").status_code == 404
+    assert (
+        client.post(f"/api/v1/portfolios/{unknown}/unarchive").status_code == 404
+    )

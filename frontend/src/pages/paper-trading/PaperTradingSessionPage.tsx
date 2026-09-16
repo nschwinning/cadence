@@ -1,9 +1,11 @@
 import { Link, useParams } from 'react-router-dom';
 import {
+  DEFAULT_SESSIONS_PARAMS,
   useSessions,
   useSessionTrades,
   useSessionRuns,
   useSessionPositions,
+  useSessionOrderSync,
 } from '../../api/paperTrading';
 import { useSessionEvents } from '../../api/aiPortfolio';
 import {
@@ -16,6 +18,11 @@ import {
   CloseButton,
   CloseFeedback,
 } from './SessionCloseCard';
+import {
+  useArchiveAction,
+  ArchiveButton,
+  ArchiveFeedback,
+} from './SessionArchiveCard';
 import { SessionValueChart } from './SessionValueChart';
 import { formatQuantity } from '../../lib/format';
 import type {
@@ -382,18 +389,21 @@ function SessionHeader({
   // dialog/summary) flows full-width below the facts.
   const rebalance = useRebalanceAction(sessionId);
   const close = useCloseAction(sessionId, session?.status);
+  const archive = useArchiveAction(sessionId, session);
 
   const actions = (
     <div className="flex flex-wrap items-center gap-2">
       <RebalanceButton action={rebalance} />
       <CloseButton action={close} />
+      <ArchiveButton action={archive} />
     </div>
   );
   const feedback =
-    rebalance.hasFeedback || close.hasFeedback ? (
+    rebalance.hasFeedback || close.hasFeedback || archive.hasFeedback ? (
       <div className="mt-4 flex flex-col gap-3">
         <RebalanceFeedback action={rebalance} />
         <CloseFeedback action={close} />
+        <ArchiveFeedback action={archive} />
       </div>
     ) : null;
 
@@ -418,6 +428,11 @@ function SessionHeader({
             {session.strategy_key}
           </h1>
           <StatusBadge status={session.status} />
+          {session.archived_at != null && (
+            <span className="inline-flex items-center rounded-full bg-slate-100 px-2 py-0.5 text-xs font-medium text-slate-500">
+              Archived
+            </span>
+          )}
         </div>
         {actions}
       </div>
@@ -459,8 +474,15 @@ function SessionHeader({
 export function PaperTradingSessionPage() {
   const { id = '' } = useParams<{ id: string }>();
   // The list endpoint is the source of session summary data; find this session.
-  const { data: sessionsData } = useSessions();
+  // Include archived rows so an archived session can still be viewed/unarchived.
+  const { data: sessionsData } = useSessions({
+    ...DEFAULT_SESSIONS_PARAMS,
+    includeArchived: true,
+  });
   const session = sessionsData?.items.find((s) => s.id === id);
+  // Reconcile broker order statuses on mount and poll until all fills settle;
+  // the hook invalidates the trades/positions/chart queries as statuses change.
+  useSessionOrderSync(id);
 
   return (
     <section className="flex flex-col gap-6">

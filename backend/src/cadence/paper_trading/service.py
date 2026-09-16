@@ -19,9 +19,15 @@ from sqlalchemy.orm import Session
 
 from cadence.broker.base import Broker
 from cadence.broker.models import OrderSide, OrderStatus
-from cadence.paper_trading.constants import RunStatus, ScheduleMode, SessionStatus
+from cadence.paper_trading.constants import (
+    TERMINAL_ORDER_STATUSES,
+    RunStatus,
+    ScheduleMode,
+    SessionStatus,
+)
 from cadence.paper_trading.errors import (
     DuplicateSessionError,
+    SessionNotArchivableError,
     SessionNotFoundError,
 )
 from cadence.paper_trading.models import (
@@ -92,24 +98,36 @@ def list_sessions(
     session: Session,
     *,
     status: SessionStatus | None = None,
+    include_archived: bool = False,
     limit: int = 50,
 ) -> list[PaperTradingSession]:
-    """List sessions, most recently updated first, optionally filtered by status."""
+    """List sessions, most recently updated first, optionally filtered by status.
+
+    Archived sessions are excluded unless ``include_archived`` is set; the archived
+    filter composes with the optional ``status`` filter.
+    """
     stmt = select(PaperTradingSession).order_by(
         PaperTradingSession.updated_at.desc(), PaperTradingSession.id.desc()
     )
     if status is not None:
         stmt = stmt.where(PaperTradingSession.status == status.value)
+    if not include_archived:
+        stmt = stmt.where(PaperTradingSession.archived_at.is_(None))
     return list(session.execute(stmt.limit(limit)).scalars())
 
 
 def count_sessions(
-    session: Session, *, status: SessionStatus | None = None
+    session: Session,
+    *,
+    status: SessionStatus | None = None,
+    include_archived: bool = False,
 ) -> int:
-    """Count sessions, optionally filtered by status."""
+    """Count sessions, optionally filtered by status; excludes archived by default."""
     stmt = select(func.count()).select_from(PaperTradingSession)
     if status is not None:
         stmt = stmt.where(PaperTradingSession.status == status.value)
+    if not include_archived:
+        stmt = stmt.where(PaperTradingSession.archived_at.is_(None))
     return session.execute(stmt).scalar_one()
 
 
@@ -121,6 +139,41 @@ def update_session_status(
     """Update a session's status. Raises if the session does not exist."""
     row = get_session(session, session_id)
     row.status = status.value
+    session.commit()
+    session.refresh(row)
+    return row
+
+
+def archive_session(
+    session: Session, session_id: uuid.UUID
+) -> PaperTradingSession:
+    """Soft-archive a stopped session by stamping ``archived_at``.
+
+    Raises:
+        SessionNotFoundError: if no session has ``session_id``.
+        SessionNotArchivableError: if the session's status is not stopped.
+    """
+    row = get_session(session, session_id)
+    if row.status != SessionStatus.STOPPED.value:
+        raise SessionNotArchivableError(
+            f"Session {session_id} must be stopped before it can be archived"
+        )
+    row.archived_at = datetime.now(tz=UTC)
+    session.commit()
+    session.refresh(row)
+    return row
+
+
+def unarchive_session(
+    session: Session, session_id: uuid.UUID
+) -> PaperTradingSession:
+    """Clear a session's ``archived_at``, restoring it to the default listing.
+
+    Unconditional (any archived session may be unarchived); the session's status is
+    unchanged. Raises :class:`SessionNotFoundError` for an unknown id.
+    """
+    row = get_session(session, session_id)
+    row.archived_at = None
     session.commit()
     session.refresh(row)
     return row
@@ -452,6 +505,144 @@ def apply_fill_to_ledger(
     session.commit()
     session.refresh(entry)
     return entry
+
+
+# --------------------------------------------------------------------------- #
+# Order-status reconciliation
+# --------------------------------------------------------------------------- #
+
+
+def list_nonterminal_trades(
+    session: Session, session_id: uuid.UUID
+) -> list[PaperTrade]:
+    """Return a session's trades that carry a broker order id and are not terminal.
+
+    These are the trades reconciliation re-queries: they were submitted to the
+    broker (``order_id`` present) but their recorded ``order_status`` has not yet
+    reached a terminal value, so their fill state may still change.
+    """
+    stmt = (
+        select(PaperTrade)
+        .where(
+            PaperTrade.session_id == session_id,
+            PaperTrade.order_id.is_not(None),
+            PaperTrade.order_status.not_in(TERMINAL_ORDER_STATUSES),
+        )
+        .order_by(PaperTrade.executed_at.asc(), PaperTrade.id.asc())
+    )
+    return list(session.execute(stmt).scalars())
+
+
+def adjust_ledger_cost_basis(
+    session: Session,
+    *,
+    session_id: uuid.UUID,
+    ticker: str,
+    trade_qty: float,
+    delta_price: float,
+) -> SessionPosition | None:
+    """Shift an open position's ``avg_cost`` by a per-share fill-price correction.
+
+    Applies ``new_avg = old_avg + (delta_price * trade_qty) / position_qty`` to the
+    ticker's open ledger entry, where ``delta_price`` is the difference between the
+    actual and previously recorded fill price of a reconciled buy of ``trade_qty``
+    shares. Spreads the correction over the position's *current* remaining quantity
+    (which may be less than ``trade_qty`` if some was already sold — an accepted
+    approximation). No-op returning ``None`` when the position is no longer open.
+    """
+    entry = get_open_position(session, session_id, ticker)
+    if entry is None or entry.quantity <= 0:
+        return None
+    entry.avg_cost = entry.avg_cost + (delta_price * trade_qty) / entry.quantity
+    session.commit()
+    session.refresh(entry)
+    return entry
+
+
+@dataclass
+class ReconcileResult:
+    """Counts from reconciling one session's non-terminal orders.
+
+    ``trades_seen`` is how many non-terminal trades were examined,
+    ``trades_reconciled`` how many the broker returned an order for (and were
+    updated), ``trades_filled`` how many of those reached ``filled``, and
+    ``trades_basis_corrected`` how many buys shifted the ledger cost basis.
+    """
+
+    trades_seen: int = 0
+    trades_reconciled: int = 0
+    trades_filled: int = 0
+    trades_basis_corrected: int = 0
+
+
+def reconcile_session_orders(
+    session: Session,
+    broker: Broker,
+    session_id: uuid.UUID,
+) -> ReconcileResult:
+    """Reconcile a session's non-terminal trades against the broker.
+
+    For each trade with a broker order id whose recorded status is not terminal,
+    re-fetches the order (``broker.get_order``) and updates the trade's
+    ``order_status`` / ``filled_price`` / ``filled_at`` to the broker's current
+    values. When a *buy* fills at a price different from the one recorded at
+    submission, the open-position cost basis for that ticker is corrected via
+    :func:`adjust_ledger_cost_basis`. A broker error or an unknown order (``None``)
+    leaves that trade untouched and the batch continues, so a transient failure
+    never corrupts recorded data.
+
+    Raises :class:`SessionNotFoundError` for an unknown session.
+    """
+    get_session(session, session_id)  # 404 for an unknown session.
+    trades = list_nonterminal_trades(session, session_id)
+    result = ReconcileResult(trades_seen=len(trades))
+
+    for trade in trades:
+        if trade.order_id is None:
+            continue
+        try:
+            order = broker.get_order(trade.order_id)
+        except Exception as exc:  # noqa: BLE001 - one bad order can't abort the batch
+            logger.warning(
+                "reconcile: get_order failed for trade %s (order %s): %s",
+                trade.id,
+                trade.order_id,
+                exc,
+            )
+            continue
+        if order is None:
+            continue
+
+        # Effective old price, captured before mutating: the last fill estimate.
+        old_price = trade.filled_price if trade.filled_price is not None else trade.price
+
+        trade.order_status = order.status.value
+        if order.filled_price is not None:
+            trade.filled_price = order.filled_price
+        if order.filled_at is not None:
+            trade.filled_at = order.filled_at
+        session.commit()
+        session.refresh(trade)
+        result.trades_reconciled += 1
+        if trade.order_status == OrderStatus.FILLED.value:
+            result.trades_filled += 1
+
+        if (
+            trade.side == OrderSide.BUY.value
+            and order.filled_price is not None
+            and order.filled_price != old_price
+        ):
+            corrected = adjust_ledger_cost_basis(
+                session,
+                session_id=session_id,
+                ticker=trade.ticker,
+                trade_qty=trade.quantity,
+                delta_price=order.filled_price - old_price,
+            )
+            if corrected is not None:
+                result.trades_basis_corrected += 1
+
+    return result
 
 
 # --------------------------------------------------------------------------- #

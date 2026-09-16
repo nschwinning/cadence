@@ -32,8 +32,21 @@ from cadence.api.routers.assets import get_market_data_provider
 from cadence.assets import service as assets_service
 from cadence.assets.market_data import AssetInfo, HistoryBar
 from cadence.broker import get_broker
+from cadence.broker.models import AssetClass, Order, OrderSide, OrderStatus
 from cadence.broker.stub import StubBroker
 from cadence.config import settings
+from cadence.paper_trading import service as paper_service
+from cadence.portfolios import service as portfolios_service
+
+
+class _ReconcileBroker:
+    """Broker double returning pre-seeded orders keyed by order id."""
+
+    def __init__(self, orders: dict[str, Order | None]) -> None:
+        self._orders = orders
+
+    def get_order(self, order_id: str) -> Order | None:
+        return self._orders.get(order_id)
 
 
 def _provider() -> FakeMarketDataProvider:
@@ -409,6 +422,91 @@ def test_rebalance_daily_fans_out_to_enrolled_sessions(
     body = resp.json()
     assert body["sessions_triggered"] == 1
     assert session_id in body["session_ids"]
+
+
+def test_reconcile_daily_rejects_without_token(
+    client: TestClient, db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(settings, "REBALANCE_CRON_TOKEN", "secret")
+    resp = client.post("/api/v1/ai-portfolio/reconcile-daily")
+    assert resp.status_code == 403
+
+
+def test_reconcile_daily_aggregates_across_sessions(
+    client: TestClient, db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(settings, "REBALANCE_CRON_TOKEN", "secret")
+    portfolio = portfolios_service.create_portfolio(
+        db_session, name="P", stocks=["AAPL"]
+    )
+    sess = paper_service.create_session(
+        db_session, portfolio_id=portfolio.id, strategy_key="recon"
+    )
+    paper_service.record_trade(
+        db_session,
+        session_id=sess.id,
+        ticker="AAPL",
+        side=OrderSide.BUY,
+        quantity=5,
+        price=20.0,
+        signal_type="entry",
+        order_id="o1",
+        order_status=OrderStatus.SUBMITTED,
+    )
+    filled = Order(
+        symbol="AAPL",
+        side=OrderSide.BUY,
+        quantity=5,
+        asset_class=AssetClass.EQUITY,
+        order_id="o1",
+        status=OrderStatus.FILLED,
+        filled_quantity=5,
+        filled_price=20.0,
+    )
+    app.dependency_overrides[get_broker] = lambda: _ReconcileBroker({"o1": filled})
+
+    resp = client.post(
+        "/api/v1/ai-portfolio/reconcile-daily",
+        headers={"X-Cron-Token": "secret"},
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["sessions_reconciled"] == 1
+    assert body["trades_reconciled"] == 1
+
+
+def test_reconcile_daily_one_failing_session_does_not_abort(
+    client: TestClient, db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(settings, "REBALANCE_CRON_TOKEN", "secret")
+    portfolio = portfolios_service.create_portfolio(
+        db_session, name="P", stocks=["AAPL"]
+    )
+    bad = paper_service.create_session(
+        db_session, portfolio_id=portfolio.id, strategy_key="bad"
+    )
+    good = paper_service.create_session(
+        db_session, portfolio_id=portfolio.id, strategy_key="good"
+    )
+
+    real_reconcile = paper_service.reconcile_session_orders
+
+    def flaky(db: Session, broker: object, session_id: object) -> object:
+        if session_id == bad.id:
+            raise RuntimeError("boom")
+        return real_reconcile(db, broker, session_id)
+
+    monkeypatch.setattr(paper_service, "reconcile_session_orders", flaky)
+    app.dependency_overrides[get_broker] = lambda: _ReconcileBroker({})
+
+    resp = client.post(
+        "/api/v1/ai-portfolio/reconcile-daily",
+        headers={"X-Cron-Token": "secret"},
+    )
+    assert resp.status_code == 200
+    # The bad session is skipped; the good one still reconciles (2 sessions, 1 ok).
+    assert resp.json()["sessions_reconciled"] == 1
+    assert good.id is not None
 
 
 def test_snapshot_daily_rejects_without_token(

@@ -35,6 +35,7 @@ const session: PaperTradingSession = {
   total_pnl: 500,
   session_metadata: null,
   schedule_mode: 'DAILY_REBALANCING',
+  archived_at: null,
 };
 
 function makeEvent(
@@ -183,6 +184,89 @@ describe('PaperTradingSessionPage', () => {
     expect(screen.getByText('Target allocations')).toBeInTheDocument();
     expect(screen.getByText('60.0%')).toBeInTheDocument();
     expect(screen.getByText('40.0%')).toBeInTheDocument();
+  });
+
+  it('shows no archive control for an active session', async () => {
+    installGet(() => 'running');
+
+    renderPage(<PaperTradingSessionPage />);
+    await screen.findByRole('heading', { name: 'ai-momentum' });
+
+    expect(
+      screen.queryByRole('button', { name: 'Archive' }),
+    ).not.toBeInTheDocument();
+  });
+
+  it('archives a stopped session from the header control', async () => {
+    const stopped: PaperTradingSession = { ...session, status: 'stopped' };
+    mockedGet.mockImplementation((url: string) => {
+      if (url.endsWith('/paper-trading/sessions')) {
+        return Promise.resolve({ data: { items: [stopped], total: 1 } });
+      }
+      if (url.includes('/ai-portfolio/sessions/') && url.endsWith('/events')) {
+        return Promise.resolve({ data: [] });
+      }
+      return Promise.resolve({ data: { items: [], total: 0 } });
+    });
+    mockedPost.mockResolvedValue({
+      data: { ...stopped, archived_at: '2026-09-16T00:00:00Z' },
+    });
+    const user = userEvent.setup();
+
+    renderPage(<PaperTradingSessionPage />);
+    await screen.findByRole('heading', { name: 'ai-momentum' });
+
+    await user.click(screen.getByRole('button', { name: 'Archive' }));
+
+    expect(mockedPost).toHaveBeenCalledWith(
+      '/api/v1/paper-trading/sessions/s1/archive',
+      {},
+    );
+  });
+
+  it('shows an Unarchive control for an archived session', async () => {
+    const archived: PaperTradingSession = {
+      ...session,
+      status: 'stopped',
+      archived_at: '2026-09-16T00:00:00Z',
+    };
+    mockedGet.mockImplementation((url: string) => {
+      if (url.endsWith('/paper-trading/sessions')) {
+        return Promise.resolve({ data: { items: [archived], total: 1 } });
+      }
+      if (url.includes('/ai-portfolio/sessions/') && url.endsWith('/events')) {
+        return Promise.resolve({ data: [] });
+      }
+      return Promise.resolve({ data: { items: [], total: 0 } });
+    });
+
+    renderPage(<PaperTradingSessionPage />);
+    await screen.findByRole('heading', { name: 'ai-momentum' });
+
+    expect(
+      screen.getByRole('button', { name: 'Unarchive' }),
+    ).toBeInTheDocument();
+  });
+
+  it('reconciles the session orders when the page opens', async () => {
+    installGet(() => 'running');
+    mockedPost.mockResolvedValue({
+      data: {
+        trades_seen: 0,
+        trades_reconciled: 0,
+        trades_filled: 0,
+        trades_basis_corrected: 0,
+        trades: [],
+      },
+    });
+
+    renderPage(<PaperTradingSessionPage />);
+    await screen.findByRole('heading', { name: 'ai-momentum' });
+
+    expect(mockedPost).toHaveBeenCalledWith(
+      '/api/v1/paper-trading/sessions/s1/reconcile',
+      {},
+    );
   });
 
   it('renders a fractional crypto trade quantity trimmed of trailing zeros', async () => {

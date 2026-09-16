@@ -8,12 +8,16 @@ lives in this module. Ticker normalization and validation mirror trading-bot's
 from __future__ import annotations
 
 import uuid
+from datetime import UTC, datetime
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from cadence.paper_trading.constants import SessionStatus
+from cadence.paper_trading.models import PaperTradingSession
 from cadence.portfolios.constants import LEGACY_SOURCES, PortfolioSource, RiskProfile
 from cadence.portfolios.errors import (
+    PortfolioNotArchivableError,
     PortfolioNotFoundError,
     PortfolioValidationError,
 )
@@ -103,23 +107,81 @@ def list_portfolios(
     *,
     limit: int = 50,
     include_legacy: bool = True,
+    include_archived: bool = False,
 ) -> list[Portfolio]:
-    """List portfolios newest first, optionally excluding legacy ones."""
+    """List portfolios newest first, optionally excluding legacy/archived ones.
+
+    Archived portfolios are excluded unless ``include_archived`` is set; the archived
+    filter composes with ``include_legacy``.
+    """
     safe_limit = max(MIN_LIST_LIMIT, min(limit, MAX_LIST_LIMIT))
     stmt = select(Portfolio).order_by(
         Portfolio.created_at.desc(), Portfolio.id.desc()
     )
     if not include_legacy:
         stmt = stmt.where(Portfolio.source.not_in([s.value for s in LEGACY_SOURCES]))
+    if not include_archived:
+        stmt = stmt.where(Portfolio.archived_at.is_(None))
     return list(session.execute(stmt.limit(safe_limit)).scalars())
 
 
-def count_portfolios(session: Session, *, include_legacy: bool = True) -> int:
-    """Count stored portfolios (optionally excluding legacy ones)."""
+def count_portfolios(
+    session: Session,
+    *,
+    include_legacy: bool = True,
+    include_archived: bool = False,
+) -> int:
+    """Count stored portfolios (optionally excluding legacy/archived ones)."""
     stmt = select(func.count()).select_from(Portfolio)
     if not include_legacy:
         stmt = stmt.where(Portfolio.source.not_in([s.value for s in LEGACY_SOURCES]))
+    if not include_archived:
+        stmt = stmt.where(Portfolio.archived_at.is_(None))
     return session.execute(stmt).scalar_one()
+
+
+def archive_portfolio(session: Session, portfolio_id: uuid.UUID) -> Portfolio:
+    """Soft-archive a portfolio by stamping ``archived_at``.
+
+    A portfolio may be archived only when none of its paper-trading sessions is
+    active or paused (all stopped/archived, or none at all).
+
+    Raises:
+        PortfolioNotFoundError: if no portfolio has ``portfolio_id``.
+        PortfolioNotArchivableError: if any of its sessions is active or paused.
+    """
+    portfolio = get_portfolio(session, portfolio_id)
+    blocking = (
+        select(func.count())
+        .select_from(PaperTradingSession)
+        .where(
+            PaperTradingSession.portfolio_id == portfolio_id,
+            PaperTradingSession.status.in_(
+                [SessionStatus.ACTIVE.value, SessionStatus.PAUSED.value]
+            ),
+        )
+    )
+    if session.execute(blocking).scalar_one() > 0:
+        raise PortfolioNotArchivableError(
+            f"Portfolio {portfolio_id} has an active or paused session and "
+            "cannot be archived"
+        )
+    portfolio.archived_at = datetime.now(tz=UTC)
+    session.commit()
+    session.refresh(portfolio)
+    return portfolio
+
+
+def unarchive_portfolio(session: Session, portfolio_id: uuid.UUID) -> Portfolio:
+    """Clear a portfolio's ``archived_at``, restoring it to the default listing.
+
+    Unconditional. Raises :class:`PortfolioNotFoundError` for an unknown id.
+    """
+    portfolio = get_portfolio(session, portfolio_id)
+    portfolio.archived_at = None
+    session.commit()
+    session.refresh(portfolio)
+    return portfolio
 
 
 def update_portfolio_stocks(

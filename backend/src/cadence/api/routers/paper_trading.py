@@ -1,8 +1,8 @@
-"""Paper-trading resource router (read-only). Mounted under ``/api/v1``.
+"""Paper-trading resource router. Mounted under ``/api/v1``.
 
-Writes to paper-trading tables happen via the ai_portfolio flow (built later);
-this router only exposes reads: session listing and a session's trades, run
-history, and closed positions.
+Trade/run/position writes happen via the ai_portfolio flow; this router exposes
+the session reads (listing plus a session's trades, run history, and closed
+positions) and the session archive/unarchive actions.
 """
 
 from __future__ import annotations
@@ -18,6 +18,7 @@ from cadence.api.schemas import (
     ClosedPositionRead,
     PaperTradeListResponse,
     PaperTradeRead,
+    PaperTradeReconcileRead,
     PaperTradingSessionListResponse,
     PaperTradingSessionRead,
     SessionRunListResponse,
@@ -25,14 +26,20 @@ from cadence.api.schemas import (
     SessionValueHistoryResponse,
     SessionValueSnapshotRead,
 )
+from cadence.broker import get_broker
+from cadence.broker.base import Broker
 from cadence.database import get_db
 from cadence.paper_trading import service
 from cadence.paper_trading.constants import SessionStatus
-from cadence.paper_trading.errors import SessionNotFoundError
+from cadence.paper_trading.errors import (
+    SessionNotArchivableError,
+    SessionNotFoundError,
+)
 
 router = APIRouter(prefix="/paper-trading", tags=["paper-trading"])
 
 DbSession = Annotated[Session, Depends(get_db)]
+BrokerDep = Annotated[Broker, Depends(get_broker)]
 
 
 @router.get("/sessions", response_model=PaperTradingSessionListResponse)
@@ -42,14 +49,25 @@ def list_sessions(
         SessionStatus | None,
         Query(alias="status", description="Filter by session status"),
     ] = None,
+    include_archived: Annotated[
+        bool,
+        Query(description="Include archived sessions in the result"),
+    ] = False,
     limit: int = 50,
 ) -> PaperTradingSessionListResponse:
     """Return paper-trading sessions, most recently updated first."""
     items = [
         PaperTradingSessionRead.model_validate(row)
-        for row in service.list_sessions(db, status=status_filter, limit=limit)
+        for row in service.list_sessions(
+            db,
+            status=status_filter,
+            include_archived=include_archived,
+            limit=limit,
+        )
     ]
-    total = service.count_sessions(db, status=status_filter)
+    total = service.count_sessions(
+        db, status=status_filter, include_archived=include_archived
+    )
     return PaperTradingSessionListResponse(items=items, total=total)
 
 
@@ -61,6 +79,72 @@ def _require_session(db: Session, session_id: uuid.UUID) -> None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)
         ) from exc
+
+
+@router.post(
+    "/sessions/{session_id}/archive", response_model=PaperTradingSessionRead
+)
+def archive_session(
+    session_id: uuid.UUID, db: DbSession
+) -> PaperTradingSessionRead:
+    """Soft-archive a stopped session (409 if it is not stopped)."""
+    try:
+        row = service.archive_session(db, session_id)
+    except SessionNotFoundError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)
+        ) from exc
+    except SessionNotArchivableError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail=str(exc)
+        ) from exc
+    return PaperTradingSessionRead.model_validate(row)
+
+
+@router.post(
+    "/sessions/{session_id}/unarchive", response_model=PaperTradingSessionRead
+)
+def unarchive_session(
+    session_id: uuid.UUID, db: DbSession
+) -> PaperTradingSessionRead:
+    """Restore an archived session to the default listing."""
+    try:
+        row = service.unarchive_session(db, session_id)
+    except SessionNotFoundError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)
+        ) from exc
+    return PaperTradingSessionRead.model_validate(row)
+
+
+@router.post(
+    "/sessions/{session_id}/reconcile", response_model=PaperTradeReconcileRead
+)
+def reconcile_session(
+    session_id: uuid.UUID, db: DbSession, broker: BrokerDep
+) -> PaperTradeReconcileRead:
+    """Reconcile a session's non-terminal orders against the broker (404 if unknown).
+
+    Returns the reconciliation counts plus the session's refreshed trades so the
+    client can render the updated statuses in one round-trip.
+    """
+    try:
+        result = service.reconcile_session_orders(db, broker, session_id)
+    except SessionNotFoundError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)
+        ) from exc
+    trades = [
+        PaperTradeRead.model_validate(row)
+        for row in service.get_session_trades(db, session_id)
+    ]
+    return PaperTradeReconcileRead(
+        trades_seen=result.trades_seen,
+        trades_reconciled=result.trades_reconciled,
+        trades_filled=result.trades_filled,
+        trades_basis_corrected=result.trades_basis_corrected,
+        trades=trades,
+    )
 
 
 @router.get(

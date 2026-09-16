@@ -126,6 +126,12 @@ class PaperTradingSession(Base):
         nullable=False,
         server_default=ScheduleMode.SCHEDULED.value,
     )
+    # When set, the session is soft-archived: hidden from the default listing but
+    # otherwise fully retained. NULL means active (not archived). Indexed so the
+    # default "not archived" filter stays cheap.
+    archived_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, index=True
+    )
 
     trades: Mapped[list[PaperTrade]] = relationship(
         back_populates="session",
