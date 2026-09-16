@@ -352,6 +352,38 @@ export interface ClosedPositionListResponse {
   total: number;
 }
 
+/** One position's line in a value snapshot's breakdown. */
+export interface SessionValueSnapshotPosition {
+  ticker: string;
+  quantity: number;
+  price: number;
+  market_value: number;
+  unrealized_pnl: number;
+  return_pct: number;
+  [key: string]: unknown;
+}
+
+/** An end-of-day portfolio-value snapshot. Mirrors `SessionValueSnapshotRead`. */
+export interface SessionValueSnapshot {
+  id: string;
+  session_id: string;
+  /** ISO date (YYYY-MM-DD) the snapshot values the session as of. */
+  snapshot_date: string;
+  total_value: number;
+  cash_value: number;
+  positions_value: number;
+  daily_pnl: number;
+  daily_pnl_pct: number;
+  positions: SessionValueSnapshotPosition[];
+  created_at: string;
+}
+
+/** A session's value snapshots (oldest first) plus the matching total. */
+export interface SessionValueHistoryResponse {
+  items: SessionValueSnapshot[];
+  total: number;
+}
+
 // --------------------------------------------------------------------------- //
 // AI-managed portfolio
 // --------------------------------------------------------------------------- //

@@ -9,19 +9,24 @@ tables:
 - ``paper_trades`` — individual fills recorded during a session.
 - ``session_runs`` — a log entry per scan/rebalance run of a session.
 - ``closed_positions`` — realized-P&L records when a position is closed.
+- ``session_positions`` — the per-session open-position ledger (one row per held
+  ticker), the source of truth for holdings and cost basis.
+- ``session_value_snapshots`` — one end-of-day portfolio-value snapshot per
+  session per day (the equity curve + daily P&L).
 
-Sessions FK to ``portfolios``; the three child tables FK to the session and
+Sessions FK to ``portfolios``; the child tables FK to the session and
 cascade-delete with it.
 """
 
 from __future__ import annotations
 
 import uuid
-from datetime import datetime
+from datetime import date, datetime
 from enum import Enum
 from typing import Any
 
 from sqlalchemy import (
+    Date,
     DateTime,
     Float,
     ForeignKey,
@@ -133,6 +138,16 @@ class PaperTradingSession(Base):
         passive_deletes=True,
     )
     closed_positions: Mapped[list[ClosedPosition]] = relationship(
+        back_populates="session",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+    )
+    positions: Mapped[list[SessionPosition]] = relationship(
+        back_populates="session",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+    )
+    value_snapshots: Mapped[list[SessionValueSnapshot]] = relationship(
         back_populates="session",
         cascade="all, delete-orphan",
         passive_deletes=True,
@@ -282,4 +297,105 @@ class ClosedPosition(Base):
 
     session: Mapped[PaperTradingSession] = relationship(
         back_populates="closed_positions"
+    )
+
+
+class SessionPosition(Base):
+    """A session's currently-open position in one ticker — the holdings ledger.
+
+    One row per ``(session_id, ticker)`` currently held, carrying the open
+    ``quantity``, a weighted-average ``avg_cost`` basis, and the ``opened_at``
+    date. This ledger is the source of truth for what a session holds and at what
+    cost: a buy opens or increases a row (re-computing the weighted average) and a
+    full exit deletes it. The brokerage is used only to submit orders and to price
+    positions — never to answer what a session holds. Unique on
+    ``(session_id, ticker)`` so a session has at most one open row per ticker.
+    """
+
+    __tablename__ = "session_positions"
+    __table_args__ = (
+        UniqueConstraint(
+            "session_id",
+            "ticker",
+            name="uq_session_positions_session_ticker",
+        ),
+        Index("idx_session_positions_session", "session_id"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        server_default=func.gen_random_uuid(),
+    )
+    session_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("paper_trading_sessions.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    ticker: Mapped[str] = mapped_column(Text, nullable=False)
+    quantity: Mapped[float] = mapped_column(Float, nullable=False)
+    avg_cost: Mapped[float] = mapped_column(Float, nullable=False)
+    opened_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
+
+    session: Mapped[PaperTradingSession] = relationship(back_populates="positions")
+
+
+class SessionValueSnapshot(Base):
+    """An end-of-day portfolio-value snapshot for a session — one row per day.
+
+    Captured by the daily snapshot cron: each row marks the session's holdings to
+    market and records its ``total_value`` (equity), ``cash_value``,
+    ``positions_value`` (market value of holdings), and the day's profit and loss
+    (absolute ``daily_pnl`` and fractional ``daily_pnl_pct``) versus the prior
+    snapshot. ``positions`` is a denormalized per-holding breakdown (ticker,
+    quantity, price, market value, unrealized P&L, return) read back as a unit for
+    the report. Unique on ``(session_id, snapshot_date)`` so re-running the cron on
+    the same day updates that day's row rather than duplicating it.
+    """
+
+    __tablename__ = "session_value_snapshots"
+    __table_args__ = (
+        UniqueConstraint(
+            "session_id",
+            "snapshot_date",
+            name="uq_session_value_snapshots_session_date",
+        ),
+        Index(
+            "idx_session_value_snapshots_session_date",
+            "session_id",
+            "snapshot_date",
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        server_default=func.gen_random_uuid(),
+    )
+    session_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("paper_trading_sessions.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    snapshot_date: Mapped[date] = mapped_column(Date, nullable=False)
+    total_value: Mapped[float] = mapped_column(Float, nullable=False)
+    cash_value: Mapped[float] = mapped_column(Float, nullable=False)
+    positions_value: Mapped[float] = mapped_column(Float, nullable=False)
+    daily_pnl: Mapped[float] = mapped_column(Float, nullable=False)
+    daily_pnl_pct: Mapped[float] = mapped_column(Float, nullable=False)
+    positions: Mapped[list[dict[str, Any]]] = mapped_column(JSONB, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    session: Mapped[PaperTradingSession] = relationship(
+        back_populates="value_snapshots"
     )

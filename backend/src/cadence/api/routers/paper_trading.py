@@ -22,6 +22,8 @@ from cadence.api.schemas import (
     PaperTradingSessionRead,
     SessionRunListResponse,
     SessionRunRead,
+    SessionValueHistoryResponse,
+    SessionValueSnapshotRead,
 )
 from cadence.database import get_db
 from cadence.paper_trading import service
@@ -112,3 +114,20 @@ def list_session_positions(
     ]
     total = service.count_closed_positions(db, session_id)
     return ClosedPositionListResponse(items=items, total=total)
+
+
+@router.get(
+    "/sessions/{session_id}/value-history",
+    response_model=SessionValueHistoryResponse,
+)
+def list_session_value_history(
+    session_id: uuid.UUID,
+    db: DbSession,
+) -> SessionValueHistoryResponse:
+    """Return a session's daily value snapshots, oldest date first."""
+    _require_session(db, session_id)
+    items = [
+        SessionValueSnapshotRead.model_validate(row)
+        for row in service.list_value_snapshots(db, session_id=session_id)
+    ]
+    return SessionValueHistoryResponse(items=items, total=len(items))

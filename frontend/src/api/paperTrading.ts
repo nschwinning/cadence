@@ -6,6 +6,7 @@ import type {
   PaperTradingSessionListResponse,
   SessionRunListResponse,
   SessionStatus,
+  SessionValueHistoryResponse,
 } from '../types/api';
 
 /** Parameters that identify a paper-trading sessions list query. */
@@ -28,6 +29,8 @@ export const paperTradingKeys = {
     ['paper-trading', 'session', sessionId, 'runs'] as const,
   positions: (sessionId: string) =>
     ['paper-trading', 'session', sessionId, 'positions'] as const,
+  valueHistory: (sessionId: string) =>
+    ['paper-trading', 'session', sessionId, 'value-history'] as const,
 };
 
 /** Fetch paper-trading sessions (most recently updated first) plus the total. */
@@ -79,6 +82,16 @@ export async function listSessionPositions(
   return data;
 }
 
+/** Fetch a session's daily value snapshots, oldest date first. */
+export async function listSessionValueHistory(
+  sessionId: string,
+): Promise<SessionValueHistoryResponse> {
+  const { data } = await apiClient.get<SessionValueHistoryResponse>(
+    `/api/v1/paper-trading/sessions/${encodeURIComponent(sessionId)}/value-history`,
+  );
+  return data;
+}
+
 /** React Query hook listing paper-trading sessions. */
 export function useSessions(
   params: SessionsListParams = DEFAULT_SESSIONS_PARAMS,
@@ -112,6 +125,15 @@ export function useSessionPositions(sessionId: string) {
   return useQuery<ClosedPositionListResponse>({
     queryKey: paperTradingKeys.positions(sessionId),
     queryFn: () => listSessionPositions(sessionId),
+    enabled: sessionId.length > 0,
+  });
+}
+
+/** React Query hook fetching a session's daily value history. */
+export function useSessionValueHistory(sessionId: string) {
+  return useQuery<SessionValueHistoryResponse>({
+    queryKey: paperTradingKeys.valueHistory(sessionId),
+    queryFn: () => listSessionValueHistory(sessionId),
     enabled: sessionId.length > 0,
   });
 }

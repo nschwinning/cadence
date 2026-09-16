@@ -7,14 +7,17 @@ service functions operating on a SQLAlchemy :class:`Session`.
 
 from __future__ import annotations
 
+import logging
 import uuid
-from datetime import UTC, datetime
+from dataclasses import dataclass
+from datetime import UTC, date, datetime
 from typing import Any
 
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from cadence.broker.base import Broker
 from cadence.broker.models import OrderSide, OrderStatus
 from cadence.paper_trading.constants import RunStatus, ScheduleMode, SessionStatus
 from cadence.paper_trading.errors import (
@@ -25,11 +28,20 @@ from cadence.paper_trading.models import (
     ClosedPosition,
     PaperTrade,
     PaperTradingSession,
+    SessionPosition,
     SessionRun,
+    SessionValueSnapshot,
 )
+
+logger = logging.getLogger(__name__)
 
 # Default seed capital for a new session (mirrors trading-bot).
 DEFAULT_ALLOCATED_CAPITAL = 100000.0
+
+# A ledger position whose remaining quantity falls at or below this is treated as
+# fully exited and its row removed. Sized to the executor's crypto quantity
+# precision (8 decimals) so fractional dust nets cleanly to a closed position.
+LEDGER_QUANTITY_EPSILON = 1e-8
 
 
 def create_session(
@@ -342,5 +354,284 @@ def get_closed_positions_by_event(
         select(ClosedPosition)
         .where(ClosedPosition.ai_portfolio_event_id == event_id)
         .order_by(ClosedPosition.exit_date.asc(), ClosedPosition.id.asc())
+    )
+    return list(session.execute(stmt).scalars())
+
+
+# --------------------------------------------------------------------------- #
+# Open-position ledger
+# --------------------------------------------------------------------------- #
+
+
+def get_open_position(
+    session: Session, session_id: uuid.UUID, ticker: str
+) -> SessionPosition | None:
+    """Return the session's open ledger entry for ``ticker`` or ``None`` if flat."""
+    stmt = select(SessionPosition).where(
+        SessionPosition.session_id == session_id,
+        SessionPosition.ticker == ticker,
+    )
+    return session.execute(stmt).scalars().first()
+
+
+def list_open_positions(
+    session: Session, session_id: uuid.UUID
+) -> list[SessionPosition]:
+    """Return the session's open ledger entries, in ticker order."""
+    stmt = (
+        select(SessionPosition)
+        .where(SessionPosition.session_id == session_id)
+        .order_by(SessionPosition.ticker.asc())
+    )
+    return list(session.execute(stmt).scalars())
+
+
+def get_position_entry_basis(
+    session: Session, session_id: uuid.UUID, ticker: str
+) -> tuple[float, datetime] | None:
+    """Return an open position's ``(avg_cost, opened_at)`` entry basis, or ``None``.
+
+    Read *before* a sell fill decrements the ledger so realized P&L uses the
+    weighted-average cost and original opened date of the position being exited.
+    """
+    entry = get_open_position(session, session_id, ticker)
+    if entry is None:
+        return None
+    return entry.avg_cost, entry.opened_at
+
+
+def apply_fill_to_ledger(
+    session: Session,
+    *,
+    session_id: uuid.UUID,
+    ticker: str,
+    side: OrderSide,
+    shares: float,
+    price: float,
+) -> SessionPosition | None:
+    """Apply one executed fill to the session's open-position ledger.
+
+    A buy opens a new entry or increases an existing one's quantity and re-computes
+    its weighted-average cost from ``price`` (``(q*avg + s*price)/(q+s)``). A sell
+    reduces the entry's quantity and removes the row once fully exited (remaining
+    quantity ``<= LEDGER_QUANTITY_EPSILON``). Returns the updated entry, or ``None``
+    when the fill closed (removed) the position or reduced one that was not open.
+    """
+    entry = get_open_position(session, session_id, ticker)
+
+    if side == OrderSide.BUY:
+        if entry is None:
+            entry = SessionPosition(
+                session_id=session_id,
+                ticker=ticker,
+                quantity=shares,
+                avg_cost=price,
+                opened_at=datetime.now(tz=UTC),
+            )
+            session.add(entry)
+        else:
+            total = entry.quantity + shares
+            entry.avg_cost = (
+                (entry.quantity * entry.avg_cost + shares * price) / total
+                if total > 0
+                else 0.0
+            )
+            entry.quantity = total
+        session.commit()
+        session.refresh(entry)
+        return entry
+
+    # Sell: reduce and delete on full exit. A sell with no open entry is a no-op.
+    if entry is None:
+        return None
+    entry.quantity -= shares
+    if entry.quantity <= LEDGER_QUANTITY_EPSILON:
+        session.delete(entry)
+        session.commit()
+        return None
+    session.commit()
+    session.refresh(entry)
+    return entry
+
+
+# --------------------------------------------------------------------------- #
+# Portfolio-value snapshots
+# --------------------------------------------------------------------------- #
+
+
+@dataclass(frozen=True)
+class SessionValuation:
+    """A session's mark-to-market equity at a point in time.
+
+    ``total_value`` is the session's equity (``allocated_capital + realized
+    total_pnl + unrealized P&L`` of the ledger positions); ``positions_value`` is
+    the market value of the held positions and ``cash_value`` the remainder.
+    ``positions`` is the per-holding breakdown persisted on the snapshot.
+    """
+
+    total_value: float
+    cash_value: float
+    positions_value: float
+    positions: list[dict[str, Any]]
+
+
+def compute_session_value(
+    session: Session,
+    *,
+    session_id: uuid.UUID,
+    broker: Broker,
+) -> SessionValuation:
+    """Value a session by marking its ledger positions to market.
+
+    ``total_value = allocated_capital + realized total_pnl + Σ(market_value −
+    cost_basis)`` over the session's open ledger positions, where ``market_value``
+    is priced from ``broker.get_quotes``. A position whose quote can't be fetched
+    (missing symbol or a quote with no usable price) is valued at its ledger
+    ``avg_cost`` and the gap logged, so one bad quote never sinks the snapshot. A
+    session with no open positions yields an all-cash valuation.
+    """
+    session_row = get_session(session, session_id)
+    ledger = list_open_positions(session, session_id)
+
+    quotes: dict[str, Any] = {}
+    tickers = [entry.ticker for entry in ledger]
+    if tickers:
+        try:
+            quotes = broker.get_quotes(tickers)
+        except Exception as exc:  # noqa: BLE001 - pricing is best-effort
+            logger.warning(
+                "snapshot: quote fetch failed for session %s: %s", session_id, exc
+            )
+            quotes = {}
+
+    positions: list[dict[str, Any]] = []
+    positions_value = 0.0
+    unrealized_total = 0.0
+    for entry in ledger:
+        cost = entry.avg_cost or 0.0
+        cost_basis = entry.quantity * cost
+        price = _quote_price(quotes.get(entry.ticker))
+        if price is None:
+            logger.warning(
+                "snapshot: no quote for %s (session %s); valuing at avg cost",
+                entry.ticker,
+                session_id,
+            )
+            price = cost
+        market_value = entry.quantity * price
+        unrealized = market_value - cost_basis
+        positions_value += market_value
+        unrealized_total += unrealized
+        positions.append(
+            {
+                "ticker": entry.ticker,
+                "quantity": entry.quantity,
+                "price": price,
+                "market_value": market_value,
+                "unrealized_pnl": unrealized,
+                "return_pct": (price / cost - 1.0) if cost > 0 else 0.0,
+            }
+        )
+
+    total_value = (
+        session_row.allocated_capital + session_row.total_pnl + unrealized_total
+    )
+    cash_value = total_value - positions_value
+    return SessionValuation(
+        total_value=total_value,
+        cash_value=cash_value,
+        positions_value=positions_value,
+        positions=positions,
+    )
+
+
+def _quote_price(quote: Any) -> float | None:
+    """Extract a usable price from a broker :class:`Quote`, or ``None``.
+
+    Prefers the midpoint (which itself falls back to the last trade), then the
+    ask. Returns ``None`` when the quote is absent or carries no price at all, so
+    the caller can fall back to the ledger cost basis.
+    """
+    if quote is None:
+        return None
+    price = getattr(quote, "mid", None)
+    if price is None:
+        price = getattr(quote, "ask", None)
+    return price
+
+
+def record_value_snapshot(
+    session: Session,
+    *,
+    session_id: uuid.UUID,
+    as_of: date,
+    broker: Broker,
+) -> SessionValueSnapshot:
+    """Upsert the session's value snapshot for ``as_of`` and return it.
+
+    Idempotent per ``(session_id, snapshot_date)``: an existing row for that day is
+    updated in place, otherwise a new one is inserted. ``daily_pnl`` is measured
+    against the most recent *prior* snapshot's ``total_value`` (or the session's
+    ``allocated_capital`` when none exists); ``daily_pnl_pct`` divides by that
+    baseline, guarding against a non-positive baseline.
+    """
+    session_row = get_session(session, session_id)
+    valuation = compute_session_value(session, session_id=session_id, broker=broker)
+
+    prior = _prior_snapshot(session, session_id, as_of)
+    baseline = prior.total_value if prior is not None else session_row.allocated_capital
+    daily_pnl = valuation.total_value - baseline
+    daily_pnl_pct = daily_pnl / baseline if baseline > 0 else 0.0
+
+    row = _get_snapshot(session, session_id, as_of)
+    if row is None:
+        row = SessionValueSnapshot(session_id=session_id, snapshot_date=as_of)
+        session.add(row)
+    row.total_value = valuation.total_value
+    row.cash_value = valuation.cash_value
+    row.positions_value = valuation.positions_value
+    row.daily_pnl = daily_pnl
+    row.daily_pnl_pct = daily_pnl_pct
+    row.positions = valuation.positions
+    session.commit()
+    session.refresh(row)
+    return row
+
+
+def _get_snapshot(
+    session: Session, session_id: uuid.UUID, snapshot_date: date
+) -> SessionValueSnapshot | None:
+    """Return the session's snapshot for ``snapshot_date`` or ``None``."""
+    stmt = select(SessionValueSnapshot).where(
+        SessionValueSnapshot.session_id == session_id,
+        SessionValueSnapshot.snapshot_date == snapshot_date,
+    )
+    return session.execute(stmt).scalars().first()
+
+
+def _prior_snapshot(
+    session: Session, session_id: uuid.UUID, before: date
+) -> SessionValueSnapshot | None:
+    """Return the session's most recent snapshot strictly before ``before``."""
+    stmt = (
+        select(SessionValueSnapshot)
+        .where(
+            SessionValueSnapshot.session_id == session_id,
+            SessionValueSnapshot.snapshot_date < before,
+        )
+        .order_by(SessionValueSnapshot.snapshot_date.desc())
+        .limit(1)
+    )
+    return session.execute(stmt).scalars().first()
+
+
+def list_value_snapshots(
+    session: Session, *, session_id: uuid.UUID
+) -> list[SessionValueSnapshot]:
+    """Return the session's value snapshots ordered oldest date first."""
+    stmt = (
+        select(SessionValueSnapshot)
+        .where(SessionValueSnapshot.session_id == session_id)
+        .order_by(SessionValueSnapshot.snapshot_date.asc())
     )
     return list(session.execute(stmt).scalars())

@@ -34,6 +34,7 @@ from cadence.ai_portfolio.service import AIBuildParams
 from cadence.api.routers.assets import get_market_data_provider
 from cadence.api.schemas import (
     AIDailyRebalanceResponse,
+    AIDailySnapshotResponse,
     AIPortfolioBuildRequest,
     AIPortfolioBuildResponse,
     AIPortfolioEventRead,
@@ -249,6 +250,30 @@ def rebalance_daily(
         sessions_triggered=len(triggered),
         session_ids=triggered,
         skipped_already_running=skipped,
+    )
+
+
+@router.post("/snapshot-daily", response_model=AIDailySnapshotResponse)
+def snapshot_daily(
+    db: DbSession,
+    broker: BrokerDep,
+    notifier: NotifierDep,
+    _token: Annotated[None, Depends(require_valid_cron_token)],
+) -> AIDailySnapshotResponse:
+    """Record an end-of-day value snapshot for every active AI session.
+
+    Guarded by the ``X-Cron-Token`` header. Runs synchronously: it marks each
+    session's holdings to market, upserts one snapshot per session for today, and
+    sends a single daily P&L report via the ``notifier`` (best-effort). Returns how
+    many sessions were snapshotted.
+    """
+    from cadence.ai_portfolio import service as ai_service
+
+    session_ids = ai_service.snapshot_all_sessions(
+        db, broker=broker, notifier=notifier
+    )
+    return AIDailySnapshotResponse(
+        sessions_snapshotted=len(session_ids), session_ids=session_ids
     )
 
 

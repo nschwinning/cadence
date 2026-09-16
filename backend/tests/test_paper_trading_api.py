@@ -7,12 +7,13 @@ reads them back through the API.
 from __future__ import annotations
 
 import uuid
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 
 from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
 
 from cadence.broker.models import OrderSide
+from cadence.broker.stub import StubBroker
 from cadence.paper_trading import service
 from cadence.portfolios import service as portfolios_service
 
@@ -102,8 +103,33 @@ def test_status_filter(client: TestClient, db_session: Session) -> None:
 
 def test_unknown_session_returns_404(client: TestClient) -> None:
     unknown = uuid.uuid4()
-    for suffix in ("trades", "runs", "positions"):
+    for suffix in ("trades", "runs", "positions", "value-history"):
         resp = client.get(
             f"/api/v1/paper-trading/sessions/{unknown}/{suffix}"
         )
         assert resp.status_code == 404
+
+
+def test_value_history_ascending(client: TestClient, db_session: Session) -> None:
+    portfolio = portfolios_service.create_portfolio(
+        db_session, name="AI", stocks=["AAPL"]
+    )
+    sess = service.create_session(
+        db_session, portfolio_id=portfolio.id, strategy_key="ai_buy_hold"
+    )
+    broker = StubBroker()
+    # Record out of order; the endpoint must return them oldest date first.
+    for day in (date(2026, 1, 6), date(2026, 1, 4), date(2026, 1, 5)):
+        service.record_value_snapshot(
+            db_session, session_id=sess.id, as_of=day, broker=broker
+        )
+
+    resp = client.get(f"/api/v1/paper-trading/sessions/{sess.id}/value-history")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["total"] == 3
+    dates = [item["snapshot_date"] for item in body["items"]]
+    assert dates == ["2026-01-04", "2026-01-05", "2026-01-06"]
+    # The snapshot fields are exposed on each item.
+    first = body["items"][0]
+    assert {"total_value", "cash_value", "positions_value", "daily_pnl"} <= first.keys()

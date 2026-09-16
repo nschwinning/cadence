@@ -21,8 +21,9 @@ import logging
 import time
 import uuid
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -51,6 +52,7 @@ from cadence.config import settings
 from cadence.notify.base import Notifier
 from cadence.paper_trading import service as paper_service
 from cadence.paper_trading.constants import RunStatus, ScheduleMode, SessionStatus
+from cadence.paper_trading.models import SessionPosition
 from cadence.portfolios import service as portfolios_service
 from cadence.portfolios.constants import PortfolioSource, RiskProfile
 
@@ -401,10 +403,19 @@ def run_rebalance_event(
         portfolio = portfolios_service.get_portfolio(session, session_row.portfolio_id)
 
         # Crypto trades 24/7, so the market-open guard can no longer skip the
-        # whole run unconditionally. Gather positions and the class map first to
-        # decide whether anything is tradable while the equities market is closed.
+        # whole run unconditionally. Read this session's holdings from its ledger
+        # (the source of truth) and the class map first, to decide whether anything
+        # is tradable while the equities market is closed.
         market_open = broker.is_market_open()
-        positions = {pos.symbol: pos for pos in broker.get_positions()}
+        ledger = paper_service.list_open_positions(session, session_id)
+        positions = {
+            entry.ticker: Position(
+                symbol=entry.ticker,
+                quantity=entry.quantity,
+                avg_cost=entry.avg_cost,
+            )
+            for entry in ledger
+        }
 
         universe = assets_service.list_assets(session)
         asset_classes = _asset_class_map(universe)
@@ -439,7 +450,7 @@ def run_rebalance_event(
         account = broker.get_account_info()
 
         candidates = _candidates_from_universe(universe)
-        holdings = _build_holdings(portfolio.stocks, positions)
+        holdings = _build_holdings(ledger, broker, asset_classes)
         account_summary = {
             "portfolio_value": account.portfolio_value,
             "cash_available": account.buying_power,
@@ -474,7 +485,7 @@ def run_rebalance_event(
         )
 
         executed, realized_pnl = _apply_rebalance_trades(
-            session, session_id, trade_results, positions, event_id=event.id
+            session, session_id, trade_results, event_id=event.id
         )
 
         paper_service.record_session_run(
@@ -589,13 +600,17 @@ def close_session(
     try:
         portfolio = portfolios_service.get_portfolio(session, session_row.portfolio_id)
 
-        # Account positions are account-wide, so narrow to this portfolio's tickers
-        # (the same intersection the rebalance holdings use).
-        account_positions = {pos.symbol: pos for pos in broker.get_positions()}
+        # The session's ledger is the source of truth for what it holds; liquidate
+        # exactly its open positions (no account-wide intersection).
+        ledger = paper_service.list_open_positions(session, session_id)
         positions = {
-            ticker: account_positions[ticker]
-            for ticker in portfolio.stocks
-            if ticker in account_positions and account_positions[ticker].quantity
+            entry.ticker: Position(
+                symbol=entry.ticker,
+                quantity=entry.quantity,
+                avg_cost=entry.avg_cost,
+            )
+            for entry in ledger
+            if entry.quantity
         }
 
         asset_classes = _asset_class_map(assets_service.list_assets(session))
@@ -606,7 +621,6 @@ def close_session(
             session,
             session_id,
             trade_results,
-            positions,
             event_id=event.id,
             signal_prefix="ai_close",
         )
@@ -669,6 +683,112 @@ def close_session(
         )
         session.refresh(event)
         return event
+
+
+# --------------------------------------------------------------------------- #
+# Daily value snapshots
+# --------------------------------------------------------------------------- #
+
+#: Timezone the end-of-day snapshot date is anchored to (US market close), matching
+#: the cron sidecar's schedule timezone.
+_SNAPSHOT_TZ = ZoneInfo("America/New_York")
+
+
+def snapshot_all_sessions(
+    session: Session,
+    *,
+    broker: Broker,
+    notifier: Notifier,
+    as_of: date | None = None,
+) -> list[uuid.UUID]:
+    """Record an end-of-day value snapshot for every active AI session and report.
+
+    Fans out over active sessions, keeps only AI-managed ones
+    (``strategy_key == AI_STRATEGY_KEY``), and upserts one snapshot per session for
+    ``as_of`` (today in the market-close timezone when omitted). Then sends a single
+    daily report: a per-session value + P&L line plus the single best- and
+    worst-performing individual holding (by return) across all snapshotted sessions,
+    omitted when no session holds anything. Delivery is best-effort — a notifier
+    failure never fails the job (see :func:`_notify_safely`). Returns the ids of the
+    sessions snapshotted.
+    """
+    if as_of is None:
+        as_of = datetime.now(tz=_SNAPSHOT_TZ).date()
+
+    sessions = paper_service.list_sessions(
+        session, status=SessionStatus.ACTIVE, limit=500
+    )
+    targets = [s for s in sessions if s.strategy_key == AI_STRATEGY_KEY]
+
+    report_lines: list[str] = []
+    holdings: list[tuple[str, float]] = []
+    snapshotted: list[uuid.UUID] = []
+    for session_row in targets:
+        snapshot = paper_service.record_value_snapshot(
+            session, session_id=session_row.id, as_of=as_of, broker=broker
+        )
+        snapshotted.append(session_row.id)
+
+        try:
+            portfolio = portfolios_service.get_portfolio(
+                session, session_row.portfolio_id
+            )
+            label = portfolio.name
+        except Exception:  # noqa: BLE001 - fall back to the strategy key for the label
+            label = session_row.strategy_key
+        report_lines.append(_session_report_line(label, snapshot))
+        for pos in snapshot.positions:
+            holdings.append((str(pos.get("ticker", "?")), float(pos.get("return_pct", 0.0))))
+
+    if snapshotted:
+        _notify_safely(
+            notifier,
+            title="Cadence: daily P&L",
+            message=_daily_snapshot_message(report_lines, holdings),
+        )
+        logger.info("Daily snapshot recorded for %s AI session(s)", len(snapshotted))
+    return snapshotted
+
+
+def _signed_money(value: float) -> str:
+    sign = "+" if value >= 0 else "−"
+    return f"{sign}${abs(value):,.2f}"
+
+
+def _signed_pct(value: float) -> str:
+    sign = "+" if value >= 0 else "−"
+    return f"{sign}{abs(value) * 100:.2f}%"
+
+
+def _session_report_line(label: str, snapshot: Any) -> str:
+    """One per-session report line: value + the day's absolute/percent P&L."""
+    return (
+        f"{label}: ${snapshot.total_value:,.2f} "
+        f"({_signed_money(snapshot.daily_pnl)}, {_signed_pct(snapshot.daily_pnl_pct)})"
+    )
+
+
+def _best_worst_line(holdings: list[tuple[str, float]]) -> str | None:
+    """The best/worst individual holding by return, or ``None`` when none held."""
+    if not holdings:
+        return None
+    best = max(holdings, key=lambda h: h[1])
+    worst = min(holdings, key=lambda h: h[1])
+    return (
+        f"Best: {best[0]} {_signed_pct(best[1])}   "
+        f"Worst: {worst[0]} {_signed_pct(worst[1])}"
+    )
+
+
+def _daily_snapshot_message(
+    report_lines: list[str], holdings: list[tuple[str, float]]
+) -> str:
+    """Assemble the daily push body: per-session lines then best/worst holding."""
+    lines = list(report_lines)
+    best_worst = _best_worst_line(holdings)
+    if best_worst is not None:
+        lines.append(best_worst)
+    return "\n".join(lines)
 
 
 # --------------------------------------------------------------------------- #
@@ -811,25 +931,39 @@ def _risk_profile(value: str) -> RiskProfile | None:
 
 
 def _build_holdings(
-    portfolio_stocks: list[str], positions: dict[str, Position]
+    ledger: list[SessionPosition],
+    broker: Broker,
+    asset_classes: dict[str, AssetClass],
 ) -> list[dict[str, Any]]:
+    """Build the agent's current-holdings context from the session's ledger.
+
+    Quantity and cost basis come from the ledger (the source of truth); the
+    current price is priced live via broker quotes. A ticker whose quote can't be
+    fetched is included at a zero current price rather than aborting the run.
+    """
     holdings: list[dict[str, Any]] = []
-    for ticker in portfolio_stocks:
-        pos = positions.get(ticker)
-        if pos and pos.quantity != 0:
-            entry = pos.avg_cost or 0.0
-            current = pos.current_price or 0.0
-            holdings.append(
-                {
-                    "ticker": ticker,
-                    "side": "long" if pos.quantity > 0 else "short",
-                    "quantity": abs(pos.quantity),
-                    "avg_cost": entry,
-                    "current_price": current,
-                    "unrealized_pnl": pos.unrealized_pnl or 0.0,
-                    "pnl_pct": (current / entry - 1) if entry > 0 else 0.0,
-                }
-            )
+    for entry in ledger:
+        if not entry.quantity:
+            continue
+        cost = entry.avg_cost or 0.0
+        cls = asset_classes.get(entry.ticker, AssetClass.EQUITY)
+        try:
+            quote = broker.get_quote(entry.ticker, cls)
+            current = quote.last or quote.ask or 0.0
+        except Exception as exc:  # noqa: BLE001 - pricing is best-effort context
+            logger.warning("holdings context: no quote for %s: %s", entry.ticker, exc)
+            current = 0.0
+        holdings.append(
+            {
+                "ticker": entry.ticker,
+                "side": "long",
+                "quantity": entry.quantity,
+                "avg_cost": cost,
+                "current_price": current,
+                "unrealized_pnl": (current - cost) * entry.quantity,
+                "pnl_pct": (current / cost - 1) if cost > 0 else 0.0,
+            }
+        )
     return holdings
 
 
@@ -841,16 +975,21 @@ def _record_trades(
     signal_prefix: str,
     event_id: uuid.UUID,
 ) -> int:
-    """Persist each executed trade; return how many were executed."""
+    """Persist each executed trade + open its ledger entry; return the count.
+
+    Build trades are opening buys, so each executed fill opens or increases the
+    session's ledger entry at the filled price (the cost basis).
+    """
     executed = 0
     for tr in trade_results:
         if not tr.executed:
             continue
+        side = _order_action(tr.side)
         paper_service.record_trade(
             session,
             session_id=session_id,
             ticker=tr.ticker,
-            side=_order_action(tr.side),
+            side=side,
             quantity=tr.shares,
             price=tr.price or 0.0,
             signal_type=f"{signal_prefix}_{tr.side}",
@@ -858,6 +997,14 @@ def _record_trades(
             order_status=tr.order_status,
             filled_price=tr.filled_price,
             ai_portfolio_event_id=event_id,
+        )
+        paper_service.apply_fill_to_ledger(
+            session,
+            session_id=session_id,
+            ticker=tr.ticker,
+            side=side,
+            shares=tr.shares,
+            price=tr.filled_price or tr.price or 0.0,
         )
         executed += 1
     return executed
@@ -867,41 +1014,35 @@ def _apply_rebalance_trades(
     session: Session,
     session_id: uuid.UUID,
     trade_results: list[TradeResult],
-    positions: dict[str, Position],
     *,
     event_id: uuid.UUID,
     signal_prefix: str = "ai_rebalance",
 ) -> tuple[int, float]:
     """Record rebalance trades + closed positions; return (executed, realized_pnl).
 
-    Sells (side ``"sell"``) that reduce or close a long position record a closed
-    position for the sold quantity with its realized P&L. The end-state ticker list
-    is derived from the AI targets by the caller, so no add/remove bookkeeping is
-    done here. ``signal_prefix`` tags the recorded trades (``"ai_rebalance"`` for a
-    rebalance, ``"ai_close"`` for a full liquidation).
+    Every executed fill updates the session's open-position ledger. Sells (side
+    ``"sell"``) that reduce or close a long record a closed position for the sold
+    quantity, using the ledger entry's weighted-average cost as the entry price and
+    its opened date as the entry date — read *before* the sell decrements the
+    ledger. The end-state ticker list is derived from the AI targets by the caller,
+    so no add/remove bookkeeping is done here. ``signal_prefix`` tags the recorded
+    trades (``"ai_rebalance"`` for a rebalance, ``"ai_close"`` for a full
+    liquidation).
     """
     executed = 0
     realized_pnl_total = 0.0
-
-    # First-entry date per ticker from this session's own opening trades, so a
-    # closed position gets a sensible holding period. Opening/increasing trades
-    # carry a signal_type ending in "_long".
-    prior_trades = paper_service.get_session_trades(session, session_id, limit=1_000_000)
-    first_entry_date: dict[str, datetime] = {}
-    for t in sorted(prior_trades, key=lambda tr: tr.executed_at):
-        if t.signal_type.endswith("_long") and t.ticker not in first_entry_date:
-            first_entry_date[t.ticker] = t.executed_at
-
     now = datetime.now(tz=UTC)
 
     for tr in trade_results:
         if not tr.executed:
             continue
+        side = _order_action(tr.side)
+        fill_price = tr.filled_price or tr.price or 0.0
         paper_service.record_trade(
             session,
             session_id=session_id,
             ticker=tr.ticker,
-            side=_order_action(tr.side),
+            side=side,
             quantity=tr.shares,
             price=tr.price or 0.0,
             signal_type=f"{signal_prefix}_{tr.side}",
@@ -912,13 +1053,15 @@ def _apply_rebalance_trades(
         )
         executed += 1
 
-        # A sell reduces/closes an existing long; record realized P&L. `positions`
-        # was captured before execution, so avg_cost is the entry price.
+        # A sell reduces/closes an existing long; record realized P&L from the
+        # ledger basis, captured before the fill decrements the entry below.
         if tr.side == "sell":
-            pos = positions.get(tr.ticker)
-            if pos is not None:
-                entry_price = pos.avg_cost or 0.0
-                exit_price = tr.filled_price or tr.price or entry_price
+            basis = paper_service.get_position_entry_basis(
+                session, session_id, tr.ticker
+            )
+            if basis is not None:
+                entry_price, entry_date = basis
+                exit_price = fill_price or entry_price
                 closed = paper_service.record_closed_position(
                     session,
                     session_id=session_id,
@@ -926,11 +1069,20 @@ def _apply_rebalance_trades(
                     quantity=tr.shares,
                     entry_price=entry_price,
                     exit_price=exit_price,
-                    entry_date=first_entry_date.get(tr.ticker, now),
+                    entry_date=entry_date,
                     exit_date=now,
                     ai_portfolio_event_id=event_id,
                 )
                 realized_pnl_total += closed.realized_pnl
+
+        paper_service.apply_fill_to_ledger(
+            session,
+            session_id=session_id,
+            ticker=tr.ticker,
+            side=side,
+            shares=tr.shares,
+            price=fill_price,
+        )
 
     return executed, realized_pnl_total
 

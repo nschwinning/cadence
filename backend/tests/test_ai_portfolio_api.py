@@ -409,3 +409,31 @@ def test_rebalance_daily_fans_out_to_enrolled_sessions(
     body = resp.json()
     assert body["sessions_triggered"] == 1
     assert session_id in body["session_ids"]
+
+
+def test_snapshot_daily_rejects_without_token(
+    client: TestClient, db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(settings, "REBALANCE_CRON_TOKEN", "secret")
+    _wire(db_session, ManualExecutor())
+    resp = client.post("/api/v1/ai-portfolio/snapshot-daily")
+    assert resp.status_code == 403
+
+
+def test_snapshot_daily_fans_out_to_active_ai_sessions(
+    client: TestClient, db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(settings, "REBALANCE_CRON_TOKEN", "secret")
+    executor = ManualExecutor(run_immediately=True)
+    _seed_universe(db_session, _provider())
+    _wire(db_session, executor)
+    session_id = _build_session(client, executor)
+
+    resp = client.post(
+        "/api/v1/ai-portfolio/snapshot-daily",
+        headers={"X-Cron-Token": "secret"},
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["sessions_snapshotted"] == 1
+    assert session_id in body["session_ids"]

@@ -32,7 +32,7 @@ from cadence.ai_portfolio.errors import (
 from cadence.ai_portfolio.service import AIBuildParams
 from cadence.assets import service as assets_service
 from cadence.assets.market_data import AssetInfo, HistoryBar
-from cadence.broker.models import AssetClass, OrderType, TimeInForce
+from cadence.broker.models import AssetClass, OrderSide, OrderType, TimeInForce
 from cadence.broker.stub import StubBroker
 from cadence.paper_trading import service as paper_service
 from cadence.paper_trading.constants import ScheduleMode, SessionStatus
@@ -392,6 +392,160 @@ def test_close_session_rejects_already_stopped_session(db_session: Session) -> N
     service.close_session(db_session, session_id, broker)  # first close -> stopped
     with pytest.raises(SessionNotEligibleError):
         service.close_session(db_session, session_id, broker)
+
+
+# --------------------------------------------------------------------------- #
+# Position ledger
+# --------------------------------------------------------------------------- #
+
+
+def test_run_build_event_opens_ledger_rows(db_session: Session) -> None:
+    provider = _seed_universe(db_session, "AAPL", "MSFT")
+    broker = StubBroker()
+    session_id, _ = _seed_session(db_session, broker, provider)
+
+    ledger = {
+        p.ticker: p
+        for p in paper_service.list_open_positions(db_session, session_id)
+    }
+    trades = {
+        t.ticker: t
+        for t in paper_service.get_session_trades(db_session, session_id, limit=100)
+    }
+    assert set(ledger) == {"AAPL", "MSFT", "NVDA"}
+    for ticker, entry in ledger.items():
+        # One ledger row per bought ticker with the trade's quantity and the
+        # fill price as its cost basis.
+        assert entry.quantity == pytest.approx(trades[ticker].quantity)
+        assert entry.avg_cost == pytest.approx(trades[ticker].filled_price)
+
+
+def test_rebalance_realized_pnl_uses_ledger_basis(db_session: Session) -> None:
+    provider = _seed_universe(db_session, "AAPL", "MSFT")
+    broker = StubBroker()
+    session_id, _ = _seed_session(db_session, broker, provider)
+
+    # Force a known low entry basis on NVDA in the ledger, then exit it.
+    nvda = paper_service.get_open_position(db_session, session_id, "NVDA")
+    assert nvda is not None
+    nvda.avg_cost = 1.0
+    db_session.commit()
+    qty = nvda.quantity
+
+    rb_event = service.create_rebalance_event(db_session, session_id)
+    service.run_rebalance_event(
+        db_session, rb_event.id, _rebalance_to_aapl_msft(), broker, provider
+    )
+
+    closed = [
+        c
+        for c in paper_service.get_closed_positions(db_session, session_id, limit=100)
+        if c.ticker == "NVDA"
+    ]
+    assert len(closed) == 1
+    # Entry price is the ledger's avg cost, not the broker's blended average.
+    assert closed[0].entry_price == pytest.approx(1.0)
+    exit_price = broker.get_quote("NVDA").last
+    assert exit_price is not None
+    assert closed[0].realized_pnl == pytest.approx((exit_price - 1.0) * qty)
+
+
+def test_close_realized_pnl_uses_ledger_basis(db_session: Session) -> None:
+    provider = _seed_universe(db_session, "AAPL", "MSFT")
+    broker = StubBroker()
+    session_id, _ = _seed_session(db_session, broker, provider)
+
+    for entry in paper_service.list_open_positions(db_session, session_id):
+        entry.avg_cost = 1.0
+    db_session.commit()
+
+    event = service.close_session(db_session, session_id, broker)
+    assert event.status == EventStatus.SUCCEEDED.value
+
+    closed = paper_service.get_closed_positions(db_session, session_id, limit=100)
+    assert closed
+    assert all(c.entry_price == pytest.approx(1.0) for c in closed)
+    assert all(c.realized_pnl > 0 for c in closed)  # exit price >> $1 basis
+
+
+def test_close_empties_ledger(db_session: Session) -> None:
+    provider = _seed_universe(db_session, "AAPL", "MSFT")
+    broker = StubBroker()
+    session_id, _ = _seed_session(db_session, broker, provider)
+
+    ledger_before = {
+        p.ticker for p in paper_service.list_open_positions(db_session, session_id)
+    }
+    assert ledger_before == {"AAPL", "MSFT", "NVDA"}
+
+    service.close_session(db_session, session_id, broker)
+
+    # Exactly the ledger's open positions are closed, and the ledger is emptied.
+    closed = {
+        c.ticker
+        for c in paper_service.get_closed_positions(db_session, session_id, limit=100)
+    }
+    assert closed == ledger_before
+    assert paper_service.list_open_positions(db_session, session_id) == []
+
+
+def test_rebalance_deltas_isolated_per_session_ledger(db_session: Session) -> None:
+    # Two sessions hold AAPL in the same account-wide broker. A rebalance of one
+    # must compute its delta from that session's own ledger, not the combined
+    # broker position.
+    provider = _seed_universe(db_session, "AAPL")
+    broker = StubBroker()
+
+    ev_a = service.create_build_event(db_session, _params(allocated_capital=30_000.0))
+    service.run_build_event(
+        db_session, ev_a.id, FakeAIPortfolioAgent(build_result=_build_result("AAPL")),
+        broker, provider,
+    )
+    session_a = service.get_event(db_session, ev_a.id).session_id
+
+    ev_b = service.create_build_event(db_session, _params(allocated_capital=60_000.0))
+    service.run_build_event(
+        db_session, ev_b.id, FakeAIPortfolioAgent(build_result=_build_result("AAPL")),
+        broker, provider,
+    )
+    session_b = service.get_event(db_session, ev_b.id).session_id
+
+    a_aapl = paper_service.get_open_position(db_session, session_a, "AAPL")
+    b_aapl = paper_service.get_open_position(db_session, session_b, "AAPL")
+    assert a_aapl is not None and b_aapl is not None
+    # Each session's ledger tracks its own quantity, not the shared account total.
+    assert a_aapl.quantity < b_aapl.quantity
+
+    # Rebalance A back to 100% AAPL at the same capital: target == A's own holding,
+    # so the delta is zero. Reading the account-wide broker position (A+B) would
+    # over-count and trigger a spurious SELL.
+    rebalance = FakeAIPortfolioAgent(
+        rebalance_result=AIRebalanceResult(
+            evaluation_summary="hold",
+            target_allocations=[
+                AITargetAllocation(
+                    ticker="AAPL",
+                    company_name="Apple",
+                    allocation_pct=1.0,
+                    investment_thesis="keep",
+                    confidence=0.9,
+                )
+            ],
+            portfolio_health="healthy",
+        )
+    )
+    rb_event = service.create_rebalance_event(db_session, session_a)
+    service.run_rebalance_event(db_session, rb_event.id, rebalance, broker, provider)
+
+    rebalance_aapl = [
+        t
+        for t in paper_service.get_session_trades(db_session, session_a, limit=100)
+        if t.ticker == "AAPL" and t.signal_type.startswith("ai_rebalance")
+    ]
+    assert rebalance_aapl == []  # no delta -> no cross-contamination trade
+    after = paper_service.get_open_position(db_session, session_a, "AAPL")
+    assert after is not None
+    assert after.quantity == pytest.approx(a_aapl.quantity)
 
 
 # --------------------------------------------------------------------------- #
@@ -771,3 +925,89 @@ def test_list_and_count_ai_runs_across_sessions(db_session: Session) -> None:
     # Filter by status.
     succeeded = service.count_ai_runs(db_session, status=EventStatus.SUCCEEDED)
     assert succeeded == 2
+
+
+# --------------------------------------------------------------------------- #
+# Daily value snapshots + Pushover report
+# --------------------------------------------------------------------------- #
+
+
+def _held_ai_session(
+    db_session: Session, name: str, ticker: str
+) -> object:
+    """An active AI session holding one open ledger position."""
+    portfolio = portfolios_service.create_portfolio(
+        db_session, name=name, stocks=[ticker]
+    )
+    sess = paper_service.create_session(
+        db_session,
+        portfolio_id=portfolio.id,
+        strategy_key="ai_buy_hold",
+        allocated_capital=100_000.0,
+    )
+    paper_service.apply_fill_to_ledger(
+        db_session,
+        session_id=sess.id,
+        ticker=ticker,
+        side=OrderSide.BUY,
+        shares=10,
+        price=100.0,
+    )
+    return sess
+
+
+def test_snapshot_all_sessions_targets_only_active_ai(db_session: Session) -> None:
+    broker = StubBroker()
+    notifier = RecordingNotifier()
+
+    ai_active = _held_ai_session(db_session, "AI Growth", "AAPL")
+
+    # A non-AI active session must be ignored.
+    non_ai_portfolio = portfolios_service.create_portfolio(
+        db_session, name="Manual", stocks=["MSFT"]
+    )
+    paper_service.create_session(
+        db_session,
+        portfolio_id=non_ai_portfolio.id,
+        strategy_key="momentum",
+    )
+
+    # A stopped AI session must be ignored (not active).
+    stopped = _held_ai_session(db_session, "AI Retired", "TSLA")
+    paper_service.update_session_status(
+        db_session, stopped.id, SessionStatus.STOPPED
+    )
+
+    ids = service.snapshot_all_sessions(
+        db_session, broker=broker, notifier=notifier, as_of=date(2026, 1, 5)
+    )
+
+    assert ids == [ai_active.id]
+    # Exactly one snapshot persisted, for the active AI session.
+    snaps = paper_service.list_value_snapshots(db_session, session_id=ai_active.id)
+    assert len(snaps) == 1
+    # One report was sent, carrying the per-session line + best/worst holding.
+    assert len(notifier.sent) == 1
+    message, title = notifier.sent[0]
+    assert title == "Cadence: daily P&L"
+    assert "AI Growth" in message
+    assert "Best:" in message and "Worst:" in message
+    assert "AAPL" in message
+
+
+def test_snapshot_all_sessions_survives_notifier_failure(
+    db_session: Session,
+) -> None:
+    broker = StubBroker()
+    notifier = RecordingNotifier(raises=True)
+    ai_active = _held_ai_session(db_session, "AI Growth", "AAPL")
+
+    # A raising notifier must not fail the job; snapshots still persist.
+    ids = service.snapshot_all_sessions(
+        db_session, broker=broker, notifier=notifier, as_of=date(2026, 1, 5)
+    )
+
+    assert ids == [ai_active.id]
+    assert len(notifier.sent) == 1  # send was attempted (and raised)
+    snaps = paper_service.list_value_snapshots(db_session, session_id=ai_active.id)
+    assert len(snaps) == 1

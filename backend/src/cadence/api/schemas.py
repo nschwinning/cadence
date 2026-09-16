@@ -323,6 +323,37 @@ class ClosedPositionListResponse(BaseModel):
     total: int
 
 
+class SessionValueSnapshotRead(BaseModel):
+    """An end-of-day portfolio-value snapshot for a session."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    session_id: uuid.UUID
+    snapshot_date: date
+    total_value: float
+    cash_value: float
+    positions_value: float
+    daily_pnl: float
+    daily_pnl_pct: float
+    positions: list[dict[str, Any]]
+    created_at: datetime
+
+
+class SessionValueHistoryResponse(BaseModel):
+    """A session's value snapshots (oldest first) plus the matching total."""
+
+    items: list[SessionValueSnapshotRead]
+    total: int
+
+
+class AIDailySnapshotResponse(BaseModel):
+    """Result of the daily snapshot fan-out: how many sessions were snapshotted."""
+
+    sessions_snapshotted: int
+    session_ids: list[uuid.UUID] = Field(default_factory=list)
+
+
 # --------------------------------------------------------------------------- #
 # AI-managed portfolio
 # --------------------------------------------------------------------------- #

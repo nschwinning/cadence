@@ -8,6 +8,7 @@ import {
 import { useSessionEvents } from '../../api/aiPortfolio';
 import { SessionRebalanceCard } from './SessionRebalanceCard';
 import { SessionCloseCard } from './SessionCloseCard';
+import { SessionValueChart } from './SessionValueChart';
 import { formatQuantity } from '../../lib/format';
 import type {
   AIPortfolioEvent,
@@ -85,7 +86,7 @@ function BackLink() {
 }
 
 /** Generic panel wrapper with a header and consistent loading/empty/error states. */
-function Panel({
+export function Panel({
   title,
   count,
   isPending,
@@ -423,6 +424,7 @@ export function PaperTradingSessionPage() {
     <section className="flex flex-col gap-6">
       <BackLink />
       <SessionHeader session={session} />
+      <SessionValueChart sessionId={id} />
       <SessionRebalanceCard sessionId={id} />
       <SessionCloseCard sessionId={id} status={session?.status} />
       <EventsPanel sessionId={id} />
