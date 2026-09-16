@@ -1,4 +1,4 @@
-"""Pure EUR-based eligibility evaluation.
+"""Pure USD-based eligibility evaluation.
 
 No I/O here: :func:`evaluate` is a pure function of the derived metrics and the
 asset's category, making it trivially unit-testable across pass/fail
@@ -18,13 +18,13 @@ from dataclasses import dataclass
 
 from cadence.assets.category import AssetCategory
 from cadence.assets.constants import (
-    MIN_AVG_DAILY_TURNOVER_EUR,
-    MIN_CRYPTO_AVG_DAILY_TURNOVER_EUR,
+    MIN_AVG_DAILY_TURNOVER_USD,
+    MIN_CRYPTO_AVG_DAILY_TURNOVER_USD,
     MIN_CRYPTO_HISTORY_YEARS,
-    MIN_CRYPTO_MARKET_CAP_EUR,
+    MIN_CRYPTO_MARKET_CAP_USD,
     MIN_HISTORY_YEARS,
-    MIN_MARKET_CAP_EUR,
-    MIN_PRICE_EUR,
+    MIN_MARKET_CAP_USD,
+    MIN_PRICE_USD,
 )
 
 # Criterion names are part of the public API contract (frontend depends on them).
@@ -36,11 +36,11 @@ CRITERION_HISTORY = "history"
 
 @dataclass(frozen=True)
 class AssetMetrics:
-    """EUR-normalized metrics fed into the evaluator."""
+    """USD-normalized metrics fed into the evaluator."""
 
-    price_eur: float | None
-    avg_daily_turnover_eur: float | None
-    market_cap_eur: float | None
+    price_usd: float | None
+    avg_daily_turnover_usd: float | None
+    market_cap_usd: float | None
     history_years: float | None
 
 
@@ -84,17 +84,17 @@ class _CriterionSpec:
 
 # Equity profile: all four criteria. Also the default for any non-crypto category.
 _STOCK_CRITERIA: tuple[_CriterionSpec, ...] = (
-    _CriterionSpec(CRITERION_PRICE, lambda m: m.price_eur, float(MIN_PRICE_EUR), _gt),
+    _CriterionSpec(CRITERION_PRICE, lambda m: m.price_usd, float(MIN_PRICE_USD), _gt),
     _CriterionSpec(
         CRITERION_AVG_DAILY_TURNOVER,
-        lambda m: m.avg_daily_turnover_eur,
-        float(MIN_AVG_DAILY_TURNOVER_EUR),
+        lambda m: m.avg_daily_turnover_usd,
+        float(MIN_AVG_DAILY_TURNOVER_USD),
         _gte,
     ),
     _CriterionSpec(
         CRITERION_MARKET_CAP,
-        lambda m: m.market_cap_eur,
-        float(MIN_MARKET_CAP_EUR),
+        lambda m: m.market_cap_usd,
+        float(MIN_MARKET_CAP_USD),
         _gt,
     ),
     _CriterionSpec(
@@ -110,14 +110,14 @@ _STOCK_CRITERIA: tuple[_CriterionSpec, ...] = (
 _CRYPTO_CRITERIA: tuple[_CriterionSpec, ...] = (
     _CriterionSpec(
         CRITERION_AVG_DAILY_TURNOVER,
-        lambda m: m.avg_daily_turnover_eur,
-        float(MIN_CRYPTO_AVG_DAILY_TURNOVER_EUR),
+        lambda m: m.avg_daily_turnover_usd,
+        float(MIN_CRYPTO_AVG_DAILY_TURNOVER_USD),
         _gte,
     ),
     _CriterionSpec(
         CRITERION_MARKET_CAP,
-        lambda m: m.market_cap_eur,
-        float(MIN_CRYPTO_MARKET_CAP_EUR),
+        lambda m: m.market_cap_usd,
+        float(MIN_CRYPTO_MARKET_CAP_USD),
         _gt,
     ),
     _CriterionSpec(

@@ -12,6 +12,15 @@ import type { AIEventStatus } from '../../types/api';
 /** Risk-profile options accepted by the build endpoint. */
 const RISK_PROFILES = ['conservative', 'balanced', 'aggressive'] as const;
 
+/** Asset-scope options (value sent as `asset_types`) with their display labels. */
+const ASSET_SCOPES = [
+  { value: 'both', label: 'Both' },
+  { value: 'stocks', label: 'Stocks only' },
+  { value: 'crypto', label: 'Crypto only' },
+] as const;
+
+type AssetScope = (typeof ASSET_SCOPES)[number]['value'];
+
 /** Presentation per terminal event status. */
 const TERMINAL_META: Record<
   Exclude<AIEventStatus, 'queued' | 'running'>,
@@ -39,8 +48,9 @@ export function BuildAIPortfolioCard() {
   const queryClient = useQueryClient();
   const build = useBuildAIPortfolio();
 
-  const [capital, setCapital] = useState('100000');
+  const [capital, setCapital] = useState('10000');
   const [riskProfile, setRiskProfile] = useState<string>('balanced');
+  const [assetTypes, setAssetTypes] = useState<AssetScope>('both');
   const [dailyRebalancing, setDailyRebalancing] = useState(false);
   const [eventId, setEventId] = useState<string | null>(null);
 
@@ -70,6 +80,7 @@ export function BuildAIPortfolioCard() {
       {
         allocated_capital: capitalValue,
         risk_profile: riskProfile,
+        asset_types: assetTypes,
         daily_rebalancing: dailyRebalancing,
       },
       { onSuccess: (res) => setEventId(res.event_id) },
@@ -108,7 +119,7 @@ export function BuildAIPortfolioCard() {
                 htmlFor="ai-capital"
                 className="block text-sm font-medium text-slate-700"
               >
-                Capital (€)
+                Capital ($)
               </label>
               <input
                 id="ai-capital"
@@ -136,6 +147,26 @@ export function BuildAIPortfolioCard() {
                 {RISK_PROFILES.map((rp) => (
                   <option key={rp} value={rp}>
                     {rp.charAt(0).toUpperCase() + rp.slice(1)}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label
+                htmlFor="ai-asset-types"
+                className="block text-sm font-medium text-slate-700"
+              >
+                Asset types
+              </label>
+              <select
+                id="ai-asset-types"
+                value={assetTypes}
+                onChange={(e) => setAssetTypes(e.target.value as AssetScope)}
+                className="mt-1 w-full rounded border border-slate-300 px-3 py-2 text-sm text-slate-900 focus:border-emerald-500 focus:outline-none focus:ring-1 focus:ring-emerald-500"
+              >
+                {ASSET_SCOPES.map((scope) => (
+                  <option key={scope.value} value={scope.value}>
+                    {scope.label}
                   </option>
                 ))}
               </select>

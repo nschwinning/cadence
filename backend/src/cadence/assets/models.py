@@ -33,7 +33,7 @@ from cadence.database import Base
 class Asset(Base):
     """An asset in Cadence's curated universe with an eligibility snapshot.
 
-    Monetary metrics are stored in EUR (converted from the native ``currency``
+    Monetary metrics are stored in USD (converted from the native ``currency``
     at add time). ``category`` and ``sector`` are each stored as their enum's
     string value (non-native enum) to keep migrations simple; ``sector`` is
     nullable ("no sector" is a valid state). ``criteria_results``
@@ -82,8 +82,8 @@ class Asset(Base):
     city: Mapped[str | None] = mapped_column(Text, nullable=True)
     employees: Mapped[int | None] = mapped_column(Integer, nullable=True)
     website: Mapped[str | None] = mapped_column(Text, nullable=True)
-    market_cap_eur: Mapped[float | None] = mapped_column(Float, nullable=True)
-    avg_daily_turnover_eur: Mapped[float | None] = mapped_column(Float, nullable=True)
+    market_cap_usd: Mapped[float | None] = mapped_column(Float, nullable=True)
+    avg_daily_turnover_usd: Mapped[float | None] = mapped_column(Float, nullable=True)
     history_years: Mapped[float | None] = mapped_column(Float, nullable=True)
     is_eligible: Mapped[bool] = mapped_column(Boolean, nullable=False)
     criteria_results: Mapped[list[dict[str, Any]]] = mapped_column(

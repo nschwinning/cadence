@@ -35,6 +35,37 @@ SUPPORTED_CATEGORIES: frozenset[AssetCategory] = frozenset(
 )
 
 
+class AssetScope(StrEnum):
+    """Which supported asset categories an AI-managed portfolio may hold.
+
+    Chosen at build time and persisted on the session, so daily rebalances honour
+    it. Values are part of the API contract (the build request's ``asset_types``).
+    ``BOTH`` is the default and preserves the original whole-universe behaviour.
+    """
+
+    STOCKS = "stocks"
+    CRYPTO = "crypto"
+    BOTH = "both"
+
+
+#: Asset scope -> the concrete supported categories it admits.
+_SCOPE_TO_CATEGORIES: dict[AssetScope, frozenset[AssetCategory]] = {
+    AssetScope.STOCKS: frozenset({AssetCategory.STOCK}),
+    AssetScope.CRYPTO: frozenset({AssetCategory.CRYPTO}),
+    AssetScope.BOTH: SUPPORTED_CATEGORIES,
+}
+
+
+def scope_categories(scope: AssetScope | str) -> frozenset[AssetCategory]:
+    """Map an :class:`AssetScope` (or its string value) to the categories it admits.
+
+    Pure lookup with no I/O. A plain string is coerced to :class:`AssetScope`,
+    so a persisted ``session_metadata`` value round-trips; an unrecognized value
+    raises :class:`ValueError` (via the enum), surfacing bad data loudly.
+    """
+    return _SCOPE_TO_CATEGORIES[AssetScope(scope)]
+
+
 # Provider ``quoteType`` (upper-cased) -> category. Anything absent maps to OTHER.
 _QUOTE_TYPE_TO_CATEGORY: dict[str, AssetCategory] = {
     "EQUITY": AssetCategory.STOCK,

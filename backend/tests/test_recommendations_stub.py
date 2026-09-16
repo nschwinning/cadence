@@ -84,4 +84,4 @@ def test_stub_prompt_embeds_categories_and_thresholds() -> None:
     )
 
     assert "stock" in prompt
-    assert f"{criteria.min_market_cap_eur:,.0f}" in prompt
+    assert f"{criteria.min_market_cap_usd:,.0f}" in prompt

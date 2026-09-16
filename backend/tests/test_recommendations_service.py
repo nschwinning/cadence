@@ -21,7 +21,7 @@ def _eligible_provider(market_cap: float = 5_000_000_000.0) -> FakeMarketDataPro
         info=AssetInfo(
             company_name="Test Co",
             exchange="XETRA",
-            currency="EUR",
+            currency="USD",
             price=50.0,
             market_cap=market_cap,
             quote_type="EQUITY",
@@ -34,7 +34,7 @@ def _eligible_provider(market_cap: float = 5_000_000_000.0) -> FakeMarketDataPro
 
 
 def _ineligible_provider() -> FakeMarketDataProvider:
-    # Market cap below the 1B EUR threshold -> not eligible.
+    # Market cap below the 1B USD threshold -> not eligible.
     return _eligible_provider(market_cap=500_000_000.0)
 
 
@@ -45,7 +45,7 @@ def _eligible_provider_with_profile() -> FakeMarketDataProvider:
         info=AssetInfo(
             company_name="Seed Co",
             exchange="XETRA",
-            currency="EUR",
+            currency="USD",
             price=50.0,
             market_cap=5_000_000_000.0,
             quote_type="EQUITY",

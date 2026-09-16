@@ -86,9 +86,30 @@ The system SHALL allow removal of an asset by its identifier, cascading to its d
 - **WHEN** a client deletes an existing asset by id
 - **THEN** the system SHALL remove the asset and its snapshots and respond 204
 
-### Requirement: EUR-based eligibility evaluation
+### Requirement: Crypto assets are a first-class, tradable universe member
 
-The system SHALL evaluate each asset against category-specific eligibility criteria expressed in EUR, converting non-EUR figures using a current FX rate. Equities SHALL be evaluated against minimum price, minimum average daily turnover, minimum market capitalization, and minimum available history. Crypto SHALL be evaluated against a distinct profile that OMITS the per-unit price criterion (per-unit price is not meaningful for crypto) and applies its own thresholds for average daily turnover, market capitalization, and available history; relative to equities, crypto's history threshold SHALL be shorter and its liquidity and market-capitalization floors higher. A category without a specific profile SHALL use the equity profile. The system SHALL record, per asset, each evaluated criterion's name, pass/fail outcome, observed value, and threshold, and SHALL set an overall eligibility flag that is true only when every criterion in the asset's profile passes. A missing (unresolved) metric SHALL fail its criterion.
+The system SHALL allow crypto assets to be added to the universe and SHALL classify
+them as crypto from the market-data provider's instrument type. A crypto asset's
+missing equity-only attributes (such as sector) SHALL be a valid state and SHALL NOT
+prevent it from being added or traded. Eligibility SHALL remain informational and
+SHALL NOT be a precondition for the AI to trade a universe asset.
+
+#### Scenario: Add a crypto asset
+
+- **WHEN** a client adds a crypto ticker (e.g. `BTC-USD`) that the provider reports
+  as a cryptocurrency
+- **THEN** the system SHALL store it in the universe classified as crypto, with a
+  null sector treated as valid
+
+#### Scenario: Crypto included as a trading candidate
+
+- **WHEN** the AI build or rebalance reads the asset universe
+- **THEN** crypto assets SHALL be presented as candidates alongside equities,
+  regardless of their eligibility flag
+
+### Requirement: USD-based eligibility evaluation
+
+The system SHALL evaluate each asset against category-specific eligibility criteria expressed in USD, converting non-USD figures using a current FX rate. Equities SHALL be evaluated against minimum price, minimum average daily turnover, minimum market capitalization, and minimum available history. Crypto SHALL be evaluated against a distinct profile that OMITS the per-unit price criterion (per-unit price is not meaningful for crypto) and applies its own thresholds for average daily turnover, market capitalization, and available history; relative to equities, crypto's history threshold SHALL be shorter and its liquidity and market-capitalization floors higher. A category without a specific profile SHALL use the equity profile. The system SHALL record, per asset, each evaluated criterion's name, pass/fail outcome, observed value, and threshold, and SHALL set an overall eligibility flag that is true only when every criterion in the asset's profile passes. A missing (unresolved) metric SHALL fail its criterion. The normalized metrics the system stores and exposes for an asset (market capitalization and average daily turnover) SHALL be denominated in USD.
 
 #### Scenario: Eligible asset
 
@@ -110,23 +131,7 @@ The system SHALL evaluate each asset against category-specific eligibility crite
 - **WHEN** a crypto asset clears the equity market-capitalization or turnover floors but not the higher crypto floors
 - **THEN** the system SHALL mark the corresponding crypto criteria as failed
 
-### Requirement: Crypto assets are a first-class, tradable universe member
+#### Scenario: Non-USD figures are normalized to USD
 
-The system SHALL allow crypto assets to be added to the universe and SHALL classify
-them as crypto from the market-data provider's instrument type. A crypto asset's
-missing equity-only attributes (such as sector) SHALL be a valid state and SHALL NOT
-prevent it from being added or traded. Eligibility SHALL remain informational and
-SHALL NOT be a precondition for the AI to trade a universe asset.
-
-#### Scenario: Add a crypto asset
-
-- **WHEN** a client adds a crypto ticker (e.g. `BTC-USD`) that the provider reports
-  as a cryptocurrency
-- **THEN** the system SHALL store it in the universe classified as crypto, with a
-  null sector treated as valid
-
-#### Scenario: Crypto included as a trading candidate
-
-- **WHEN** the AI build or rebalance reads the asset universe
-- **THEN** crypto assets SHALL be presented as candidates alongside equities,
-  regardless of their eligibility flag
+- **WHEN** an asset reports its market data in a currency other than USD
+- **THEN** the system SHALL convert its price, market capitalization, and average daily turnover to USD using a current FX rate before evaluating them against the USD thresholds

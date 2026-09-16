@@ -6,6 +6,7 @@ in this module.
 
 from __future__ import annotations
 
+from collections.abc import Collection
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from typing import Any
@@ -40,6 +41,7 @@ def add_asset(
     ticker: str,
     provider: MarketDataProvider,
     broker: Broker,
+    allowed_categories: Collection[AssetCategory] | None = None,
 ) -> Asset:
     """Fetch, classify, convert, verify tradability, evaluate, and persist an asset.
 
@@ -47,12 +49,20 @@ def add_asset(
     (``broker``) and rejected unless the broker lists it as tradable. The broker's
     canonical symbol is stored on the row so trading never has to reconstruct it.
 
+    ``allowed_categories`` optionally narrows which categories may be added below
+    the always-enforced :data:`SUPPORTED_CATEGORIES` gate — used by the AI
+    discovery path to reject an asset outside the session's chosen scope (e.g. a
+    stock discovered for a crypto-only portfolio). When ``None`` (the default,
+    used by manual add and the recommender) only the supported-category gate
+    applies, so those callers are unchanged.
+
     Raises:
         DuplicateAssetError: if the (normalized) ticker already exists.
         UnknownTickerError: if the provider has no data for the ticker.
         MarketDataUnavailableError: on provider/FX failure (nothing persisted).
         UnsupportedCategoryError: if the instrument's category is not tradeable
-            (only stock and crypto are supported); nothing is persisted.
+            (only stock and crypto are supported) or falls outside
+            ``allowed_categories``; nothing is persisted.
         UntradeableTickerError: if the brokerage does not list the asset as
             tradable (e.g. a non-US listing like ``BAYN.DE``); nothing persisted.
         broker.ConnectionError: if the brokerage is unreachable/unconfigured;
@@ -76,6 +86,15 @@ def add_asset(
         raise UnsupportedCategoryError(
             f"Asset {normalized!r} has unsupported category "
             f"{derived.category.value!r}; only stock and crypto are supported"
+        )
+
+    # Optional scope narrowing (AI discovery): reject an otherwise-supported
+    # category that the caller did not allow, before persistence.
+    if allowed_categories is not None and derived.category not in allowed_categories:
+        allowed = ", ".join(sorted(c.value for c in allowed_categories))
+        raise UnsupportedCategoryError(
+            f"Asset {normalized!r} has category {derived.category.value!r} "
+            f"outside the allowed scope ({allowed})"
         )
 
     # Authoritative tradability check: confirm the brokerage lists the asset and
@@ -107,8 +126,8 @@ def add_asset(
         city=derived.city,
         employees=derived.employees,
         website=derived.website,
-        market_cap_eur=derived.metrics.market_cap_eur,
-        avg_daily_turnover_eur=derived.metrics.avg_daily_turnover_eur,
+        market_cap_usd=derived.metrics.market_cap_usd,
+        avg_daily_turnover_usd=derived.metrics.avg_daily_turnover_usd,
         history_years=derived.metrics.history_years,
         is_eligible=result.is_eligible,
         criteria_results=_serialize_criteria(result),

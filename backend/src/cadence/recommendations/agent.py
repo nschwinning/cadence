@@ -41,25 +41,25 @@ proposal is wasted because it will be rejected as a duplicate.
 
 @dataclass(frozen=True)
 class EligibilityCriteria:
-    """The EUR eligibility thresholds shown to the agent in the prompt.
+    """The USD eligibility thresholds shown to the agent in the prompt.
 
     Mirrors :mod:`cadence.assets.constants`; kept as an explicit value object so
     it is an argument to :meth:`RecommenderAgent.recommend` (and thus assertable
     in tests) rather than a hidden import inside the prompt builder.
     """
 
-    min_price_eur: float
-    min_avg_daily_turnover_eur: float
-    min_market_cap_eur: float
+    min_price_usd: float
+    min_avg_daily_turnover_usd: float
+    min_market_cap_usd: float
     min_history_years: float
 
 
 def default_eligibility_criteria() -> EligibilityCriteria:
     """Build the criteria from the assets domain's fixed thresholds."""
     return EligibilityCriteria(
-        min_price_eur=asset_constants.MIN_PRICE_EUR,
-        min_avg_daily_turnover_eur=asset_constants.MIN_AVG_DAILY_TURNOVER_EUR,
-        min_market_cap_eur=asset_constants.MIN_MARKET_CAP_EUR,
+        min_price_usd=asset_constants.MIN_PRICE_USD,
+        min_avg_daily_turnover_usd=asset_constants.MIN_AVG_DAILY_TURNOVER_USD,
+        min_market_cap_usd=asset_constants.MIN_MARKET_CAP_USD,
         min_history_years=asset_constants.MIN_HISTORY_YEARS,
     )
 
@@ -203,10 +203,10 @@ to confirm current index membership; eligible names that are not index
 constituents are still welcome when they improve diversification.
 
 Each asset must plausibly satisfy ALL of these eligibility rules (all monetary
-values in EUR, converted from the asset's native currency):
-- Latest price greater than {criteria.min_price_eur:,.0f} EUR.
-- Average daily turnover at least {criteria.min_avg_daily_turnover_eur:,.0f} EUR.
-- Market capitalization greater than {criteria.min_market_cap_eur:,.0f} EUR.
+values in USD, converted from the asset's native currency):
+- Latest price greater than {criteria.min_price_usd:,.0f} USD.
+- Average daily turnover at least {criteria.min_avg_daily_turnover_usd:,.0f} USD.
+- Market capitalization greater than {criteria.min_market_cap_usd:,.0f} USD.
 - At least {criteria.min_history_years:,.0f} years of price history.
 
 Use web_search to verify these facts before proposing an asset. Prefer well

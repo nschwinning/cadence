@@ -29,9 +29,9 @@ from cadence.recommendations.errors import RecommendationAgentError
 
 def _criteria() -> EligibilityCriteria:
     return EligibilityCriteria(
-        min_price_eur=5,
-        min_avg_daily_turnover_eur=2_000_000,
-        min_market_cap_eur=1_000_000_000,
+        min_price_usd=5,
+        min_avg_daily_turnover_usd=2_000_000,
+        min_market_cap_usd=1_000_000_000,
         min_history_years=5,
     )
 
@@ -70,7 +70,7 @@ def test_prompt_includes_categories_and_thresholds() -> None:
     # Thresholds appear (thousands-separated).
     assert "2,000,000" in prompt
     assert "1,000,000,000" in prompt
-    assert "5 EUR" in prompt
+    assert "5 USD" in prompt
     assert "5 years" in prompt
 
 
@@ -131,9 +131,9 @@ def test_default_criteria_match_asset_constants() -> None:
     from cadence.assets import constants as c
 
     criteria = default_eligibility_criteria()
-    assert criteria.min_price_eur == c.MIN_PRICE_EUR
-    assert criteria.min_avg_daily_turnover_eur == c.MIN_AVG_DAILY_TURNOVER_EUR
-    assert criteria.min_market_cap_eur == c.MIN_MARKET_CAP_EUR
+    assert criteria.min_price_usd == c.MIN_PRICE_USD
+    assert criteria.min_avg_daily_turnover_usd == c.MIN_AVG_DAILY_TURNOVER_USD
+    assert criteria.min_market_cap_usd == c.MIN_MARKET_CAP_USD
     assert criteria.min_history_years == c.MIN_HISTORY_YEARS
 
 

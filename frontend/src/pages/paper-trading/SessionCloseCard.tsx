@@ -3,13 +3,7 @@ import axios from 'axios';
 import { Link } from 'react-router-dom';
 import { useCloseSession } from '../../api/aiPortfolio';
 import type { AIPortfolioRunDetail } from '../../types/api';
-
-/** Format a EUR value. */
-const eur = new Intl.NumberFormat(undefined, {
-  style: 'currency',
-  currency: 'EUR',
-  maximumFractionDigits: 2,
-});
+import { formatCurrency } from '../../lib/format';
 
 /** Map an axios error from the close endpoint to a user-facing message. */
 function closeErrorMessage(error: unknown): string {
@@ -45,7 +39,7 @@ function CloseResult({ result }: { result: AIPortfolioRunDetail }) {
       <p className="font-semibold">Portfolio closed</p>
       <p className="mt-1">
         {closedCount} position{closedCount === 1 ? '' : 's'} liquidated · realized
-        P&amp;L {eur.format(realized)}
+        P&amp;L {formatCurrency(realized)}
         {skipped > 0
           ? ` · ${skipped} order${skipped === 1 ? '' : 's'} could not be closed`
           : ''}

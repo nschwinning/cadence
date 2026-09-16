@@ -169,15 +169,15 @@ describe('PaperTradingSessionPage', () => {
     renderPage(<PaperTradingSessionPage />);
 
     // Current value tile.
-    expect(await screen.findByText('€102,500.00')).toBeInTheDocument();
+    expect(await screen.findByText('$102,500.00')).toBeInTheDocument();
     // Realised P&L is positive -> green.
-    const realised = screen.getByText('€750.00');
+    const realised = screen.getByText('$750.00');
     expect(realised).toHaveClass('text-emerald-700');
     // Unrealised P&L is negative -> red.
-    const unrealised = screen.getByText('-€200.00');
+    const unrealised = screen.getByText('-$200.00');
     expect(unrealised).toHaveClass('text-red-700');
     // Total return shows the money amount and a percentage hint.
-    expect(screen.getByText('€2,500.00')).toHaveClass('text-emerald-700');
+    expect(screen.getByText('$2,500.00')).toHaveClass('text-emerald-700');
     expect(screen.getByText('2.50%')).toBeInTheDocument();
     // Sharpe is null -> fallback copy.
     expect(screen.getByText('Not yet available')).toBeInTheDocument();

@@ -92,7 +92,7 @@ def _provider() -> FakeMarketDataProvider:
         info=AssetInfo(
             company_name="Co",
             exchange="XETRA",
-            currency="EUR",
+            currency="USD",
             price=50.0,
             market_cap=5_000_000_000.0,
             quote_type="EQUITY",
@@ -205,6 +205,46 @@ def test_run_build_event_discovers_and_adds_new_asset(db_session: Session) -> No
     assert set(portfolio.stocks) == {"AAPL", "MSFT", "NVDA"}
 
 
+def _seed_mixed_universe(db_session: Session) -> None:
+    """Seed one stock (AAPL) and one crypto (BTC-USD) into the universe."""
+    assets_service.add_asset(db_session, "AAPL", _provider(), StubBroker())
+    assets_service.add_asset(db_session, "BTC-USD", _crypto_provider(), StubBroker())
+
+
+def test_run_build_event_scope_restricts_candidates_and_persists_scope(
+    db_session: Session,
+) -> None:
+    _seed_mixed_universe(db_session)
+    agent = FakeAIPortfolioAgent(build_result=_build_result("AAPL"))
+    # stocks-only scope: the crypto asset must not appear as a candidate.
+    event = service.create_build_event(db_session, _params(asset_types="stocks"))
+
+    service.run_build_event(db_session, event.id, agent, StubBroker(), _provider())
+
+    assert agent.build_calls
+    candidate_tickers = {c["ticker"] for c in agent.build_calls[0]["candidates"]}
+    assert candidate_tickers == {"AAPL"}  # BTC-USD (crypto) excluded
+
+    refreshed = service.get_event(db_session, event.id)
+    session_row = paper_service.get_session(db_session, refreshed.session_id)
+    assert session_row.session_metadata["asset_types"] == "stocks"
+
+
+def test_run_build_event_rejects_out_of_scope_discovery(
+    db_session: Session,
+) -> None:
+    # crypto-only scope; the equity provider classifies any discovered ticker as a
+    # stock, which is outside scope and must not enter the universe.
+    assets_service.add_asset(db_session, "BTC-USD", _crypto_provider(), StubBroker())
+    agent = FakeAIPortfolioAgent(build_result=_build_result("TSLA"))
+    event = service.create_build_event(db_session, _params(asset_types="crypto"))
+
+    service.run_build_event(db_session, event.id, agent, StubBroker(), _provider())
+
+    universe = {a.ticker for a in assets_service.list_assets(db_session)}
+    assert "TSLA" not in universe  # out-of-scope stock rejected by the hard-filter
+
+
 def test_run_build_event_manual_schedule_when_not_enrolled(
     db_session: Session,
 ) -> None:
@@ -240,12 +280,17 @@ def _seed_session(
     db_session: Session,
     broker: StubBroker,
     provider: FakeMarketDataProvider,
+    **build_params: object,
 ) -> tuple[object, object]:
-    """Build a 3-holding AI session (AAPL, MSFT, NVDA) and return (session, portfolio)."""
+    """Build a 3-holding AI session (AAPL, MSFT, NVDA) and return (session, portfolio).
+
+    Extra ``build_params`` (e.g. ``risk_profile``/``asset_types``) are forwarded to
+    the build params so callers can seed a scoped or non-default-risk session.
+    """
     agent = FakeAIPortfolioAgent(build_result=_build_result("AAPL", "MSFT", "NVDA"))
-    build_event = service.create_build_event(
-        db_session, _params(allocated_capital=50_000.0, daily_rebalancing=True)
-    )
+    params = {"allocated_capital": 50_000.0, "daily_rebalancing": True}
+    params.update(build_params)
+    build_event = service.create_build_event(db_session, _params(**params))
     service.run_build_event(db_session, build_event.id, agent, broker, provider)
     event = service.get_event(db_session, build_event.id)
     return event.session_id, event.portfolio_id
@@ -322,6 +367,112 @@ def test_run_rebalance_event_trades_toward_targets_and_updates_stocks(
 
     portfolio = portfolios_service.get_portfolio(db_session, portfolio_id)
     assert set(portfolio.stocks) == {"AAPL", "MSFT"}
+
+
+def _noop_rebalance() -> FakeAIPortfolioAgent:
+    """A rebalance agent that keeps every holding (empty targets = no-op-ish)."""
+    return FakeAIPortfolioAgent(
+        rebalance_result=AIRebalanceResult(
+            evaluation_summary="steady",
+            target_allocations=[
+                AITargetAllocation(
+                    ticker=t,
+                    company_name=t,
+                    allocation_pct=round(1 / 3, 4),
+                    investment_thesis="keep",
+                    confidence=0.9,
+                )
+                for t in ("AAPL", "MSFT", "NVDA")
+            ],
+            portfolio_health="healthy",
+        )
+    )
+
+
+def test_run_rebalance_event_applies_persisted_risk_profile(
+    db_session: Session,
+) -> None:
+    # A session built as aggressive must rebalance as aggressive — the profile is
+    # read back from session_metadata and passed to the agent (bug fix).
+    provider = _seed_universe(db_session, "AAPL", "MSFT")
+    broker = StubBroker()
+    session_id, _ = _seed_session(
+        db_session, broker, provider, risk_profile="aggressive"
+    )
+
+    rebalance = _noop_rebalance()
+    rb_event = service.create_rebalance_event(db_session, session_id)
+    service.run_rebalance_event(db_session, rb_event.id, rebalance, broker, provider)
+
+    assert rebalance.rebalance_calls
+    assert rebalance.rebalance_calls[0]["risk_profile"] == "aggressive"
+
+
+def test_run_rebalance_event_legacy_session_defaults_risk_and_scope(
+    db_session: Session,
+) -> None:
+    # A session whose metadata predates these fields is treated as balanced/both.
+    provider = _seed_universe(db_session, "AAPL", "MSFT")
+    broker = StubBroker()
+    session_id, _ = _seed_session(db_session, broker, provider)
+
+    # Simulate a legacy session: strip the two fields from session_metadata.
+    session_row = paper_service.get_session(db_session, session_id)
+    metadata = dict(session_row.session_metadata or {})
+    metadata.pop("risk_profile", None)
+    metadata.pop("asset_types", None)
+    session_row.session_metadata = metadata
+    db_session.commit()
+
+    rebalance = _noop_rebalance()
+    rb_event = service.create_rebalance_event(db_session, session_id)
+    service.run_rebalance_event(db_session, rb_event.id, rebalance, broker, provider)
+
+    assert rebalance.rebalance_calls
+    call = rebalance.rebalance_calls[0]
+    assert call["risk_profile"] == "balanced"
+    # both-scope => the full universe (seeded + discovered NVDA) is offered.
+    assert {c["ticker"] for c in call["candidates"]} == {"AAPL", "MSFT", "NVDA"}
+
+
+def test_run_rebalance_event_scope_restricts_candidates(
+    db_session: Session,
+) -> None:
+    # A crypto-only session's rebalance must only offer crypto candidates even
+    # though the universe also holds stocks.
+    _seed_mixed_universe(db_session)
+    broker = StubBroker()
+    # Build a crypto-only session holding BTC-USD.
+    agent = FakeAIPortfolioAgent(build_result=_build_result("BTC-USD"))
+    build_event = service.create_build_event(
+        db_session, _params(asset_types="crypto")
+    )
+    service.run_build_event(db_session, build_event.id, agent, broker, _crypto_provider())
+    session_id = service.get_event(db_session, build_event.id).session_id
+
+    rebalance = FakeAIPortfolioAgent(
+        rebalance_result=AIRebalanceResult(
+            evaluation_summary="steady",
+            target_allocations=[
+                AITargetAllocation(
+                    ticker="BTC-USD",
+                    company_name="Bitcoin",
+                    allocation_pct=1.0,
+                    investment_thesis="keep",
+                    confidence=0.9,
+                )
+            ],
+            portfolio_health="healthy",
+        )
+    )
+    rb_event = service.create_rebalance_event(db_session, session_id)
+    service.run_rebalance_event(
+        db_session, rb_event.id, rebalance, broker, _crypto_provider()
+    )
+
+    assert rebalance.rebalance_calls
+    candidate_tickers = {c["ticker"] for c in rebalance.rebalance_calls[0]["candidates"]}
+    assert candidate_tickers == {"BTC-USD"}  # AAPL (stock) excluded from scope
 
 
 # --------------------------------------------------------------------------- #

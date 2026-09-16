@@ -1,19 +1,19 @@
 """Eligibility thresholds and evaluation windows for the assets domain.
 
-All monetary thresholds are expressed in EUR. Thresholds are fixed constants for
+All monetary thresholds are expressed in USD. Thresholds are fixed constants for
 v1 (configurable thresholds are out of scope).
 """
 
 from __future__ import annotations
 
 # Minimum latest price (strictly greater than).
-MIN_PRICE_EUR = 5
+MIN_PRICE_USD = 5
 
 # Minimum average daily turnover over the trailing window (at least).
-MIN_AVG_DAILY_TURNOVER_EUR = 2_000_000
+MIN_AVG_DAILY_TURNOVER_USD = 2_000_000
 
 # Minimum market capitalization (strictly greater than).
-MIN_MARKET_CAP_EUR = 1_000_000_000
+MIN_MARKET_CAP_USD = 1_000_000_000
 
 # Minimum available price history in years (at least).
 MIN_HISTORY_YEARS = 5
@@ -31,10 +31,10 @@ MIN_HISTORY_YEARS = 5
 # ---------------------------------------------------------------------------- #
 
 # Minimum average daily turnover for crypto over the trailing window (at least).
-MIN_CRYPTO_AVG_DAILY_TURNOVER_EUR = 10_000_000
+MIN_CRYPTO_AVG_DAILY_TURNOVER_USD = 10_000_000
 
 # Minimum crypto market capitalization (strictly greater than).
-MIN_CRYPTO_MARKET_CAP_EUR = 2_000_000_000
+MIN_CRYPTO_MARKET_CAP_USD = 2_000_000_000
 
 # Minimum available crypto price history in years (at least).
 MIN_CRYPTO_HISTORY_YEARS = 1

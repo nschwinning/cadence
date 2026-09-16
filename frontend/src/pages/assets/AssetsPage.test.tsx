@@ -38,8 +38,8 @@ const apple: Asset = {
   sector: 'technology',
   exchange: 'NASDAQ',
   currency: 'USD',
-  market_cap_eur: 2_500_000_000_000,
-  avg_daily_turnover_eur: 8_000_000_000,
+  market_cap_usd: 2_500_000_000_000,
+  avg_daily_turnover_usd: 8_000_000_000,
   history_years: 20,
   is_eligible: true,
   criteria_results: [],
@@ -152,14 +152,14 @@ describe('AssetsPage', () => {
     const stockRow = (await screen.findByText('Tiny Stock')).closest('tr');
     expect(
       within(stockRow as HTMLElement).getByText('Not eligible'),
-    ).toHaveAttribute('title', 'Failed: Market cap > €1.0B, History ≥ 5 years');
+    ).toHaveAttribute('title', 'Failed: Market cap > $1.0B, History ≥ 5 years');
 
     const cryptoRow = screen.getByText('New Coin').closest('tr');
     expect(
       within(cryptoRow as HTMLElement).getByText('Not eligible'),
     ).toHaveAttribute(
       'title',
-      'Failed: Market cap > €2.0B, Avg daily turnover ≥ €10.0M, History ≥ 1 year',
+      'Failed: Market cap > $2.0B, Avg daily turnover ≥ $10.0M, History ≥ 1 year',
     );
   });
 

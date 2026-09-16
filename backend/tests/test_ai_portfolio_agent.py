@@ -142,11 +142,14 @@ def test_build_rebalance_input_includes_sections() -> None:
         holdings=[{"ticker": "AAPL"}],
         account_summary={"cash_available": 1000},
         candidates=[{"ticker": "MSFT"}],
+        risk_profile="aggressive",
     )
     assert "Current Holdings" in prompt
     assert "Account Summary" in prompt
     assert "long only" in prompt
     assert "target weights" in prompt
+    # The rebalance prompt now states the session's persisted risk profile.
+    assert "aggressive" in prompt
 
 
 # --------------------------------------------------------------------------- #

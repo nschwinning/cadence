@@ -26,7 +26,7 @@ The system SHALL access the brokerage through a single abstraction exposing acco
 
 ### Requirement: Build an AI portfolio and execute it as paper trades
 
-The system SHALL accept a request to build an AI portfolio over the entire current asset universe and an amount of capital to allocate, with options for risk profile and whether the portfolio is enrolled in daily rebalancing. The request SHALL NOT accept a candidate ticker list or per-position allocation caps. The AI SHALL be given every asset in the universe (enriched with name, sector, category, and eligibility) as candidates, MAY research and propose assets not currently in the universe (discovery is always enabled), and SHALL produce long-only target holdings whose allocations are fractions in [0, 1] that sum to approximately 1.0 (an allocation of ~0 excludes a holding). Newly discovered tickers SHALL be added to the universe on a best-effort basis, bounded by a configured maximum number of new assets per run; if an add fails the ticker SHALL still be eligible for the portfolio. The request SHALL be processed in the background and SHALL return immediately with an event identifier for polling. Execution SHALL: ask the AI for target holdings and allocations, create a portfolio and a paper-trading session, size each position from the allocated capital and a current quote, submit the corresponding buy orders through the brokerage, and record each executed trade and a run summary. The AI's research SHALL be cost-bounded per run by a configured maximum number of reasoning turns and a hard cap on the number of web searches.
+The system SHALL accept a request to build an AI portfolio over the current asset universe and an amount of capital to allocate, with options for risk profile, whether the portfolio is enrolled in daily rebalancing, and an **asset scope** selecting which asset types the portfolio may hold: stocks only, crypto only, or both. The asset scope SHALL default to both (the whole supported universe) when not specified, and the allocated capital SHALL default to a configured default amount. The request SHALL NOT accept a candidate ticker list or per-position allocation caps. The AI SHALL be given as candidates every asset in the universe **whose category is within the selected asset scope** (enriched with name, sector, category, and eligibility), MAY research and propose assets not currently in the universe (discovery is always enabled), and SHALL produce long-only target holdings whose allocations are fractions in [0, 1] that sum to approximately 1.0 (an allocation of ~0 excludes a holding). Newly discovered tickers SHALL be added to the universe on a best-effort basis, bounded by a configured maximum number of new assets per run, **and a discovered asset whose category falls outside the selected asset scope SHALL be rejected — not added and not traded**; if an in-scope add fails the ticker SHALL still be eligible for the portfolio. The selected asset scope SHALL be persisted with the session so that later automated rebalances honour the same scope. The request SHALL be processed in the background and SHALL return immediately with an event identifier for polling. Execution SHALL: ask the AI for target holdings and allocations, create a portfolio and a paper-trading session, size each position from the allocated capital and a current quote, submit the corresponding buy orders through the brokerage, and record each executed trade and a run summary. The AI's research SHALL be cost-bounded per run by a configured maximum number of reasoning turns and a hard cap on the number of web searches.
 
 #### Scenario: Queue a build
 
@@ -43,10 +43,25 @@ The system SHALL accept a request to build an AI portfolio over the entire curre
 - **WHEN** the background build runs
 - **THEN** the system SHALL create the portfolio and session, place the sized buy orders via the brokerage, record the executed trades and a run entry, and mark the build event succeeded (or partial if some orders could not be placed)
 
+#### Scenario: Default capital and scope
+
+- **WHEN** a client requests a build without specifying allocated capital or asset scope
+- **THEN** the system SHALL use the configured default capital amount and an asset scope of both (stocks and crypto)
+
+#### Scenario: Scope restricts the candidate universe
+
+- **WHEN** a build requests an asset scope of stocks only (or crypto only)
+- **THEN** the AI SHALL be given only universe assets whose category matches the scope, and the resulting portfolio SHALL contain only assets of the selected type
+
 #### Scenario: AI discovers a new asset
 
-- **WHEN** the AI proposes a holding whose ticker is not in the current universe
+- **WHEN** the AI proposes a holding whose ticker is not in the current universe and whose category is within the selected asset scope
 - **THEN** the system SHALL attempt to add that asset to the universe (up to the configured per-run limit) and SHALL still include the ticker in the portfolio and its trades even if the add fails
+
+#### Scenario: AI discovers an out-of-scope asset
+
+- **WHEN** the AI proposes a holding whose category falls outside the selected asset scope
+- **THEN** the system SHALL reject that asset — neither adding it to the universe nor trading it — while continuing the rest of the build
 
 #### Scenario: Position too small to trade
 
@@ -462,3 +477,41 @@ sessions and trades were reconciled.
 
 - **WHEN** reconciling one session fails during a scheduled run
 - **THEN** the system SHALL continue reconciling the remaining sessions
+
+### Requirement: Live session performance KPIs
+
+The system SHALL expose, on demand for a given paper-trading session, a summary of the session's live performance comprising: the current portfolio value (net asset value: cash plus open positions valued at current market quotes), cumulative realised profit/loss, live unrealised profit/loss on open positions, total return relative to the allocated capital (as both an absolute money amount and a fraction), and a risk-adjusted Sharpe ratio. Requesting the summary SHALL value the session's open positions against current quotes at request time (marking to market on load) rather than returning a stale stored valuation. A request for an unknown session SHALL fail as not found.
+
+#### Scenario: Summary for a session with open positions
+
+- **WHEN** a client requests the KPI summary for an existing session
+- **THEN** the system SHALL mark the session's open positions to market and return the current portfolio value, realised P&L, unrealised P&L, total return relative to allocated capital, and the Sharpe ratio (or an unavailable Sharpe when history is insufficient)
+
+#### Scenario: Unknown session
+
+- **WHEN** a client requests the KPI summary for a session id that does not exist
+- **THEN** the system SHALL respond with a not-found error and no summary
+
+#### Scenario: Total return relative to allocated capital
+
+- **WHEN** the KPI summary is computed
+- **THEN** the total return SHALL be the current portfolio value measured against the session's allocated capital, provided both as an absolute money amount (current value minus allocated capital) and as a fraction of allocated capital
+
+### Requirement: Sharpe ratio from the session's daily NAV series
+
+The system SHALL compute a session's Sharpe ratio from the session's own ordered series of daily net-asset-value returns (the recorded daily value snapshots), as the mean daily return in excess of a configurable risk-free rate (defaulting to zero) divided by the standard deviation of daily returns, annualised by the square root of a configurable number of trading days per year. The Sharpe ratio SHALL be reported as unavailable (no value) when the session has fewer than a configured minimum number of daily returns, or when the daily returns have zero standard deviation. The computation SHALL rely solely on the session's recorded daily NAV series and SHALL NOT fetch external price history.
+
+#### Scenario: Sufficient history
+
+- **WHEN** a session has at least the configured minimum number of daily returns with non-zero variation
+- **THEN** the system SHALL report a Sharpe ratio equal to the annualised mean-over-standard-deviation of those daily returns
+
+#### Scenario: Insufficient history
+
+- **WHEN** a session has fewer than the configured minimum number of daily returns
+- **THEN** the system SHALL report the Sharpe ratio as unavailable rather than a computed value
+
+#### Scenario: No volatility
+
+- **WHEN** a session's daily returns have zero standard deviation
+- **THEN** the system SHALL report the Sharpe ratio as unavailable rather than dividing by zero

@@ -79,7 +79,7 @@ def _eligible_provider(
         info=AssetInfo(
             company_name=company_name,
             exchange="NASDAQ",
-            currency="EUR",
+            currency="USD",
             price=190.0,
             market_cap=3_000_000_000_000.0,
             quote_type=quote_type,
@@ -115,7 +115,7 @@ def test_create_asset_success(client: TestClient) -> None:
     assert body["ticker"] == "AAPL"  # normalized
     assert body["name"] == "Apple Inc."
     assert body["category"] == "stock"
-    assert body["currency"] == "EUR"
+    assert body["currency"] == "USD"
     assert body["is_eligible"] is True
     assert set(body.keys()) == {
         "id",
@@ -126,8 +126,8 @@ def test_create_asset_success(client: TestClient) -> None:
         "sector",
         "exchange",
         "currency",
-        "market_cap_eur",
-        "avg_daily_turnover_eur",
+        "market_cap_usd",
+        "avg_daily_turnover_usd",
         "history_years",
         "is_eligible",
         "criteria_results",
@@ -581,7 +581,7 @@ def test_get_asset_details_success(client: TestClient) -> None:
     assert body["ticker"] == "AAPL"
     assert body["name"] == "Apple Inc."
     assert body["category"] == "stock"
-    assert body["currency"] == "EUR"
+    assert body["currency"] == "USD"
     assert body["current_price"] == 191.0
     assert body["previous_close"] == 188.0
     # Company Information panel fields.

@@ -34,7 +34,7 @@ def _provider(
         info=AssetInfo(
             company_name="Co",
             exchange="XETRA",
-            currency="EUR",
+            currency="USD",
             price=50.0,
             market_cap=market_cap,
             quote_type=quote_type,

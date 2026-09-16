@@ -54,7 +54,7 @@ def _provider() -> FakeMarketDataProvider:
         info=AssetInfo(
             company_name="Co",
             exchange="XETRA",
-            currency="EUR",
+            currency="USD",
             price=50.0,
             market_cap=5_000_000_000.0,
             quote_type="EQUITY",
@@ -161,6 +161,34 @@ def test_build_rejects_empty_universe(client: TestClient, db_session: Session) -
     # No assets seeded -> the universe is empty -> the build is rejected (422).
     _wire(db_session, ManualExecutor())
     resp = client.post("/api/v1/ai-portfolio/build", json={"allocated_capital": 100000})
+    assert resp.status_code == 422
+
+
+def test_build_accepts_valid_asset_types(
+    client: TestClient, db_session: Session
+) -> None:
+    executor = ManualExecutor()
+    _seed_universe(db_session, _provider())
+    _wire(db_session, executor)
+
+    resp = client.post(
+        "/api/v1/ai-portfolio/build",
+        json={"allocated_capital": 10000, "asset_types": "stocks"},
+    )
+    assert resp.status_code == 202
+
+
+def test_build_rejects_invalid_asset_types(
+    client: TestClient, db_session: Session
+) -> None:
+    # An unknown asset scope fails request validation (422) before any build runs.
+    _seed_universe(db_session, _provider())
+    _wire(db_session, ManualExecutor())
+
+    resp = client.post(
+        "/api/v1/ai-portfolio/build",
+        json={"allocated_capital": 10000, "asset_types": "commodities"},
+    )
     assert resp.status_code == 422
 
 

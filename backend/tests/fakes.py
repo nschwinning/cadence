@@ -77,7 +77,7 @@ class FakeMarketDataProvider:
     def fetch_fx_rate(self, currency: str) -> float:
         if self._fx_error is not None:
             raise self._fx_error
-        if currency.upper() == "EUR":
+        if currency.upper() == "USD":
             return 1.0
         return self._fx_rates[currency.upper()]
 
@@ -204,12 +204,14 @@ class FakeAIPortfolioAgent:
         holdings: list[dict[str, Any]],
         account_summary: dict[str, Any],
         candidates: list[dict[str, Any]],
+        risk_profile: str = "balanced",
     ) -> AIRebalanceResult:
         self.rebalance_calls.append(
             {
                 "holdings": holdings,
                 "account_summary": account_summary,
                 "candidates": candidates,
+                "risk_profile": risk_profile,
             }
         )
         self._emit_research()

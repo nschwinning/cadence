@@ -113,7 +113,7 @@ class MarketDataProvider(Protocol):
         ...
 
     def fetch_fx_rate(self, currency: str) -> float:
-        """Return the ``currency`` -> EUR conversion rate (1.0 for EUR).
+        """Return the ``currency`` -> USD conversion rate (1.0 for USD).
 
         Raises:
             MarketDataUnavailableError: if the rate cannot be obtained.
@@ -214,12 +214,12 @@ class YFinanceMarketDataProvider:
 
     def fetch_fx_rate(self, currency: str) -> float:
         currency = currency.upper()
-        if currency == "EUR":
+        if currency == "USD":
             return 1.0
 
         import yfinance as yf
 
-        pair = f"{currency}EUR=X"
+        pair = f"{currency}USD=X"
         try:
             frame = yf.Ticker(pair).history(period="5d", auto_adjust=False)
         except Exception as exc:

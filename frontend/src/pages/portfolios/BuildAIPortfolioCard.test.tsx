@@ -61,7 +61,7 @@ describe('BuildAIPortfolioCard', () => {
     ).not.toBeInTheDocument();
   });
 
-  it('starts a build submitting only capital, risk profile, and rebalancing, and updates to succeeded without manual refresh', async () => {
+  it('starts a build with the default capital, risk profile, asset scope, and rebalancing, and updates to succeeded without manual refresh', async () => {
     let status: AIEventStatus = 'running';
     mockedPost.mockResolvedValue({ data: { event_id: 'evt-1', status: 'queued' } });
     mockedGet.mockImplementation(() => Promise.resolve({ data: makeEvent(status) }));
@@ -69,13 +69,18 @@ describe('BuildAIPortfolioCard', () => {
 
     const { queryClient } = renderWithClient(<BuildAIPortfolioCard />);
 
+    // The capital input defaults to the new $10,000, and asset scope to Both.
+    expect(screen.getByLabelText('Capital ($)')).toHaveValue(10000);
+    expect(screen.getByLabelText('Asset types')).toHaveValue('both');
+
     await user.click(screen.getByRole('button', { name: 'Build portfolio' }));
 
     // Running mode appears from the polled status, no user action needed.
     expect(await screen.findByText('Building portfolio…')).toBeInTheDocument();
     expect(mockedPost).toHaveBeenCalledWith('/api/v1/ai-portfolio/build', {
-      allocated_capital: 100000,
+      allocated_capital: 10000,
       risk_profile: 'balanced',
+      asset_types: 'both',
       daily_rebalancing: false,
     });
 
@@ -105,6 +110,22 @@ describe('BuildAIPortfolioCard', () => {
     expect(mockedPost).toHaveBeenCalledWith(
       '/api/v1/ai-portfolio/build',
       expect.objectContaining({ daily_rebalancing: true }),
+    );
+  });
+
+  it('sends the selected asset scope with the build request', async () => {
+    mockedPost.mockResolvedValue({ data: { event_id: 'evt-1', status: 'queued' } });
+    mockedGet.mockResolvedValue({ data: makeEvent('running') });
+    const user = userEvent.setup();
+
+    renderWithClient(<BuildAIPortfolioCard />);
+
+    await user.selectOptions(screen.getByLabelText('Asset types'), 'crypto');
+    await user.click(screen.getByRole('button', { name: 'Build portfolio' }));
+
+    expect(mockedPost).toHaveBeenCalledWith(
+      '/api/v1/ai-portfolio/build',
+      expect.objectContaining({ asset_types: 'crypto' }),
     );
   });
 });

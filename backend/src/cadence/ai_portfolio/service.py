@@ -43,7 +43,7 @@ from cadence.ai_portfolio.errors import (
 from cadence.ai_portfolio.executor import AIPortfolioExecutor, TradeResult
 from cadence.ai_portfolio.models import AIPortfolioEvent
 from cadence.assets import service as assets_service
-from cadence.assets.category import AssetCategory
+from cadence.assets.category import AssetCategory, AssetScope, scope_categories
 from cadence.assets.market_data import MarketDataProvider
 from cadence.assets.models import Asset
 from cadence.broker.base import Broker
@@ -69,22 +69,25 @@ class AIBuildParams:
     discovery), so no ticker list or per-asset/position caps are accepted.
     """
 
-    allocated_capital: float = 100000.0
+    allocated_capital: float = 10000.0
     risk_profile: str = "balanced"
+    asset_types: str = AssetScope.BOTH.value
     daily_rebalancing: bool = False
 
     def to_payload(self) -> dict[str, Any]:
         return {
             "allocated_capital": self.allocated_capital,
             "risk_profile": self.risk_profile,
+            "asset_types": self.asset_types,
             "daily_rebalancing": self.daily_rebalancing,
         }
 
     @classmethod
     def from_payload(cls, payload: dict[str, Any]) -> AIBuildParams:
         return cls(
-            allocated_capital=float(payload.get("allocated_capital", 100000.0)),
+            allocated_capital=float(payload.get("allocated_capital", 10000.0)),
             risk_profile=str(payload.get("risk_profile", "balanced")),
+            asset_types=str(payload.get("asset_types", AssetScope.BOTH.value)),
             daily_rebalancing=bool(payload.get("daily_rebalancing", False)),
         )
 
@@ -253,7 +256,10 @@ def run_build_event(
     research: list[dict[str, Any]] = []
     try:
         params = AIBuildParams.from_payload(event.request_payload or {})
-        universe = assets_service.list_assets(session)
+        allowed_categories = scope_categories(params.asset_types)
+        universe = assets_service.list_assets(
+            session, categories=[c.value for c in allowed_categories]
+        )
         candidates = _candidates_from_universe(universe)
 
         with record_web_searches() as research:
@@ -265,7 +271,9 @@ def run_build_event(
         stock_tickers = _normalize_tickers([s.ticker for s in result.stocks])
         universe_tickers = {a.ticker for a in universe}
         discovered = [t for t in stock_tickers if t not in universe_tickers]
-        _add_discovered_assets(session, discovered, provider, broker)
+        _add_discovered_assets(
+            session, discovered, provider, broker, scope=params.asset_types
+        )
 
         portfolio = portfolios_service.create_portfolio(
             session,
@@ -294,6 +302,7 @@ def run_build_event(
         session_row.session_metadata = {
             "session_type": "ai_managed",
             "risk_profile": params.risk_profile,
+            "asset_types": params.asset_types,
             "build_event_id": str(event.id),
             "portfolio_id": str(portfolio.id),
         }
@@ -402,6 +411,15 @@ def run_rebalance_event(
         session_row = paper_service.get_session(session, session_id)
         portfolio = portfolios_service.get_portfolio(session, session_row.portfolio_id)
 
+        # Read the scope and risk profile persisted at build. Sessions built before
+        # these fields existed default to ``both`` / ``balanced`` (unchanged
+        # behaviour). ``risk_profile`` was previously written but never re-read here,
+        # so every rebalance silently ran as the agent's default.
+        metadata = session_row.session_metadata or {}
+        asset_scope = str(metadata.get("asset_types", AssetScope.BOTH.value))
+        risk_profile = str(metadata.get("risk_profile", "balanced"))
+        allowed_categories = scope_categories(asset_scope)
+
         # Crypto trades 24/7, so the market-open guard can no longer skip the
         # whole run unconditionally. Read this session's holdings from its ledger
         # (the source of truth) and the class map first, to decide whether anything
@@ -449,7 +467,12 @@ def run_rebalance_event(
 
         account = broker.get_account_info()
 
-        candidates = _candidates_from_universe(universe)
+        # Candidates are restricted to the session's asset scope; the full universe
+        # (above) still backs the class map so held positions stay classified.
+        scoped_universe = [
+            asset for asset in universe if asset.category in allowed_categories
+        ]
+        candidates = _candidates_from_universe(scoped_universe)
         holdings = _build_holdings(ledger, broker, asset_classes)
         account_summary = {
             "portfolio_value": account.portfolio_value,
@@ -462,16 +485,20 @@ def run_rebalance_event(
                 holdings=holdings,
                 account_summary=account_summary,
                 candidates=candidates,
+                risk_profile=risk_profile,
             )
         agent_output = result.model_dump(mode="json")
 
-        # Best-effort add of any discovered target ticker not yet in the universe.
+        # Best-effort add of any discovered target ticker not yet in the universe;
+        # out-of-scope discoveries are rejected inside ``_add_discovered_assets``.
         universe_tickers = {a.ticker for a in universe}
         target_tickers = _normalize_tickers(
             [t.ticker for t in result.target_allocations]
         )
         discovered = [t for t in target_tickers if t not in universe_tickers]
-        _add_discovered_assets(session, discovered, provider, broker)
+        _add_discovered_assets(
+            session, discovered, provider, broker, scope=asset_scope
+        )
 
         # Rebuild the class map so any discovered crypto target is classified.
         asset_classes = _asset_class_map(assets_service.list_assets(session))
@@ -894,18 +921,26 @@ def _add_discovered_assets(
     discovered: list[str],
     provider: MarketDataProvider,
     broker: Broker,
+    scope: str = AssetScope.BOTH.value,
 ) -> list[str]:
     """Best-effort add of newly-proposed tickers to the universe (capped).
 
     Adds at most :data:`settings.AI_PORTFOLIO_MAX_NEW_ASSETS` tickers. Any add that
-    fails (unknown ticker, market data unavailable, duplicate, or not tradable on
-    the brokerage) is logged and skipped — the ticker is still traded and included
-    in the portfolio.
+    fails (unknown ticker, market data unavailable, duplicate, not tradable on the
+    brokerage, or a category outside the session's ``scope``) is logged and
+    skipped — a rejected ticker is not added and (being out of scope) not traded.
     """
+    allowed_categories = scope_categories(scope)
     added: list[str] = []
     for ticker in discovered[: settings.AI_PORTFOLIO_MAX_NEW_ASSETS]:
         try:
-            assets_service.add_asset(session, ticker, provider, broker)
+            assets_service.add_asset(
+                session,
+                ticker,
+                provider,
+                broker,
+                allowed_categories=allowed_categories,
+            )
             added.append(ticker)
         except Exception as exc:  # noqa: BLE001 - discovery-add is best-effort
             session.rollback()

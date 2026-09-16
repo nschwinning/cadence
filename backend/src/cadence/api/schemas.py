@@ -7,8 +7,9 @@ from datetime import date, datetime
 from enum import Enum
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from cadence.assets.category import AssetScope
 from cadence.portfolios.constants import PortfolioSource, RiskProfile
 
 
@@ -61,8 +62,8 @@ class AssetRead(BaseModel):
     sector: str | None
     exchange: str | None
     currency: str
-    market_cap_eur: float | None
-    avg_daily_turnover_eur: float | None
+    market_cap_usd: float | None
+    avg_daily_turnover_usd: float | None
     history_years: float | None
     is_eligible: bool
     criteria_results: list[CriterionResult]
@@ -408,12 +409,27 @@ class AIPortfolioBuildRequest(BaseModel):
     caps are accepted.
     """
 
-    allocated_capital: float = Field(default=100000.0, ge=1000)
+    allocated_capital: float = Field(default=10000.0, ge=1000)
     risk_profile: str = Field(default="balanced")
+    asset_types: str = Field(
+        default=AssetScope.BOTH.value,
+        description="Which asset categories the portfolio may hold: "
+        "'stocks', 'crypto', or 'both' (default).",
+    )
     daily_rebalancing: bool = Field(
         default=False,
         description="Enroll this session in automatic daily rebalancing.",
     )
+
+    @field_validator("asset_types")
+    @classmethod
+    def _validate_asset_types(cls, value: str) -> str:
+        """Reject anything that is not a known :class:`AssetScope` (→ 422)."""
+        try:
+            return AssetScope(value).value
+        except ValueError as exc:
+            allowed = ", ".join(scope.value for scope in AssetScope)
+            raise ValueError(f"asset_types must be one of: {allowed}") from exc
 
 
 class AIPortfolioBuildResponse(BaseModel):

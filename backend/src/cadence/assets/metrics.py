@@ -1,4 +1,4 @@
-"""Derive EUR-normalized asset metrics from provider data.
+"""Derive USD-normalized asset metrics from provider data.
 
 This layer orchestrates the (network-bound) provider but contains only pure
 arithmetic itself, so it is unit-tested with a fake provider.
@@ -21,7 +21,7 @@ _DAYS_PER_YEAR = 365.25
 
 @dataclass(frozen=True)
 class DerivedAsset:
-    """Everything needed to persist and evaluate an asset, in EUR."""
+    """Everything needed to persist and evaluate an asset, in USD."""
 
     name: str | None
     category: AssetCategory
@@ -43,7 +43,7 @@ def derive_metrics(
     *,
     today: date | None = None,
 ) -> DerivedAsset:
-    """Fetch, convert to EUR, and derive metrics for ``ticker``.
+    """Fetch, convert to USD, and derive metrics for ``ticker``.
 
     Raises:
         UnknownTickerError: propagated from the provider for unknown tickers.
@@ -56,10 +56,10 @@ def derive_metrics(
 
     fx_rate = provider.fetch_fx_rate(info.currency)
 
-    price_eur = _convert(info.price, fx_rate)
-    market_cap_eur = _convert(info.market_cap, fx_rate)
+    price_usd = _convert(info.price, fx_rate)
+    market_cap_usd = _convert(info.market_cap, fx_rate)
     turnover_native = _avg_daily_turnover(history)
-    avg_daily_turnover_eur = _convert(turnover_native, fx_rate)
+    avg_daily_turnover_usd = _convert(turnover_native, fx_rate)
     history_years = _history_years(history, reference_day)
 
     return DerivedAsset(
@@ -73,9 +73,9 @@ def derive_metrics(
         employees=info.employees,
         website=info.website,
         metrics=AssetMetrics(
-            price_eur=price_eur,
-            avg_daily_turnover_eur=avg_daily_turnover_eur,
-            market_cap_eur=market_cap_eur,
+            price_usd=price_usd,
+            avg_daily_turnover_usd=avg_daily_turnover_usd,
+            market_cap_usd=market_cap_usd,
             history_years=history_years,
         ),
     )

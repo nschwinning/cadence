@@ -1,19 +1,12 @@
 import { Link, useParams } from 'react-router-dom';
 import { useAIRunDetail } from '../../api/aiPortfolio';
-import { formatQuantity } from '../../lib/format';
+import { formatCurrency, formatQuantity } from '../../lib/format';
 import type {
   AIPortfolioEvent,
   AIResearchEntry,
   ClosedPosition,
   PaperTrade,
 } from '../../types/api';
-
-/** Format a EUR value. */
-const eur = new Intl.NumberFormat(undefined, {
-  style: 'currency',
-  currency: 'EUR',
-  maximumFractionDigits: 2,
-});
 
 /** Format an ISO timestamp for display, or an em dash when absent. */
 function ts(value: string | null | undefined): string {
@@ -351,7 +344,7 @@ function SkippedTradesCard({ skipped }: { skipped: SkippedAction[] }) {
                     {s.side ?? '—'}
                   </td>
                   <td className="px-4 py-3 text-right tabular-nums text-slate-700">
-                    {s.price === null ? '—' : eur.format(s.price)}
+                    {s.price === null ? '—' : formatCurrency(s.price)}
                   </td>
                   <td className="px-4 py-3 text-amber-700">{s.reason ?? '—'}</td>
                 </tr>
@@ -404,10 +397,10 @@ function TradesCard({ trades }: { trades: PaperTrade[] }) {
                     {formatQuantity(t.quantity)}
                   </td>
                   <td className="px-4 py-3 text-right tabular-nums text-slate-700">
-                    {eur.format(t.price)}
+                    {formatCurrency(t.price)}
                   </td>
                   <td className="px-4 py-3 text-right tabular-nums text-slate-700">
-                    {eur.format(t.notional)}
+                    {formatCurrency(t.notional)}
                   </td>
                   <td className="px-4 py-3 text-slate-700">{t.order_status}</td>
                   <td className="px-4 py-3 text-slate-500">
@@ -460,15 +453,15 @@ function ClosedPositionsCard({ positions }: { positions: ClosedPosition[] }) {
                     {formatQuantity(p.quantity)}
                   </td>
                   <td className="px-4 py-3 text-right tabular-nums text-slate-700">
-                    {eur.format(p.entry_price)}
+                    {formatCurrency(p.entry_price)}
                   </td>
                   <td className="px-4 py-3 text-right tabular-nums text-slate-700">
-                    {eur.format(p.exit_price)}
+                    {formatCurrency(p.exit_price)}
                   </td>
                   <td
                     className={`px-4 py-3 text-right tabular-nums font-medium ${pnlClass(p.realized_pnl)}`}
                   >
-                    {eur.format(p.realized_pnl)}
+                    {formatCurrency(p.realized_pnl)}
                   </td>
                   <td
                     className={`px-4 py-3 text-right tabular-nums font-medium ${pnlClass(p.return_pct)}`}

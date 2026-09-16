@@ -7,13 +7,7 @@ import {
   useUnarchiveSession,
 } from '../../api/paperTrading';
 import type { PaperTradingSession } from '../../types/api';
-
-/** Format a EUR value with no fraction digits. */
-const eurFormatter = new Intl.NumberFormat(undefined, {
-  style: 'currency',
-  currency: 'EUR',
-  maximumFractionDigits: 0,
-});
+import { formatCurrency } from '../../lib/format';
 
 /** Status pill colors per session status. */
 const STATUS_STYLES: Record<string, string> = {
@@ -64,13 +58,13 @@ function SessionRow({ session }: { session: PaperTradingSession }) {
       </td>
       <td className="px-4 py-3 text-slate-700">{session.schedule_mode}</td>
       <td className="px-4 py-3 text-right tabular-nums text-slate-700">
-        {eurFormatter.format(session.allocated_capital)}
+        {formatCurrency(session.allocated_capital)}
       </td>
       <td className="px-4 py-3 text-right tabular-nums text-slate-700">
         {session.total_trades}
       </td>
       <td className={`px-4 py-3 text-right tabular-nums font-medium ${pnlClass}`}>
-        {eurFormatter.format(session.total_pnl)}
+        {formatCurrency(session.total_pnl)}
       </td>
       <td className="px-4 py-3 text-slate-500">
         {session.last_run_at

@@ -35,13 +35,6 @@ import type {
   SessionRun,
 } from '../../types/api';
 
-/** Format a EUR value. */
-const eur = new Intl.NumberFormat(undefined, {
-  style: 'currency',
-  currency: 'EUR',
-  maximumFractionDigits: 2,
-});
-
 /** Format an ISO timestamp for display, or an em dash when absent. */
 function ts(value: string | null | undefined): string {
   return value ? new Date(value).toLocaleString() : '—';
@@ -192,10 +185,10 @@ function TradesPanel({ sessionId }: { sessionId: string }) {
                 {formatQuantity(t.quantity)}
               </td>
               <td className="px-4 py-3 text-right tabular-nums text-slate-700">
-                {eur.format(t.price)}
+                {formatCurrency(t.price)}
               </td>
               <td className="px-4 py-3 text-right tabular-nums text-slate-700">
-                {eur.format(t.notional)}
+                {formatCurrency(t.notional)}
               </td>
               <td className="px-4 py-3 text-slate-700">{t.signal_type}</td>
               <td className="px-4 py-3 text-slate-700">{t.order_status}</td>
@@ -302,15 +295,15 @@ function PositionsPanel({ sessionId }: { sessionId: string }) {
                 {formatQuantity(p.quantity)}
               </td>
               <td className="px-4 py-3 text-right tabular-nums text-slate-700">
-                {eur.format(p.entry_price)}
+                {formatCurrency(p.entry_price)}
               </td>
               <td className="px-4 py-3 text-right tabular-nums text-slate-700">
-                {eur.format(p.exit_price)}
+                {formatCurrency(p.exit_price)}
               </td>
               <td
                 className={`px-4 py-3 text-right tabular-nums font-medium ${pnlClass(p.realized_pnl)}`}
               >
-                {eur.format(p.realized_pnl)}
+                {formatCurrency(p.realized_pnl)}
               </td>
               <td
                 className={`px-4 py-3 text-right tabular-nums font-medium ${pnlClass(p.return_pct)}`}
@@ -444,7 +437,7 @@ function SessionHeader({
             Capital
           </dt>
           <dd className="text-sm text-slate-900">
-            {eur.format(session.allocated_capital)}
+            {formatCurrency(session.allocated_capital)}
           </dd>
         </div>
         <div>
@@ -458,7 +451,7 @@ function SessionHeader({
             Total P&amp;L
           </dt>
           <dd className={`text-sm font-medium ${pnlClass(session.total_pnl)}`}>
-            {eur.format(session.total_pnl)}
+            {formatCurrency(session.total_pnl)}
           </dd>
         </div>
         <div>

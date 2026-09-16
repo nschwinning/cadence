@@ -64,7 +64,7 @@ def _eligible_provider(
         info=AssetInfo(
             company_name=company_name,
             exchange="XETRA",
-            currency="EUR",
+            currency="USD",
             price=50.0,
             market_cap=5_000_000_000.0,
             quote_type=quote_type,
@@ -174,6 +174,37 @@ def test_add_asset_accepts_stock_and_crypto(db_session: Session) -> None:
         "STK": AssetCategory.STOCK.value,
         "BTC-USD": AssetCategory.CRYPTO.value,
     }
+
+
+def test_add_asset_allowed_categories_rejects_out_of_scope(
+    db_session: Session,
+) -> None:
+    # A crypto-only scope (allowed_categories={CRYPTO}) rejects a supported-but-
+    # out-of-scope stock before any persistence — used by AI discovery.
+    provider = _eligible_provider(quote_type="EQUITY")
+    with pytest.raises(UnsupportedCategoryError):
+        service.add_asset(
+            db_session,
+            "STK",
+            provider,
+            _broker(),
+            allowed_categories={AssetCategory.CRYPTO},
+        )
+
+    assert service.list_assets(db_session) == []
+
+
+def test_add_asset_allowed_categories_admits_in_scope(db_session: Session) -> None:
+    # An in-scope category passes the narrowing gate and persists normally.
+    asset = service.add_asset(
+        db_session,
+        "BTC-USD",
+        _eligible_provider(quote_type="CRYPTOCURRENCY", sector_key=None),
+        _broker(),
+        allowed_categories={AssetCategory.CRYPTO},
+    )
+
+    assert asset.category == AssetCategory.CRYPTO.value
 
 
 @pytest.mark.parametrize("ticker", ["BAYN.DE", "air.pa", "SHEL.L"])
@@ -360,7 +391,7 @@ def test_list_assets_sort_by_name_puts_nulls_last(db_session: Session) -> None:
             ticker="ZZZ",
             name=None,
             category=AssetCategory.STOCK.value,
-            currency="EUR",
+            currency="USD",
             is_eligible=True,
             criteria_results=[],
         )
@@ -384,7 +415,7 @@ def test_list_assets_filter_by_category(db_session: Session) -> None:
             ticker="ETFX",
             name="ETFX",
             category=AssetCategory.ETF.value,
-            currency="EUR",
+            currency="USD",
             is_eligible=True,
             criteria_results=[],
         )
@@ -457,7 +488,7 @@ def test_list_assets_sector_composes_with_category_and_search(
             name="Apex Financials ETF",
             category=AssetCategory.ETF.value,
             sector="financial-services",
-            currency="EUR",
+            currency="USD",
             is_eligible=True,
             criteria_results=[],
         )

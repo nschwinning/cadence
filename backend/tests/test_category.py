@@ -4,7 +4,12 @@ from __future__ import annotations
 
 import pytest
 
-from cadence.assets.category import AssetCategory, categorize
+from cadence.assets.category import (
+    AssetCategory,
+    AssetScope,
+    categorize,
+    scope_categories,
+)
 
 
 @pytest.mark.parametrize(
@@ -50,3 +55,38 @@ def test_category_values_are_the_contract() -> None:
     assert AssetCategory.ETF.value == "etf"
     assert AssetCategory.FUND.value == "fund"
     assert AssetCategory.OTHER.value == "other"
+
+
+# --------------------------------------------------------------------------- #
+# Asset scope -> categories
+# --------------------------------------------------------------------------- #
+
+
+def test_scope_values_are_the_contract() -> None:
+    assert AssetScope.STOCKS.value == "stocks"
+    assert AssetScope.CRYPTO.value == "crypto"
+    assert AssetScope.BOTH.value == "both"
+
+
+@pytest.mark.parametrize(
+    ("scope", "expected"),
+    [
+        (AssetScope.STOCKS, frozenset({AssetCategory.STOCK})),
+        (AssetScope.CRYPTO, frozenset({AssetCategory.CRYPTO})),
+        (AssetScope.BOTH, frozenset({AssetCategory.STOCK, AssetCategory.CRYPTO})),
+    ],
+)
+def test_scope_categories_maps_each_scope(
+    scope: AssetScope, expected: frozenset[AssetCategory]
+) -> None:
+    assert scope_categories(scope) == expected
+
+
+def test_scope_categories_accepts_string_value() -> None:
+    # A persisted ``session_metadata`` string round-trips to the same set.
+    assert scope_categories("crypto") == frozenset({AssetCategory.CRYPTO})
+
+
+def test_scope_categories_rejects_unknown_value() -> None:
+    with pytest.raises(ValueError):
+        scope_categories("commodities")

@@ -83,8 +83,8 @@ export interface Asset {
   sector: Sector | null;
   exchange: string | null;
   currency: string;
-  market_cap_eur: number | null;
-  avg_daily_turnover_eur: number | null;
+  market_cap_usd: number | null;
+  avg_daily_turnover_usd: number | null;
   history_years: number | null;
   is_eligible: boolean;
   criteria_results: CriterionResult[];
@@ -431,12 +431,14 @@ export type AIEventStatus =
  * across the app's ENTIRE asset universe automatically — the AI decides each
  * asset's weight (long-only, no caps) and may research and add new assets — so
  * callers no longer supply tickers or a position count. Backend defaults:
- * `allocated_capital` 100000, `risk_profile` "balanced", `daily_rebalancing`
- * false.
+ * `allocated_capital` 10000, `risk_profile` "balanced", `asset_types` "both",
+ * `daily_rebalancing` false.
  */
 export interface AIPortfolioBuildRequest {
   allocated_capital?: number;
   risk_profile?: string;
+  /** Which asset categories the portfolio may hold. Defaults to `both`. */
+  asset_types?: 'stocks' | 'crypto' | 'both';
   daily_rebalancing?: boolean;
 }
 

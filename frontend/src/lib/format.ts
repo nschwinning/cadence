@@ -14,10 +14,14 @@ export function formatQuantity(value: number): string {
   return quantityFormatter.format(value);
 }
 
-/** Format a monetary value as EUR with two fraction digits (e.g. `-€1,234.50`). */
-const currencyFormatter = new Intl.NumberFormat(undefined, {
+/**
+ * Format a monetary value as USD with two fraction digits (e.g. `-$1,234.50`).
+ * USD matches the brokerage's (Alpaca) settlement currency; the underlying
+ * stored numbers are unchanged — this is presentational only.
+ */
+const currencyFormatter = new Intl.NumberFormat('en-US', {
   style: 'currency',
-  currency: 'EUR',
+  currency: 'USD',
   maximumFractionDigits: 2,
 });
 

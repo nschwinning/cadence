@@ -24,14 +24,14 @@ import type {
   Sector,
 } from '../../types/api';
 
-/** Format a EUR monetary value compactly (e.g. €1.2B, €3.4M, €5.00). `null` → "—". */
-function formatEur(value: number | null): string {
+/** Format a USD monetary value compactly (e.g. $1.2B, $3.4M, $5.00). `null` → "—". */
+function formatUsd(value: number | null): string {
   if (value === null || Number.isNaN(value)) return '—';
   const abs = Math.abs(value);
-  if (abs >= 1_000_000_000) return `€${(value / 1_000_000_000).toFixed(1)}B`;
-  if (abs >= 1_000_000) return `€${(value / 1_000_000).toFixed(1)}M`;
-  if (abs >= 1_000) return `€${(value / 1_000).toFixed(1)}K`;
-  return `€${value.toFixed(2)}`;
+  if (abs >= 1_000_000_000) return `$${(value / 1_000_000_000).toFixed(1)}B`;
+  if (abs >= 1_000_000) return `$${(value / 1_000_000).toFixed(1)}M`;
+  if (abs >= 1_000) return `$${(value / 1_000).toFixed(1)}K`;
+  return `$${value.toFixed(2)}`;
 }
 
 /** Format a year count (e.g. "7.3 yrs"). `null` → "—". */
@@ -49,11 +49,11 @@ function formatYears(value: number | null): string {
 function criterionLabel(c: CriterionResult): string {
   switch (c.name) {
     case 'price':
-      return `Price > ${formatEur(c.threshold)}`;
+      return `Price > ${formatUsd(c.threshold)}`;
     case 'avg_daily_turnover':
-      return `Avg daily turnover ≥ ${formatEur(c.threshold)}`;
+      return `Avg daily turnover ≥ ${formatUsd(c.threshold)}`;
     case 'market_cap':
-      return `Market cap > ${formatEur(c.threshold)}`;
+      return `Market cap > ${formatUsd(c.threshold)}`;
     case 'history':
       return `History ≥ ${c.threshold} ${c.threshold === 1 ? 'year' : 'years'}`;
     default:
@@ -132,10 +132,10 @@ function AssetRow({ asset }: { asset: Asset }) {
         <SectorBadge sector={asset.sector} />
       </td>
       <td className="px-4 py-3 text-right tabular-nums text-slate-700">
-        {formatEur(asset.market_cap_eur)}
+        {formatUsd(asset.market_cap_usd)}
       </td>
       <td className="px-4 py-3 text-right tabular-nums text-slate-700">
-        {formatEur(asset.avg_daily_turnover_eur)}
+        {formatUsd(asset.avg_daily_turnover_usd)}
       </td>
       <td className="px-4 py-3 text-right tabular-nums text-slate-700">
         {formatYears(asset.history_years)}
@@ -606,8 +606,8 @@ export function AssetsPage() {
                   />
                   <th className="px-4 py-3">Category</th>
                   <th className="px-4 py-3">Sector</th>
-                  <th className="px-4 py-3 text-right">Market Cap (€)</th>
-                  <th className="px-4 py-3 text-right">Avg Daily Turnover (€)</th>
+                  <th className="px-4 py-3 text-right">Market Cap ($)</th>
+                  <th className="px-4 py-3 text-right">Avg Daily Turnover ($)</th>
                   <th className="px-4 py-3 text-right">History</th>
                   <th className="px-4 py-3">Eligibility</th>
                   <th className="px-4 py-3 text-right">Actions</th>

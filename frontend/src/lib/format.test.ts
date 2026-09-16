@@ -9,10 +9,10 @@ describe('formatQuantity', () => {
 });
 
 describe('formatCurrency', () => {
-  it('formats positive, negative, and zero as EUR with two decimals', () => {
-    expect(formatCurrency(1234.5)).toBe('€1,234.50');
-    expect(formatCurrency(-1234.5)).toBe('-€1,234.50');
-    expect(formatCurrency(0)).toBe('€0.00');
+  it('formats positive, negative, and zero as USD with two decimals', () => {
+    expect(formatCurrency(1234.5)).toBe('$1,234.50');
+    expect(formatCurrency(-1234.5)).toBe('-$1,234.50');
+    expect(formatCurrency(0)).toBe('$0.00');
   });
 });
 

@@ -44,6 +44,11 @@ services:
       # the same value in the X-Cron-Token header. Empty => every trigger is
       # rejected, so set REBALANCE_CRON_TOKEN in the root .env to enable rebalances.
       REBALANCE_CRON_TOKEN: ${REBALANCE_CRON_TOKEN:-}
+      # Pushover credentials for daily-rebalance push notifications, forwarded from
+      # the root .env. Both must be set or notifications are silently disabled
+      # (the backend falls back to a no-op notifier and rebalances normally).
+      PUSHOVER_USER: ${PUSHOVER_USER:-}
+      PUSHOVER_TOKEN: ${PUSHOVER_TOKEN:-}
     ports:
       # Host 8002 -> container 8000 (8000/8001 already used by other apps locally)
       - "8002:8000"

@@ -29,7 +29,7 @@ def _provider() -> FakeMarketDataProvider:
         info=AssetInfo(
             company_name="Test Co",
             exchange="XETRA",
-            currency="EUR",
+            currency="USD",
             price=50.0,
             market_cap=5_000_000_000.0,
             quote_type="EQUITY",

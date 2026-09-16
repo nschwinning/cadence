@@ -178,12 +178,14 @@ def _build_rebalance_input(
     holdings: list[dict[str, Any]],
     account_summary: dict[str, Any],
     candidates: list[dict[str, Any]],
+    risk_profile: str,
 ) -> str:
     holdings_json = json.dumps(holdings, indent=2)
     account_json = json.dumps(account_summary, indent=2)
     candidates_json = json.dumps(candidates, indent=2)
     return f"""
-Review this portfolio and return the desired end-state target weights (target_allocations).
+Review this portfolio and return the desired end-state target weights (target_allocations)
+for a {risk_profile} long-only buy-and-hold portfolio.
 All positions are long only. Weights across all targets must sum to approximately 1.0.
 Omit (or set to ~0) any asset that should be exited.
 
@@ -240,6 +242,7 @@ def rebalance_ai_portfolio(
     holdings: list[dict[str, Any]],
     account_summary: dict[str, Any],
     candidates: list[dict[str, Any]],
+    risk_profile: str = "balanced",
 ) -> AIRebalanceResult:
     """Run the rebalance agent and return its validated :class:`AIRebalanceResult`."""
     return asyncio.run(
@@ -247,6 +250,7 @@ def rebalance_ai_portfolio(
             holdings=holdings,
             account_summary=account_summary,
             candidates=candidates,
+            risk_profile=risk_profile,
         )
     )
 
@@ -255,6 +259,7 @@ async def _run_rebalance(
     holdings: list[dict[str, Any]],
     account_summary: dict[str, Any],
     candidates: list[dict[str, Any]],
+    risk_profile: str,
 ) -> AIRebalanceResult:
     agent = build_agent(
         name="AIRebalanceEvaluatorAgent",
@@ -268,7 +273,9 @@ async def _run_rebalance(
         result = await asyncio.wait_for(
             Runner.run(
                 agent,
-                _build_rebalance_input(holdings, account_summary, candidates),
+                _build_rebalance_input(
+                    holdings, account_summary, candidates, risk_profile
+                ),
                 max_turns=settings.AI_PORTFOLIO_MAX_TURNS,
             ),
             timeout=REBALANCE_TIMEOUT_SECONDS,
@@ -304,6 +311,7 @@ class AIPortfolioAgent(Protocol):
         holdings: list[dict[str, Any]],
         account_summary: dict[str, Any],
         candidates: list[dict[str, Any]],
+        risk_profile: str,
     ) -> AIRebalanceResult:
         """Return the agent's structured rebalance target weights."""
         ...
@@ -324,9 +332,11 @@ class OpenAIAIPortfolioAgent:
         holdings: list[dict[str, Any]],
         account_summary: dict[str, Any],
         candidates: list[dict[str, Any]],
+        risk_profile: str,
     ) -> AIRebalanceResult:
         return rebalance_ai_portfolio(
             holdings=holdings,
             account_summary=account_summary,
             candidates=candidates,
+            risk_profile=risk_profile,
         )
