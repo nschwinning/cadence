@@ -37,6 +37,7 @@ from cadence.ai_portfolio.constants import (
 from cadence.ai_portfolio.errors import (
     AIPortfolioValidationError,
     EventNotFoundError,
+    SessionNotEligibleError,
 )
 from cadence.ai_portfolio.executor import AIPortfolioExecutor, TradeResult
 from cadence.ai_portfolio.models import AIPortfolioEvent
@@ -49,7 +50,7 @@ from cadence.broker.models import AssetClass, OrderSide, Position
 from cadence.config import settings
 from cadence.notify.base import Notifier
 from cadence.paper_trading import service as paper_service
-from cadence.paper_trading.constants import RunStatus, ScheduleMode
+from cadence.paper_trading.constants import RunStatus, ScheduleMode, SessionStatus
 from cadence.portfolios import service as portfolios_service
 from cadence.portfolios.constants import PortfolioSource, RiskProfile
 
@@ -182,6 +183,19 @@ def create_rebalance_event(
     event = AIPortfolioEvent(
         session_id=session_id,
         event_type=EventType.REBALANCE.value,
+        status=EventStatus.QUEUED.value,
+    )
+    session.add(event)
+    session.commit()
+    session.refresh(event)
+    return event
+
+
+def create_close_event(session: Session, session_id: uuid.UUID) -> AIPortfolioEvent:
+    """Insert a queued close event for a session; return it."""
+    event = AIPortfolioEvent(
+        session_id=session_id,
+        event_type=EventType.CLOSE.value,
         status=EventStatus.QUEUED.value,
     )
     session.add(event)
@@ -534,6 +548,130 @@ def run_rebalance_event(
 
 
 # --------------------------------------------------------------------------- #
+# Close flow
+# --------------------------------------------------------------------------- #
+
+
+def close_session(
+    session: Session,
+    session_id: uuid.UUID,
+    broker: Broker,
+    notifier: Notifier | None = None,
+) -> AIPortfolioEvent:
+    """Liquidate all of a session's open positions and stop it, synchronously.
+
+    Unlike build/rebalance this runs inline (no agent, no web search, so it's
+    fast): every position the session holds is fully sold — regardless of market
+    hours — the sells and their realized P&L are recorded against a ``close``
+    event, and the session is moved to ``stopped`` so it is excluded from further
+    rebalances and the daily fan-out. Returns the terminal event.
+
+    Raises:
+        SessionNotFoundError: if the session does not exist.
+        SessionNotEligibleError: if the session is not an active AI-managed session,
+            or a rebalance is still in flight for it.
+    """
+    t0 = time.monotonic()
+    session_row = paper_service.get_session(session, session_id)
+    if session_row.strategy_key != AI_STRATEGY_KEY:
+        raise SessionNotEligibleError("only AI-managed sessions can be closed")
+    if session_row.status != SessionStatus.ACTIVE.value:
+        raise SessionNotEligibleError(f"session is {session_row.status}, not active")
+    if get_inflight_rebalance_event(session, session_id) is not None:
+        raise SessionNotEligibleError(
+            "a rebalance is in progress; wait for it to finish before closing"
+        )
+
+    event = create_close_event(session, session_id)
+    event.status = EventStatus.RUNNING.value
+    session.commit()
+
+    try:
+        portfolio = portfolios_service.get_portfolio(session, session_row.portfolio_id)
+
+        # Account positions are account-wide, so narrow to this portfolio's tickers
+        # (the same intersection the rebalance holdings use).
+        account_positions = {pos.symbol: pos for pos in broker.get_positions()}
+        positions = {
+            ticker: account_positions[ticker]
+            for ticker in portfolio.stocks
+            if ticker in account_positions and account_positions[ticker].quantity
+        }
+
+        asset_classes = _asset_class_map(assets_service.list_assets(session))
+        executor = AIPortfolioExecutor(broker, session_row.allocated_capital)
+        trade_results = executor.execute_close(positions, asset_classes=asset_classes)
+
+        executed, realized_pnl = _apply_rebalance_trades(
+            session,
+            session_id,
+            trade_results,
+            positions,
+            event_id=event.id,
+            signal_prefix="ai_close",
+        )
+
+        paper_service.record_session_run(
+            session,
+            session_id=session_id,
+            signals_scanned=len(positions),
+            signals_actionable=executed,
+            orders_executed=executed,
+            orders_skipped=len(trade_results) - executed,
+            details=[tr.to_dict() for tr in trade_results],
+            status=RunStatus.SUCCESS,
+            run_trigger="ai_close",
+            duration_ms=_elapsed_ms(t0),
+        )
+        paper_service.update_session_last_run(
+            session, session_id, trades_delta=executed, pnl_delta=realized_pnl
+        )
+        # Stop the session even if some orders failed: the user asked to close it,
+        # and any leftover positions are surfaced as skipped rows on the event.
+        paper_service.update_session_status(session, session_id, SessionStatus.STOPPED)
+
+        all_executed = all(tr.executed for tr in trade_results)
+        status = EventStatus.SUCCEEDED if all_executed else EventStatus.PARTIAL
+        _finish_event(
+            session,
+            event,
+            status,
+            result_payload=None,
+            actions_taken=[tr.to_dict() for tr in trade_results],
+            duration_ms=_elapsed_ms(t0),
+        )
+        logger.info(
+            "AI close %s completed: %s/%s positions liquidated",
+            event.id,
+            executed,
+            len(trade_results),
+        )
+
+        if notifier is not None and executed > 0:
+            _notify_safely(
+                notifier,
+                title=f"Cadence: {portfolio.name} closed",
+                message=_rebalance_success_message(
+                    portfolio.name, trade_results, realized_pnl
+                ),
+            )
+
+        session.refresh(event)
+        return event
+    except Exception as exc:  # noqa: BLE001 - persisted as the event's failure reason
+        session.rollback()
+        logger.error("AI close %s failed: %s", event.id, exc)
+        _fail_event(
+            session,
+            event.id,
+            str(exc) or exc.__class__.__name__,
+            _elapsed_ms(t0),
+        )
+        session.refresh(event)
+        return event
+
+
+# --------------------------------------------------------------------------- #
 # Helpers
 # --------------------------------------------------------------------------- #
 
@@ -732,13 +870,15 @@ def _apply_rebalance_trades(
     positions: dict[str, Position],
     *,
     event_id: uuid.UUID,
+    signal_prefix: str = "ai_rebalance",
 ) -> tuple[int, float]:
     """Record rebalance trades + closed positions; return (executed, realized_pnl).
 
     Sells (side ``"sell"``) that reduce or close a long position record a closed
     position for the sold quantity with its realized P&L. The end-state ticker list
     is derived from the AI targets by the caller, so no add/remove bookkeeping is
-    done here.
+    done here. ``signal_prefix`` tags the recorded trades (``"ai_rebalance"`` for a
+    rebalance, ``"ai_close"`` for a full liquidation).
     """
     executed = 0
     realized_pnl_total = 0.0
@@ -764,7 +904,7 @@ def _apply_rebalance_trades(
             side=_order_action(tr.side),
             quantity=tr.shares,
             price=tr.price or 0.0,
-            signal_type=f"ai_rebalance_{tr.side}",
+            signal_type=f"{signal_prefix}_{tr.side}",
             order_id=tr.order_id,
             order_status=tr.order_status,
             filled_price=tr.filled_price,

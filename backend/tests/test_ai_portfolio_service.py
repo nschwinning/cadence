@@ -25,14 +25,17 @@ from cadence.ai_portfolio.agent import (
     AITargetAllocation,
 )
 from cadence.ai_portfolio.constants import EventStatus, EventType
-from cadence.ai_portfolio.errors import AIPortfolioValidationError
+from cadence.ai_portfolio.errors import (
+    AIPortfolioValidationError,
+    SessionNotEligibleError,
+)
 from cadence.ai_portfolio.service import AIBuildParams
 from cadence.assets import service as assets_service
 from cadence.assets.market_data import AssetInfo, HistoryBar
 from cadence.broker.models import AssetClass, OrderType, TimeInForce
 from cadence.broker.stub import StubBroker
 from cadence.paper_trading import service as paper_service
-from cadence.paper_trading.constants import ScheduleMode
+from cadence.paper_trading.constants import ScheduleMode, SessionStatus
 from cadence.portfolios import service as portfolios_service
 
 
@@ -319,6 +322,76 @@ def test_run_rebalance_event_trades_toward_targets_and_updates_stocks(
 
     portfolio = portfolios_service.get_portfolio(db_session, portfolio_id)
     assert set(portfolio.stocks) == {"AAPL", "MSFT"}
+
+
+# --------------------------------------------------------------------------- #
+# Close (full liquidation)
+# --------------------------------------------------------------------------- #
+
+
+def test_close_session_liquidates_all_positions_and_stops(
+    db_session: Session,
+) -> None:
+    provider = _seed_universe(db_session, "AAPL", "MSFT")
+    broker = StubBroker()
+    session_id, _ = _seed_session(db_session, broker, provider)
+    assert broker.get_positions()  # sanity: the build opened positions
+
+    event = service.close_session(db_session, session_id, broker)
+
+    assert event.event_type == EventType.CLOSE.value
+    assert event.status == EventStatus.SUCCEEDED.value
+
+    # The session is stopped so it drops out of rebalance + daily fan-out.
+    session_row = paper_service.get_session(db_session, session_id)
+    assert session_row.status == SessionStatus.STOPPED.value
+
+    # Every held ticker was sold and recorded as a closed position, and the broker
+    # holds nothing afterwards.
+    closed = paper_service.get_closed_positions(db_session, session_id, limit=100)
+    assert {c.ticker for c in closed} == {"AAPL", "MSFT", "NVDA"}
+    assert broker.get_positions() == []
+
+    # Liquidation trades link back to the close event and are tagged ai_close_*.
+    trades = paper_service.get_trades_by_event(db_session, event.id)
+    assert {t.ticker for t in trades} == {"AAPL", "MSFT", "NVDA"}
+    assert all(t.signal_type == "ai_close_sell" for t in trades)
+
+
+def test_close_session_liquidates_equities_when_market_closed(
+    db_session: Session,
+) -> None:
+    # A close ignores market hours: equities are sold even when closed.
+    provider = _seed_universe(db_session, "AAPL", "MSFT")
+    broker = _ClosedBroker()
+    session_id, _ = _seed_session(db_session, broker, provider)
+
+    event = service.close_session(db_session, session_id, broker)
+
+    assert event.status == EventStatus.SUCCEEDED.value
+    closed = paper_service.get_closed_positions(db_session, session_id, limit=100)
+    assert {c.ticker for c in closed} == {"AAPL", "MSFT", "NVDA"}
+
+
+def test_close_session_rejects_non_ai_session(db_session: Session) -> None:
+    portfolio = portfolios_service.create_portfolio(
+        db_session, name="Manual", stocks=["AAPL"]
+    )
+    session_row = paper_service.create_session(
+        db_session, portfolio_id=portfolio.id, strategy_key="momentum"
+    )
+    with pytest.raises(SessionNotEligibleError):
+        service.close_session(db_session, session_row.id, StubBroker())
+
+
+def test_close_session_rejects_already_stopped_session(db_session: Session) -> None:
+    provider = _seed_universe(db_session, "AAPL", "MSFT")
+    broker = StubBroker()
+    session_id, _ = _seed_session(db_session, broker, provider)
+
+    service.close_session(db_session, session_id, broker)  # first close -> stopped
+    with pytest.raises(SessionNotEligibleError):
+        service.close_session(db_session, session_id, broker)
 
 
 # --------------------------------------------------------------------------- #

@@ -273,6 +273,90 @@ def test_execute_rebalance_market_closed_skips_equity_trades_crypto() -> None:
     assert by_ticker["BTC-USD"].side == "long"
 
 
+# --------------------------------------------------------------------------- #
+# Close: full liquidation regardless of market hours
+# --------------------------------------------------------------------------- #
+
+
+class _MarketClosedBroker(StubBroker):
+    """StubBroker reporting the market as closed (close must ignore this)."""
+
+    def is_market_open(self) -> bool:  # type: ignore[override]
+        return False
+
+
+class _FailingSellBroker(StubBroker):
+    """StubBroker that raises when selling a specific ticker (isolation test)."""
+
+    def __init__(self, fail_ticker: str) -> None:
+        super().__init__()
+        self._fail_ticker = fail_ticker
+
+    def sell(
+        self,
+        symbol: str,
+        quantity: float,
+        order_type: OrderType = OrderType.MARKET,
+        limit_price: float | None = None,
+        time_in_force: TimeInForce = TimeInForce.DAY,
+        asset_class: AssetClass = AssetClass.EQUITY,
+    ):  # type: ignore[override]
+        if symbol == self._fail_ticker:
+            raise OrderError(f"forced sell failure for {symbol}")
+        return super().sell(
+            symbol, quantity, order_type, limit_price, time_in_force, asset_class
+        )
+
+
+def test_execute_close_liquidates_every_position_in_full() -> None:
+    broker = StubBroker()
+    broker.buy("AAPL", 10)
+    broker.buy("BTC-USD", 0.5, asset_class=AssetClass.CRYPTO)
+    positions = {p.symbol: p for p in broker.get_positions()}
+    executor = AIPortfolioExecutor(broker, allocated_capital=100_000)
+
+    results = executor.execute_close(positions, asset_classes=_CRYPTO)
+
+    by_ticker = {r.ticker: r for r in results}
+    assert by_ticker["AAPL"].side == "sell"
+    assert by_ticker["AAPL"].shares == 10
+    assert by_ticker["AAPL"].executed is True
+    assert by_ticker["BTC-USD"].side == "sell"
+    assert by_ticker["BTC-USD"].shares == pytest.approx(0.5)
+    assert by_ticker["BTC-USD"].executed is True
+    # Nothing is left held after a full liquidation.
+    assert broker.get_positions() == []
+
+
+def test_execute_close_sells_equities_even_when_market_closed() -> None:
+    broker = _MarketClosedBroker()
+    broker.buy("AAPL", 4)
+    positions = {p.symbol: p for p in broker.get_positions()}
+    executor = AIPortfolioExecutor(broker, allocated_capital=100_000)
+
+    results = executor.execute_close(positions)
+
+    assert len(results) == 1
+    assert results[0].ticker == "AAPL"
+    assert results[0].executed is True
+    assert results[0].shares == 4
+
+
+def test_execute_close_isolates_per_ticker_failures() -> None:
+    broker = _FailingSellBroker("MSFT")
+    broker.buy("AAPL", 5)
+    broker.buy("MSFT", 7)
+    positions = {p.symbol: p for p in broker.get_positions()}
+    executor = AIPortfolioExecutor(broker, allocated_capital=100_000)
+
+    results = executor.execute_close(positions)
+
+    by_ticker = {r.ticker: r for r in results}
+    assert by_ticker["AAPL"].executed is True
+    assert by_ticker["MSFT"].executed is False
+    assert "failed" in by_ticker["MSFT"].reason.lower()
+
+
 def test_position_helper_import_available() -> None:
     # Sanity: the Position model used to size positions is importable.
     assert Position(symbol="X", quantity=0.0, avg_cost=0.0).symbol == "X"

@@ -263,6 +263,79 @@ class AIPortfolioExecutor:
 
         return results
 
+    def execute_close(
+        self,
+        positions: dict[str, Position],
+        asset_classes: dict[str, AssetClass] | None = None,
+    ) -> list[TradeResult]:
+        """Liquidate every held position in full, regardless of market hours.
+
+        Used by the close-portfolio flow: each position with a non-zero quantity is
+        fully sold (equities in whole shares, crypto fractionally). Unlike
+        :meth:`execute_rebalance`, there is no market-open guard — a sell is always
+        submitted (real Alpaca queues an equity market order for the next open; the
+        stub fills immediately). Positions are processed in ticker order and one
+        ticker's failure is recorded as not executed without aborting the rest.
+        """
+        classes = asset_classes or {}
+        results: list[TradeResult] = []
+
+        for ticker in sorted(positions):
+            pos = positions[ticker]
+            if not pos.quantity:
+                continue
+            cls = classes.get(ticker, AssetClass.EQUITY)
+            try:
+                quote = self.broker.get_quote(ticker, cls)
+                price = quote.last or quote.ask
+                if cls == AssetClass.CRYPTO:
+                    qty = round(abs(pos.quantity), CRYPTO_QTY_PRECISION)
+                else:
+                    qty = float(int(abs(pos.quantity)))
+                if qty <= 0:
+                    results.append(
+                        TradeResult(
+                            ticker=ticker,
+                            side="sell",
+                            shares=0,
+                            price=price,
+                            executed=False,
+                            reason="Position below one tradable unit",
+                        )
+                    )
+                    continue
+
+                order = self.broker.sell(ticker, qty, asset_class=cls)
+                fill_price = order.filled_price or price
+                logger.info("AI close: sell %s %s", qty, ticker)
+                results.append(
+                    TradeResult(
+                        ticker=ticker,
+                        side="sell",
+                        shares=qty,
+                        price=fill_price,
+                        executed=True,
+                        reason=f"Closed {qty} units (exit)",
+                        order_id=order.order_id,
+                        order_status=order.status,
+                        filled_price=order.filled_price,
+                    )
+                )
+            except Exception as exc:  # noqa: BLE001 - one ticker must not abort the run
+                logger.error("AI close failed for %s: %s", ticker, exc)
+                results.append(
+                    TradeResult(
+                        ticker=ticker,
+                        side="sell",
+                        shares=0,
+                        price=None,
+                        executed=False,
+                        reason=f"Order failed: {exc}",
+                    )
+                )
+
+        return results
+
     def _rebalance_equity(
         self,
         ticker: str,

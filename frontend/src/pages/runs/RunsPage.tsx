@@ -29,12 +29,13 @@ function EventStatusBadge({ status }: { status: string }) {
 }
 
 /** Which run types the history can be filtered to. */
-type TypeFilter = 'all' | 'build' | 'rebalance';
+type TypeFilter = 'all' | 'build' | 'rebalance' | 'close';
 
 const TYPE_FILTERS: { value: TypeFilter; label: string }[] = [
   { value: 'all', label: 'All' },
   { value: 'build', label: 'Builds' },
   { value: 'rebalance', label: 'Rebalances' },
+  { value: 'close', label: 'Closes' },
 ];
 
 function RunRow({ run }: { run: AIPortfolioEvent }) {

@@ -7,6 +7,7 @@ import {
 } from '../../api/paperTrading';
 import { useSessionEvents } from '../../api/aiPortfolio';
 import { SessionRebalanceCard } from './SessionRebalanceCard';
+import { SessionCloseCard } from './SessionCloseCard';
 import { formatQuantity } from '../../lib/format';
 import type {
   AIPortfolioEvent,
@@ -423,6 +424,7 @@ export function PaperTradingSessionPage() {
       <BackLink />
       <SessionHeader session={session} />
       <SessionRebalanceCard sessionId={id} />
+      <SessionCloseCard sessionId={id} status={session?.status} />
       <EventsPanel sessionId={id} />
       <TradesPanel sessionId={id} />
       <PositionsPanel sessionId={id} />

@@ -298,6 +298,63 @@ def test_run_detail_unknown_event_404(client: TestClient, db_session: Session) -
 
 
 # --------------------------------------------------------------------------- #
+# Close portfolio
+# --------------------------------------------------------------------------- #
+
+
+def test_close_session_liquidates_and_stops(
+    client: TestClient, db_session: Session
+) -> None:
+    executor = ManualExecutor()
+    _seed_universe(db_session, _provider())
+    _wire(db_session, executor)
+    session_id = _build_session(client, executor)
+
+    resp = client.post(f"/api/v1/ai-portfolio/sessions/{session_id}/close")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["event"]["event_type"] == "close"
+    assert body["event"]["status"] == "succeeded"
+    # Every held ticker was closed and linked to the close event.
+    assert {c["ticker"] for c in body["closed_positions"]} == {"AAPL", "MSFT"}
+    assert all(
+        c["ai_portfolio_event_id"] == body["event"]["id"]
+        for c in body["closed_positions"]
+    )
+    assert {t["ticker"] for t in body["trades"]} == {"AAPL", "MSFT"}
+
+    # The session is now stopped: closing again is rejected as non-eligible.
+    again = client.post(f"/api/v1/ai-portfolio/sessions/{session_id}/close")
+    assert again.status_code == 409
+
+
+def test_close_unknown_session_404(client: TestClient, db_session: Session) -> None:
+    _wire(db_session, ManualExecutor())
+    resp = client.post(
+        "/api/v1/ai-portfolio/sessions/"
+        "00000000-0000-0000-0000-000000000000/close"
+    )
+    assert resp.status_code == 404
+
+
+def test_close_non_eligible_session_rejected(
+    client: TestClient, db_session: Session
+) -> None:
+    from cadence.paper_trading import service as paper_service
+    from cadence.portfolios import service as portfolios_service
+
+    _wire(db_session, ManualExecutor())
+    portfolio = portfolios_service.create_portfolio(
+        db_session, name="Manual", stocks=["AAPL"]
+    )
+    session_row = paper_service.create_session(
+        db_session, portfolio_id=portfolio.id, strategy_key="momentum"
+    )
+    resp = client.post(f"/api/v1/ai-portfolio/sessions/{session_row.id}/close")
+    assert resp.status_code == 409
+
+
+# --------------------------------------------------------------------------- #
 # Daily fan-out + cron token guard
 # --------------------------------------------------------------------------- #
 

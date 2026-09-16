@@ -284,6 +284,86 @@ function ResearchCard({ research }: { research: AIResearchEntry[] | null }) {
   );
 }
 
+/** A planned order that did not execute, read from the event's `actions_taken`. */
+interface SkippedAction {
+  ticker: string;
+  side: string | null;
+  price: number | null;
+  reason: string | null;
+}
+
+/**
+ * Extract the non-executed orders from an event's `actions_taken` payload. Each
+ * entry is a serialized `TradeResult`; only the executed ones become
+ * `paper_trades` rows, so the skipped ones (with their `reason`) live only here.
+ */
+function readSkipped(actions: Record<string, unknown>[] | null): SkippedAction[] {
+  if (!Array.isArray(actions)) return [];
+  const skipped: SkippedAction[] = [];
+  for (const raw of actions) {
+    if (!raw || typeof raw !== 'object') continue;
+    const r = raw as Record<string, unknown>;
+    if (r.executed === false && typeof r.ticker === 'string') {
+      skipped.push({
+        ticker: r.ticker,
+        side: typeof r.side === 'string' ? r.side : null,
+        price: typeof r.price === 'number' ? r.price : null,
+        reason: typeof r.reason === 'string' ? r.reason : null,
+      });
+    }
+  }
+  return skipped;
+}
+
+function SkippedTradesCard({ skipped }: { skipped: SkippedAction[] }) {
+  return (
+    <Card title="Skipped / not executed" count={skipped.length}>
+      {skipped.length === 0 ? (
+        <p className="p-6 text-slate-500">
+          Every planned order executed for this run.
+        </p>
+      ) : (
+        <div className="overflow-x-auto">
+          <table className="w-full min-w-[640px] border-collapse text-sm">
+            <thead>
+              <tr className="border-b border-slate-200 bg-slate-50 text-left text-xs font-semibold uppercase tracking-wide text-slate-500">
+                <th className="px-4 py-3">Ticker</th>
+                <th className="px-4 py-3">Side</th>
+                <th className="px-4 py-3 text-right">Price</th>
+                <th className="px-4 py-3">Reason</th>
+              </tr>
+            </thead>
+            <tbody>
+              {skipped.map((s, i) => (
+                <tr
+                  key={`${s.ticker}-${i}`}
+                  className="border-b border-slate-100 align-top hover:bg-slate-50"
+                >
+                  <td className="px-4 py-3 font-semibold">
+                    <Link
+                      to={`/assets/${s.ticker}`}
+                      className="text-emerald-700 hover:underline"
+                    >
+                      {s.ticker}
+                    </Link>
+                  </td>
+                  <td className="px-4 py-3 capitalize text-slate-700">
+                    {s.side ?? '—'}
+                  </td>
+                  <td className="px-4 py-3 text-right tabular-nums text-slate-700">
+                    {s.price === null ? '—' : eur.format(s.price)}
+                  </td>
+                  <td className="px-4 py-3 text-amber-700">{s.reason ?? '—'}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </Card>
+  );
+}
+
 function TradesCard({ trades }: { trades: PaperTrade[] }) {
   return (
     <Card title="Opening trades" count={trades.length}>
@@ -496,6 +576,7 @@ export function RunDetailPage() {
           <Reasoning event={data.event} />
           <ResearchCard research={data.event.research} />
           <TradesCard trades={data.trades} />
+          <SkippedTradesCard skipped={readSkipped(data.event.actions_taken)} />
           <ClosedPositionsCard positions={data.closed_positions} />
         </>
       )}

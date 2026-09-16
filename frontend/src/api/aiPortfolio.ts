@@ -3,6 +3,7 @@ import { apiClient } from './client';
 import { paperTradingKeys } from './paperTrading';
 import type {
   AIEventStatus,
+  AIEventType,
   AIPortfolioBuildRequest,
   AIPortfolioBuildResponse,
   AIPortfolioEvent,
@@ -13,7 +14,7 @@ import type {
 
 /** Optional filters for the AI runs history list. */
 export interface AIRunsQuery {
-  eventType?: 'build' | 'rebalance';
+  eventType?: AIEventType;
   status?: AIEventStatus;
   limit?: number;
   offset?: number;
@@ -91,6 +92,22 @@ export async function rebalanceSession(
   return data;
 }
 
+/**
+ * Close a session: liquidate all its open positions and stop it. Resolves to the
+ * resulting `close` run (event + liquidation trades + closed positions); rejects
+ * with the axios error (404 unknown / 409 not eligible) so callers can surface a
+ * specific message.
+ */
+export async function closeSession(
+  sessionId: string,
+): Promise<AIPortfolioRunDetail> {
+  const { data } = await apiClient.post<AIPortfolioRunDetail>(
+    `/api/v1/ai-portfolio/sessions/${encodeURIComponent(sessionId)}/close`,
+    {},
+  );
+  return data;
+}
+
 /** Fetch a session's AI events (build + rebalances), newest first. */
 export async function listSessionEvents(
   sessionId: string,
@@ -157,6 +174,25 @@ export function useRebalanceSession(sessionId: string) {
       queryClient.invalidateQueries({
         queryKey: paperTradingKeys.all,
       });
+    },
+  });
+}
+
+/**
+ * Mutation closing a session (liquidate all positions + stop). Invalidates the
+ * session's events, the runs history, and the paper-trading queries so the now
+ * stopped session and its closed positions reflect immediately.
+ */
+export function useCloseSession(sessionId: string) {
+  const queryClient = useQueryClient();
+  return useMutation<AIPortfolioRunDetail, unknown, void>({
+    mutationFn: () => closeSession(sessionId),
+    onSuccess: () => {
+      queryClient.invalidateQueries({
+        queryKey: aiPortfolioKeys.sessionEvents(sessionId),
+      });
+      queryClient.invalidateQueries({ queryKey: aiPortfolioKeys.all });
+      queryClient.invalidateQueries({ queryKey: paperTradingKeys.all });
     },
   });
 }

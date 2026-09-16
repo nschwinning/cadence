@@ -34,7 +34,24 @@ const detail: AIPortfolioRunDetail = {
         },
       ],
     },
-    actions_taken: null,
+    actions_taken: [
+      {
+        ticker: 'AAPL',
+        side: 'buy',
+        shares: 10,
+        price: 190,
+        executed: true,
+        reason: 'Bought 10 units',
+      },
+      {
+        ticker: 'NVDA',
+        side: 'long',
+        shares: 0,
+        price: 950,
+        executed: false,
+        reason: 'Allocation $500 too small for price $950.00',
+      },
+    ],
     research: [
       { query: 'apple earnings 2026', results: { organic_results: [] }, error: null },
     ],
@@ -122,6 +139,13 @@ describe('RunDetailPage', () => {
     // Section headings present.
     expect(screen.getByText('Opening trades')).toBeInTheDocument();
     expect(screen.getByText('Closed positions')).toBeInTheDocument();
+
+    // Skipped orders surface the non-executed ticker and its reason.
+    expect(screen.getByText('Skipped / not executed')).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'NVDA' })).toBeInTheDocument();
+    expect(
+      screen.getByText('Allocation $500 too small for price $950.00'),
+    ).toBeInTheDocument();
   });
 
   it('surfaces an error when the run cannot be loaded', async () => {

@@ -16,6 +16,7 @@ class EventType(StrEnum):
 
     BUILD = "build"
     REBALANCE = "rebalance"
+    CLOSE = "close"
 
 
 class EventStatus(StrEnum):

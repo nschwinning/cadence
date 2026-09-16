@@ -357,7 +357,7 @@ export interface ClosedPositionListResponse {
 // --------------------------------------------------------------------------- //
 
 /** Which AI job an event records. Mirrors the backend `EventType` enum. */
-export type AIEventType = 'build' | 'rebalance';
+export type AIEventType = 'build' | 'rebalance' | 'close';
 
 /**
  * Lifecycle status of an AI portfolio event. `queued`/`running` are non-terminal;

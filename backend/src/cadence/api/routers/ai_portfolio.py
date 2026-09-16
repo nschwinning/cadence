@@ -173,6 +173,42 @@ def rebalance_session(
     return AIRebalanceResponse(event_id=event.id, status=event.status, started=started)
 
 
+@router.post(
+    "/sessions/{session_id}/close", response_model=AIPortfolioRunDetail
+)
+def close_session_endpoint(
+    session_id: uuid.UUID,
+    db: DbSession,
+    broker: BrokerDep,
+) -> AIPortfolioRunDetail:
+    """Close a session: liquidate all its open positions and stop it.
+
+    Runs synchronously (no agent) and returns the resulting ``close`` event with
+    the liquidation trades and the positions it closed — the same shape as a run
+    detail, so the client can show the outcome or link straight to the run.
+    """
+    from cadence.ai_portfolio import service as ai_service
+
+    try:
+        event = ai_service.close_session(db, session_id, broker)
+    except SessionNotFoundError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)
+        ) from exc
+    except SessionNotEligibleError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail=str(exc)
+        ) from exc
+
+    trades = paper_service.get_trades_by_event(db, event.id)
+    closed = paper_service.get_closed_positions_by_event(db, event.id)
+    return AIPortfolioRunDetail(
+        event=AIPortfolioEventRead.model_validate(event),
+        trades=[PaperTradeRead.model_validate(t) for t in trades],
+        closed_positions=[ClosedPositionRead.model_validate(c) for c in closed],
+    )
+
+
 @router.post("/rebalance-daily", response_model=AIDailyRebalanceResponse)
 def rebalance_daily(
     db: DbSession,
