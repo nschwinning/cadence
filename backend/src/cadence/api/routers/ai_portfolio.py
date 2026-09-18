@@ -34,6 +34,7 @@ from cadence.ai_portfolio.errors import (
 from cadence.ai_portfolio.service import AIBuildParams
 from cadence.api.routers.assets import get_market_data_provider
 from cadence.api.schemas import (
+    AIBenchmarkIngestResponse,
     AIDailyRebalanceResponse,
     AIDailyReconcileResponse,
     AIDailySnapshotResponse,
@@ -119,6 +120,12 @@ def build_ai_portfolio_endpoint(
         allocated_capital=payload.allocated_capital,
         risk_profile=payload.risk_profile,
         daily_rebalancing=payload.daily_rebalancing,
+        asset_types=payload.asset_types,
+        benchmark=(
+            payload.benchmark.value
+            if payload.benchmark is not None
+            else settings.DEFAULT_BENCHMARK
+        ),
     )
     try:
         event = job_runner.start_build(db, params, agent, broker, provider)
@@ -315,6 +322,30 @@ def snapshot_daily(
     )
     return AIDailySnapshotResponse(
         sessions_snapshotted=len(session_ids), session_ids=session_ids
+    )
+
+
+@router.post("/fetch-benchmarks", response_model=AIBenchmarkIngestResponse)
+def fetch_benchmarks(
+    db: DbSession,
+    provider: Provider,
+    _token: Annotated[None, Depends(require_valid_cron_token)],
+) -> AIBenchmarkIngestResponse:
+    """Fetch and store the daily close of every catalog benchmark index.
+
+    Guarded by the ``X-Cron-Token`` header. Iterates the fixed benchmark catalog,
+    fetches each index's history via the market-data provider, and upserts every
+    returned daily bar into the stored price series (idempotent per benchmark+date).
+    A benchmark whose fetch fails is skipped; the others still ingest. Returns the
+    per-benchmark upsert counts.
+    """
+    from cadence.paper_trading import benchmark as benchmark_module
+
+    counts = benchmark_module.ingest_benchmark_prices(db, provider)
+    return AIBenchmarkIngestResponse(
+        benchmarks_ingested=sum(1 for n in counts.values() if n > 0),
+        prices_upserted=sum(counts.values()),
+        counts=counts,
     )
 
 

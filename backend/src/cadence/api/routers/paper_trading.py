@@ -14,6 +14,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
 
 from cadence.api.schemas import (
+    BenchmarkCatalogEntry,
     ClosedPositionListResponse,
     ClosedPositionRead,
     PaperTradeListResponse,
@@ -22,6 +23,7 @@ from cadence.api.schemas import (
     PaperTradingSessionKpisRead,
     PaperTradingSessionListResponse,
     PaperTradingSessionRead,
+    SessionBenchmarkChangeRequest,
     SessionRunListResponse,
     SessionRunRead,
     SessionValueHistoryResponse,
@@ -31,8 +33,13 @@ from cadence.broker import get_broker
 from cadence.broker.base import Broker
 from cadence.database import get_db
 from cadence.paper_trading import service
-from cadence.paper_trading.constants import SessionStatus
+from cadence.paper_trading.constants import (
+    BENCHMARK_DISPLAY_NAMES,
+    Benchmark,
+    SessionStatus,
+)
 from cadence.paper_trading.errors import (
+    InvalidBenchmarkError,
     SessionNotArchivableError,
     SessionNotFoundError,
 )
@@ -228,6 +235,9 @@ def get_session_kpis(
         total_return=kpis.total_return,
         total_return_pct=kpis.total_return_pct,
         sharpe_ratio=kpis.sharpe_ratio,
+        benchmark=kpis.benchmark,
+        benchmark_return_pct=kpis.benchmark_return_pct,
+        excess_return_pct=kpis.excess_return_pct,
     )
 
 
@@ -239,10 +249,46 @@ def list_session_value_history(
     session_id: uuid.UUID,
     db: DbSession,
 ) -> SessionValueHistoryResponse:
-    """Return a session's daily value snapshots, oldest date first."""
+    """Return a session's daily value snapshots (with benchmark), oldest first."""
     _require_session(db, session_id)
     items = [
-        SessionValueSnapshotRead.model_validate(row)
-        for row in service.list_value_snapshots(db, session_id=session_id)
+        SessionValueSnapshotRead.model_validate(point.snapshot).model_copy(
+            update={"benchmark_value": point.benchmark_value}
+        )
+        for point in service.list_value_history(db, session_id=session_id)
     ]
     return SessionValueHistoryResponse(items=items, total=len(items))
+
+
+@router.get("/benchmarks", response_model=list[BenchmarkCatalogEntry])
+def list_benchmarks() -> list[BenchmarkCatalogEntry]:
+    """Return the fixed benchmark catalog as ``[{id, name}]``."""
+    return [
+        BenchmarkCatalogEntry(id=member.value, name=BENCHMARK_DISPLAY_NAMES[member])
+        for member in Benchmark
+    ]
+
+
+@router.put(
+    "/sessions/{session_id}/benchmark",
+    response_model=PaperTradingSessionRead,
+)
+def change_session_benchmark(
+    session_id: uuid.UUID,
+    payload: SessionBenchmarkChangeRequest,
+    db: DbSession,
+) -> PaperTradingSessionRead:
+    """Switch a session's benchmark (404 unknown session, 422 invalid id)."""
+    try:
+        row = service.change_session_benchmark(
+            db, session_id=session_id, benchmark=payload.benchmark
+        )
+    except SessionNotFoundError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)
+        ) from exc
+    except InvalidBenchmarkError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
+        ) from exc
+    return PaperTradingSessionRead.model_validate(row)

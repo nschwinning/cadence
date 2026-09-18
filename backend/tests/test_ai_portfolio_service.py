@@ -37,7 +37,8 @@ from cadence.assets.market_data import AssetInfo, HistoryBar
 from cadence.broker.models import AssetClass, OrderSide, OrderType, TimeInForce
 from cadence.broker.stub import StubBroker
 from cadence.paper_trading import service as paper_service
-from cadence.paper_trading.constants import ScheduleMode, SessionStatus
+from cadence.paper_trading.constants import Benchmark, ScheduleMode, SessionStatus
+from cadence.paper_trading.models import BenchmarkPrice
 from cadence.portfolios import service as portfolios_service
 
 
@@ -187,6 +188,51 @@ def test_run_build_event_success_creates_portfolio_and_session(
 
     runs = paper_service.get_session_runs(db_session, refreshed.session_id, limit=10)
     assert len(runs) == 1
+
+
+def test_run_build_event_generates_distinct_portfolio_name(
+    db_session: Session,
+) -> None:
+    # The build must NOT use the AI's generic name; it generates a distinct,
+    # human-friendly name prefixed with the risk profile.
+    provider = _seed_universe(db_session, "AAPL", "MSFT")
+    agent = FakeAIPortfolioAgent(build_result=_build_result("AAPL", "MSFT"))
+    event = service.create_build_event(
+        db_session, _params(risk_profile="aggressive")
+    )
+
+    service.run_build_event(db_session, event.id, agent, StubBroker(), provider)
+
+    refreshed = service.get_event(db_session, event.id)
+    assert refreshed.portfolio_id is not None
+    portfolio = portfolios_service.get_portfolio(db_session, refreshed.portfolio_id)
+    # Not the AI-provided name, and carries the risk-profile prefix.
+    assert portfolio.name != "AI Growth"
+    assert portfolio.name.startswith("Aggressive ")
+    # The AI's thesis is still preserved as the description.
+    assert portfolio.description == "tech"
+
+
+def test_run_build_event_name_is_unique_against_existing(
+    db_session: Session,
+) -> None:
+    # Two consecutive builds must not collide on the generated name.
+    provider = _seed_universe(db_session, "AAPL", "MSFT")
+    agent = FakeAIPortfolioAgent(build_result=_build_result("AAPL", "MSFT"))
+
+    first_event = service.create_build_event(db_session, _params())
+    service.run_build_event(db_session, first_event.id, agent, StubBroker(), provider)
+    first = portfolios_service.get_portfolio(
+        db_session, service.get_event(db_session, first_event.id).portfolio_id
+    )
+
+    second_event = service.create_build_event(db_session, _params())
+    service.run_build_event(db_session, second_event.id, agent, StubBroker(), provider)
+    second = portfolios_service.get_portfolio(
+        db_session, service.get_event(db_session, second_event.id).portfolio_id
+    )
+
+    assert first.name != second.name
 
 
 def test_run_build_event_discovers_and_adds_new_asset(db_session: Session) -> None:
@@ -698,7 +744,7 @@ def test_close_session_rejects_non_ai_session(db_session: Session) -> None:
         db_session, name="Manual", stocks=["AAPL"]
     )
     session_row = paper_service.create_session(
-        db_session, portfolio_id=portfolio.id, strategy_key="momentum", rebalance_prompt_version=1)
+        db_session, portfolio_id=portfolio.id, strategy_key="momentum", rebalance_prompt_version=1, benchmark=Benchmark.SP500)
     with pytest.raises(SessionNotEligibleError):
         service.close_session(db_session, session_row.id, StubBroker())
 
@@ -1262,7 +1308,7 @@ def _held_ai_session(
         db_session,
         portfolio_id=portfolio.id,
         strategy_key="ai_buy_hold",
-        allocated_capital=100_000.0, rebalance_prompt_version=1)
+        allocated_capital=100_000.0, rebalance_prompt_version=1, benchmark=Benchmark.SP500)
     paper_service.apply_fill_to_ledger(
         db_session,
         session_id=sess.id,
@@ -1287,7 +1333,7 @@ def test_snapshot_all_sessions_targets_only_active_ai(db_session: Session) -> No
     paper_service.create_session(
         db_session,
         portfolio_id=non_ai_portfolio.id,
-        strategy_key="momentum", rebalance_prompt_version=1)
+        strategy_key="momentum", rebalance_prompt_version=1, benchmark=Benchmark.SP500)
 
     # A stopped AI session must be ignored (not active).
     stopped = _held_ai_session(db_session, "AI Retired", "TSLA")
@@ -1328,3 +1374,74 @@ def test_snapshot_all_sessions_survives_notifier_failure(
     assert len(notifier.sent) == 1  # send was attempted (and raised)
     snaps = paper_service.list_value_snapshots(db_session, session_id=ai_active.id)
     assert len(snaps) == 1
+
+
+# --------------------------------------------------------------------------- #
+# Build benchmark selection (7.1) + daily-report comparison (8.1)
+# --------------------------------------------------------------------------- #
+
+
+def test_run_build_event_defaults_benchmark_to_sp500(db_session: Session) -> None:
+    provider = _seed_universe(db_session, "AAPL", "MSFT")
+    agent = FakeAIPortfolioAgent(build_result=_build_result("AAPL", "MSFT"))
+    event = service.create_build_event(db_session, _params())  # benchmark omitted
+
+    service.run_build_event(db_session, event.id, agent, StubBroker(), provider)
+
+    refreshed = service.get_event(db_session, event.id)
+    session_row = paper_service.get_session(db_session, refreshed.session_id)
+    assert session_row.benchmark == Benchmark.SP500.value
+
+
+def test_run_build_event_uses_supplied_benchmark(db_session: Session) -> None:
+    provider = _seed_universe(db_session, "AAPL", "MSFT")
+    agent = FakeAIPortfolioAgent(build_result=_build_result("AAPL", "MSFT"))
+    event = service.create_build_event(db_session, _params(benchmark="DJIA"))
+
+    service.run_build_event(db_session, event.id, agent, StubBroker(), provider)
+
+    refreshed = service.get_event(db_session, event.id)
+    session_row = paper_service.get_session(db_session, refreshed.session_id)
+    assert session_row.benchmark == Benchmark.DJIA.value
+
+
+def test_snapshot_report_includes_benchmark_comparison(db_session: Session) -> None:
+    broker = StubBroker()
+    notifier = RecordingNotifier()
+    ai_active = _held_ai_session(db_session, "AI Growth", "AAPL")
+
+    # An earlier snapshot anchors the benchmark start; prices bracket the window.
+    start = date(2026, 1, 2)
+    as_of = date(2026, 1, 5)
+    paper_service.record_value_snapshot(
+        db_session, session_id=ai_active.id, as_of=start, broker=broker
+    )
+    db_session.add(BenchmarkPrice(benchmark="SP500", price_date=start, close=100.0))
+    db_session.add(BenchmarkPrice(benchmark="SP500", price_date=as_of, close=110.0))
+    db_session.commit()
+
+    service.snapshot_all_sessions(
+        db_session, broker=broker, notifier=notifier, as_of=as_of
+    )
+
+    message, _ = notifier.sent[0]
+    # The per-session line carries the benchmark comparison (display name + excess).
+    assert "vs S&P 500" in message
+    assert "excess" in message
+
+
+def test_snapshot_report_omits_benchmark_when_unavailable(
+    db_session: Session,
+) -> None:
+    broker = StubBroker()
+    notifier = RecordingNotifier()
+    _held_ai_session(db_session, "AI Growth", "AAPL")
+
+    # No benchmark prices stored -> the comparison suffix is omitted gracefully.
+    service.snapshot_all_sessions(
+        db_session, broker=broker, notifier=notifier, as_of=date(2026, 1, 5)
+    )
+
+    message, _ = notifier.sent[0]
+    assert "AI Growth" in message
+    assert "vs S&P 500" not in message

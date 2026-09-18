@@ -19,6 +19,7 @@ from cadence.assets.market_data import AssetInfo, HistoryBar
 from cadence.broker.models import OrderSide
 from cadence.dashboard import service
 from cadence.paper_trading import service as paper_trading_service
+from cadence.paper_trading.constants import Benchmark
 from cadence.portfolios import service as portfolios_service
 
 
@@ -85,7 +86,7 @@ def _seed_activity(db_session: Session) -> None:
         db_session, name="P", stocks=["TECH", "FIN"]
     )
     session_row = paper_trading_service.create_session(
-        db_session, portfolio_id=portfolio.id, strategy_key="momentum", rebalance_prompt_version=1)
+        db_session, portfolio_id=portfolio.id, strategy_key="momentum", rebalance_prompt_version=1, benchmark=Benchmark.SP500)
     for ticker in ("TECH", "FIN"):
         paper_trading_service.record_trade(
             db_session,

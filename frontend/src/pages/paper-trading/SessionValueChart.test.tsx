@@ -12,7 +12,11 @@ vi.mock('../../api/client', () => ({
 
 const mockedGet = vi.mocked(apiClient.get);
 
-function snapshot(date: string, total: number): SessionValueSnapshot {
+function snapshot(
+  date: string,
+  total: number,
+  benchmarkValue: number | null = null,
+): SessionValueSnapshot {
   return {
     id: `snap-${date}`,
     session_id: 's1',
@@ -24,6 +28,7 @@ function snapshot(date: string, total: number): SessionValueSnapshot {
     daily_pnl_pct: 0,
     positions: [],
     created_at: `${date}T21:00:00Z`,
+    benchmark_value: benchmarkValue,
   };
 }
 
@@ -63,6 +68,46 @@ describe('SessionValueChart', () => {
     expect(polyline).not.toBeNull();
     // Three points -> three "x,y" pairs.
     expect(polyline?.getAttribute('points')?.trim().split(' ')).toHaveLength(3);
+  });
+
+  it('renders the benchmark overlay line when benchmark values are present', async () => {
+    mockedGet.mockResolvedValue({
+      data: {
+        items: [
+          snapshot('2026-01-04', 100000, 100000),
+          snapshot('2026-01-05', 100500, 100200),
+          snapshot('2026-01-06', 101200, 100900),
+        ],
+        total: 3,
+      },
+    });
+
+    const { container } = renderChart(<SessionValueChart sessionId="s1" />);
+
+    await screen.findByRole('img', {
+      name: /portfolio value over the last 3 daily snapshots/i,
+    });
+    expect(container.querySelector('[data-testid="benchmark-line"]')).not.toBeNull();
+  });
+
+  it('omits the benchmark overlay line when all benchmark values are null', async () => {
+    mockedGet.mockResolvedValue({
+      data: {
+        items: [
+          snapshot('2026-01-04', 100000),
+          snapshot('2026-01-05', 100500),
+          snapshot('2026-01-06', 101200),
+        ],
+        total: 3,
+      },
+    });
+
+    const { container } = renderChart(<SessionValueChart sessionId="s1" />);
+
+    await screen.findByRole('img', {
+      name: /portfolio value over the last 3 daily snapshots/i,
+    });
+    expect(container.querySelector('[data-testid="benchmark-line"]')).toBeNull();
   });
 
   it('shows the placeholder when there are fewer than two snapshots', async () => {

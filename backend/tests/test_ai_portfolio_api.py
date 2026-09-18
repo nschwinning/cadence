@@ -7,6 +7,7 @@ market-data provider dependency with an in-memory fake (no network).
 
 from __future__ import annotations
 
+import uuid
 from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import date
@@ -36,6 +37,7 @@ from cadence.broker.models import AssetClass, Order, OrderSide, OrderStatus
 from cadence.broker.stub import StubBroker
 from cadence.config import settings
 from cadence.paper_trading import service as paper_service
+from cadence.paper_trading.constants import Benchmark
 from cadence.portfolios import service as portfolios_service
 
 
@@ -178,6 +180,35 @@ def test_build_accepts_valid_asset_types(
     assert resp.status_code == 202
 
 
+def test_build_persists_requested_asset_scope(
+    client: TestClient, db_session: Session
+) -> None:
+    # Regression: the router must thread payload.asset_types into AIBuildParams so
+    # a "stocks only" request is actually scoped to stocks (previously it dropped
+    # the field and every build defaulted to "both", buying crypto).
+    executor = ManualExecutor()
+    _seed_universe(db_session, _provider())
+    _wire(db_session, executor)
+
+    resp = client.post(
+        "/api/v1/ai-portfolio/build",
+        json={"allocated_capital": 10000, "asset_types": "stocks"},
+    )
+    assert resp.status_code == 202
+
+    executor.run_pending()
+    event_id = resp.json()["event_id"]
+    status_body = client.get(
+        f"/api/v1/ai-portfolio/build/status/{event_id}"
+    ).json()
+    session_id = status_body["session_id"]
+    assert session_id is not None
+
+    session = paper_service.get_session(db_session, uuid.UUID(session_id))
+    assert session.session_metadata is not None
+    assert session.session_metadata["asset_types"] == "stocks"
+
+
 def test_build_rejects_invalid_asset_types(
     client: TestClient, db_session: Session
 ) -> None:
@@ -263,7 +294,7 @@ def test_session_rebalance_non_eligible_rejected(
         db_session, name="Manual", stocks=["AAPL"]
     )
     session_row = paper_service.create_session(
-        db_session, portfolio_id=portfolio.id, strategy_key="momentum", rebalance_prompt_version=1)
+        db_session, portfolio_id=portfolio.id, strategy_key="momentum", rebalance_prompt_version=1, benchmark=Benchmark.SP500)
     resp = client.post(
         f"/api/v1/ai-portfolio/sessions/{session_row.id}/rebalance"
     )
@@ -390,7 +421,7 @@ def test_close_non_eligible_session_rejected(
         db_session, name="Manual", stocks=["AAPL"]
     )
     session_row = paper_service.create_session(
-        db_session, portfolio_id=portfolio.id, strategy_key="momentum", rebalance_prompt_version=1)
+        db_session, portfolio_id=portfolio.id, strategy_key="momentum", rebalance_prompt_version=1, benchmark=Benchmark.SP500)
     resp = client.post(f"/api/v1/ai-portfolio/sessions/{session_row.id}/close")
     assert resp.status_code == 409
 
@@ -468,7 +499,7 @@ def test_reconcile_daily_aggregates_across_sessions(
         db_session, name="P", stocks=["AAPL"]
     )
     sess = paper_service.create_session(
-        db_session, portfolio_id=portfolio.id, strategy_key="recon", rebalance_prompt_version=1)
+        db_session, portfolio_id=portfolio.id, strategy_key="recon", rebalance_prompt_version=1, benchmark=Benchmark.SP500)
     paper_service.record_trade(
         db_session,
         session_id=sess.id,
@@ -510,9 +541,9 @@ def test_reconcile_daily_one_failing_session_does_not_abort(
         db_session, name="P", stocks=["AAPL"]
     )
     bad = paper_service.create_session(
-        db_session, portfolio_id=portfolio.id, strategy_key="bad", rebalance_prompt_version=1)
+        db_session, portfolio_id=portfolio.id, strategy_key="bad", rebalance_prompt_version=1, benchmark=Benchmark.SP500)
     good = paper_service.create_session(
-        db_session, portfolio_id=portfolio.id, strategy_key="good", rebalance_prompt_version=1)
+        db_session, portfolio_id=portfolio.id, strategy_key="good", rebalance_prompt_version=1, benchmark=Benchmark.SP500)
 
     real_reconcile = paper_service.reconcile_session_orders
 
@@ -560,3 +591,40 @@ def test_snapshot_daily_fans_out_to_active_ai_sessions(
     body = resp.json()
     assert body["sessions_snapshotted"] == 1
     assert session_id in body["session_ids"]
+
+
+# --------------------------------------------------------------------------- #
+# Benchmark ingestion endpoint (cron-guarded)
+# --------------------------------------------------------------------------- #
+
+
+def test_fetch_benchmarks_rejects_without_token(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(settings, "REBALANCE_CRON_TOKEN", "secret")
+    resp = client.post("/api/v1/ai-portfolio/fetch-benchmarks")
+    assert resp.status_code == 403
+
+
+def test_fetch_benchmarks_ingests_with_token(
+    client: TestClient, db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(settings, "REBALANCE_CRON_TOKEN", "secret")
+    provider = FakeMarketDataProvider(
+        history=[
+            HistoryBar(date=date(2026, 1, 3), close=100.0, volume=1_000.0),
+            HistoryBar(date=date(2026, 1, 6), close=106.0, volume=1_000.0),
+        ]
+    )
+    app.dependency_overrides[get_market_data_provider] = lambda: provider
+
+    resp = client.post(
+        "/api/v1/ai-portfolio/fetch-benchmarks",
+        headers={"X-Cron-Token": "secret"},
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    # Every catalog benchmark ingested both bars.
+    assert body["benchmarks_ingested"] == len(Benchmark)
+    assert body["prices_upserted"] == 2 * len(Benchmark)
+    assert body["counts"]["SP500"] == 2

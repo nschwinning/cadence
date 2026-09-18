@@ -82,6 +82,9 @@ services:
       TZ: ${CRON_TZ:-America/New_York}
       # Cron expression; default 09:35 on weekdays (just after the US open).
       REBALANCE_SCHEDULE: ${REBALANCE_SCHEDULE:-35 9 * * 1-5}
+      # Cron expression; default 16:05 on weekdays — ingest benchmark closes just
+      # before the snapshot so the daily report compares against fresh prices.
+      BENCHMARK_SCHEDULE: ${BENCHMARK_SCHEDULE:-5 16 * * 1-5}
       # Cron expression; default 16:15 on weekdays (just after the US close).
       SNAPSHOT_SCHEDULE: ${SNAPSHOT_SCHEDULE:-15 16 * * 1-5}
       # Must match the backend's REBALANCE_CRON_TOKEN.
@@ -89,7 +92,7 @@ services:
     depends_on:
       backend:
         condition: service_healthy
-    # Install curl + tzdata, stash the token in a file, then generate the two
+    # Install curl + tzdata, stash the token in a file, then generate the three
     # trigger scripts that POST their endpoints with the shared token, and a
     # crontab with one line per script. `$$` keeps expansion in the container
     # shell; `\"` embeds a literal quote (not compose interpolation).
@@ -109,10 +112,18 @@ services:
       'set -eu'
       'B=http://backend:8000/api/v1'
       'T=$$(cat /tmp/cron.token)'
+      'curl -fsS -X POST -H X-Cron-Token:$$T $$B/ai-portfolio/fetch-benchmarks >/dev/null'
+      > /usr/local/bin/benchmark.sh &&
+      printf '%s\n'
+      '#!/bin/sh'
+      'set -eu'
+      'B=http://backend:8000/api/v1'
+      'T=$$(cat /tmp/cron.token)'
       'curl -fsS -X POST -H X-Cron-Token:$$T $$B/ai-portfolio/snapshot-daily >/dev/null'
       > /usr/local/bin/snapshot.sh &&
-      chmod +x /usr/local/bin/rebalance.sh /usr/local/bin/snapshot.sh &&
+      chmod +x /usr/local/bin/rebalance.sh /usr/local/bin/benchmark.sh /usr/local/bin/snapshot.sh &&
       echo \"$${REBALANCE_SCHEDULE} /usr/local/bin/rebalance.sh\" > /etc/crontabs/root &&
+      echo \"$${BENCHMARK_SCHEDULE} /usr/local/bin/benchmark.sh\" >> /etc/crontabs/root &&
       echo \"$${SNAPSHOT_SCHEDULE} /usr/local/bin/snapshot.sh\" >> /etc/crontabs/root &&
       crond -f -l 8"
     restart: unless-stopped

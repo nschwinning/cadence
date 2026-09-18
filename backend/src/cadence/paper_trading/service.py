@@ -22,16 +22,23 @@ from sqlalchemy.orm import Session
 from cadence.broker.base import Broker
 from cadence.broker.models import OrderSide, OrderStatus
 from cadence.config import settings
+from cadence.paper_trading.benchmark import (
+    benchmark_return_fraction,
+    load_benchmark_series,
+    rebased_benchmark_value,
+)
 from cadence.paper_trading.constants import (
     SHARPE_MIN_RETURNS,
     SHARPE_TRADING_DAYS_PER_YEAR,
     TERMINAL_ORDER_STATUSES,
+    Benchmark,
     RunStatus,
     ScheduleMode,
     SessionStatus,
 )
 from cadence.paper_trading.errors import (
     DuplicateSessionError,
+    InvalidBenchmarkError,
     SessionNotArchivableError,
     SessionNotFoundError,
 )
@@ -61,6 +68,7 @@ def create_session(
     portfolio_id: uuid.UUID,
     strategy_key: str,
     rebalance_prompt_version: int,
+    benchmark: Benchmark,
     allocated_capital: float = DEFAULT_ALLOCATED_CAPITAL,
     max_allocation_pct: float = 1.0,
     schedule_mode: ScheduleMode = ScheduleMode.SCHEDULED,
@@ -69,6 +77,8 @@ def create_session(
 
     ``rebalance_prompt_version`` freezes the rebalance-prompt version this session
     will always use; callers pass the version that is active at build time.
+    ``benchmark`` is the market index the session is compared against (the build
+    passes the chosen/default id).
 
     Raises:
         DuplicateSessionError: if a session already exists for the same
@@ -82,6 +92,7 @@ def create_session(
         max_allocation_pct=max_allocation_pct,
         schedule_mode=schedule_mode.value,
         rebalance_prompt_version=rebalance_prompt_version,
+        benchmark=benchmark.value,
     )
     session.add(row)
     try:
@@ -184,6 +195,34 @@ def unarchive_session(
     """
     row = get_session(session, session_id)
     row.archived_at = None
+    session.commit()
+    session.refresh(row)
+    return row
+
+
+def change_session_benchmark(
+    session: Session, session_id: uuid.UUID, benchmark: str
+) -> PaperTradingSession:
+    """Change the benchmark a session is compared against.
+
+    ``benchmark`` must be a valid :class:`Benchmark` id. Only the pointer changes;
+    the session's trades, positions, and value snapshots are untouched, so later
+    reads recompute comparisons against the new series.
+
+    Raises:
+        SessionNotFoundError: if no session has ``session_id``.
+        InvalidBenchmarkError: if ``benchmark`` is not in the catalog (the session's
+            benchmark is left unchanged).
+    """
+    try:
+        resolved = Benchmark(benchmark)
+    except ValueError as exc:
+        allowed = ", ".join(b.value for b in Benchmark)
+        raise InvalidBenchmarkError(
+            f"benchmark must be one of: {allowed}"
+        ) from exc
+    row = get_session(session, session_id)
+    row.benchmark = resolved.value
     session.commit()
     session.refresh(row)
     return row
@@ -854,6 +893,54 @@ def list_value_snapshots(
     return list(session.execute(stmt).scalars())
 
 
+@dataclass(frozen=True)
+class ValueHistoryPoint:
+    """A value snapshot paired with the session's benchmark value for its date.
+
+    ``benchmark_value`` is a buy-and-hold of the session's allocated capital in the
+    session's benchmark, rebased so it equals the allocated capital on the session's
+    first snapshot date; ``None`` when the benchmark has no stored price on or before
+    the snapshot's date.
+    """
+
+    snapshot: SessionValueSnapshot
+    benchmark_value: float | None
+
+
+def list_value_history(
+    session: Session, *, session_id: uuid.UUID
+) -> list[ValueHistoryPoint]:
+    """Return the session's value snapshots (oldest first) with benchmark values.
+
+    Each snapshot carries the rebased benchmark value for its date, derived from the
+    stored benchmark price series (rebased to the session's first snapshot date and
+    allocated capital). A snapshot whose date precedes the benchmark's first stored
+    close (or when no prices are stored) carries a ``None`` benchmark value.
+
+    Raises :class:`SessionNotFoundError` for an unknown session.
+    """
+    session_row = get_session(session, session_id)
+    snapshots = list_value_snapshots(session, session_id=session_id)
+    if not snapshots:
+        return []
+
+    series = load_benchmark_series(session, session_row.benchmark)
+    start_date = snapshots[0].snapshot_date
+    allocated = session_row.allocated_capital
+    return [
+        ValueHistoryPoint(
+            snapshot=snap,
+            benchmark_value=rebased_benchmark_value(
+                series,
+                allocated_capital=allocated,
+                start_date=start_date,
+                as_of=snap.snapshot_date,
+            ),
+        )
+        for snap in snapshots
+    ]
+
+
 # --------------------------------------------------------------------------- #
 # Session KPIs (live valuation + Sharpe)
 # --------------------------------------------------------------------------- #
@@ -892,7 +979,10 @@ class SessionKpis:
     allocated capital (``current_value − allocated_capital``) and
     ``total_return_pct`` the same as a fraction of allocated capital;
     ``sharpe_ratio`` the annualised Sharpe of the daily NAV series, or ``None``
-    until enough history exists.
+    until enough history exists. ``benchmark`` is the session's benchmark id;
+    ``benchmark_return_pct`` the benchmark's buy-and-hold fractional return over the
+    session's period and ``excess_return_pct`` the session's total-return fraction
+    minus it, both ``None`` when the benchmark has insufficient stored prices.
     """
 
     current_value: float
@@ -902,6 +992,9 @@ class SessionKpis:
     total_return: float
     total_return_pct: float
     sharpe_ratio: float | None
+    benchmark: str
+    benchmark_return_pct: float | None
+    excess_return_pct: float | None
 
 
 def session_kpis(
@@ -929,6 +1022,23 @@ def session_kpis(
     daily_returns = [snap.daily_pnl_pct for snap in snapshots]
     daily_risk_free = settings.SHARPE_RISK_FREE_RATE / SHARPE_TRADING_DAYS_PER_YEAR
 
+    # Benchmark comparison: buy-and-hold return from the session's start (its first
+    # snapshot date) to the latest available benchmark close. Unavailable (None)
+    # when the session has no snapshots yet or the series lacks a start/end close.
+    benchmark_return_pct: float | None = None
+    if snapshots:
+        series = load_benchmark_series(session, session_row.benchmark)
+        benchmark_return_pct = benchmark_return_fraction(
+            series,
+            start_date=snapshots[0].snapshot_date,
+            as_of=datetime.now(tz=UTC).date(),
+        )
+    excess_return_pct = (
+        total_return_pct - benchmark_return_pct
+        if benchmark_return_pct is not None
+        else None
+    )
+
     return SessionKpis(
         current_value=valuation.total_value,
         realised_pnl=session_row.total_pnl,
@@ -937,4 +1047,7 @@ def session_kpis(
         total_return=total_return,
         total_return_pct=total_return_pct,
         sharpe_ratio=sharpe_ratio(daily_returns, risk_free=daily_risk_free),
+        benchmark=session_row.benchmark,
+        benchmark_return_pct=benchmark_return_pct,
+        excess_return_pct=excess_return_pct,
     )

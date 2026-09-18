@@ -78,6 +78,11 @@ class Settings(BaseSettings):
     # session; set to 0 to disable.
     TRANSACTION_COST_USD: float = 1.0
 
+    # Default benchmark index a newly built paper-trading session is compared
+    # against, and the fallback for existing sessions. Must be a valid
+    # ``cadence.paper_trading.constants.Benchmark`` id (e.g. "SP500" = S&P 500).
+    DEFAULT_BENCHMARK: str = "SP500"
+
     # Model id the AI portfolio manager runs on.
     AI_PORTFOLIO_MODEL: str = "gpt-5-mini"
 

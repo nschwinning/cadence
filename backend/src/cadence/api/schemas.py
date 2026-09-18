@@ -10,6 +10,7 @@ from typing import Any
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from cadence.assets.category import AssetScope
+from cadence.paper_trading.constants import Benchmark
 from cadence.portfolios.constants import PortfolioSource, RiskProfile
 
 
@@ -226,6 +227,7 @@ class PaperTradingSessionRead(BaseModel):
 
     id: uuid.UUID
     portfolio_id: uuid.UUID
+    portfolio_name: str | None
     strategy_key: str
     status: str
     allocated_capital: float
@@ -240,6 +242,8 @@ class PaperTradingSessionRead(BaseModel):
     archived_at: datetime | None
     # The rebalance-prompt version frozen onto this session at build time.
     rebalance_prompt_version: int
+    # The benchmark index this session is compared against (a catalog id).
+    benchmark: str
 
 
 class PaperTradingSessionListResponse(BaseModel):
@@ -364,6 +368,10 @@ class SessionValueSnapshotRead(BaseModel):
     daily_pnl_pct: float
     positions: list[dict[str, Any]]
     created_at: datetime
+    # Rebased buy-and-hold value of the session's benchmark as of this snapshot's
+    # date (allocated capital in the benchmark, rebased to the session start), or
+    # ``None`` when the benchmark has no stored price on or before that date.
+    benchmark_value: float | None = None
 
 
 class SessionValueHistoryResponse(BaseModel):
@@ -381,7 +389,10 @@ class PaperTradingSessionKpisRead(BaseModel):
     open positions; ``total_fees`` the cumulative per-trade transaction cost;
     ``total_return`` the absolute gain/loss versus allocated capital and
     ``total_return_pct`` the same as a fraction; ``sharpe_ratio`` is ``None`` until
-    the session has accumulated enough daily history.
+    the session has accumulated enough daily history. ``benchmark`` is the session's
+    benchmark id; ``benchmark_return_pct`` the benchmark's fractional return over the
+    session's period and ``excess_return_pct`` the session's return minus it, both
+    ``None`` when the benchmark has insufficient stored prices.
     """
 
     current_value: float
@@ -391,6 +402,9 @@ class PaperTradingSessionKpisRead(BaseModel):
     total_return: float
     total_return_pct: float
     sharpe_ratio: float | None
+    benchmark: str
+    benchmark_return_pct: float | None
+    excess_return_pct: float | None
 
 
 class AIDailySnapshotResponse(BaseModel):
@@ -398,6 +412,33 @@ class AIDailySnapshotResponse(BaseModel):
 
     sessions_snapshotted: int
     session_ids: list[uuid.UUID] = Field(default_factory=list)
+
+
+class BenchmarkCatalogEntry(BaseModel):
+    """One selectable benchmark index: its stable id and display name."""
+
+    id: str
+    name: str
+
+
+class AIBenchmarkIngestResponse(BaseModel):
+    """Result of the benchmark price-ingestion cron: rows upserted per benchmark.
+
+    ``benchmarks_ingested`` counts benchmarks that stored at least one row (a
+    benchmark whose fetch failed contributes 0 and is not counted);
+    ``prices_upserted`` is the total rows upserted across all benchmarks; ``counts``
+    breaks the total down by benchmark id.
+    """
+
+    benchmarks_ingested: int
+    prices_upserted: int
+    counts: dict[str, int]
+
+
+class SessionBenchmarkChangeRequest(BaseModel):
+    """Request body for changing a session's benchmark."""
+
+    benchmark: str = Field(..., description="A benchmark id from the catalog")
 
 
 # --------------------------------------------------------------------------- #
@@ -423,6 +464,11 @@ class AIPortfolioBuildRequest(BaseModel):
     daily_rebalancing: bool = Field(
         default=False,
         description="Enroll this session in automatic daily rebalancing.",
+    )
+    benchmark: Benchmark | None = Field(
+        default=None,
+        description="Benchmark index to compare the session against (a catalog "
+        "id). Defaults to the configured default benchmark (S&P 500).",
     )
 
     @field_validator("asset_types")

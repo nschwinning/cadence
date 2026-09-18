@@ -23,7 +23,7 @@ from __future__ import annotations
 import uuid
 from datetime import date, datetime
 from enum import Enum
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import (
     Date,
@@ -42,7 +42,15 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from cadence.broker.models import OrderSide, OrderStatus
 from cadence.database import Base
-from cadence.paper_trading.constants import RunStatus, ScheduleMode, SessionStatus
+from cadence.paper_trading.constants import (
+    Benchmark,
+    RunStatus,
+    ScheduleMode,
+    SessionStatus,
+)
+
+if TYPE_CHECKING:
+    from cadence.portfolios.models import Portfolio
 
 
 def _enum_column(enum: type[Enum]) -> SQLEnum:
@@ -145,6 +153,17 @@ class PaperTradingSession(Base):
     # session's behavior. Non-nullable: set on every build and backfilled for
     # pre-existing sessions by the migration.
     rebalance_prompt_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    # The benchmark index this session's performance is compared against. Stores a
+    # ``cadence.paper_trading.constants.Benchmark`` id (never a raw market symbol).
+    # Non-nullable: set on every build (from the chosen/default id) and backfilled to
+    # the default (``SP500``) for pre-existing sessions by the migration. Changeable
+    # at any time via the change-benchmark service op; only the pointer moves, so
+    # comparisons recompute against the new series on read.
+    benchmark: Mapped[str] = mapped_column(
+        _enum_column(Benchmark),
+        nullable=False,
+        server_default=Benchmark.SP500.value,
+    )
 
     trades: Mapped[list[PaperTrade]] = relationship(
         back_populates="session",
@@ -171,6 +190,16 @@ class PaperTradingSession(Base):
         cascade="all, delete-orphan",
         passive_deletes=True,
     )
+    # View-only link to the traded portfolio so the session can surface its name
+    # (the human-facing label). Eager-loaded to keep listing free of N+1 queries.
+    portfolio: Mapped[Portfolio] = relationship(
+        "Portfolio", lazy="joined", viewonly=True
+    )
+
+    @property
+    def portfolio_name(self) -> str | None:
+        """The traded portfolio's display name, if the portfolio still exists."""
+        return self.portfolio.name if self.portfolio is not None else None
 
 
 class PaperTrade(Base):
@@ -417,4 +446,43 @@ class SessionValueSnapshot(Base):
 
     session: Mapped[PaperTradingSession] = relationship(
         back_populates="value_snapshots"
+    )
+
+
+class BenchmarkPrice(Base):
+    """One stored daily closing price for a benchmark index.
+
+    The system owns this series: a scheduled cron job fetches each catalog
+    benchmark's daily close and upserts it here. Comparisons for a session are
+    derived on read from these rows (rebased to the session's start), so no
+    per-session/per-snapshot benchmark value is stored. Unique on
+    ``(benchmark, price_date)`` so re-running the ingestion updates a day's close
+    rather than duplicating it; indexed on the same pair for the range reads.
+    ``benchmark`` stores a :class:`~cadence.paper_trading.constants.Benchmark` id.
+    """
+
+    __tablename__ = "benchmark_prices"
+    __table_args__ = (
+        UniqueConstraint(
+            "benchmark",
+            "price_date",
+            name="uq_benchmark_prices_benchmark_date",
+        ),
+        Index(
+            "idx_benchmark_prices_benchmark_date",
+            "benchmark",
+            "price_date",
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        server_default=func.gen_random_uuid(),
+    )
+    benchmark: Mapped[str] = mapped_column(_enum_column(Benchmark), nullable=False)
+    price_date: Mapped[date] = mapped_column(Date, nullable=False)
+    close: Mapped[float] = mapped_column(Float, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
     )

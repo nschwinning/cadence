@@ -11,6 +11,9 @@ const TREND_STROKE = {
 
 type Trend = keyof typeof TREND_STROKE;
 
+/** Stroke colour for the benchmark overlay line (neutral amber, distinct from trend). */
+const BENCHMARK_STROKE = '#d97706';
+
 function trendOf(snapshots: SessionValueSnapshot[]): Trend {
   const first = snapshots[0].total_value;
   const last = snapshots[snapshots.length - 1].total_value;
@@ -36,16 +39,34 @@ function ValueCurve({ snapshots }: { snapshots: SessionValueSnapshot[] }) {
   const width = 800;
   const height = 160;
   const pad = 8;
+
+  // Benchmark is a second series rebased to the same units as total_value, so both
+  // share one y-scale. Only snapshots with a non-null benchmark value are plotted;
+  // when every value is null the overlay is omitted entirely.
+  const hasBenchmark = snapshots.some((s) => s.benchmark_value !== null);
+  const benchmarkValues = snapshots
+    .map((s) => s.benchmark_value)
+    .filter((v): v is number => v !== null);
+
   const values = snapshots.map((s) => s.total_value);
-  const min = Math.min(...values);
-  const max = Math.max(...values);
+  const min = Math.min(...values, ...benchmarkValues);
+  const max = Math.max(...values, ...benchmarkValues);
   const span = max - min || 1;
 
-  const points = snapshots.map((s, i) => {
-    const x = pad + (i / (snapshots.length - 1)) * (width - 2 * pad);
-    const y = pad + (1 - (s.total_value - min) / span) * (height - 2 * pad);
-    return `${x.toFixed(2)},${y.toFixed(2)}`;
-  });
+  const x = (i: number) => pad + (i / (snapshots.length - 1)) * (width - 2 * pad);
+  const y = (value: number) =>
+    pad + (1 - (value - min) / span) * (height - 2 * pad);
+
+  const points = snapshots.map(
+    (s, i) => `${x(i).toFixed(2)},${y(s.total_value).toFixed(2)}`,
+  );
+  const benchmarkPoints = snapshots
+    .map((s, i) =>
+      s.benchmark_value !== null
+        ? `${x(i).toFixed(2)},${y(s.benchmark_value).toFixed(2)}`
+        : null,
+    )
+    .filter((p): p is string => p !== null);
 
   return (
     <svg
@@ -55,6 +76,20 @@ function ValueCurve({ snapshots }: { snapshots: SessionValueSnapshot[] }) {
       role="img"
       aria-label={`Portfolio value over the last ${snapshots.length} daily snapshots`}
     >
+      {hasBenchmark && benchmarkPoints.length >= 2 && (
+        <polyline
+          points={benchmarkPoints.join(' ')}
+          fill="none"
+          stroke={BENCHMARK_STROKE}
+          strokeWidth={1.5}
+          strokeDasharray="4 3"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          vectorEffect="non-scaling-stroke"
+          aria-label="Benchmark value"
+          data-testid="benchmark-line"
+        />
+      )}
       <polyline
         points={points.join(' ')}
         fill="none"

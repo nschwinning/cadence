@@ -6,8 +6,11 @@ import {
   useBuildStatus,
 } from '../../api/aiPortfolio';
 import { portfolioKeys } from '../../api/portfolios';
-import { paperTradingKeys } from '../../api/paperTrading';
+import { paperTradingKeys, useBenchmarks } from '../../api/paperTrading';
 import type { AIEventStatus } from '../../types/api';
+
+/** Default benchmark id preselected in the build form (S&P 500). */
+const DEFAULT_BENCHMARK = 'SP500';
 
 /** Risk-profile options accepted by the build endpoint. */
 const RISK_PROFILES = ['conservative', 'balanced', 'aggressive'] as const;
@@ -52,7 +55,11 @@ export function BuildAIPortfolioCard() {
   const [riskProfile, setRiskProfile] = useState<string>('balanced');
   const [assetTypes, setAssetTypes] = useState<AssetScope>('both');
   const [dailyRebalancing, setDailyRebalancing] = useState(false);
+  const [benchmark, setBenchmark] = useState<string>(DEFAULT_BENCHMARK);
   const [eventId, setEventId] = useState<string | null>(null);
+
+  const { data: benchmarks } = useBenchmarks();
+  const benchmarkCatalog = Array.isArray(benchmarks) ? benchmarks : null;
 
   const statusQuery = useBuildStatus(eventId);
   const event = statusQuery.data;
@@ -82,6 +89,7 @@ export function BuildAIPortfolioCard() {
         risk_profile: riskProfile,
         asset_types: assetTypes,
         daily_rebalancing: dailyRebalancing,
+        benchmark,
       },
       { onSuccess: (res) => setEventId(res.event_id) },
     );
@@ -169,6 +177,28 @@ export function BuildAIPortfolioCard() {
                     {scope.label}
                   </option>
                 ))}
+              </select>
+            </div>
+            <div>
+              <label
+                htmlFor="ai-benchmark"
+                className="block text-sm font-medium text-slate-700"
+              >
+                Benchmark
+              </label>
+              <select
+                id="ai-benchmark"
+                value={benchmark}
+                onChange={(e) => setBenchmark(e.target.value)}
+                className="mt-1 w-full rounded border border-slate-300 px-3 py-2 text-sm text-slate-900 focus:border-emerald-500 focus:outline-none focus:ring-1 focus:ring-emerald-500"
+              >
+                {(benchmarkCatalog ?? [{ id: DEFAULT_BENCHMARK, name: 'S&P 500' }]).map(
+                  (b) => (
+                    <option key={b.id} value={b.id}>
+                      {b.name}
+                    </option>
+                  ),
+                )}
               </select>
             </div>
           </div>

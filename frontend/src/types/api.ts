@@ -265,6 +265,7 @@ export type ScheduleMode = 'MANUAL' | 'SCHEDULED' | 'DAILY_REBALANCING';
 export interface PaperTradingSession {
   id: string;
   portfolio_id: string;
+  portfolio_name: string | null;
   strategy_key: string;
   status: string;
   allocated_capital: number;
@@ -279,6 +280,14 @@ export interface PaperTradingSession {
   archived_at: string | null;
   /** The rebalance-prompt version frozen onto this session at build time. */
   rebalance_prompt_version: number;
+  /** The benchmark id this session is compared against (a catalog id, e.g. `SP500`). */
+  benchmark: string;
+}
+
+/** One entry in the fixed benchmark catalog. Mirrors `BenchmarkCatalogEntry`. */
+export interface BenchmarkCatalogEntry {
+  id: string;
+  name: string;
 }
 
 /** A list of paper-trading sessions plus the matching total. */
@@ -390,6 +399,12 @@ export interface SessionValueSnapshot {
   daily_pnl_pct: number;
   positions: SessionValueSnapshotPosition[];
   created_at: string;
+  /**
+   * The session's benchmark value rebased to the session start (allocated capital
+   * on the first snapshot date). Null when the benchmark has no stored price on or
+   * before this snapshot's date.
+   */
+  benchmark_value: number | null;
 }
 
 /** A session's value snapshots (oldest first) plus the matching total. */
@@ -409,6 +424,18 @@ export interface PaperTradingSessionKpis {
   total_return_pct: number;
   /** Null until the session has enough daily history to compute it. */
   sharpe_ratio: number | null;
+  /** The session's benchmark id (a catalog id, e.g. `SP500`). */
+  benchmark: string;
+  /**
+   * The benchmark's buy-and-hold fractional return over the session period, from
+   * stored prices. Null when the benchmark has insufficient stored prices.
+   */
+  benchmark_return_pct: number | null;
+  /**
+   * `total_return_pct − benchmark_return_pct`. Null when the benchmark return is
+   * unavailable.
+   */
+  excess_return_pct: number | null;
 }
 
 // --------------------------------------------------------------------------- //
@@ -444,6 +471,8 @@ export interface AIPortfolioBuildRequest {
   /** Which asset categories the portfolio may hold. Defaults to `both`. */
   asset_types?: 'stocks' | 'crypto' | 'both';
   daily_rebalancing?: boolean;
+  /** Benchmark id to compare the session against. Defaults to `SP500`. */
+  benchmark?: string;
 }
 
 /**

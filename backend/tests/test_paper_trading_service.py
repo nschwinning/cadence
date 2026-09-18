@@ -19,16 +19,22 @@ from cadence.config import settings
 from cadence.paper_trading import service
 from cadence.paper_trading.constants import (
     SHARPE_MIN_RETURNS,
+    Benchmark,
     RunStatus,
     ScheduleMode,
     SessionStatus,
 )
 from cadence.paper_trading.errors import (
     DuplicateSessionError,
+    InvalidBenchmarkError,
     SessionNotArchivableError,
     SessionNotFoundError,
 )
-from cadence.paper_trading.models import SessionValueSnapshot
+from cadence.paper_trading.models import (
+    BenchmarkPrice,
+    PaperTradingSession,
+    SessionValueSnapshot,
+)
 from cadence.portfolios import service as portfolios_service
 from cadence.portfolios.models import Portfolio
 
@@ -42,7 +48,7 @@ def _portfolio(db_session: Session) -> Portfolio:
 def test_create_session_defaults(db_session: Session) -> None:
     portfolio = _portfolio(db_session)
     sess = service.create_session(
-        db_session, portfolio_id=portfolio.id, strategy_key="momentum", rebalance_prompt_version=1)
+        db_session, portfolio_id=portfolio.id, strategy_key="momentum", rebalance_prompt_version=1, benchmark=Benchmark.SP500)
     assert sess.id is not None
     assert sess.portfolio_id == portfolio.id
     assert sess.status == SessionStatus.ACTIVE.value
@@ -55,10 +61,10 @@ def test_create_session_defaults(db_session: Session) -> None:
 def test_duplicate_portfolio_strategy_raises(db_session: Session) -> None:
     portfolio = _portfolio(db_session)
     service.create_session(
-        db_session, portfolio_id=portfolio.id, strategy_key="momentum", rebalance_prompt_version=1)
+        db_session, portfolio_id=portfolio.id, strategy_key="momentum", rebalance_prompt_version=1, benchmark=Benchmark.SP500)
     with pytest.raises(DuplicateSessionError):
         service.create_session(
-            db_session, portfolio_id=portfolio.id, strategy_key="momentum", rebalance_prompt_version=1)
+            db_session, portfolio_id=portfolio.id, strategy_key="momentum", rebalance_prompt_version=1, benchmark=Benchmark.SP500)
 
 
 def test_get_and_not_found(db_session: Session) -> None:
@@ -66,7 +72,7 @@ def test_get_and_not_found(db_session: Session) -> None:
 
     portfolio = _portfolio(db_session)
     sess = service.create_session(
-        db_session, portfolio_id=portfolio.id, strategy_key="s", rebalance_prompt_version=1)
+        db_session, portfolio_id=portfolio.id, strategy_key="s", rebalance_prompt_version=1, benchmark=Benchmark.SP500)
     assert service.get_session(db_session, sess.id).id == sess.id
     with pytest.raises(SessionNotFoundError):
         service.get_session(db_session, uuid.uuid4())
@@ -75,7 +81,7 @@ def test_get_and_not_found(db_session: Session) -> None:
 def test_record_trade_derives_notional(db_session: Session) -> None:
     portfolio = _portfolio(db_session)
     sess = service.create_session(
-        db_session, portfolio_id=portfolio.id, strategy_key="s", rebalance_prompt_version=1)
+        db_session, portfolio_id=portfolio.id, strategy_key="s", rebalance_prompt_version=1, benchmark=Benchmark.SP500)
     trade = service.record_trade(
         db_session,
         session_id=sess.id,
@@ -95,7 +101,7 @@ def test_record_trade_derives_notional(db_session: Session) -> None:
 def test_record_trade_charges_transaction_fee(db_session: Session) -> None:
     portfolio = _portfolio(db_session)
     sess = service.create_session(
-        db_session, portfolio_id=portfolio.id, strategy_key="s", rebalance_prompt_version=1)
+        db_session, portfolio_id=portfolio.id, strategy_key="s", rebalance_prompt_version=1, benchmark=Benchmark.SP500)
     # A fresh session starts fee-free.
     assert sess.total_fees == pytest.approx(0.0)
     for _ in range(2):
@@ -116,7 +122,7 @@ def test_record_trade_charges_transaction_fee(db_session: Session) -> None:
 def test_record_run(db_session: Session) -> None:
     portfolio = _portfolio(db_session)
     sess = service.create_session(
-        db_session, portfolio_id=portfolio.id, strategy_key="s", rebalance_prompt_version=1)
+        db_session, portfolio_id=portfolio.id, strategy_key="s", rebalance_prompt_version=1, benchmark=Benchmark.SP500)
     run = service.record_session_run(
         db_session,
         session_id=sess.id,
@@ -139,7 +145,7 @@ def test_record_run(db_session: Session) -> None:
 def test_record_closed_position_computes_pnl(db_session: Session) -> None:
     portfolio = _portfolio(db_session)
     sess = service.create_session(
-        db_session, portfolio_id=portfolio.id, strategy_key="s", rebalance_prompt_version=1)
+        db_session, portfolio_id=portfolio.id, strategy_key="s", rebalance_prompt_version=1, benchmark=Benchmark.SP500)
     entry = datetime(2026, 1, 1, tzinfo=UTC)
     exit_ = entry + timedelta(days=10)
     pos = service.record_closed_position(
@@ -161,7 +167,7 @@ def test_record_closed_position_computes_pnl(db_session: Session) -> None:
 def test_update_last_run_and_status(db_session: Session) -> None:
     portfolio = _portfolio(db_session)
     sess = service.create_session(
-        db_session, portfolio_id=portfolio.id, strategy_key="s", rebalance_prompt_version=1)
+        db_session, portfolio_id=portfolio.id, strategy_key="s", rebalance_prompt_version=1, benchmark=Benchmark.SP500)
     updated = service.update_session_last_run(
         db_session, sess.id, trades_delta=3, pnl_delta=42.5
     )
@@ -178,9 +184,9 @@ def test_update_last_run_and_status(db_session: Session) -> None:
 def test_list_sessions_filter_by_status(db_session: Session) -> None:
     portfolio = _portfolio(db_session)
     active = service.create_session(
-        db_session, portfolio_id=portfolio.id, strategy_key="a", rebalance_prompt_version=1)
+        db_session, portfolio_id=portfolio.id, strategy_key="a", rebalance_prompt_version=1, benchmark=Benchmark.SP500)
     stopped = service.create_session(
-        db_session, portfolio_id=portfolio.id, strategy_key="b", rebalance_prompt_version=1)
+        db_session, portfolio_id=portfolio.id, strategy_key="b", rebalance_prompt_version=1, benchmark=Benchmark.SP500)
     service.update_session_status(db_session, stopped.id, SessionStatus.STOPPED)
 
     active_ids = [
@@ -198,7 +204,7 @@ def test_list_sessions_filter_by_status(db_session: Session) -> None:
 def _stopped_session(db_session: Session, strategy_key: str = "s") -> object:
     portfolio = _portfolio(db_session)
     sess = service.create_session(
-        db_session, portfolio_id=portfolio.id, strategy_key=strategy_key, rebalance_prompt_version=1)
+        db_session, portfolio_id=portfolio.id, strategy_key=strategy_key, rebalance_prompt_version=1, benchmark=Benchmark.SP500)
     return service.update_session_status(
         db_session, sess.id, SessionStatus.STOPPED
     )
@@ -215,7 +221,7 @@ def test_archive_stopped_session_sets_timestamp(db_session: Session) -> None:
 def test_archive_rejects_active_or_paused(db_session: Session) -> None:
     portfolio = _portfolio(db_session)
     active = service.create_session(
-        db_session, portfolio_id=portfolio.id, strategy_key="a", rebalance_prompt_version=1)
+        db_session, portfolio_id=portfolio.id, strategy_key="a", rebalance_prompt_version=1, benchmark=Benchmark.SP500)
     with pytest.raises(SessionNotArchivableError):
         service.archive_session(db_session, active.id)
 
@@ -263,7 +269,7 @@ def test_archive_unknown_session_raises(db_session: Session) -> None:
 def _ledger_session(db_session: Session) -> object:
     portfolio = _portfolio(db_session)
     return service.create_session(
-        db_session, portfolio_id=portfolio.id, strategy_key="ledger", rebalance_prompt_version=1)
+        db_session, portfolio_id=portfolio.id, strategy_key="ledger", rebalance_prompt_version=1, benchmark=Benchmark.SP500)
 
 
 def test_apply_fill_to_ledger_opens_and_averages_up(db_session: Session) -> None:
@@ -337,9 +343,9 @@ def test_apply_fill_to_ledger_partial_sell_then_full_exit(db_session: Session) -
 def test_list_open_positions_scoped_to_session(db_session: Session) -> None:
     portfolio = _portfolio(db_session)
     a = service.create_session(
-        db_session, portfolio_id=portfolio.id, strategy_key="a", rebalance_prompt_version=1)
+        db_session, portfolio_id=portfolio.id, strategy_key="a", rebalance_prompt_version=1, benchmark=Benchmark.SP500)
     b = service.create_session(
-        db_session, portfolio_id=portfolio.id, strategy_key="b", rebalance_prompt_version=1)
+        db_session, portfolio_id=portfolio.id, strategy_key="b", rebalance_prompt_version=1, benchmark=Benchmark.SP500)
     service.apply_fill_to_ledger(
         db_session, session_id=a.id, ticker="AAPL", side=OrderSide.BUY,
         shares=5, price=50.0,
@@ -632,7 +638,7 @@ def _ai_session(db_session: Session) -> object:
         db_session,
         portfolio_id=portfolio.id,
         strategy_key="ai_buy_hold",
-        allocated_capital=100_000.0, rebalance_prompt_version=1)
+        allocated_capital=100_000.0, rebalance_prompt_version=1, benchmark=Benchmark.SP500)
 
 
 def _buy(db_session: Session, session_id: object, ticker: str, qty: float, price: float) -> None:
@@ -937,3 +943,133 @@ def test_session_kpis_unknown_session_raises(db_session: Session) -> None:
         service.session_kpis(
             db_session, session_id=uuid.uuid4(), broker=_QuoteBroker({})
         )
+
+
+def test_portfolio_name_resolves_from_linked_portfolio(
+    db_session: Session,
+) -> None:
+    portfolio = _portfolio(db_session)
+    sess = service.create_session(
+        db_session,
+        portfolio_id=portfolio.id,
+        strategy_key="ai_buy_hold",
+        rebalance_prompt_version=1,
+        benchmark=Benchmark.SP500,
+    )
+    assert service.get_session(db_session, sess.id).portfolio_name == "P"
+
+
+def test_portfolio_name_is_none_when_portfolio_unresolved() -> None:
+    # A session with no linked portfolio (transient) surfaces None rather than
+    # raising, so callers can fall back to the strategy label.
+    assert PaperTradingSession().portfolio_name is None
+
+
+# --------------------------------------------------------------------------- #
+# Benchmark: change selection, value-history overlay, KPI comparison
+# --------------------------------------------------------------------------- #
+
+
+def _add_benchmark_price(
+    db_session: Session, benchmark: str, day: date, close: float
+) -> None:
+    db_session.add(
+        BenchmarkPrice(benchmark=benchmark, price_date=day, close=close)
+    )
+    db_session.commit()
+
+
+def test_change_session_benchmark_persists(db_session: Session) -> None:
+    sess = _ai_session(db_session)
+    updated = service.change_session_benchmark(
+        db_session, session_id=sess.id, benchmark="DJIA"
+    )
+    assert updated.benchmark == "DJIA"
+    assert service.get_session(db_session, sess.id).benchmark == "DJIA"
+
+
+def test_change_session_benchmark_unknown_session_raises(
+    db_session: Session,
+) -> None:
+    import uuid
+
+    with pytest.raises(SessionNotFoundError):
+        service.change_session_benchmark(
+            db_session, session_id=uuid.uuid4(), benchmark="DJIA"
+        )
+
+
+def test_change_session_benchmark_invalid_id_raises_and_keeps_current(
+    db_session: Session,
+) -> None:
+    sess = _ai_session(db_session)
+    with pytest.raises(InvalidBenchmarkError):
+        service.change_session_benchmark(
+            db_session, session_id=sess.id, benchmark="NOPE"
+        )
+    # The invalid attempt leaves the original benchmark untouched.
+    assert service.get_session(db_session, sess.id).benchmark == Benchmark.SP500.value
+
+
+def test_value_history_attaches_rebased_benchmark_values(
+    db_session: Session,
+) -> None:
+    sess = _ai_session(db_session)
+    broker = _QuoteBroker({})
+    start = date(2026, 1, 5)
+    later = date(2026, 1, 6)
+    for day in (start, later):
+        service.record_value_snapshot(
+            db_session, session_id=sess.id, as_of=day, broker=broker
+        )
+    _add_benchmark_price(db_session, "SP500", start, 200.0)
+    _add_benchmark_price(db_session, "SP500", later, 220.0)
+
+    points = service.list_value_history(db_session, session_id=sess.id)
+    # First snapshot rebases to allocated capital; +10% on the second day.
+    assert points[0].benchmark_value == pytest.approx(100_000.0)
+    assert points[1].benchmark_value == pytest.approx(110_000.0)
+
+
+def test_value_history_benchmark_value_null_without_prices(
+    db_session: Session,
+) -> None:
+    sess = _ai_session(db_session)
+    broker = _QuoteBroker({})
+    service.record_value_snapshot(
+        db_session, session_id=sess.id, as_of=date(2026, 1, 5), broker=broker
+    )
+    points = service.list_value_history(db_session, session_id=sess.id)
+    # No stored benchmark prices -> the overlay value is null, not an error.
+    assert points[0].benchmark_value is None
+
+
+def test_session_kpis_benchmark_return_and_excess(db_session: Session) -> None:
+    sess = _ai_session(db_session)
+    _buy(db_session, sess.id, "AAPL", 10, 100.0)  # +20/share -> +200 unrealised
+    start = date(2026, 1, 5)
+    service.record_value_snapshot(
+        db_session, session_id=sess.id, as_of=start, broker=_QuoteBroker({"AAPL": 100.0})
+    )
+    # Benchmark up 10% from the session start close to the latest close.
+    _add_benchmark_price(db_session, "SP500", start, 100.0)
+    _add_benchmark_price(db_session, "SP500", start + timedelta(days=30), 110.0)
+
+    kpis = service.session_kpis(
+        db_session, session_id=sess.id, broker=_QuoteBroker({"AAPL": 120.0})
+    )
+    assert kpis.benchmark == Benchmark.SP500.value
+    assert kpis.benchmark_return_pct == pytest.approx(0.10)
+    assert kpis.excess_return_pct == pytest.approx(kpis.total_return_pct - 0.10)
+
+
+def test_session_kpis_benchmark_none_without_prices(db_session: Session) -> None:
+    sess = _ai_session(db_session)
+    _buy(db_session, sess.id, "AAPL", 10, 100.0)
+    kpis = service.session_kpis(
+        db_session, session_id=sess.id, broker=_QuoteBroker({"AAPL": 120.0})
+    )
+    # No stored benchmark prices -> comparison figures are withheld.
+    assert kpis.benchmark == Benchmark.SP500.value
+    assert kpis.benchmark_return_pct is None
+    assert kpis.excess_return_pct is None

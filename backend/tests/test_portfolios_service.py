@@ -8,7 +8,7 @@ import pytest
 from sqlalchemy.orm import Session
 
 from cadence.paper_trading import service as paper_service
-from cadence.paper_trading.constants import SessionStatus
+from cadence.paper_trading.constants import Benchmark, SessionStatus
 from cadence.portfolios import service
 from cadence.portfolios.constants import PortfolioSource, RiskProfile
 from cadence.portfolios.errors import (
@@ -122,7 +122,7 @@ def _session(
     status: SessionStatus | None = None,
 ) -> None:
     sess = paper_service.create_session(
-        db_session, portfolio_id=portfolio_id, strategy_key=strategy_key, rebalance_prompt_version=1)
+        db_session, portfolio_id=portfolio_id, strategy_key=strategy_key, rebalance_prompt_version=1, benchmark=Benchmark.SP500)
     if status is not None:
         paper_service.update_session_status(db_session, sess.id, status)
 

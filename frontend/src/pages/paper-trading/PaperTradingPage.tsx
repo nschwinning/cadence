@@ -45,13 +45,16 @@ function SessionRow({ session }: { session: PaperTradingSession }) {
           to={`/paper-trading/${session.id}`}
           className="text-emerald-700 hover:text-emerald-800 hover:underline focus:outline-none focus:ring-1 focus:ring-emerald-500"
         >
-          {session.strategy_key}
+          {session.portfolio_name || session.strategy_key}
         </Link>
         {isArchived && (
           <span className="ml-2 inline-flex items-center rounded-full bg-slate-100 px-2 py-0.5 text-xs font-medium text-slate-500">
             Archived
           </span>
         )}
+        <span className="mt-0.5 block text-xs font-normal text-slate-500">
+          {session.strategy_key}
+        </span>
       </td>
       <td className="px-4 py-3">
         <StatusBadge status={session.status} />
@@ -157,7 +160,7 @@ export function PaperTradingPage() {
             <table className="w-full min-w-[820px] border-collapse text-sm">
               <thead>
                 <tr className="border-b border-slate-200 bg-slate-50 text-left text-xs font-semibold uppercase tracking-wide text-slate-500">
-                  <th className="px-4 py-3">Strategy</th>
+                  <th className="px-4 py-3">Portfolio</th>
                   <th className="px-4 py-3">Status</th>
                   <th className="px-4 py-3">Schedule</th>
                   <th className="px-4 py-3 text-right">Capital</th>

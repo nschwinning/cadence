@@ -1,24 +1,31 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { renderHook } from '@testing-library/react';
+import { renderHook, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { createElement, type ReactNode } from 'react';
 import { apiClient } from './client';
 import {
   isTerminalOrderStatus,
   paperTradingKeys,
+  useChangeSessionBenchmark,
   useSessionOrderSync,
 } from './paperTrading';
-import type { PaperTrade, PaperTradeReconcileResult } from '../types/api';
+import type {
+  PaperTrade,
+  PaperTradeReconcileResult,
+  PaperTradingSession,
+} from '../types/api';
 
 // Mock the shared axios client rather than the network.
 vi.mock('./client', () => ({
   apiClient: {
     get: vi.fn(),
     post: vi.fn(),
+    put: vi.fn(),
   },
 }));
 
 const mockedPost = vi.mocked(apiClient.post);
+const mockedPut = vi.mocked(apiClient.put);
 
 function makeTrade(orderStatus: string): PaperTrade {
   return {
@@ -71,6 +78,70 @@ describe('paperTradingKeys factory', () => {
       'sess-1',
       'kpis',
     ]);
+  });
+
+  it('builds the benchmarks key', () => {
+    expect(paperTradingKeys.benchmarks()).toEqual([
+      'paper-trading',
+      'benchmarks',
+    ]);
+  });
+});
+
+describe('useChangeSessionBenchmark', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  function makeSession(benchmark: string): PaperTradingSession {
+    return {
+      id: 'sess-1',
+      portfolio_id: 'p1',
+      portfolio_name: 'P',
+      strategy_key: 'ai-momentum',
+      status: 'active',
+      allocated_capital: 10000,
+      max_allocation_pct: 1,
+      created_at: '2026-01-01T00:00:00Z',
+      updated_at: '2026-01-01T00:00:00Z',
+      last_run_at: null,
+      total_trades: 0,
+      total_pnl: 0,
+      session_metadata: null,
+      schedule_mode: 'manual',
+      archived_at: null,
+      rebalance_prompt_version: 1,
+      benchmark,
+    };
+  }
+
+  it('PUTs to the benchmark endpoint and invalidates session/kpis/value-history keys', async () => {
+    mockedPut.mockResolvedValue({ data: makeSession('DJIA') });
+
+    const queryClient = new QueryClient({
+      defaultOptions: { mutations: { retry: false } },
+    });
+    const invalidate = vi.spyOn(queryClient, 'invalidateQueries');
+
+    const { result } = renderHook(() => useChangeSessionBenchmark('sess-1'), {
+      wrapper: wrapper(queryClient),
+    });
+
+    result.current.mutate('DJIA');
+
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+
+    expect(mockedPut).toHaveBeenCalledWith(
+      '/api/v1/paper-trading/sessions/sess-1/benchmark',
+      { benchmark: 'DJIA' },
+    );
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: paperTradingKeys.all });
+    expect(invalidate).toHaveBeenCalledWith({
+      queryKey: paperTradingKeys.kpis('sess-1'),
+    });
+    expect(invalidate).toHaveBeenCalledWith({
+      queryKey: paperTradingKeys.valueHistory('sess-1'),
+    });
   });
 });
 

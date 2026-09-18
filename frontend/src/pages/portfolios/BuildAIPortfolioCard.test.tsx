@@ -33,6 +33,21 @@ function makeEvent(status: AIEventStatus): AIPortfolioEvent {
   };
 }
 
+const BENCHMARKS = [
+  { id: 'SP500', name: 'S&P 500' },
+  { id: 'DJIA', name: 'Dow Jones Industrial Average' },
+];
+
+/** Route GETs: the benchmark catalog for its endpoint, the build event otherwise. */
+function routeGet(status: () => AIEventStatus) {
+  return (url: string) => {
+    if (url.endsWith('/paper-trading/benchmarks')) {
+      return Promise.resolve({ data: BENCHMARKS });
+    }
+    return Promise.resolve({ data: makeEvent(status()) });
+  };
+}
+
 function renderWithClient(ui: ReactNode) {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
@@ -64,7 +79,7 @@ describe('BuildAIPortfolioCard', () => {
   it('starts a build with the default capital, risk profile, asset scope, and rebalancing, and updates to succeeded without manual refresh', async () => {
     let status: AIEventStatus = 'running';
     mockedPost.mockResolvedValue({ data: { event_id: 'evt-1', status: 'queued' } });
-    mockedGet.mockImplementation(() => Promise.resolve({ data: makeEvent(status) }));
+    mockedGet.mockImplementation(routeGet(() => status));
     const user = userEvent.setup();
 
     const { queryClient } = renderWithClient(<BuildAIPortfolioCard />);
@@ -82,6 +97,7 @@ describe('BuildAIPortfolioCard', () => {
       risk_profile: 'balanced',
       asset_types: 'both',
       daily_rebalancing: false,
+      benchmark: 'SP500',
     });
 
     // Backend advances the event to terminal; force the poll's refetch (jsdom
@@ -97,7 +113,7 @@ describe('BuildAIPortfolioCard', () => {
 
   it('enrolls in daily rebalancing when the toggle is checked', async () => {
     mockedPost.mockResolvedValue({ data: { event_id: 'evt-1', status: 'queued' } });
-    mockedGet.mockResolvedValue({ data: makeEvent('running') });
+    mockedGet.mockImplementation(routeGet(() => 'running'));
     const user = userEvent.setup();
 
     renderWithClient(<BuildAIPortfolioCard />);
@@ -115,7 +131,7 @@ describe('BuildAIPortfolioCard', () => {
 
   it('sends the selected asset scope with the build request', async () => {
     mockedPost.mockResolvedValue({ data: { event_id: 'evt-1', status: 'queued' } });
-    mockedGet.mockResolvedValue({ data: makeEvent('running') });
+    mockedGet.mockImplementation(routeGet(() => 'running'));
     const user = userEvent.setup();
 
     renderWithClient(<BuildAIPortfolioCard />);
@@ -126,6 +142,31 @@ describe('BuildAIPortfolioCard', () => {
     expect(mockedPost).toHaveBeenCalledWith(
       '/api/v1/ai-portfolio/build',
       expect.objectContaining({ asset_types: 'crypto' }),
+    );
+  });
+
+  it('defaults the benchmark to S&P 500 and sends the selected benchmark id', async () => {
+    mockedPost.mockResolvedValue({ data: { event_id: 'evt-1', status: 'queued' } });
+    mockedGet.mockImplementation(routeGet(() => 'running'));
+    const user = userEvent.setup();
+
+    renderWithClient(<BuildAIPortfolioCard />);
+
+    // The benchmark selector defaults to S&P 500 (its SP500 catalog id).
+    const select = await screen.findByLabelText('Benchmark');
+    expect(select).toHaveValue('SP500');
+
+    // Wait for the fetched catalog to populate its options, then switch to
+    // another catalog benchmark — it is sent with the build request.
+    await screen.findByRole('option', {
+      name: 'Dow Jones Industrial Average',
+    });
+    await user.selectOptions(select, 'DJIA');
+    await user.click(screen.getByRole('button', { name: 'Build portfolio' }));
+
+    expect(mockedPost).toHaveBeenCalledWith(
+      '/api/v1/ai-portfolio/build',
+      expect.objectContaining({ benchmark: 'DJIA' }),
     );
   });
 });

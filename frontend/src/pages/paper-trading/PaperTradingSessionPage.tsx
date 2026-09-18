@@ -7,6 +7,8 @@ import {
   useSessionPositions,
   useSessionOrderSync,
   useSessionKpis,
+  useBenchmarks,
+  useChangeSessionBenchmark,
 } from '../../api/paperTrading';
 import { useSessionEvents } from '../../api/aiPortfolio';
 import {
@@ -419,9 +421,12 @@ function SessionHeader({
     <header className="rounded-lg border border-slate-200 bg-white p-6 shadow-sm">
       <div className="flex flex-wrap items-start justify-between gap-4">
         <div className="flex flex-wrap items-center gap-3">
-          <h1 className="text-2xl font-bold tracking-tight text-slate-900">
-            {session.strategy_key}
-          </h1>
+          <div>
+            <h1 className="text-2xl font-bold tracking-tight text-slate-900">
+              {session.portfolio_name || session.strategy_key}
+            </h1>
+            <p className="text-sm text-slate-500">{session.strategy_key}</p>
+          </div>
           <StatusBadge status={session.status} />
           {session.archived_at != null && (
             <span className="inline-flex items-center rounded-full bg-slate-100 px-2 py-0.5 text-xs font-medium text-slate-500">
@@ -468,6 +473,9 @@ function SessionHeader({
             v{session.rebalance_prompt_version}
           </dd>
         </div>
+        <div>
+          <BenchmarkSwitcher sessionId={sessionId} current={session.benchmark} />
+        </div>
       </dl>
       {feedback}
     </header>
@@ -479,9 +487,15 @@ function PnlValue({ value }: { value: number }) {
   return <span className={pnlClass(value)}>{formatCurrency(value)}</span>;
 }
 
-/** Live performance KPI tiles: value, realised/unrealised P&L, fees, total return, Sharpe. */
+/**
+ * Live performance KPI tiles: value, realised/unrealised P&L, fees, total return,
+ * Sharpe, plus the benchmark return and excess return versus the session's
+ * benchmark. The benchmark tiles read "Not yet available" until enough stored
+ * prices exist to compute them.
+ */
 function KpiRow({ sessionId }: { sessionId: string }) {
   const { data, isPending, isError } = useSessionKpis(sessionId);
+  const { data: benchmarks } = useBenchmarks();
 
   if (isPending || isError || !data) {
     return (
@@ -498,8 +512,29 @@ function KpiRow({ sessionId }: { sessionId: string }) {
   const sharpe =
     data.sharpe_ratio === null ? 'Not yet available' : data.sharpe_ratio.toFixed(2);
 
+  const catalog = Array.isArray(benchmarks) ? benchmarks : [];
+  const benchmarkName =
+    catalog.find((b) => b.id === data.benchmark)?.name ?? data.benchmark;
+
+  const benchmarkReturn =
+    data.benchmark_return_pct === null ? (
+      'Not yet available'
+    ) : (
+      <span className={pnlClass(data.benchmark_return_pct)}>
+        {formatPercent(data.benchmark_return_pct)}
+      </span>
+    );
+  const excessReturn =
+    data.excess_return_pct === null ? (
+      'Not yet available'
+    ) : (
+      <span className={pnlClass(data.excess_return_pct)}>
+        {formatPercent(data.excess_return_pct)}
+      </span>
+    );
+
   return (
-    <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-6">
+    <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
       <StatTile label="Current value" value={formatCurrency(data.current_value)} />
       <StatTile label="Realised P&L" value={<PnlValue value={data.realised_pnl} />} />
       <StatTile
@@ -529,6 +564,67 @@ function KpiRow({ sessionId }: { sessionId: string }) {
             : 'Annualised, from daily NAV'
         }
       />
+      <StatTile
+        label="Benchmark return"
+        value={benchmarkReturn}
+        hint={`${benchmarkName}, buy & hold`}
+      />
+      <StatTile
+        label="Excess return"
+        value={excessReturn}
+        hint={`vs ${benchmarkName}`}
+      />
+    </div>
+  );
+}
+
+/**
+ * A dropdown to switch the session's benchmark. Preselects the current benchmark,
+ * lists the fixed catalog, shows in-flight/error state, and refreshes the session's
+ * benchmark figures on success (the mutation invalidates the session, KPIs, and
+ * value-history queries).
+ */
+function BenchmarkSwitcher({
+  sessionId,
+  current,
+}: {
+  sessionId: string;
+  current: string;
+}) {
+  const { data: benchmarks } = useBenchmarks();
+  const mutation = useChangeSessionBenchmark(sessionId);
+  const catalog = Array.isArray(benchmarks) ? benchmarks : null;
+  return (
+    <div>
+      <label
+        htmlFor="benchmark-select"
+        className="text-xs font-semibold uppercase tracking-wide text-slate-500"
+      >
+        Benchmark
+      </label>
+      <select
+        id="benchmark-select"
+        className="mt-1 block w-full rounded border border-slate-300 bg-white px-2 py-1 text-sm text-slate-900 disabled:opacity-60"
+        value={current}
+        disabled={mutation.isPending || !catalog}
+        onChange={(e) => mutation.mutate(e.target.value)}
+      >
+        {(catalog ?? [{ id: current, name: current }]).map((b) => (
+          <option key={b.id} value={b.id}>
+            {b.name}
+          </option>
+        ))}
+      </select>
+      {mutation.isPending && (
+        <p role="status" aria-live="polite" className="mt-1 text-xs text-slate-500">
+          Updating…
+        </p>
+      )}
+      {mutation.isError && (
+        <p role="alert" className="mt-1 text-xs text-red-700">
+          Could not change the benchmark.
+        </p>
+      )}
     </div>
   );
 }

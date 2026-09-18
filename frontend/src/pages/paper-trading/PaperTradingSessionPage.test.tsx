@@ -16,15 +16,17 @@ import type {
 } from '../../types/api';
 
 vi.mock('../../api/client', () => ({
-  apiClient: { get: vi.fn(), post: vi.fn() },
+  apiClient: { get: vi.fn(), post: vi.fn(), put: vi.fn() },
 }));
 
 const mockedGet = vi.mocked(apiClient.get);
 const mockedPost = vi.mocked(apiClient.post);
+const mockedPut = vi.mocked(apiClient.put);
 
 const session: PaperTradingSession = {
   id: 's1',
   portfolio_id: 'p1',
+  portfolio_name: 'Aggressive Jolly Wozniak',
   strategy_key: 'ai-momentum',
   status: 'active',
   allocated_capital: 100000,
@@ -38,6 +40,7 @@ const session: PaperTradingSession = {
   schedule_mode: 'DAILY_REBALANCING',
   archived_at: null,
   rebalance_prompt_version: 1,
+  benchmark: 'SP500',
 };
 
 function makeEvent(
@@ -90,6 +93,9 @@ const KPIS: PaperTradingSessionKpis = {
   total_return: 2500,
   total_return_pct: 0.025,
   sharpe_ratio: null,
+  benchmark: 'SP500',
+  benchmark_return_pct: 0.015,
+  excess_return_pct: 0.01,
 };
 
 /** Route the mocked GETs by URL to the right fixture. */
@@ -103,6 +109,14 @@ function installGet(
     }
     if (url.endsWith('/kpis')) {
       return Promise.resolve({ data: kpis });
+    }
+    if (url.endsWith('/paper-trading/benchmarks')) {
+      return Promise.resolve({
+        data: [
+          { id: 'SP500', name: 'S&P 500' },
+          { id: 'DJIA', name: 'Dow Jones Industrial Average' },
+        ],
+      });
     }
     if (url.includes('/ai-portfolio/sessions/') && url.endsWith('/events')) {
       return Promise.resolve({ data: [] });
@@ -148,8 +162,10 @@ describe('PaperTradingSessionPage', () => {
     renderPage(<PaperTradingSessionPage />);
 
     expect(
-      await screen.findByRole('heading', { name: 'ai-momentum' }),
+      await screen.findByRole('heading', { name: 'Aggressive Jolly Wozniak' }),
     ).toBeInTheDocument();
+    // The strategy is shown as secondary context, not the heading.
+    expect(screen.getByText('ai-momentum')).toBeInTheDocument();
     // The rebalance + close actions sit in the header's upper-right corner.
     expect(
       screen.getByRole('button', { name: 'Rebalance now' }),
@@ -163,6 +179,31 @@ describe('PaperTradingSessionPage', () => {
       screen.getByRole('heading', { name: 'Closed positions' }),
     ).toBeInTheDocument();
     expect(screen.getByRole('heading', { name: 'Runs' })).toBeInTheDocument();
+  });
+
+  it('falls back to the strategy label when the portfolio name is missing', async () => {
+    const unnamed: PaperTradingSession = { ...session, portfolio_name: null };
+    mockedGet.mockImplementation((url: string) => {
+      if (url.endsWith('/paper-trading/sessions')) {
+        return Promise.resolve({ data: { items: [unnamed], total: 1 } });
+      }
+      if (url.endsWith('/kpis')) {
+        return Promise.resolve({ data: KPIS });
+      }
+      if (url.includes('/ai-portfolio/sessions/') && url.endsWith('/events')) {
+        return Promise.resolve({ data: [] });
+      }
+      if (url.includes('/build/status/')) {
+        return Promise.resolve({ data: makeEvent('running') });
+      }
+      return Promise.resolve({ data: { items: [], total: 0 } });
+    });
+
+    renderPage(<PaperTradingSessionPage />);
+
+    expect(
+      await screen.findByRole('heading', { name: 'ai-momentum' }),
+    ).toBeInTheDocument();
   });
 
   it('renders the KPI tiles, colours P&L by sign, and shows the Sharpe fallback', async () => {
@@ -197,6 +238,61 @@ describe('PaperTradingSessionPage', () => {
     expect(screen.queryByText('Not yet available')).not.toBeInTheDocument();
   });
 
+  it('renders the benchmark-return and excess-return tiles with their values', async () => {
+    // Sharpe present so the only "Not yet available" copy would come from the
+    // benchmark tiles — of which there is none when both figures are set.
+    installGet(() => 'running', { ...KPIS, sharpe_ratio: 1.234 });
+
+    renderPage(<PaperTradingSessionPage />);
+
+    // Both benchmark tiles carry the session's benchmark name in their hints.
+    expect(await screen.findByText('Benchmark return')).toBeInTheDocument();
+    expect(screen.getByText('Excess return')).toBeInTheDocument();
+    // benchmark_return_pct 0.015 -> 1.50%; excess_return_pct 0.01 -> 1.00%.
+    expect(screen.getByText('1.50%')).toBeInTheDocument();
+    expect(screen.getByText('1.00%')).toBeInTheDocument();
+    // The catalog display name resolves the SP500 id in the tile hints.
+    expect(screen.getByText('S&P 500, buy & hold')).toBeInTheDocument();
+    expect(screen.getByText('vs S&P 500')).toBeInTheDocument();
+    // With every figure available, no tile shows the unavailable fallback.
+    expect(screen.queryByText('Not yet available')).not.toBeInTheDocument();
+  });
+
+  it('shows the unavailable state on the benchmark tiles until prices exist', async () => {
+    installGet(() => 'running', {
+      ...KPIS,
+      sharpe_ratio: 1.234,
+      benchmark_return_pct: null,
+      excess_return_pct: null,
+    });
+
+    renderPage(<PaperTradingSessionPage />);
+
+    await screen.findByText('Benchmark return');
+    // Both the benchmark-return and excess-return tiles fall back to the copy.
+    expect(screen.getAllByText('Not yet available')).toHaveLength(2);
+  });
+
+  it('switches the benchmark and reflects the new selection', async () => {
+    installGet(() => 'running');
+    mockedPut.mockResolvedValue({ data: { ...session, benchmark: 'DJIA' } });
+    const user = userEvent.setup();
+
+    renderPage(<PaperTradingSessionPage />);
+
+    // The switcher preselects the session's current benchmark (SP500).
+    const select = await screen.findByLabelText('Benchmark');
+    expect(select).toHaveValue('SP500');
+
+    // Choosing another catalog benchmark PUTs the change to the endpoint.
+    await user.selectOptions(select, 'DJIA');
+
+    expect(mockedPut).toHaveBeenCalledWith(
+      '/api/v1/paper-trading/sessions/s1/benchmark',
+      { benchmark: 'DJIA' },
+    );
+  });
+
   it('triggers a rebalance and reflects terminal feedback without manual refresh', async () => {
     let status: AIEventStatus = 'running';
     installGet(() => status);
@@ -206,7 +302,7 @@ describe('PaperTradingSessionPage', () => {
     const user = userEvent.setup();
 
     const { queryClient } = renderPage(<PaperTradingSessionPage />);
-    await screen.findByRole('heading', { name: 'ai-momentum' });
+    await screen.findByRole('heading', { name: 'Aggressive Jolly Wozniak' });
 
     await user.click(screen.getByRole('button', { name: 'Rebalance now' }));
 
@@ -240,7 +336,7 @@ describe('PaperTradingSessionPage', () => {
     installGet(() => 'running');
 
     renderPage(<PaperTradingSessionPage />);
-    await screen.findByRole('heading', { name: 'ai-momentum' });
+    await screen.findByRole('heading', { name: 'Aggressive Jolly Wozniak' });
 
     expect(screen.getByText('Prompt version')).toBeInTheDocument();
     expect(screen.getByText('v1')).toBeInTheDocument();
@@ -250,7 +346,7 @@ describe('PaperTradingSessionPage', () => {
     installGet(() => 'running');
 
     renderPage(<PaperTradingSessionPage />);
-    await screen.findByRole('heading', { name: 'ai-momentum' });
+    await screen.findByRole('heading', { name: 'Aggressive Jolly Wozniak' });
 
     expect(
       screen.queryByRole('button', { name: 'Archive' }),
@@ -277,7 +373,7 @@ describe('PaperTradingSessionPage', () => {
     const user = userEvent.setup();
 
     renderPage(<PaperTradingSessionPage />);
-    await screen.findByRole('heading', { name: 'ai-momentum' });
+    await screen.findByRole('heading', { name: 'Aggressive Jolly Wozniak' });
 
     await user.click(screen.getByRole('button', { name: 'Archive' }));
 
@@ -307,7 +403,7 @@ describe('PaperTradingSessionPage', () => {
     });
 
     renderPage(<PaperTradingSessionPage />);
-    await screen.findByRole('heading', { name: 'ai-momentum' });
+    await screen.findByRole('heading', { name: 'Aggressive Jolly Wozniak' });
 
     expect(
       screen.getByRole('button', { name: 'Unarchive' }),
@@ -327,7 +423,7 @@ describe('PaperTradingSessionPage', () => {
     });
 
     renderPage(<PaperTradingSessionPage />);
-    await screen.findByRole('heading', { name: 'ai-momentum' });
+    await screen.findByRole('heading', { name: 'Aggressive Jolly Wozniak' });
 
     expect(mockedPost).toHaveBeenCalledWith(
       '/api/v1/paper-trading/sessions/s1/reconcile',

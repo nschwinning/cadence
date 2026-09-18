@@ -125,6 +125,16 @@ def list_portfolios(
     return list(session.execute(stmt.limit(safe_limit)).scalars())
 
 
+def list_portfolio_names(session: Session) -> set[str]:
+    """Return the names of all portfolios (including legacy and archived).
+
+    Used when generating a distinct name for a new portfolio so the generator can
+    avoid collisions with any existing name.
+    """
+    stmt = select(Portfolio.name)
+    return set(session.execute(stmt).scalars())
+
+
 def count_portfolios(
     session: Session,
     *,

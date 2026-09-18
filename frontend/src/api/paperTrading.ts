@@ -2,6 +2,7 @@ import { useEffect } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { apiClient } from './client';
 import type {
+  BenchmarkCatalogEntry,
   ClosedPositionListResponse,
   PaperTradeListResponse,
   PaperTradeReconcileResult,
@@ -51,6 +52,7 @@ export const paperTradingKeys = {
     ['paper-trading', 'session', sessionId, 'kpis'] as const,
   orderSync: (sessionId: string) =>
     ['paper-trading', 'session', sessionId, 'order-sync'] as const,
+  benchmarks: () => ['paper-trading', 'benchmarks'] as const,
 };
 
 /** Fetch paper-trading sessions (most recently updated first) plus the total. */
@@ -158,6 +160,26 @@ export async function getSessionKpis(
   return data;
 }
 
+/** Fetch the fixed benchmark catalog (`[{id, name}]`). */
+export async function listBenchmarks(): Promise<BenchmarkCatalogEntry[]> {
+  const { data } = await apiClient.get<BenchmarkCatalogEntry[]>(
+    '/api/v1/paper-trading/benchmarks',
+  );
+  return data;
+}
+
+/** Switch a session's benchmark; returns the updated session. */
+export async function changeSessionBenchmark(
+  sessionId: string,
+  benchmark: string,
+): Promise<PaperTradingSession> {
+  const { data } = await apiClient.put<PaperTradingSession>(
+    `/api/v1/paper-trading/sessions/${encodeURIComponent(sessionId)}/benchmark`,
+    { benchmark },
+  );
+  return data;
+}
+
 /** React Query hook listing paper-trading sessions. */
 export function useSessions(
   params: SessionsListParams = DEFAULT_SESSIONS_PARAMS,
@@ -210,6 +232,36 @@ export function useSessionKpis(sessionId: string) {
     queryKey: paperTradingKeys.kpis(sessionId),
     queryFn: () => getSessionKpis(sessionId),
     enabled: sessionId.length > 0,
+  });
+}
+
+/** React Query hook fetching the fixed benchmark catalog. */
+export function useBenchmarks() {
+  return useQuery<BenchmarkCatalogEntry[]>({
+    queryKey: paperTradingKeys.benchmarks(),
+    queryFn: () => listBenchmarks(),
+  });
+}
+
+/**
+ * Mutation switching a session's benchmark. On success it invalidates the
+ * session's own query, its KPIs, and its value-history so the benchmark figures
+ * (return, excess return, chart overlay) refresh against the new series.
+ */
+export function useChangeSessionBenchmark(sessionId: string) {
+  const queryClient = useQueryClient();
+  return useMutation<PaperTradingSession, unknown, string>({
+    mutationFn: (benchmark: string) =>
+      changeSessionBenchmark(sessionId, benchmark),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: paperTradingKeys.all });
+      queryClient.invalidateQueries({
+        queryKey: paperTradingKeys.kpis(sessionId),
+      });
+      queryClient.invalidateQueries({
+        queryKey: paperTradingKeys.valueHistory(sessionId),
+      });
+    },
   });
 }
 

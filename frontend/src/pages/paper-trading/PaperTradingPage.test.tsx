@@ -21,6 +21,7 @@ const mockedPost = vi.mocked(apiClient.post);
 const session: PaperTradingSession = {
   id: 's1',
   portfolio_id: 'p1',
+  portfolio_name: 'Aggressive Jolly Wozniak',
   strategy_key: 'ai-momentum',
   status: 'active',
   allocated_capital: 100000,
@@ -34,6 +35,7 @@ const session: PaperTradingSession = {
   schedule_mode: 'DAILY_REBALANCING',
   archived_at: null,
   rebalance_prompt_version: 1,
+  benchmark: 'SP500',
 };
 
 function renderWithClient(ui: ReactNode) {
@@ -61,10 +63,22 @@ describe('PaperTradingPage', () => {
 
     renderWithClient(<PaperTradingPage />);
 
-    const link = await screen.findByRole('link', { name: 'ai-momentum' });
+    const link = await screen.findByRole('link', { name: 'Aggressive Jolly Wozniak' });
     expect(link).toHaveAttribute('href', '/paper-trading/s1');
+    // The strategy is shown as secondary context, not the primary label.
+    expect(screen.getByText('ai-momentum')).toBeInTheDocument();
     expect(screen.getByText('active')).toBeInTheDocument();
     expect(screen.getByText('12')).toBeInTheDocument();
+  });
+
+  it('falls back to the strategy label when the portfolio name is missing', async () => {
+    const unnamed: PaperTradingSession = { ...session, portfolio_name: null };
+    mockedGet.mockResolvedValue({ data: { items: [unnamed], total: 1 } });
+
+    renderWithClient(<PaperTradingPage />);
+
+    const link = await screen.findByRole('link', { name: 'ai-momentum' });
+    expect(link).toHaveAttribute('href', '/paper-trading/s1');
   });
 
   it('shows an empty state with no sessions', async () => {
@@ -82,7 +96,7 @@ describe('PaperTradingPage', () => {
     const user = userEvent.setup();
 
     renderWithClient(<PaperTradingPage />);
-    await screen.findByRole('link', { name: 'ai-momentum' });
+    await screen.findByRole('link', { name: 'Aggressive Jolly Wozniak' });
 
     // The default list request omits the flag.
     expect(mockedGet).toHaveBeenCalledWith(
@@ -112,7 +126,7 @@ describe('PaperTradingPage', () => {
     const user = userEvent.setup();
 
     renderWithClient(<PaperTradingPage />);
-    await screen.findByRole('link', { name: 'ai-momentum' });
+    await screen.findByRole('link', { name: 'Aggressive Jolly Wozniak' });
 
     await user.click(screen.getByRole('button', { name: 'Archive' }));
 
@@ -137,7 +151,7 @@ describe('PaperTradingPage', () => {
     const user = userEvent.setup();
 
     renderWithClient(<PaperTradingPage />);
-    await screen.findByRole('link', { name: 'ai-momentum' });
+    await screen.findByRole('link', { name: 'Aggressive Jolly Wozniak' });
     expect(screen.getByText('Archived')).toBeInTheDocument();
 
     await user.click(screen.getByRole('button', { name: 'Unarchive' }));

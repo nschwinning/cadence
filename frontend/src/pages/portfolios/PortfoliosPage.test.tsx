@@ -35,6 +35,7 @@ const portfolio: Portfolio = {
 const activeSession: PaperTradingSession = {
   id: 's1',
   portfolio_id: 'p1',
+  portfolio_name: 'Aggressive Jolly Wozniak',
   strategy_key: 'ai-momentum',
   status: 'active',
   allocated_capital: 100000,
@@ -48,6 +49,7 @@ const activeSession: PaperTradingSession = {
   schedule_mode: 'DAILY_REBALANCING',
   archived_at: null,
   rebalance_prompt_version: 1,
+  benchmark: 'SP500',
 };
 
 /**

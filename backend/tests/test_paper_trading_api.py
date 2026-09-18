@@ -9,6 +9,7 @@ from __future__ import annotations
 import uuid
 from datetime import UTC, date, datetime, timedelta
 
+import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
 
@@ -17,7 +18,12 @@ from cadence.broker import get_broker
 from cadence.broker.models import AssetClass, Order, OrderSide, OrderStatus, Quote
 from cadence.broker.stub import StubBroker
 from cadence.paper_trading import service
-from cadence.paper_trading.constants import SessionStatus
+from cadence.paper_trading.constants import (
+    BENCHMARK_DISPLAY_NAMES,
+    Benchmark,
+    SessionStatus,
+)
+from cadence.paper_trading.models import BenchmarkPrice
 from cadence.portfolios import service as portfolios_service
 
 
@@ -36,7 +42,7 @@ def _seed(db_session: Session) -> uuid.UUID:
         db_session, name="P", stocks=["AAPL"]
     )
     sess = service.create_session(
-        db_session, portfolio_id=portfolio.id, strategy_key="momentum", rebalance_prompt_version=1)
+        db_session, portfolio_id=portfolio.id, strategy_key="momentum", rebalance_prompt_version=1, benchmark=Benchmark.SP500)
     service.record_trade(
         db_session,
         session_id=sess.id,
@@ -72,6 +78,8 @@ def test_list_sessions(client: TestClient, db_session: Session) -> None:
     item = next(item for item in body["items"] if item["id"] == str(session_id))
     # The frozen rebalance-prompt version is exposed on the read model.
     assert item["rebalance_prompt_version"] == 1
+    # The traded portfolio's name is surfaced so the client can label the session.
+    assert item["portfolio_name"] == "P"
 
 
 def test_read_back_trades_runs_positions(
@@ -129,7 +137,7 @@ def _stopped_session_id(db_session: Session, strategy_key: str = "arch") -> uuid
         db_session, name="P", stocks=["AAPL"]
     )
     sess = service.create_session(
-        db_session, portfolio_id=portfolio.id, strategy_key=strategy_key, rebalance_prompt_version=1)
+        db_session, portfolio_id=portfolio.id, strategy_key=strategy_key, rebalance_prompt_version=1, benchmark=Benchmark.SP500)
     service.update_session_status(db_session, sess.id, SessionStatus.STOPPED)
     return sess.id
 
@@ -169,7 +177,7 @@ def test_archive_non_stopped_session_conflicts(
         db_session, name="P", stocks=["AAPL"]
     )
     sess = service.create_session(
-        db_session, portfolio_id=portfolio.id, strategy_key="active", rebalance_prompt_version=1)
+        db_session, portfolio_id=portfolio.id, strategy_key="active", rebalance_prompt_version=1, benchmark=Benchmark.SP500)
     resp = client.post(f"/api/v1/paper-trading/sessions/{sess.id}/archive")
     assert resp.status_code == 409
 
@@ -195,7 +203,7 @@ def test_reconcile_session_returns_counts_and_refreshed_trades(
         db_session, name="P", stocks=["AAPL"]
     )
     sess = service.create_session(
-        db_session, portfolio_id=portfolio.id, strategy_key="recon", rebalance_prompt_version=1)
+        db_session, portfolio_id=portfolio.id, strategy_key="recon", rebalance_prompt_version=1, benchmark=Benchmark.SP500)
     service.record_trade(
         db_session,
         session_id=sess.id,
@@ -240,7 +248,7 @@ def test_value_history_ascending(client: TestClient, db_session: Session) -> Non
         db_session, name="AI", stocks=["AAPL"]
     )
     sess = service.create_session(
-        db_session, portfolio_id=portfolio.id, strategy_key="ai_buy_hold", rebalance_prompt_version=1)
+        db_session, portfolio_id=portfolio.id, strategy_key="ai_buy_hold", rebalance_prompt_version=1, benchmark=Benchmark.SP500)
     broker = StubBroker()
     # Record out of order; the endpoint must return them oldest date first.
     for day in (date(2026, 1, 6), date(2026, 1, 4), date(2026, 1, 5)):
@@ -254,9 +262,45 @@ def test_value_history_ascending(client: TestClient, db_session: Session) -> Non
     assert body["total"] == 3
     dates = [item["snapshot_date"] for item in body["items"]]
     assert dates == ["2026-01-04", "2026-01-05", "2026-01-06"]
-    # The snapshot fields are exposed on each item.
+    # The snapshot fields are exposed on each item, including the benchmark value
+    # (null here since no benchmark prices are stored).
     first = body["items"][0]
     assert {"total_value", "cash_value", "positions_value", "daily_pnl"} <= first.keys()
+    assert all("benchmark_value" in item for item in body["items"])
+    assert first["benchmark_value"] is None
+
+
+def test_value_history_carries_rebased_benchmark_value(
+    client: TestClient, db_session: Session
+) -> None:
+    portfolio = portfolios_service.create_portfolio(
+        db_session, name="AI", stocks=["AAPL"]
+    )
+    sess = service.create_session(
+        db_session,
+        portfolio_id=portfolio.id,
+        strategy_key="ai_vh_bench",
+        rebalance_prompt_version=1,
+        benchmark=Benchmark.SP500,
+    )
+    broker = StubBroker()
+    start = date(2026, 1, 5)
+    later = date(2026, 1, 6)
+    for day in (start, later):
+        service.record_value_snapshot(
+            db_session, session_id=sess.id, as_of=day, broker=broker
+        )
+    # Benchmark up 20% between the two snapshot dates.
+    db_session.add(BenchmarkPrice(benchmark="SP500", price_date=start, close=100.0))
+    db_session.add(BenchmarkPrice(benchmark="SP500", price_date=later, close=120.0))
+    db_session.commit()
+
+    resp = client.get(f"/api/v1/paper-trading/sessions/{sess.id}/value-history")
+    assert resp.status_code == 200
+    items = resp.json()["items"]
+    # Rebased to allocated capital on the first snapshot date, then +20%.
+    assert items[0]["benchmark_value"] == 100_000.0
+    assert items[1]["benchmark_value"] == 120_000.0
 
 
 class _QuoteBroker:
@@ -280,7 +324,7 @@ def test_session_kpis_returns_live_figures(
         db_session, name="AI", stocks=["AAPL"]
     )
     sess = service.create_session(
-        db_session, portfolio_id=portfolio.id, strategy_key="ai_kpis", rebalance_prompt_version=1)
+        db_session, portfolio_id=portfolio.id, strategy_key="ai_kpis", rebalance_prompt_version=1, benchmark=Benchmark.SP500)
     service.apply_fill_to_ledger(
         db_session,
         session_id=sess.id,
@@ -302,6 +346,9 @@ def test_session_kpis_returns_live_figures(
         "total_return",
         "total_return_pct",
         "sharpe_ratio",
+        "benchmark",
+        "benchmark_return_pct",
+        "excess_return_pct",
     }
     # Ledger buy above did not go through record_trade, so no fees accrued.
     assert body["total_fees"] == 0.0
@@ -312,3 +359,108 @@ def test_session_kpis_returns_live_figures(
     assert body["total_return_pct"] == 200.0 / 100_000.0
     # No daily snapshots yet -> Sharpe withheld.
     assert body["sharpe_ratio"] is None
+    # The session's benchmark id is echoed; with no stored benchmark prices the
+    # comparison figures degrade to null.
+    assert body["benchmark"] == Benchmark.SP500.value
+    assert body["benchmark_return_pct"] is None
+    assert body["excess_return_pct"] is None
+
+
+def test_session_kpis_benchmark_comparison_from_stored_prices(
+    client: TestClient, db_session: Session
+) -> None:
+    portfolio = portfolios_service.create_portfolio(
+        db_session, name="AI", stocks=["AAPL"]
+    )
+    sess = service.create_session(
+        db_session,
+        portfolio_id=portfolio.id,
+        strategy_key="ai_kpis_bench",
+        rebalance_prompt_version=1,
+        benchmark=Benchmark.SP500,
+    )
+    service.apply_fill_to_ledger(
+        db_session,
+        session_id=sess.id,
+        ticker="AAPL",
+        side=OrderSide.BUY,
+        shares=10,
+        price=100.0,
+    )
+    # One snapshot anchors the session's start date for the benchmark rebase.
+    broker = StubBroker()
+    start = date(2026, 1, 5)
+    service.record_value_snapshot(
+        db_session, session_id=sess.id, as_of=start, broker=broker
+    )
+    # Benchmark rose 10% from the session's start close to the latest close.
+    db_session.add(BenchmarkPrice(benchmark="SP500", price_date=start, close=100.0))
+    db_session.add(
+        BenchmarkPrice(
+            benchmark="SP500", price_date=start + timedelta(days=30), close=110.0
+        )
+    )
+    db_session.commit()
+    app.dependency_overrides[get_broker] = lambda: _QuoteBroker({"AAPL": 120.0})
+
+    resp = client.get(f"/api/v1/paper-trading/sessions/{sess.id}/kpis")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["benchmark"] == "SP500"
+    assert body["benchmark_return_pct"] == pytest.approx(0.10)
+    # Excess return is the session's total return minus the benchmark's.
+    assert body["excess_return_pct"] == pytest.approx(
+        body["total_return_pct"] - body["benchmark_return_pct"]
+    )
+
+
+# --------------------------------------------------------------------------- #
+# Benchmark catalog + change-benchmark endpoints
+# --------------------------------------------------------------------------- #
+
+
+def test_list_benchmarks_returns_full_catalog(client: TestClient) -> None:
+    resp = client.get("/api/v1/paper-trading/benchmarks")
+    assert resp.status_code == 200
+    body = resp.json()
+    # All eight catalog benchmarks are listed as {id, name}.
+    assert len(body) == len(Benchmark)
+    by_id = {entry["id"]: entry["name"] for entry in body}
+    assert set(by_id) == {b.value for b in Benchmark}
+    for member, name in BENCHMARK_DISPLAY_NAMES.items():
+        assert by_id[member.value] == name
+
+
+def test_change_benchmark_persists_new_selection(
+    client: TestClient, db_session: Session
+) -> None:
+    session_id = _seed(db_session)
+    resp = client.put(
+        f"/api/v1/paper-trading/sessions/{session_id}/benchmark",
+        json={"benchmark": "DJIA"},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["benchmark"] == "DJIA"
+    # The change persisted on the row.
+    assert service.get_session(db_session, session_id).benchmark == "DJIA"
+
+
+def test_change_benchmark_unknown_session_is_404(client: TestClient) -> None:
+    resp = client.put(
+        f"/api/v1/paper-trading/sessions/{uuid.uuid4()}/benchmark",
+        json={"benchmark": "DJIA"},
+    )
+    assert resp.status_code == 404
+
+
+def test_change_benchmark_invalid_id_is_422(
+    client: TestClient, db_session: Session
+) -> None:
+    session_id = _seed(db_session)
+    resp = client.put(
+        f"/api/v1/paper-trading/sessions/{session_id}/benchmark",
+        json={"benchmark": "NOT_A_REAL_INDEX"},
+    )
+    assert resp.status_code == 422
+    # The session's benchmark is left unchanged.
+    assert service.get_session(db_session, session_id).benchmark == "SP500"

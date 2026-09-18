@@ -52,10 +52,21 @@ from cadence.broker.models import AssetClass, OrderSide, Position
 from cadence.config import settings
 from cadence.notify.base import Notifier
 from cadence.paper_trading import service as paper_service
-from cadence.paper_trading.constants import RunStatus, ScheduleMode, SessionStatus
+from cadence.paper_trading.benchmark import (
+    benchmark_return_fraction,
+    load_benchmark_series,
+)
+from cadence.paper_trading.constants import (
+    Benchmark,
+    RunStatus,
+    ScheduleMode,
+    SessionStatus,
+    benchmark_display_name,
+)
 from cadence.paper_trading.models import SessionPosition
 from cadence.portfolios import service as portfolios_service
 from cadence.portfolios.constants import PortfolioSource, RiskProfile
+from cadence.utils.name_generator import generate_unique_name
 
 logger = logging.getLogger(__name__)
 
@@ -74,6 +85,7 @@ class AIBuildParams:
     risk_profile: str = "balanced"
     asset_types: str = AssetScope.BOTH.value
     daily_rebalancing: bool = False
+    benchmark: str = settings.DEFAULT_BENCHMARK
 
     def to_payload(self) -> dict[str, Any]:
         return {
@@ -81,6 +93,7 @@ class AIBuildParams:
             "risk_profile": self.risk_profile,
             "asset_types": self.asset_types,
             "daily_rebalancing": self.daily_rebalancing,
+            "benchmark": self.benchmark,
         }
 
     @classmethod
@@ -90,6 +103,7 @@ class AIBuildParams:
             risk_profile=str(payload.get("risk_profile", "balanced")),
             asset_types=str(payload.get("asset_types", AssetScope.BOTH.value)),
             daily_rebalancing=bool(payload.get("daily_rebalancing", False)),
+            benchmark=str(payload.get("benchmark", settings.DEFAULT_BENCHMARK)),
         )
 
 
@@ -276,9 +290,17 @@ def run_build_event(
             session, discovered, provider, broker, scope=params.asset_types
         )
 
+        # The AI names every build generically (e.g. "AI Growth"), so portfolios
+        # collide and their sessions become indistinguishable. Generate a distinct,
+        # human-friendly name instead; the AI's thesis is still kept as the
+        # description.
+        portfolio_name = generate_unique_name(
+            risk_profile=params.risk_profile,
+            existing_names=portfolios_service.list_portfolio_names(session),
+        )
         portfolio = portfolios_service.create_portfolio(
             session,
-            name=result.portfolio_name,
+            name=portfolio_name,
             stocks=stock_tickers,
             source=PortfolioSource.AI_MANAGED,
             description=result.overall_thesis[:500],
@@ -303,6 +325,7 @@ def run_build_event(
             allocated_capital=params.allocated_capital,
             max_allocation_pct=portfolio.max_allocation_pct,
             schedule_mode=schedule_mode,
+            benchmark=Benchmark(params.benchmark),
         )
         session_row.session_metadata = {
             "session_type": "ai_managed",
@@ -813,7 +836,12 @@ def snapshot_all_sessions(
             label = portfolio.name
         except Exception:  # noqa: BLE001 - fall back to the strategy key for the label
             label = session_row.strategy_key
-        report_lines.append(_session_report_line(label, snapshot))
+        benchmark_suffix = _benchmark_suffix(
+            session, session_row, snapshot, as_of=as_of
+        )
+        report_lines.append(
+            _session_report_line(label, snapshot, benchmark_suffix)
+        )
         for pos in snapshot.positions:
             holdings.append((str(pos.get("ticker", "?")), float(pos.get("return_pct", 0.0))))
 
@@ -837,11 +865,59 @@ def _signed_pct(value: float) -> str:
     return f"{sign}{abs(value) * 100:.2f}%"
 
 
-def _session_report_line(label: str, snapshot: Any) -> str:
-    """One per-session report line: value + the day's absolute/percent P&L."""
-    return (
+def _session_report_line(
+    label: str, snapshot: Any, benchmark_suffix: str | None = None
+) -> str:
+    """One per-session report line: value + the day's absolute/percent P&L.
+
+    Appends a benchmark comparison suffix (benchmark return + excess return over
+    the session period) when available; the suffix is omitted when the session's
+    benchmark has no usable stored prices.
+    """
+    line = (
         f"{label}: ${snapshot.total_value:,.2f} "
         f"({_signed_money(snapshot.daily_pnl)}, {_signed_pct(snapshot.daily_pnl_pct)})"
+    )
+    if benchmark_suffix is not None:
+        line = f"{line} {benchmark_suffix}"
+    return line
+
+
+def _benchmark_suffix(
+    session: Session,
+    session_row: Any,
+    snapshot: Any,
+    *,
+    as_of: date,
+) -> str | None:
+    """Benchmark comparison suffix for a session's report line, or ``None``.
+
+    Computes the session's benchmark buy-and-hold return over the period (from its
+    first snapshot date to ``as_of``, using stored prices) and the excess return
+    (session total return − benchmark return). Returns ``None`` when the session has
+    no snapshots or the benchmark lacks usable stored prices, so the caller omits
+    the suffix.
+    """
+    snapshots = paper_service.list_value_snapshots(
+        session, session_id=session_row.id
+    )
+    if not snapshots:
+        return None
+    series = load_benchmark_series(session, session_row.benchmark)
+    benchmark_return = benchmark_return_fraction(
+        series, start_date=snapshots[0].snapshot_date, as_of=as_of
+    )
+    if benchmark_return is None:
+        return None
+    allocated = session_row.allocated_capital
+    total_return_pct = (
+        (snapshot.total_value - allocated) / allocated if allocated > 0 else 0.0
+    )
+    excess = total_return_pct - benchmark_return
+    name = benchmark_display_name(Benchmark(session_row.benchmark))
+    return (
+        f"vs {name}: {_signed_pct(benchmark_return)} "
+        f"(excess {_signed_pct(excess)})"
     )
 
 

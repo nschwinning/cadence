@@ -41,6 +41,63 @@ class RunStatus(StrEnum):
     FAILURE = "failure"
 
 
+class Benchmark(StrEnum):
+    """A market benchmark index a paper-trading session can be compared against.
+
+    The member *value* is the stable identifier persisted on a session and used in
+    the API; :data:`BENCHMARK_DISPLAY_NAMES` maps it to a human-readable name and
+    :data:`BENCHMARK_SYMBOLS` to the market-data symbol the system fetches. Sessions
+    store the identifier, never the raw symbol, so the symbol mapping can change
+    without touching stored data. All catalog entries are **price-return** index
+    tickers (dividends excluded): the session valuation does not credit dividends
+    either, so a price-return comparison is apples-to-apples.
+    """
+
+    SP500 = "SP500"
+    DJIA = "DJIA"
+    NYSE_COMPOSITE = "NYSE_COMPOSITE"
+    NASDAQ_COMPOSITE = "NASDAQ_COMPOSITE"
+    NASDAQ_100 = "NASDAQ_100"
+    RUSSELL_2000 = "RUSSELL_2000"
+    SP100 = "SP100"
+    WILSHIRE_5000 = "WILSHIRE_5000"
+
+
+#: Human-readable display name per benchmark, surfaced in the UI catalog.
+BENCHMARK_DISPLAY_NAMES: dict[Benchmark, str] = {
+    Benchmark.SP500: "S&P 500",
+    Benchmark.DJIA: "Dow Jones Industrial Average",
+    Benchmark.NYSE_COMPOSITE: "NYSE Composite",
+    Benchmark.NASDAQ_COMPOSITE: "Nasdaq Composite",
+    Benchmark.NASDAQ_100: "Nasdaq-100",
+    Benchmark.RUSSELL_2000: "Russell 2000",
+    Benchmark.SP100: "S&P 100",
+    Benchmark.WILSHIRE_5000: "Wilshire 5000",
+}
+
+#: Market-data (yfinance) symbol the ingestion job fetches per benchmark.
+BENCHMARK_SYMBOLS: dict[Benchmark, str] = {
+    Benchmark.SP500: "^GSPC",
+    Benchmark.DJIA: "^DJI",
+    Benchmark.NYSE_COMPOSITE: "^NYA",
+    Benchmark.NASDAQ_COMPOSITE: "^IXIC",
+    Benchmark.NASDAQ_100: "^NDX",
+    Benchmark.RUSSELL_2000: "^RUT",
+    Benchmark.SP100: "^OEX",
+    Benchmark.WILSHIRE_5000: "^FTW5000",
+}
+
+
+def benchmark_display_name(benchmark: Benchmark) -> str:
+    """Return the human-readable display name for ``benchmark``."""
+    return BENCHMARK_DISPLAY_NAMES[benchmark]
+
+
+def benchmark_symbol(benchmark: Benchmark) -> str:
+    """Return the market-data symbol the system fetches for ``benchmark``."""
+    return BENCHMARK_SYMBOLS[benchmark]
+
+
 #: Default trade side/status come from the broker vocabulary; imported here for
 #: convenience so the paper-trading layer has a single enums module.
 DEFAULT_ORDER_STATUS = "filled"

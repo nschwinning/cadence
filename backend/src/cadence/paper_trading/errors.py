@@ -21,3 +21,7 @@ class DuplicateSessionError(PaperTradingError):
 
 class SessionNotArchivableError(PaperTradingError):
     """The session cannot be archived because it is not stopped."""
+
+
+class InvalidBenchmarkError(PaperTradingError):
+    """The requested benchmark id is not in the fixed benchmark catalog."""
