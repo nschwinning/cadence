@@ -391,8 +391,10 @@ class PaperTradingSessionKpisRead(BaseModel):
     ``total_return_pct`` the same as a fraction; ``sharpe_ratio`` is ``None`` until
     the session has accumulated enough daily history. ``benchmark`` is the session's
     benchmark id; ``benchmark_return_pct`` the benchmark's fractional return over the
-    session's period and ``excess_return_pct`` the session's return minus it, both
-    ``None`` when the benchmark has insufficient stored prices.
+    session's period and ``excess_return_pct`` the session's return minus it;
+    ``excess_return`` is that excess in absolute terms (net-of-fees dollar gain minus
+    the benchmark's dollar gain on the same capital). All three are ``None`` when the
+    benchmark has insufficient stored prices.
     """
 
     current_value: float
@@ -405,6 +407,7 @@ class PaperTradingSessionKpisRead(BaseModel):
     benchmark: str
     benchmark_return_pct: float | None
     excess_return_pct: float | None
+    excess_return: float | None
 
 
 class AIDailySnapshotResponse(BaseModel):

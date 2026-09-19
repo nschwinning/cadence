@@ -532,6 +532,14 @@ function KpiRow({ sessionId }: { sessionId: string }) {
         {formatPercent(data.excess_return_pct)}
       </span>
     );
+  const excessHint =
+    data.excess_return === null ? (
+      `vs ${benchmarkName}`
+    ) : (
+      <>
+        <PnlValue value={data.excess_return} /> vs {benchmarkName}
+      </>
+    );
 
   return (
     <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
@@ -548,12 +556,12 @@ function KpiRow({ sessionId }: { sessionId: string }) {
       />
       <StatTile
         label="Total return"
-        value={<PnlValue value={data.total_return} />}
-        hint={
+        value={
           <span className={pnlClass(data.total_return_pct)}>
             {formatPercent(data.total_return_pct)}
           </span>
         }
+        hint={<PnlValue value={data.total_return} />}
       />
       <StatTile
         label="Sharpe ratio"
@@ -569,11 +577,7 @@ function KpiRow({ sessionId }: { sessionId: string }) {
         value={benchmarkReturn}
         hint={`${benchmarkName}, buy & hold`}
       />
-      <StatTile
-        label="Excess return"
-        value={excessReturn}
-        hint={`vs ${benchmarkName}`}
-      />
+      <StatTile label="Excess return" value={excessReturn} hint={excessHint} />
     </div>
   );
 }

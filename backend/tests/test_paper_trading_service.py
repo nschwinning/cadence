@@ -1061,6 +1061,9 @@ def test_session_kpis_benchmark_return_and_excess(db_session: Session) -> None:
     assert kpis.benchmark == Benchmark.SP500.value
     assert kpis.benchmark_return_pct == pytest.approx(0.10)
     assert kpis.excess_return_pct == pytest.approx(kpis.total_return_pct - 0.10)
+    # Absolute excess equals the fractional excess on allocated capital.
+    allocated = kpis.current_value - kpis.total_return
+    assert kpis.excess_return == pytest.approx(kpis.excess_return_pct * allocated)
 
 
 def test_session_kpis_benchmark_none_without_prices(db_session: Session) -> None:
@@ -1073,3 +1076,4 @@ def test_session_kpis_benchmark_none_without_prices(db_session: Session) -> None
     assert kpis.benchmark == Benchmark.SP500.value
     assert kpis.benchmark_return_pct is None
     assert kpis.excess_return_pct is None
+    assert kpis.excess_return is None

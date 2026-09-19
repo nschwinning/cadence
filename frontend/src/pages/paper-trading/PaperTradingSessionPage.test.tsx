@@ -96,6 +96,7 @@ const KPIS: PaperTradingSessionKpis = {
   benchmark: 'SP500',
   benchmark_return_pct: 0.015,
   excess_return_pct: 0.01,
+  excess_return: 1000,
 };
 
 /** Route the mocked GETs by URL to the right fixture. */
@@ -219,9 +220,9 @@ describe('PaperTradingSessionPage', () => {
     // Unrealised P&L is negative -> red.
     const unrealised = screen.getByText('-$200.00');
     expect(unrealised).toHaveClass('text-red-700');
-    // Total return shows the money amount and a percentage hint.
+    // Total return leads with the percentage; the money amount is the hint.
+    expect(screen.getByText('2.50%')).toHaveClass('text-emerald-700');
     expect(screen.getByText('$2,500.00')).toHaveClass('text-emerald-700');
-    expect(screen.getByText('2.50%')).toBeInTheDocument();
     // Transaction fees tile shows the cumulative cost.
     expect(screen.getByText('Transaction fees')).toBeInTheDocument();
     expect(screen.getByText('$12.00')).toBeInTheDocument();
@@ -254,6 +255,8 @@ describe('PaperTradingSessionPage', () => {
     // The catalog display name resolves the SP500 id in the tile hints.
     expect(screen.getByText('S&P 500, buy & hold')).toBeInTheDocument();
     expect(screen.getByText('vs S&P 500')).toBeInTheDocument();
+    // Excess return also shows the monetary excess (net of fees) in its hint.
+    expect(screen.getByText('$1,000.00')).toHaveClass('text-emerald-700');
     // With every figure available, no tile shows the unavailable fallback.
     expect(screen.queryByText('Not yet available')).not.toBeInTheDocument();
   });

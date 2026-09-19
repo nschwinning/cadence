@@ -238,6 +238,7 @@ def get_session_kpis(
         benchmark=kpis.benchmark,
         benchmark_return_pct=kpis.benchmark_return_pct,
         excess_return_pct=kpis.excess_return_pct,
+        excess_return=kpis.excess_return,
     )
 
 

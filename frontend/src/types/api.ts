@@ -436,6 +436,12 @@ export interface PaperTradingSessionKpis {
    * unavailable.
    */
   excess_return_pct: number | null;
+  /**
+   * The excess as an absolute amount (`excess_return_pct × allocated_capital`): the
+   * session's net-of-fees dollar gain minus the benchmark's dollar gain on the same
+   * capital. Null when the benchmark return is unavailable.
+   */
+  excess_return: number | null;
 }
 
 // --------------------------------------------------------------------------- //

@@ -982,7 +982,11 @@ class SessionKpis:
     until enough history exists. ``benchmark`` is the session's benchmark id;
     ``benchmark_return_pct`` the benchmark's buy-and-hold fractional return over the
     session's period and ``excess_return_pct`` the session's total-return fraction
-    minus it, both ``None`` when the benchmark has insufficient stored prices.
+    minus it; ``excess_return`` is that excess as an absolute amount
+    (``excess_return_pct × allocated_capital``) — the session's net-of-fees dollar
+    gain minus what a costless buy-and-hold of the benchmark would have gained on the
+    same capital. All three are ``None`` when the benchmark has insufficient stored
+    prices.
     """
 
     current_value: float
@@ -995,6 +999,7 @@ class SessionKpis:
     benchmark: str
     benchmark_return_pct: float | None
     excess_return_pct: float | None
+    excess_return: float | None
 
 
 def session_kpis(
@@ -1038,6 +1043,12 @@ def session_kpis(
         if benchmark_return_pct is not None
         else None
     )
+    # Absolute excess on the session's allocated capital. total_return already nets
+    # out per-trade fees while the benchmark leg is a costless buy-and-hold, so this
+    # is the session's real net-of-fees dollar gain minus the index's dollar gain.
+    excess_return = (
+        excess_return_pct * allocated if excess_return_pct is not None else None
+    )
 
     return SessionKpis(
         current_value=valuation.total_value,
@@ -1050,4 +1061,5 @@ def session_kpis(
         benchmark=session_row.benchmark,
         benchmark_return_pct=benchmark_return_pct,
         excess_return_pct=excess_return_pct,
+        excess_return=excess_return,
     )

@@ -349,6 +349,7 @@ def test_session_kpis_returns_live_figures(
         "benchmark",
         "benchmark_return_pct",
         "excess_return_pct",
+        "excess_return",
     }
     # Ledger buy above did not go through record_trade, so no fees accrued.
     assert body["total_fees"] == 0.0
@@ -364,6 +365,7 @@ def test_session_kpis_returns_live_figures(
     assert body["benchmark"] == Benchmark.SP500.value
     assert body["benchmark_return_pct"] is None
     assert body["excess_return_pct"] is None
+    assert body["excess_return"] is None
 
 
 def test_session_kpis_benchmark_comparison_from_stored_prices(
@@ -411,6 +413,11 @@ def test_session_kpis_benchmark_comparison_from_stored_prices(
     # Excess return is the session's total return minus the benchmark's.
     assert body["excess_return_pct"] == pytest.approx(
         body["total_return_pct"] - body["benchmark_return_pct"]
+    )
+    # Absolute excess equals the fractional excess on allocated capital.
+    allocated = body["current_value"] - body["total_return"]
+    assert body["excess_return"] == pytest.approx(
+        body["excess_return_pct"] * allocated
     )
 
 

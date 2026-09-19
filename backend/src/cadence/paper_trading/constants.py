@@ -84,7 +84,7 @@ BENCHMARK_SYMBOLS: dict[Benchmark, str] = {
     Benchmark.NASDAQ_100: "^NDX",
     Benchmark.RUSSELL_2000: "^RUT",
     Benchmark.SP100: "^OEX",
-    Benchmark.WILSHIRE_5000: "^FTW5000",
+    Benchmark.WILSHIRE_5000: "^W5000",
 }
 
 
