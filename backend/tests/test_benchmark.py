@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, timedelta
 
 import pytest
 from sqlalchemy import func, select
@@ -150,6 +150,25 @@ def test_ingest_is_idempotent_on_rerun(db_session: Session) -> None:
     series = load_benchmark_series(db_session, Benchmark.SP500.value)
     assert series.dates == [date(2026, 1, 3), date(2026, 1, 6)]
     assert series.closes == [100.0, 106.0]
+
+
+def test_ingest_chunks_history_exceeding_param_limit(db_session: Session) -> None:
+    # A full-history fetch (SP500 period="max" ≈ 24.8k bars) binds >65,535
+    # params if inserted in one statement; ingestion must chunk. Feed one
+    # benchmark a history spanning multiple chunks and assert every bar lands.
+    big = [
+        HistoryBar(date=date(2000, 1, 1) + timedelta(days=i), close=100.0 + i, volume=1.0)
+        for i in range(12_345)
+    ]
+    sp500 = benchmark_symbol(Benchmark.SP500)
+    provider = FakeMarketDataProvider(history=[], history_by_ticker={sp500: big})
+    counts = ingest_benchmark_prices(db_session, provider)
+
+    assert counts[Benchmark.SP500.value] == 12_345
+    series = load_benchmark_series(db_session, Benchmark.SP500.value)
+    assert len(series.dates) == 12_345
+    assert series.dates[0] == date(2000, 1, 1)
+    assert series.closes[-1] == 100.0 + 12_344
 
 
 def test_ingest_one_failing_benchmark_does_not_abort_others(

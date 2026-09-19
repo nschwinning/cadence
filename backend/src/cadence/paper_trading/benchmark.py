@@ -25,6 +25,13 @@ from cadence.paper_trading.models import BenchmarkPrice
 
 logger = logging.getLogger(__name__)
 
+# PostgreSQL caps a single statement at 65,535 (2^16-1) bound parameters. Each
+# upserted row binds 3 params (benchmark, price_date, close), so a full-history
+# fetch (SP500's ``period="max"`` returns ~24,800 daily bars back to 1927 →
+# ~74k params) overflows one INSERT. Chunk to stay well under the cap: 5,000
+# rows * 3 = 15,000 params per statement.
+_UPSERT_CHUNK_ROWS = 5_000
+
 
 def ingest_benchmark_prices(
     session: Session, provider: object
@@ -47,36 +54,42 @@ def ingest_benchmark_prices(
         symbol = benchmark_symbol(benchmark)
         try:
             bars = provider.fetch_history(symbol)  # type: ignore[attr-defined]
+
+            rows = [
+                {
+                    "benchmark": benchmark.value,
+                    "price_date": bar.date,
+                    "close": bar.close,
+                }
+                for bar in bars
+            ]
+            if not rows:
+                counts[benchmark.value] = 0
+                continue
+
+            # Chunk the upsert so each INSERT stays under PostgreSQL's
+            # 65,535-bound-parameter cap (see ``_UPSERT_CHUNK_ROWS``). All chunks
+            # for a benchmark commit together so the benchmark is stored atomically.
+            for start in range(0, len(rows), _UPSERT_CHUNK_ROWS):
+                chunk = rows[start : start + _UPSERT_CHUNK_ROWS]
+                stmt = pg_insert(BenchmarkPrice).values(chunk)
+                stmt = stmt.on_conflict_do_update(
+                    constraint="uq_benchmark_prices_benchmark_date",
+                    set_={"close": stmt.excluded.close},
+                )
+                session.execute(stmt)
+            session.commit()
+            counts[benchmark.value] = len(rows)
         except Exception as exc:  # noqa: BLE001 - one benchmark can't abort the batch
+            session.rollback()
             logger.warning(
-                "benchmark ingestion: fetch failed for %s (%s): %s",
+                "benchmark ingestion: failed for %s (%s): %s",
                 benchmark.value,
                 symbol,
                 exc,
             )
             counts[benchmark.value] = 0
             continue
-
-        rows = [
-            {
-                "benchmark": benchmark.value,
-                "price_date": bar.date,
-                "close": bar.close,
-            }
-            for bar in bars
-        ]
-        if not rows:
-            counts[benchmark.value] = 0
-            continue
-
-        stmt = pg_insert(BenchmarkPrice).values(rows)
-        stmt = stmt.on_conflict_do_update(
-            constraint="uq_benchmark_prices_benchmark_date",
-            set_={"close": stmt.excluded.close},
-        )
-        session.execute(stmt)
-        session.commit()
-        counts[benchmark.value] = len(rows)
 
     return counts
 
