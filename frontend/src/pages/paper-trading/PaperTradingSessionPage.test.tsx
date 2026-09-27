@@ -57,6 +57,7 @@ function makeEvent(
     result_payload,
     actions_taken: null,
     research: null,
+    trend_context: null,
     error: null,
     duration_ms: null,
     created_at: '2026-09-14T00:00:00Z',

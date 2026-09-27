@@ -89,8 +89,11 @@ class Settings(BaseSettings):
     # Cost controls bounding the AI portfolio build/rebalance runs. These cap the
     # number of expensive LLM/tool interactions per job so a single run cannot run
     # away with turns, web searches, or newly-discovered assets.
-    #: Hard SDK-enforced turn cap per agent run (bounds tool-call loops).
-    AI_PORTFOLIO_MAX_TURNS: int = 8
+    #: Hard SDK-enforced turn cap per agent run (bounds tool-call loops). Sized
+    #: with headroom above the web-search budget: each search is a turn, plus
+    #: planning turns and the extra final model call the structured ``output_type``
+    #: forces, so this must exceed ``AI_PORTFOLIO_MAX_WEB_SEARCHES`` comfortably.
+    AI_PORTFOLIO_MAX_TURNS: int = 12
     #: Hard cap on web searches per agent run (enforced in the web_search tool).
     AI_PORTFOLIO_MAX_WEB_SEARCHES: int = 6
     #: Cap on assets the agent may discover and add beyond the current universe.

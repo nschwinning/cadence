@@ -43,6 +43,7 @@ class FakeMarketDataProvider:
         detail_error: Exception | None = None,
         history_by_ticker: dict[str, list[HistoryBar]] | None = None,
         history_error_by_ticker: dict[str, Exception] | None = None,
+        info_error_by_ticker: dict[str, Exception] | None = None,
     ) -> None:
         self._info = info
         self._history = history or []
@@ -55,10 +56,15 @@ class FakeMarketDataProvider:
         # Per-ticker overrides let a test vary history (or raise) by ticker.
         self._history_by_ticker = history_by_ticker or {}
         self._history_error_by_ticker = history_error_by_ticker or {}
+        # Per-ticker info errors drive the dotted->dash class-share fallback:
+        # raise for ``BRK.B`` but succeed for ``BRK-B``.
+        self._info_error_by_ticker = info_error_by_ticker or {}
         self.detail_calls = 0
         self.history_calls: list[str] = []
 
     def fetch_info(self, ticker: str) -> AssetInfo:
+        if ticker in self._info_error_by_ticker:
+            raise self._info_error_by_ticker[ticker]
         if self._info_error is not None:
             raise self._info_error
         assert self._info is not None, "FakeMarketDataProvider has no info configured"

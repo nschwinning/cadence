@@ -25,6 +25,7 @@ from datetime import UTC, date, datetime
 from typing import Any
 from zoneinfo import ZoneInfo
 
+from agents.exceptions import MaxTurnsExceeded
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
@@ -32,6 +33,7 @@ from cadence.agents.tools import record_web_searches
 from cadence.ai_portfolio.agent import AIPortfolioAgent
 from cadence.ai_portfolio.constants import (
     AI_STRATEGY_KEY,
+    TREND_PROMPT_VERSION,
     EventStatus,
     EventType,
 )
@@ -66,6 +68,8 @@ from cadence.paper_trading.constants import (
 from cadence.paper_trading.models import SessionPosition
 from cadence.portfolios import service as portfolios_service
 from cadence.portfolios.constants import PortfolioSource, RiskProfile
+from cadence.technical_indicators import service as ti_service
+from cadence.technical_indicators.models import TechnicalIndicator
 from cadence.utils.name_generator import generate_unique_name
 
 logger = logging.getLogger(__name__)
@@ -266,16 +270,41 @@ def run_build_event(
     event.status = EventStatus.RUNNING.value
     session.commit()
 
-    # Bound at ``with`` entry so any research captured before a mid-run failure is
-    # still persisted on the (failed) event.
+    # Bound at ``with`` entry so any research/trend context captured before a
+    # mid-run failure is still persisted on the (failed) event.
     research: list[dict[str, Any]] = []
+    trend_context: dict[str, Any] | None = None
     try:
         params = AIBuildParams.from_payload(event.request_payload or {})
         allowed_categories = scope_categories(params.asset_types)
         universe = assets_service.list_assets(
             session, categories=[c.value for c in allowed_categories]
         )
-        candidates = _candidates_from_universe(universe)
+        # A build freezes the active (highest) prompt version; the trend gate and
+        # its per-run context apply only once that version is the trend strategy
+        # (i.e. after the v3 migration). Before then the build stays ungated and
+        # records no trend context.
+        active_prompt = get_active_rebalance_prompt(session)
+        gating_enabled = active_prompt.version >= TREND_PROMPT_VERSION
+        snapshots = (
+            ti_service.get_latest_snapshots(
+                session, [asset.id for asset in universe]
+            )
+            if gating_enabled
+            else {}
+        )
+        candidates, dropped_candidates = _candidates_from_universe(
+            universe, snapshots, apply_gate=gating_enabled
+        )
+        if gating_enabled:
+            trend_context = {
+                "dropped_candidates": dropped_candidates,
+                "candidates": [
+                    {"ticker": c["ticker"], "indicators": c["indicators"]}
+                    for c in candidates
+                ],
+                "holdings": [],
+            }
 
         with record_web_searches() as research:
             result = agent.build(
@@ -286,6 +315,13 @@ def run_build_event(
         stock_tickers = _normalize_tickers([s.ticker for s in result.stocks])
         universe_tickers = {a.ticker for a in universe}
         discovered = [t for t in stock_tickers if t not in universe_tickers]
+        if gating_enabled:
+            # A discovered ticker that already has a stored snapshot failing the
+            # gate is dropped from the candidate set; genuinely new tickers (no
+            # snapshot) are still added and traded.
+            discovered, discovered_dropped = _gate_discovered(session, discovered)
+            if trend_context is not None:
+                trend_context["dropped_candidates"].extend(discovered_dropped)
         _add_discovered_assets(
             session, discovered, provider, broker, scope=params.asset_types
         )
@@ -316,12 +352,11 @@ def run_build_event(
         )
         # Freeze the currently active rebalance-prompt version onto the session so
         # every rebalance for it uses this version, regardless of later prompt edits.
-        frozen_prompt_version = get_active_rebalance_prompt(session).version
         session_row = paper_service.create_session(
             session,
             portfolio_id=portfolio.id,
             strategy_key=AI_STRATEGY_KEY,
-            rebalance_prompt_version=frozen_prompt_version,
+            rebalance_prompt_version=active_prompt.version,
             allocated_capital=params.allocated_capital,
             max_allocation_pct=portfolio.max_allocation_pct,
             schedule_mode=schedule_mode,
@@ -380,6 +415,13 @@ def run_build_event(
             actions_taken=[tr.to_dict() for tr in trade_results],
             duration_ms=_elapsed_ms(t0),
             research=research,
+            trend_context=trend_context,
+            run_stats=_build_run_stats(
+                trade_results=trade_results,
+                executed=executed,
+                all_executed=all_executed,
+                trend_context=trend_context,
+            ),
         )
         logger.info(
             "AI portfolio build %s completed: %s/%s trades executed",
@@ -393,9 +435,10 @@ def run_build_event(
         _fail_event(
             session,
             event_id,
-            str(exc) or exc.__class__.__name__,
+            _humanize_failure(exc),
             _elapsed_ms(t0),
             research=research,
+            trend_context=trend_context,
         )
 
 
@@ -469,6 +512,9 @@ def run_rebalance_event(
     # Bound at ``with`` entry (below) so research captured before a mid-run failure
     # is still persisted on the (failed) event; stays empty on the skip path.
     research: list[dict[str, Any]] = []
+    # Assembled at the candidate/holdings seam so a mid-run failure keeps it; stays
+    # null on the skip path and for sessions frozen to a pre-trend prompt version.
+    trend_context: dict[str, Any] | None = None
     try:
         if event.session_id is None:
             raise ValueError("rebalance event has no session")
@@ -532,13 +578,55 @@ def run_rebalance_event(
 
         account = broker.get_account_info()
 
+        # The trend gate and its per-run context apply only when this session is
+        # frozen to the trend prompt version (or later); sessions on an earlier
+        # (pre-trend) version keep their original ungated behaviour and record no
+        # trend context.
+        gating_enabled = (
+            session_row.rebalance_prompt_version >= TREND_PROMPT_VERSION
+        )
+
         # Candidates are restricted to the session's asset scope; the full universe
         # (above) still backs the class map so held positions stay classified.
         scoped_universe = [
             asset for asset in universe if asset.category in allowed_categories
         ]
-        candidates = _candidates_from_universe(scoped_universe)
-        holdings = _build_holdings(ledger, broker, asset_classes)
+        candidate_snapshots = (
+            ti_service.get_latest_snapshots(
+                session, [asset.id for asset in scoped_universe]
+            )
+            if gating_enabled
+            else {}
+        )
+        candidates, dropped_candidates = _candidates_from_universe(
+            scoped_universe, candidate_snapshots, apply_gate=gating_enabled
+        )
+        holding_snapshots = (
+            _snapshots_by_ticker(
+                session, [entry.ticker for entry in ledger if entry.quantity]
+            )
+            if gating_enabled
+            else None
+        )
+        holdings = _build_holdings(
+            ledger, broker, asset_classes, holding_snapshots
+        )
+        if gating_enabled:
+            trend_context = {
+                "dropped_candidates": dropped_candidates,
+                "candidates": [
+                    {"ticker": c["ticker"], "indicators": c["indicators"]}
+                    for c in candidates
+                ],
+                "holdings": [
+                    {
+                        "ticker": h["ticker"],
+                        "indicators": h["indicators"],
+                        "reversal_flags": h["reversal_flags"],
+                    }
+                    for h in holdings
+                ],
+            }
         account_summary = {
             "portfolio_value": account.portfolio_value,
             "cash_available": account.buying_power,
@@ -569,6 +657,12 @@ def run_rebalance_event(
             [t.ticker for t in result.target_allocations]
         )
         discovered = [t for t in target_tickers if t not in universe_tickers]
+        if gating_enabled:
+            # A discovered ticker that already has a stored snapshot failing the
+            # gate is dropped; genuinely new tickers (no snapshot) are still added.
+            discovered, discovered_dropped = _gate_discovered(session, discovered)
+            if trend_context is not None:
+                trend_context["dropped_candidates"].extend(discovered_dropped)
         _add_discovered_assets(
             session, discovered, provider, broker, scope=asset_scope
         )
@@ -625,6 +719,15 @@ def run_rebalance_event(
             actions_taken=[tr.to_dict() for tr in trade_results],
             duration_ms=_elapsed_ms(t0),
             research=research,
+            trend_context=trend_context,
+            run_stats=_build_run_stats(
+                trade_results=trade_results,
+                executed=executed,
+                all_executed=all_executed,
+                realized_pnl=realized_pnl,
+                account_summary=account_summary,
+                trend_context=trend_context,
+            ),
         )
         logger.info("AI rebalance %s completed: %s trades executed", event.id, executed)
 
@@ -641,20 +744,20 @@ def run_rebalance_event(
     except Exception as exc:  # noqa: BLE001 - persisted as the event's failure reason
         session.rollback()
         logger.error("AI rebalance %s failed: %s", event_id, exc)
+        reason = _humanize_failure(exc)
         _fail_event(
             session,
             event_id,
-            str(exc) or exc.__class__.__name__,
+            reason,
             _elapsed_ms(t0),
             research=research,
+            trend_context=trend_context,
         )
         if notifier is not None:
             _notify_safely(
                 notifier,
                 title="Cadence: daily rebalance failed",
-                message=(
-                    f"Rebalance {event_id} failed: {str(exc) or exc.__class__.__name__}"
-                ),
+                message=f"Rebalance {event_id} failed: {reason}",
             )
 
 
@@ -753,6 +856,12 @@ def close_session(
             result_payload=None,
             actions_taken=[tr.to_dict() for tr in trade_results],
             duration_ms=_elapsed_ms(t0),
+            run_stats=_build_run_stats(
+                trade_results=trade_results,
+                executed=executed,
+                all_executed=all_executed,
+                realized_pnl=realized_pnl,
+            ),
         )
         logger.info(
             "AI close %s completed: %s/%s positions liquidated",
@@ -805,12 +914,12 @@ def snapshot_all_sessions(
 
     Fans out over active sessions, keeps only AI-managed ones
     (``strategy_key == AI_STRATEGY_KEY``), and upserts one snapshot per session for
-    ``as_of`` (today in the market-close timezone when omitted). Then sends a single
-    daily report: a per-session value + P&L line plus the single best- and
-    worst-performing individual holding (by return) across all snapshotted sessions,
-    omitted when no session holds anything. Delivery is best-effort — a notifier
-    failure never fails the job (see :func:`_notify_safely`). Returns the ids of the
-    sessions snapshotted.
+    ``as_of`` (today in the market-close timezone when omitted). Sends **one push
+    per session** (titled by its portfolio name) carrying that session's value and
+    day P&L, headline KPIs (total return, realized/unrealized P&L, fees, Sharpe),
+    its benchmark comparison, and its own best/worst holding. Delivery is
+    best-effort — a notifier failure never fails the job (see
+    :func:`_notify_safely`). Returns the ids of the sessions snapshotted.
     """
     if as_of is None:
         as_of = datetime.now(tz=_SNAPSHOT_TZ).date()
@@ -820,8 +929,6 @@ def snapshot_all_sessions(
     )
     targets = [s for s in sessions if s.strategy_key == AI_STRATEGY_KEY]
 
-    report_lines: list[str] = []
-    holdings: list[tuple[str, float]] = []
     snapshotted: list[uuid.UUID] = []
     for session_row in targets:
         snapshot = paper_service.record_value_snapshot(
@@ -839,18 +946,22 @@ def snapshot_all_sessions(
         benchmark_suffix = _benchmark_suffix(
             session, session_row, snapshot, as_of=as_of
         )
-        report_lines.append(
-            _session_report_line(label, snapshot, benchmark_suffix)
+        kpis = paper_service.session_kpis(
+            session, session_id=session_row.id, broker=broker
         )
-        for pos in snapshot.positions:
-            holdings.append((str(pos.get("ticker", "?")), float(pos.get("return_pct", 0.0))))
-
-    if snapshotted:
+        holdings = [
+            (str(pos.get("ticker", "?")), float(pos.get("return_pct", 0.0)))
+            for pos in snapshot.positions
+        ]
         _notify_safely(
             notifier,
-            title="Cadence: daily P&L",
-            message=_daily_snapshot_message(report_lines, holdings),
+            title=f"Cadence: {label} daily P&L",
+            message=_session_snapshot_message(
+                snapshot, kpis, benchmark_suffix, holdings
+            ),
         )
+
+    if snapshotted:
         logger.info("Daily snapshot recorded for %s AI session(s)", len(snapshotted))
     return snapshotted
 
@@ -865,22 +976,47 @@ def _signed_pct(value: float) -> str:
     return f"{sign}{abs(value) * 100:.2f}%"
 
 
-def _session_report_line(
-    label: str, snapshot: Any, benchmark_suffix: str | None = None
-) -> str:
-    """One per-session report line: value + the day's absolute/percent P&L.
+def _sharpe_text(sharpe: float | None) -> str:
+    """Signed Sharpe to 2dp, or an em dash until enough history exists."""
+    return f"{sharpe:+.2f}" if sharpe is not None else "—"
 
-    Appends a benchmark comparison suffix (benchmark return + excess return over
-    the session period) when available; the suffix is omitted when the session's
-    benchmark has no usable stored prices.
+
+def _session_snapshot_message(
+    snapshot: Any,
+    kpis: Any,
+    benchmark_suffix: str | None,
+    holdings: list[tuple[str, float]],
+) -> str:
+    """Build one session's daily push body.
+
+    The portfolio name lives in the push title, so the body leads with the day's
+    value + P&L, then headline KPIs (total return, realized/unrealized P&L, fees,
+    Sharpe), the benchmark comparison (when available), and the session's own
+    best/worst holding (when it holds anything).
     """
-    line = (
-        f"{label}: ${snapshot.total_value:,.2f} "
-        f"({_signed_money(snapshot.daily_pnl)}, {_signed_pct(snapshot.daily_pnl_pct)})"
-    )
+    lines = [
+        (
+            f"${snapshot.total_value:,.2f} today "
+            f"({_signed_money(snapshot.daily_pnl)}, "
+            f"{_signed_pct(snapshot.daily_pnl_pct)})"
+        ),
+        (
+            f"Total return: {_signed_money(kpis.total_return)} "
+            f"({_signed_pct(kpis.total_return_pct)})"
+        ),
+        (
+            f"Realized {_signed_money(kpis.realised_pnl)} · "
+            f"Unrealized {_signed_money(kpis.unrealised_pnl)} · "
+            f"Fees ${kpis.total_fees:,.2f}"
+        ),
+        f"Sharpe: {_sharpe_text(kpis.sharpe_ratio)}",
+    ]
     if benchmark_suffix is not None:
-        line = f"{line} {benchmark_suffix}"
-    return line
+        lines.append(benchmark_suffix)
+    best_worst = _best_worst_line(holdings)
+    if best_worst is not None:
+        lines.append(best_worst)
+    return "\n".join(lines)
 
 
 def _benchmark_suffix(
@@ -933,15 +1069,6 @@ def _best_worst_line(holdings: list[tuple[str, float]]) -> str | None:
     )
 
 
-def _daily_snapshot_message(
-    report_lines: list[str], holdings: list[tuple[str, float]]
-) -> str:
-    """Assemble the daily push body: per-session lines then best/worst holding."""
-    lines = list(report_lines)
-    best_worst = _best_worst_line(holdings)
-    if best_worst is not None:
-        lines.append(best_worst)
-    return "\n".join(lines)
 
 
 # --------------------------------------------------------------------------- #
@@ -1028,18 +1155,138 @@ def _involves_crypto(
     )
 
 
-def _candidates_from_universe(assets: list[Asset]) -> list[dict[str, Any]]:
-    """Build the enriched candidate records the agent reasons over from the universe."""
-    return [
-        {
+def _indicator_annotation(snap: TechnicalIndicator) -> dict[str, Any]:
+    """The trend-indicator values handed to the AI for a candidate or holding."""
+    return {
+        "trading_date": snap.trading_date.isoformat() if snap.trading_date else None,
+        "close": snap.close,
+        "sma_50": snap.sma_50,
+        "sma_200": snap.sma_200,
+        "close_sma200": snap.close_sma200,
+        "sma50_sma200": snap.sma50_sma200,
+        "sma200_slope": snap.sma200_slope,
+        "ema_20": snap.ema_20,
+        "macd_line": snap.macd_line,
+        "macd_signal": snap.macd_signal,
+        "macd_hist": snap.macd_hist,
+        "rsi_14": snap.rsi_14,
+        "roc_120": snap.roc_120,
+        "obv": snap.obv,
+        "obv_change_20d": snap.obv_change_20d,
+        "vol_ratio_50": snap.vol_ratio_50,
+        "dist_high_52w": snap.dist_high_52w,
+        "drawdown_from_max": snap.drawdown_from_max,
+        "hvol_20": snap.hvol_20,
+        "bb_pctb": snap.bb_pctb,
+        "bb_width": snap.bb_width,
+        "gate_pass": snap.gate_pass,
+        "regime_pass": snap.regime_pass,
+        "momentum_pass": snap.momentum_pass,
+        "obv_rising": snap.obv_rising,
+    }
+
+
+def _reversal_annotation(snap: TechnicalIndicator) -> dict[str, Any]:
+    """The deterministic reversal flags handed to the AI for a holding."""
+    return {
+        "macd_hist_rollover": snap.rev_macd_hist_rollover,
+        "rsi_rollover": snap.rev_rsi_rollover,
+        "return_decel": snap.rev_return_decel,
+        "obv_price_divergence": snap.rev_obv_price_divergence,
+        "sma200_slope_flattening": snap.rev_sma200_slope_flattening,
+    }
+
+
+def _gate_failure_reason(snap: TechnicalIndicator) -> str:
+    """Name the gate condition a dropped candidate failed (for the run context)."""
+    if not snap.regime_pass:
+        return "regime not confirmed (close>SMA200, SMA50>SMA200, SMA200 slope>=0)"
+    if not snap.momentum_pass:
+        return "momentum not confirmed (MACD hist>0, RSI14>50, ROC120>0)"
+    return "trend gate failed"
+
+
+def _candidates_from_universe(
+    assets: list[Asset],
+    snapshots: dict[int, TechnicalIndicator],
+    *,
+    apply_gate: bool,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Build the candidate records the agent reasons over from the universe.
+
+    Returns ``(candidates, dropped)``. When ``apply_gate`` is true (trend
+    strategy), each in-scope asset is kept only if it has a stored snapshot whose
+    uptrend gate passes; survivors are annotated with their trend indicators, and
+    assets that fail the gate or lack a snapshot are dropped from the candidate set
+    (never shown to the AI) and returned in ``dropped`` with the reason. When
+    ``apply_gate`` is false (pre-trend prompt version), every asset is a candidate
+    with no indicator annotation and nothing is dropped (original behaviour).
+    """
+    candidates: list[dict[str, Any]] = []
+    dropped: list[dict[str, Any]] = []
+    for asset in assets:
+        base = {
             "ticker": asset.ticker,
             "company_name": asset.name or asset.ticker,
             "sector": asset.sector or "unknown",
             "category": asset.category,
             "is_eligible": asset.is_eligible,
         }
-        for asset in assets
-    ]
+        if not apply_gate:
+            candidates.append(base)
+            continue
+        snap = snapshots.get(asset.id)
+        if snap is None:
+            dropped.append({"ticker": asset.ticker, "reason": "no snapshot"})
+            continue
+        if not snap.gate_pass:
+            dropped.append(
+                {"ticker": asset.ticker, "reason": _gate_failure_reason(snap)}
+            )
+            continue
+        candidates.append({**base, "indicators": _indicator_annotation(snap)})
+    return candidates, dropped
+
+
+def _snapshots_by_ticker(
+    session: Session, tickers: list[str]
+) -> dict[str, TechnicalIndicator]:
+    """Resolve the latest stored snapshot for each ticker, keyed by ticker."""
+    if not tickers:
+        return {}
+    id_to_ticker = {
+        asset.id: asset.ticker
+        for asset in session.execute(
+            select(Asset).where(Asset.ticker.in_(tickers))
+        ).scalars()
+    }
+    snaps = ti_service.get_latest_snapshots(session, list(id_to_ticker))
+    return {id_to_ticker[asset_id]: snap for asset_id, snap in snaps.items()}
+
+
+def _gate_discovered(
+    session: Session, discovered: list[str]
+) -> tuple[list[str], list[dict[str, Any]]]:
+    """Drop discovered tickers whose stored snapshot already fails the trend gate.
+
+    A discovered ticker with no stored snapshot is kept — a genuinely new asset is
+    still added and traded, and will be gated as a normal candidate in later runs
+    once the nightly job computes its snapshot. One that already has a stored
+    snapshot failing the gate is dropped from the candidate set. Returns the
+    surviving tickers and the dropped records (ticker + reason).
+    """
+    if not discovered:
+        return [], []
+    snaps = _snapshots_by_ticker(session, discovered)
+    survivors: list[str] = []
+    dropped: list[dict[str, Any]] = []
+    for ticker in discovered:
+        snap = snaps.get(ticker)
+        if snap is not None and not snap.gate_pass:
+            dropped.append({"ticker": ticker, "reason": _gate_failure_reason(snap)})
+            continue
+        survivors.append(ticker)
+    return survivors, dropped
 
 
 def _add_discovered_assets(
@@ -1095,12 +1342,19 @@ def _build_holdings(
     ledger: list[SessionPosition],
     broker: Broker,
     asset_classes: dict[str, AssetClass],
+    snapshots: dict[str, TechnicalIndicator] | None = None,
 ) -> list[dict[str, Any]]:
     """Build the agent's current-holdings context from the session's ledger.
 
     Quantity and cost basis come from the ledger (the source of truth); the
     current price is priced live via broker quotes. A ticker whose quote can't be
     fetched is included at a zero current price rather than aborting the run.
+
+    When ``snapshots`` is provided (trend strategy), each holding also carries its
+    full indicator set and deterministic reversal flags so the AI can decide
+    sell/trim/hold — there is no hard exit. A holding without a stored snapshot
+    carries ``None`` for both. When ``snapshots`` is ``None`` (pre-trend prompt
+    version) no technical context is attached (original behaviour).
     """
     holdings: list[dict[str, Any]] = []
     for entry in ledger:
@@ -1114,17 +1368,20 @@ def _build_holdings(
         except Exception as exc:  # noqa: BLE001 - pricing is best-effort context
             logger.warning("holdings context: no quote for %s: %s", entry.ticker, exc)
             current = 0.0
-        holdings.append(
-            {
-                "ticker": entry.ticker,
-                "side": "long",
-                "quantity": entry.quantity,
-                "avg_cost": cost,
-                "current_price": current,
-                "unrealized_pnl": (current - cost) * entry.quantity,
-                "pnl_pct": (current / cost - 1) if cost > 0 else 0.0,
-            }
-        )
+        holding: dict[str, Any] = {
+            "ticker": entry.ticker,
+            "side": "long",
+            "quantity": entry.quantity,
+            "avg_cost": cost,
+            "current_price": current,
+            "unrealized_pnl": (current - cost) * entry.quantity,
+            "pnl_pct": (current / cost - 1) if cost > 0 else 0.0,
+        }
+        if snapshots is not None:
+            snap = snapshots.get(entry.ticker)
+            holding["indicators"] = _indicator_annotation(snap) if snap else None
+            holding["reversal_flags"] = _reversal_annotation(snap) if snap else None
+        holdings.append(holding)
     return holdings
 
 
@@ -1257,6 +1514,8 @@ def _finish_event(
     actions_taken: list[dict[str, Any]],
     duration_ms: int,
     research: list[dict[str, Any]] | None = None,
+    trend_context: dict[str, Any] | None = None,
+    run_stats: dict[str, Any] | None = None,
 ) -> None:
     event.status = status.value
     event.result_payload = result_payload
@@ -1264,6 +1523,10 @@ def _finish_event(
     event.duration_ms = duration_ms
     if research:
         event.research = research
+    if trend_context:
+        event.trend_context = trend_context
+    if run_stats:
+        event.run_stats = run_stats
     session.commit()
 
 
@@ -1273,11 +1536,12 @@ def _fail_event(
     error: str,
     duration_ms: int,
     research: list[dict[str, Any]] | None = None,
+    trend_context: dict[str, Any] | None = None,
 ) -> None:
     """Best-effort transition of an event to ``failed`` with a reason.
 
-    Any research captured before the failure is persisted so a failed run is still
-    reviewable.
+    Any research/trend context captured before the failure is persisted so a failed
+    run is still reviewable.
     """
     event = session.get(AIPortfolioEvent, event_id)
     if event is None:
@@ -1287,7 +1551,65 @@ def _fail_event(
     event.duration_ms = duration_ms
     if research:
         event.research = research
+    if trend_context:
+        event.trend_context = trend_context
     session.commit()
+
+
+def _humanize_failure(exc: Exception) -> str:
+    """Render an exception as a user-facing failure reason for the event row.
+
+    Most exceptions carry a readable message, but the agents SDK's
+    :class:`MaxTurnsExceeded` stringifies to a terse ``"Max turns (N) exceeded"``
+    that means nothing to a portfolio owner. Translate it into an actionable
+    sentence; everything else falls back to its message (or class name).
+    """
+    if isinstance(exc, MaxTurnsExceeded):
+        return (
+            f"The AI reached its step limit ({settings.AI_PORTFOLIO_MAX_TURNS} turns) "
+            "before finishing — usually too many web searches or tool calls in one "
+            "run. No changes were made. Please retry."
+        )
+    return str(exc) or exc.__class__.__name__
+
+
+def _build_run_stats(
+    *,
+    trade_results: list[TradeResult],
+    executed: int,
+    all_executed: bool,
+    realized_pnl: float | None = None,
+    account_summary: dict[str, Any] | None = None,
+    trend_context: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Assemble the machine-readable run-outcome blob for offline learning.
+
+    Captures order counts, full per-trade details (including ``filled_price``,
+    which ``actions_taken`` drops), the run's realized P&L and account/valuation
+    snapshot where applicable, and trend-gate counts derived from
+    ``trend_context``. Deliberately not exposed via the API/UI (see
+    ``AIPortfolioEvent.run_stats``).
+    """
+    stats: dict[str, Any] = {
+        "orders": {
+            "executed": executed,
+            "skipped": len(trade_results) - executed,
+            "total": len(trade_results),
+            "all_executed": all_executed,
+        },
+        "trades": [tr.to_stats_dict() for tr in trade_results],
+    }
+    if realized_pnl is not None:
+        stats["realized_pnl"] = realized_pnl
+    if account_summary is not None:
+        stats["account"] = account_summary
+    if trend_context is not None:
+        stats["gate"] = {
+            "candidates": len(trend_context.get("candidates", [])),
+            "dropped": len(trend_context.get("dropped_candidates", [])),
+            "holdings": len(trend_context.get("holdings", [])),
+        }
+    return stats
 
 
 def _elapsed_ms(t0: float) -> int:

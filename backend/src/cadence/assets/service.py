@@ -20,6 +20,7 @@ from cadence.assets.category import SUPPORTED_CATEGORIES, AssetCategory
 from cadence.assets.errors import (
     AssetNotFoundError,
     DuplicateAssetError,
+    UnknownTickerError,
     UnsupportedCategoryError,
     UntradeableTickerError,
 )
@@ -78,7 +79,25 @@ def add_asset(
 
     # May raise UnknownTickerError / MarketDataUnavailableError before any
     # persistence, guaranteeing no partial rows.
-    derived = derive_metrics(provider, normalized)
+    try:
+        derived = derive_metrics(provider, normalized)
+    except UnknownTickerError:
+        # yfinance denotes US class/preferred shares with a dash (``BRK-B``),
+        # while Alpaca and common usage write a dot (``BRK.B``). If a dotted
+        # ticker isn't found, retry the dash form and canonicalize to it so the
+        # stored ticker resolves on both the data provider and the brokerage.
+        # Foreign listings (e.g. ``BAYN.DE``) are known to yfinance, so they do
+        # not reach this fallback and stay rejected by the tradability check.
+        dash_form = normalized.replace(".", "-")
+        if dash_form == normalized:
+            raise
+        derived = derive_metrics(provider, dash_form)
+        normalized = dash_form
+        existing = session.execute(
+            select(Asset).where(Asset.ticker == normalized)
+        ).scalar_one_or_none()
+        if existing is not None:
+            raise DuplicateAssetError(f"Asset {normalized!r} already exists")
 
     # Only tradeable categories (stock, crypto) may enter the universe; reject
     # anything else before persistence so no untradeable row is ever stored.

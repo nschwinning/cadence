@@ -90,6 +90,16 @@ class AIPortfolioEvent(Base):
     # The run's research transcript: one entry per web search the agent performed
     # ({query, results, error}), captured for later review of the AI's reasoning.
     research: Mapped[list[dict[str, Any]] | None] = mapped_column(JSONB, nullable=True)
+    # The run's trend-decision context: candidates dropped by the trend gate (with
+    # reasons) and the indicator annotations handed to the AI for the surviving
+    # candidates and the holdings (with reversal flags). Null for runs that did no
+    # gating (e.g. a session frozen to a pre-trend prompt version).
+    trend_context: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
+    # Machine-readable run outcome captured for later offline learning (never
+    # surfaced in the UI): order counts, per-trade details (incl. filled prices),
+    # realized P&L, an account/valuation snapshot, and trend-gate counts. Null on
+    # runs that failed before execution.
+    run_stats: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
     duration_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
     created_at: Mapped[datetime] = mapped_column(

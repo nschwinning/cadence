@@ -227,6 +227,38 @@ def test_add_asset_stores_alpaca_symbol_on_success(db_session: Session) -> None:
     assert asset.alpaca_symbol == "AAPL"
 
 
+def test_add_asset_class_share_dash_form_stores_alpaca_dot_symbol(
+    db_session: Session,
+) -> None:
+    # A US class share added in yfinance dash form (BRK-B) is stored as-is and
+    # its Alpaca dot symbol (BRK.B) is captured for trading.
+    asset = service.add_asset(db_session, "BRK-B", _eligible_provider(), _broker())
+
+    assert asset.ticker == "BRK-B"
+    assert asset.alpaca_symbol == "BRK.B"
+
+
+def test_add_asset_class_share_dotted_form_falls_back_to_dash(
+    db_session: Session,
+) -> None:
+    # A user typing the Alpaca dot form (BRK.B) hits yfinance's UnknownTicker for
+    # that form; the service retries the dash form, canonicalizes the stored
+    # ticker to BRK-B, and still captures the Alpaca dot symbol.
+    provider = FakeMarketDataProvider(
+        info=_eligible_provider()._info,
+        history=[
+            HistoryBar(date=date(2005, 1, 1), close=50.0, volume=1_000_000.0),
+            HistoryBar(date=date(2024, 1, 1), close=50.0, volume=1_000_000.0),
+        ],
+        info_error_by_ticker={"BRK.B": UnknownTickerError("no BRK.B")},
+    )
+
+    asset = service.add_asset(db_session, "BRK.B", provider, _broker())
+
+    assert asset.ticker == "BRK-B"
+    assert asset.alpaca_symbol == "BRK.B"
+
+
 def test_add_asset_stores_alpaca_symbol_for_crypto(db_session: Session) -> None:
     # Crypto is stored with Alpaca's slash form (BTC-USD -> BTC/USD).
     asset = service.add_asset(

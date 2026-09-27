@@ -25,6 +25,7 @@ function makeRun(overrides: Partial<AIPortfolioEvent> = {}): AIPortfolioEvent {
     result_payload: null,
     actions_taken: [{ ticker: 'AAPL' }],
     research: [{ query: 'q', results: null, error: null }],
+    trend_context: null,
     error: null,
     duration_ms: 1200,
     created_at: '2026-09-14T00:00:00Z',

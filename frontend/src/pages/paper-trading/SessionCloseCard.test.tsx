@@ -49,6 +49,7 @@ const RUN_DETAIL: AIPortfolioRunDetail = {
       { ticker: 'MSFT', side: 'sell', executed: true },
     ],
     research: null,
+    trend_context: null,
     error: null,
     duration_ms: 120,
     created_at: '2026-09-16T00:00:00Z',

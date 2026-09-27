@@ -99,17 +99,18 @@ class StubBroker:
     ) -> BrokerAsset | None:
         """Simulate an Alpaca asset lookup without any network access.
 
-        Every symbol is treated as tradable except an **equity** whose Alpaca
-        symbol carries an exchange suffix (a ``.``, e.g. ``BAYN.DE``) — Alpaca
-        does not list foreign equities, so this returns ``None`` for them. This
-        keeps the offline stub / Docker smoke rejecting non-US listings without
-        real credentials. Crypto is always fractionable.
+        Every symbol is treated as tradable except an **equity** whose *input*
+        (yfinance/canonical) symbol carries an exchange suffix (a ``.``, e.g.
+        ``BAYN.DE``) — Alpaca does not list foreign equities, so this returns
+        ``None`` for them. The check is on the input, not the converted Alpaca
+        symbol, so a US class share (``BRK-B`` -> ``BRK.B``) is still accepted.
+        This keeps the offline stub / Docker smoke rejecting non-US listings
+        without real credentials. Crypto is always fractionable.
         """
-        alpaca_symbol = to_alpaca_symbol(symbol, asset_class)
-        if asset_class == AssetClass.EQUITY and "." in alpaca_symbol:
+        if asset_class == AssetClass.EQUITY and "." in symbol.strip():
             return None
         return BrokerAsset(
-            symbol=alpaca_symbol,
+            symbol=to_alpaca_symbol(symbol, asset_class),
             asset_class=asset_class,
             tradable=True,
             fractionable=asset_class == AssetClass.CRYPTO,

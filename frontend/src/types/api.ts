@@ -541,6 +541,13 @@ export interface AIPortfolioEvent {
    * Null when the run did no research (or on legacy rows before capture existed).
    */
   research: AIResearchEntry[] | null;
+  /**
+   * The run's trend-decision context: candidates dropped by the trend gate (with
+   * reasons) and the indicator annotations handed to the AI for surviving
+   * candidates and current holdings. Null for runs that performed no gating (e.g.
+   * a session frozen to a pre-trend prompt version).
+   */
+  trend_context: AITrendContext | null;
   error: string | null;
   duration_ms: number | null;
   created_at: string;
@@ -556,6 +563,35 @@ export interface AIResearchEntry {
   query: string;
   results: Record<string, unknown> | null;
   error: string | null;
+}
+
+/** A candidate dropped by the trend gate, with the reason it failed. */
+export interface AITrendDroppedCandidate {
+  ticker: string;
+  reason: string;
+}
+
+/** A surviving candidate handed to the AI, with its indicator annotation. */
+export interface AITrendCandidate {
+  ticker: string;
+  indicators: Record<string, unknown> | null;
+}
+
+/** A current holding handed to the AI, with its indicators and reversal flags. */
+export interface AITrendHolding {
+  ticker: string;
+  indicators: Record<string, unknown> | null;
+  reversal_flags: Record<string, unknown> | null;
+}
+
+/**
+ * The per-run trend-decision context recorded on an AI event. Mirrors the backend
+ * `trend_context` blob: what the gate dropped and what was handed to the AI.
+ */
+export interface AITrendContext {
+  dropped_candidates: AITrendDroppedCandidate[];
+  candidates: AITrendCandidate[];
+  holdings: AITrendHolding[];
 }
 
 /** A page of AI runs plus the matching total. Mirrors `AIPortfolioRunListResponse`. */

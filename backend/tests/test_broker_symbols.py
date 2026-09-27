@@ -43,6 +43,20 @@ def test_equity_passthrough_uppercased(ticker: str) -> None:
     assert to_canonical_symbol(ticker, AssetClass.EQUITY) == up
 
 
+@pytest.mark.parametrize(
+    ("ticker", "expected"),
+    [
+        ("BRK-B", "BRK.B"),  # US class share: dash (yfinance) -> dot (Alpaca)
+        ("brk-b", "BRK.B"),
+        ("BF-B", "BF.B"),
+    ],
+)
+def test_to_alpaca_symbol_equity_class_share_dash_to_dot(
+    ticker: str, expected: str
+) -> None:
+    assert to_alpaca_symbol(ticker, AssetClass.EQUITY) == expected
+
+
 @pytest.mark.parametrize("canonical", ["BTC-USD", "ETH-USDT", "SOL-EUR"])
 def test_crypto_round_trip(canonical: str) -> None:
     alpaca = to_alpaca_symbol(canonical, AssetClass.CRYPTO)

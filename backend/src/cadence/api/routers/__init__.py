@@ -7,6 +7,9 @@ from cadence.api.routers.health import router as health_router
 from cadence.api.routers.paper_trading import router as paper_trading_router
 from cadence.api.routers.portfolios import router as portfolios_router
 from cadence.api.routers.recommendations import router as recommendations_router
+from cadence.api.routers.technical_indicators import (
+    router as technical_indicators_router,
+)
 
 __all__ = [
     "ai_portfolio_router",
@@ -16,4 +19,5 @@ __all__ = [
     "paper_trading_router",
     "portfolios_router",
     "recommendations_router",
+    "technical_indicators_router",
 ]

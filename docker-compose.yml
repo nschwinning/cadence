@@ -87,6 +87,10 @@ services:
       BENCHMARK_SCHEDULE: ${BENCHMARK_SCHEDULE:-5 16 * * 1-5}
       # Cron expression; default 16:15 on weekdays (just after the US close).
       SNAPSHOT_SCHEDULE: ${SNAPSHOT_SCHEDULE:-15 16 * * 1-5}
+      # Cron expression; default 05:00 on weekdays — precompute technical
+      # indicators over the whole universe before the market-open rebalance so the
+      # trend gate reads fresh snapshots.
+      INDICATORS_SCHEDULE: ${INDICATORS_SCHEDULE:-0 5 * * 1-5}
       # Must match the backend's REBALANCE_CRON_TOKEN.
       REBALANCE_CRON_TOKEN: ${REBALANCE_CRON_TOKEN:-}
     depends_on:
@@ -121,10 +125,18 @@ services:
       'T=$$(cat /tmp/cron.token)'
       'curl -fsS -X POST -H X-Cron-Token:$$T $$B/ai-portfolio/snapshot-daily >/dev/null'
       > /usr/local/bin/snapshot.sh &&
-      chmod +x /usr/local/bin/rebalance.sh /usr/local/bin/benchmark.sh /usr/local/bin/snapshot.sh &&
+      printf '%s\n'
+      '#!/bin/sh'
+      'set -eu'
+      'B=http://backend:8000/api/v1'
+      'T=$$(cat /tmp/cron.token)'
+      'curl -fsS -X POST -H X-Cron-Token:$$T $$B/technical-indicators/runs >/dev/null'
+      > /usr/local/bin/indicators.sh &&
+      chmod +x /usr/local/bin/rebalance.sh /usr/local/bin/benchmark.sh /usr/local/bin/snapshot.sh /usr/local/bin/indicators.sh &&
       echo \"$${REBALANCE_SCHEDULE} /usr/local/bin/rebalance.sh\" > /etc/crontabs/root &&
       echo \"$${BENCHMARK_SCHEDULE} /usr/local/bin/benchmark.sh\" >> /etc/crontabs/root &&
       echo \"$${SNAPSHOT_SCHEDULE} /usr/local/bin/snapshot.sh\" >> /etc/crontabs/root &&
+      echo \"$${INDICATORS_SCHEDULE} /usr/local/bin/indicators.sh\" >> /etc/crontabs/root &&
       crond -f -l 8"
     restart: unless-stopped
 

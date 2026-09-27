@@ -55,6 +55,19 @@ const detail: AIPortfolioRunDetail = {
     research: [
       { query: 'apple earnings 2026', results: { organic_results: [] }, error: null },
     ],
+    trend_context: {
+      dropped_candidates: [{ ticker: 'XOM', reason: 'no snapshot' }],
+      candidates: [
+        { ticker: 'AAPL', indicators: { close_sma200: 1.12, rsi_14: 61.2 } },
+      ],
+      holdings: [
+        {
+          ticker: 'MSFT',
+          indicators: { rsi_14: 72.0 },
+          reversal_flags: { rsi_rollover: true, macd_hist_rollover: false },
+        },
+      ],
+    },
     error: null,
     duration_ms: 1200,
     created_at: '2026-09-14T00:00:00Z',
@@ -151,6 +164,26 @@ describe('RunDetailPage', () => {
     // The frozen rebalance-prompt version used for this run.
     expect(screen.getByText('Prompt version')).toBeInTheDocument();
     expect(screen.getByText('v3')).toBeInTheDocument();
+
+    // Trend-decision context: dropped candidate + reason, and reversal flags.
+    expect(screen.getByText('Trend decision')).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'XOM' })).toBeInTheDocument();
+    expect(screen.getByText('no snapshot')).toBeInTheDocument();
+    expect(screen.getByText('rsi_rollover')).toBeInTheDocument();
+  });
+
+  it('omits the trend-decision section when the run recorded none', async () => {
+    mockedGet.mockResolvedValue({
+      data: { ...detail, event: { ...detail.event, trend_context: null } },
+    });
+
+    renderPage(<RunDetailPage />);
+
+    // Wait for the page to render, then confirm the section is absent.
+    expect(
+      await screen.findByText('Rotated toward higher-conviction names.'),
+    ).toBeInTheDocument();
+    expect(screen.queryByText('Trend decision')).not.toBeInTheDocument();
   });
 
   it('surfaces an error when the run cannot be loaded', async () => {

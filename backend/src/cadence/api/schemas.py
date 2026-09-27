@@ -417,6 +417,18 @@ class AIDailySnapshotResponse(BaseModel):
     session_ids: list[uuid.UUID] = Field(default_factory=list)
 
 
+class TechnicalIndicatorRunResponse(BaseModel):
+    """Result of triggering the technical-indicator precompute cron.
+
+    ``started`` is ``False`` when a run was already in flight (the existing run's
+    id is returned instead of a new one), so the trigger is safe to call twice.
+    """
+
+    run_id: int
+    status: str
+    started: bool
+
+
 class BenchmarkCatalogEntry(BaseModel):
     """One selectable benchmark index: its stable id and display name."""
 
@@ -522,6 +534,9 @@ class AIPortfolioEventRead(BaseModel):
     result_payload: dict[str, Any] | None
     actions_taken: list[dict[str, Any]] | None
     research: list[dict[str, Any]] | None
+    # Per-run trend-decision context (dropped candidates + indicator annotations
+    # handed to the AI); null for runs that performed no gating.
+    trend_context: dict[str, Any] | None
     error: str | None
     duration_ms: int | None
     created_at: datetime

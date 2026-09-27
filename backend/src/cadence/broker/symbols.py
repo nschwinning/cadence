@@ -20,14 +20,17 @@ _FIAT_SUFFIXES = ("USDT", "USDC", "USD", "EUR", "GBP", "USDP")
 def to_alpaca_symbol(ticker: str, asset_class: AssetClass) -> str:
     """Convert a canonical universe ticker to Alpaca's brokerage format.
 
-    Equities are returned upper-cased and otherwise unchanged. Crypto is
-    upper-cased and expressed with a ``/`` separator: ``BTC-USD`` -> ``BTC/USD``.
-    Input already in ``BTC/USD`` form is left as-is, and a joined form like
-    ``BTCUSD`` (with a known fiat suffix) has the separator inserted.
+    Equities are upper-cased and their US class/preferred-share separator is
+    switched from the yfinance dash to Alpaca's dot: ``BRK-B`` -> ``BRK.B``
+    (foreign listings never reach here as tradable, so a dash in an equity always
+    denotes a class separator). Crypto is upper-cased and expressed with a ``/``
+    separator: ``BTC-USD`` -> ``BTC/USD``. Input already in ``BTC/USD`` form is
+    left as-is, and a joined form like ``BTCUSD`` (with a known fiat suffix) has
+    the separator inserted.
     """
     symbol = ticker.strip().upper()
     if asset_class != AssetClass.CRYPTO:
-        return symbol
+        return symbol.replace("-", ".")
     if "/" in symbol:
         return symbol
     if "-" in symbol:

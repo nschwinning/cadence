@@ -4,6 +4,7 @@ import { formatCurrency, formatQuantity } from '../../lib/format';
 import type {
   AIPortfolioEvent,
   AIResearchEntry,
+  AITrendContext,
   ClosedPosition,
   PaperTrade,
 } from '../../types/api';
@@ -238,6 +239,198 @@ function Reasoning({ event }: { event: AIPortfolioEvent }) {
             {JSON.stringify(payload, null, 2)}
           </pre>
         )}
+      </div>
+    </Card>
+  );
+}
+
+/** Format a numeric indicator value compactly, or an em dash when absent/non-numeric. */
+function num(source: Record<string, unknown> | null, key: string): string {
+  if (!source) return '—';
+  const value = source[key];
+  return typeof value === 'number' ? value.toFixed(2) : '—';
+}
+
+/** The reversal-flag keys that are set (truthy), for compact display as chips. */
+function activeFlags(flags: Record<string, unknown> | null): string[] {
+  if (!flags) return [];
+  return Object.entries(flags)
+    .filter(([, value]) => value === true)
+    .map(([key]) => key);
+}
+
+/** The trend-indicator columns handed to the AI, shown compactly per row. */
+const INDICATOR_COLUMNS: { key: string; label: string }[] = [
+  { key: 'close_sma200', label: 'Close/SMA200' },
+  { key: 'sma50_sma200', label: 'SMA50/200' },
+  { key: 'sma200_slope', label: 'SMA200 slope' },
+  { key: 'macd_hist', label: 'MACD hist' },
+  { key: 'rsi_14', label: 'RSI14' },
+  { key: 'roc_120', label: 'ROC120' },
+];
+
+/**
+ * The per-run trend decision: candidates the deterministic gate dropped (with
+ * reasons) and the indicator annotations handed to the AI for surviving candidates
+ * and current holdings. Omitted entirely by the caller when `trend_context` is null
+ * (a run that performed no gating).
+ */
+function TrendDecisionCard({ context }: { context: AITrendContext }) {
+  const dropped = context.dropped_candidates ?? [];
+  const candidates = context.candidates ?? [];
+  const holdings = context.holdings ?? [];
+  return (
+    <Card title="Trend decision">
+      <div className="flex flex-col gap-4 p-4">
+        <div>
+          <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">
+            Dropped by the gate ({dropped.length})
+          </h3>
+          {dropped.length === 0 ? (
+            <p className="text-sm text-slate-500">
+              No candidates were dropped by the trend gate.
+            </p>
+          ) : (
+            <ul className="m-0 flex list-none flex-col gap-1 p-0 text-sm">
+              {dropped.map((d, i) => (
+                <li
+                  key={`${d.ticker}-${i}`}
+                  className="flex flex-wrap items-baseline gap-2"
+                >
+                  <Link
+                    to={`/assets/${d.ticker}`}
+                    className="font-semibold text-emerald-700 hover:underline"
+                  >
+                    {d.ticker}
+                  </Link>
+                  <span className="text-slate-600">{d.reason}</span>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+
+        <div>
+          <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">
+            Candidates handed to the AI ({candidates.length})
+          </h3>
+          {candidates.length === 0 ? (
+            <p className="text-sm text-slate-500">
+              No trend-confirmed candidates were presented.
+            </p>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full min-w-[640px] border-collapse text-sm">
+                <thead>
+                  <tr className="border-b border-slate-200 bg-slate-50 text-left text-xs font-semibold uppercase tracking-wide text-slate-500">
+                    <th className="px-4 py-3">Ticker</th>
+                    {INDICATOR_COLUMNS.map((c) => (
+                      <th key={c.key} className="px-4 py-3 text-right">
+                        {c.label}
+                      </th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {candidates.map((c, i) => (
+                    <tr
+                      key={`${c.ticker}-${i}`}
+                      className="border-b border-slate-100 hover:bg-slate-50"
+                    >
+                      <td className="px-4 py-3 font-semibold">
+                        <Link
+                          to={`/assets/${c.ticker}`}
+                          className="text-emerald-700 hover:underline"
+                        >
+                          {c.ticker}
+                        </Link>
+                      </td>
+                      {INDICATOR_COLUMNS.map((col) => (
+                        <td
+                          key={col.key}
+                          className="px-4 py-3 text-right tabular-nums text-slate-700"
+                        >
+                          {num(c.indicators, col.key)}
+                        </td>
+                      ))}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+
+        <div>
+          <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">
+            Holdings handed to the AI ({holdings.length})
+          </h3>
+          {holdings.length === 0 ? (
+            <p className="text-sm text-slate-500">
+              This run had no current holdings.
+            </p>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full min-w-[720px] border-collapse text-sm">
+                <thead>
+                  <tr className="border-b border-slate-200 bg-slate-50 text-left text-xs font-semibold uppercase tracking-wide text-slate-500">
+                    <th className="px-4 py-3">Ticker</th>
+                    {INDICATOR_COLUMNS.map((c) => (
+                      <th key={c.key} className="px-4 py-3 text-right">
+                        {c.label}
+                      </th>
+                    ))}
+                    <th className="px-4 py-3">Reversal flags</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {holdings.map((h, i) => {
+                    const flags = activeFlags(h.reversal_flags);
+                    return (
+                      <tr
+                        key={`${h.ticker}-${i}`}
+                        className="border-b border-slate-100 align-top hover:bg-slate-50"
+                      >
+                        <td className="px-4 py-3 font-semibold">
+                          <Link
+                            to={`/assets/${h.ticker}`}
+                            className="text-emerald-700 hover:underline"
+                          >
+                            {h.ticker}
+                          </Link>
+                        </td>
+                        {INDICATOR_COLUMNS.map((col) => (
+                          <td
+                            key={col.key}
+                            className="px-4 py-3 text-right tabular-nums text-slate-700"
+                          >
+                            {num(h.indicators, col.key)}
+                          </td>
+                        ))}
+                        <td className="px-4 py-3">
+                          {flags.length === 0 ? (
+                            <span className="text-slate-500">—</span>
+                          ) : (
+                            <div className="flex flex-wrap gap-1">
+                              {flags.map((f) => (
+                                <span
+                                  key={f}
+                                  className="inline-flex items-center rounded-full bg-amber-100 px-2 py-0.5 text-xs font-medium text-amber-800"
+                                >
+                                  {f}
+                                </span>
+                              ))}
+                            </div>
+                          )}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
       </div>
     </Card>
   );
@@ -584,6 +777,9 @@ export function RunDetailPage() {
             promptVersion={data.rebalance_prompt_version}
           />
           <Reasoning event={data.event} />
+          {data.event.trend_context && (
+            <TrendDecisionCard context={data.event.trend_context} />
+          )}
           <ResearchCard research={data.event.research} />
           <TradesCard trades={data.trades} />
           <SkippedTradesCard skipped={readSkipped(data.event.actions_taken)} />

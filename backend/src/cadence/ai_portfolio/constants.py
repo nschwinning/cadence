@@ -47,3 +47,10 @@ TERMINAL_STATUSES = frozenset(
 
 #: Strategy key identifying an AI-managed buy-and-hold paper-trading session.
 AI_STRATEGY_KEY = "ai_buy_hold"
+
+#: First rebalance-prompt version that drives the technical-indicator trend
+#: strategy (seeded by the v3 migration). A session whose frozen prompt version is
+#: at least this applies the deterministic uptrend gate and records per-run
+#: trend-decision context; sessions frozen to an earlier (pre-trend) version keep
+#: their original ungated behaviour and record no trend context.
+TREND_PROMPT_VERSION = 3

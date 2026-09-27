@@ -37,6 +37,15 @@ def test_get_asset_returns_none_for_dotted_equity(symbol: str) -> None:
     assert StubBroker().get_asset(symbol) is None
 
 
+def test_get_asset_accepts_us_class_share_with_alpaca_dot_symbol() -> None:
+    # A US class share arrives in yfinance dash form (no exchange-suffix dot) and
+    # is tradable; its Alpaca symbol uses the dot separator (BRK-B -> BRK.B).
+    asset = StubBroker().get_asset("BRK-B")
+    assert asset is not None
+    assert asset.symbol == "BRK.B"
+    assert asset.tradable is True
+
+
 def test_deterministic_quotes_are_stable() -> None:
     broker = StubBroker()
     first = broker.get_quote("AAPL")

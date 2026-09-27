@@ -11,6 +11,7 @@ from cadence.database import Base
 from cadence.paper_trading import models as _paper_trading_models  # noqa: F401
 from cadence.portfolios import models as _portfolios_models  # noqa: F401
 from cadence.recommendations import models as _recommendations_models  # noqa: F401
+from cadence.technical_indicators import models as _technical_indicator_models  # noqa: F401
 
 # this is the Alembic Config object, which provides
 # access to the values within the .ini file in use.

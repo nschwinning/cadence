@@ -10,6 +10,8 @@ from __future__ import annotations
 from datetime import date
 
 import pytest
+from agents.exceptions import MaxTurnsExceeded
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 from tests.fakes import (
     FakeAIPortfolioAgent,
@@ -24,7 +26,11 @@ from cadence.ai_portfolio.agent import (
     AIRebalanceResult,
     AITargetAllocation,
 )
-from cadence.ai_portfolio.constants import EventStatus, EventType
+from cadence.ai_portfolio.constants import (
+    TREND_PROMPT_VERSION,
+    EventStatus,
+    EventType,
+)
 from cadence.ai_portfolio.errors import (
     AIPortfolioValidationError,
     RebalancePromptNotFoundError,
@@ -34,12 +40,14 @@ from cadence.ai_portfolio.models import RebalancePrompt
 from cadence.ai_portfolio.service import AIBuildParams
 from cadence.assets import service as assets_service
 from cadence.assets.market_data import AssetInfo, HistoryBar
+from cadence.assets.models import Asset
 from cadence.broker.models import AssetClass, OrderSide, OrderType, TimeInForce
 from cadence.broker.stub import StubBroker
 from cadence.paper_trading import service as paper_service
 from cadence.paper_trading.constants import Benchmark, ScheduleMode, SessionStatus
 from cadence.paper_trading.models import BenchmarkPrice
 from cadence.portfolios import service as portfolios_service
+from cadence.technical_indicators.models import TechnicalIndicator
 
 
 class _ClosedBroker(StubBroker):
@@ -190,6 +198,72 @@ def test_run_build_event_success_creates_portfolio_and_session(
     assert len(runs) == 1
 
 
+def test_run_build_event_persists_run_stats(db_session: Session) -> None:
+    # The machine-readable run_stats payload is captured for later offline learning
+    # (never surfaced in the API/UI): order counts + per-trade details incl. the
+    # filled price that actions_taken deliberately drops.
+    provider = _seed_universe(db_session, "AAPL", "MSFT")
+    agent = FakeAIPortfolioAgent(build_result=_build_result("AAPL", "MSFT"))
+    event = service.create_build_event(db_session, _params())
+
+    service.run_build_event(db_session, event.id, agent, StubBroker(), provider)
+
+    refreshed = service.get_event(db_session, event.id)
+    stats = refreshed.run_stats
+    assert stats is not None
+    assert stats["orders"]["executed"] == 2
+    assert stats["orders"]["skipped"] == 0
+    assert stats["orders"]["total"] == 2
+    assert stats["orders"]["all_executed"] is True
+    trades = stats["trades"]
+    assert {t["ticker"] for t in trades} == {"AAPL", "MSFT"}
+    # filled_price is present in run_stats but omitted from the UI-facing payload.
+    assert all("filled_price" in t for t in trades)
+    assert all("filled_price" not in a for a in refreshed.actions_taken)
+
+
+def test_run_rebalance_event_run_stats_includes_pnl_and_account(
+    db_session: Session,
+) -> None:
+    # A rebalance additionally records realized P&L and an account/valuation
+    # snapshot in run_stats (the build path omits these).
+    provider = _seed_universe(db_session, "AAPL", "MSFT")
+    broker = StubBroker()
+    session_id, _ = _seed_session(db_session, broker, provider)
+
+    rebalance = FakeAIPortfolioAgent(
+        rebalance_result=AIRebalanceResult(
+            evaluation_summary="steady",
+            target_allocations=[
+                AITargetAllocation(
+                    ticker="AAPL",
+                    company_name="Apple",
+                    allocation_pct=0.5,
+                    investment_thesis="keep",
+                    confidence=0.9,
+                ),
+                AITargetAllocation(
+                    ticker="MSFT",
+                    company_name="Microsoft",
+                    allocation_pct=0.5,
+                    investment_thesis="keep",
+                    confidence=0.9,
+                ),
+            ],
+            portfolio_health="healthy",
+        )
+    )
+    rb_event = service.create_rebalance_event(db_session, session_id)
+    service.run_rebalance_event(db_session, rb_event.id, rebalance, broker, provider)
+
+    refreshed = service.get_event(db_session, rb_event.id)
+    stats = refreshed.run_stats
+    assert stats is not None
+    assert "orders" in stats and "trades" in stats
+    assert "realized_pnl" in stats
+    assert "account" in stats
+
+
 def test_run_build_event_generates_distinct_portfolio_name(
     db_session: Session,
 ) -> None:
@@ -317,6 +391,24 @@ def test_run_build_event_failure_marks_event_failed(db_session: Session) -> None
     refreshed = service.get_event(db_session, event.id)
     assert refreshed.status == EventStatus.FAILED.value
     assert "boom" in (refreshed.error or "")
+
+
+def test_run_build_event_humanizes_max_turns_error(db_session: Session) -> None:
+    # The agents SDK raises a terse "Max turns (N) exceeded"; the service persists
+    # an actionable message instead of the raw string.
+    provider = _seed_universe(db_session, "AAPL", "MSFT")
+    agent = FakeAIPortfolioAgent(
+        build_error=MaxTurnsExceeded("Max turns (12) exceeded")
+    )
+    event = service.create_build_event(db_session, _params())
+
+    service.run_build_event(db_session, event.id, agent, StubBroker(), provider)
+
+    refreshed = service.get_event(db_session, event.id)
+    assert refreshed.status == EventStatus.FAILED.value
+    error = refreshed.error or ""
+    assert "step limit" in error
+    assert "Max turns (12) exceeded" not in error
 
 
 # --------------------------------------------------------------------------- #
@@ -1349,11 +1441,13 @@ def test_snapshot_all_sessions_targets_only_active_ai(db_session: Session) -> No
     # Exactly one snapshot persisted, for the active AI session.
     snaps = paper_service.list_value_snapshots(db_session, session_id=ai_active.id)
     assert len(snaps) == 1
-    # One report was sent, carrying the per-session line + best/worst holding.
+    # One per-session report was sent: the portfolio name titles it and the body
+    # carries the headline KPIs plus that session's best/worst holding.
     assert len(notifier.sent) == 1
     message, title = notifier.sent[0]
-    assert title == "Cadence: daily P&L"
-    assert "AI Growth" in message
+    assert title == "Cadence: AI Growth daily P&L"
+    assert "Total return:" in message
+    assert "Sharpe:" in message
     assert "Best:" in message and "Worst:" in message
     assert "AAPL" in message
 
@@ -1442,6 +1536,222 @@ def test_snapshot_report_omits_benchmark_when_unavailable(
         db_session, broker=broker, notifier=notifier, as_of=date(2026, 1, 5)
     )
 
-    message, _ = notifier.sent[0]
-    assert "AI Growth" in message
+    message, title = notifier.sent[0]
+    assert title == "Cadence: AI Growth daily P&L"
     assert "vs S&P 500" not in message
+
+
+# --------------------------------------------------------------------------- #
+# Technical-indicator trend gate (v3): candidate hard-filter, holdings context,
+# and per-run trend-decision context.
+# --------------------------------------------------------------------------- #
+
+
+def _seed_trend_prompt(db_session: Session) -> None:
+    """Seed the trend (v3) rebalance prompt so builds/rebalances gate."""
+    db_session.add(
+        RebalancePrompt(
+            version=TREND_PROMPT_VERSION,
+            instructions="v3 trend instructions {max_new_assets}",
+            input_template=(
+                "v3 {risk_profile} {candidates_json} {holdings_json} "
+                "{account_summary_json}"
+            ),
+        )
+    )
+    db_session.flush()
+
+
+def _seed_snapshot(
+    db_session: Session,
+    ticker: str,
+    *,
+    gate_pass: bool = True,
+    regime_pass: bool = True,
+    momentum_pass: bool = True,
+    rsi_rollover: bool = False,
+) -> None:
+    """Attach a technical-indicator snapshot to an existing universe asset."""
+    asset = db_session.execute(
+        select(Asset).where(Asset.ticker == ticker)
+    ).scalar_one()
+    db_session.add(
+        TechnicalIndicator(
+            asset_id=asset.id,
+            trading_date=date(2026, 1, 2),
+            close=100.0,
+            sma_50=95.0,
+            sma_200=90.0,
+            close_sma200=1.11,
+            sma50_sma200=1.05,
+            sma200_slope=0.5,
+            rsi_14=60.0,
+            roc_120=0.2,
+            macd_hist=0.3,
+            gate_pass=gate_pass,
+            regime_pass=regime_pass,
+            momentum_pass=momentum_pass,
+            obv_rising=True,
+            rev_macd_hist_rollover=False,
+            rev_rsi_rollover=rsi_rollover,
+            rev_return_decel=False,
+            rev_obv_price_divergence=False,
+            rev_sma200_slope_flattening=False,
+        )
+    )
+    db_session.flush()
+
+
+def test_run_build_event_gates_candidates_and_records_trend_context(
+    db_session: Session,
+) -> None:
+    # A v3-active build hard-filters the candidate set: only assets whose stored
+    # snapshot passes the gate reach the AI; failing / snapshot-less assets are
+    # dropped and recorded in the per-run trend context.
+    provider = _seed_universe(db_session, "AAPL", "MSFT", "GOOG")
+    _seed_trend_prompt(db_session)
+    _seed_snapshot(db_session, "AAPL", gate_pass=True)
+    _seed_snapshot(db_session, "MSFT", gate_pass=False, regime_pass=False)
+    # GOOG intentionally has no snapshot -> dropped as "no snapshot".
+
+    agent = FakeAIPortfolioAgent(build_result=_build_result("AAPL"))
+    event = service.create_build_event(db_session, _params())
+    service.run_build_event(db_session, event.id, agent, StubBroker(), provider)
+
+    # Only the gate-passing AAPL is shown to the AI, and it carries indicators.
+    assert agent.build_calls
+    candidates = agent.build_calls[0]["candidates"]
+    assert {c["ticker"] for c in candidates} == {"AAPL"}
+    assert "indicators" in candidates[0]
+
+    refreshed = service.get_event(db_session, event.id)
+    ctx = refreshed.trend_context
+    assert ctx is not None
+    dropped = {d["ticker"]: d["reason"] for d in ctx["dropped_candidates"]}
+    assert set(dropped) == {"MSFT", "GOOG"}
+    assert dropped["GOOG"] == "no snapshot"
+    assert "regime" in dropped["MSFT"]
+    assert {c["ticker"] for c in ctx["candidates"]} == {"AAPL"}
+    assert ctx["holdings"] == []  # builds record no holdings
+
+
+def test_run_build_event_pre_v3_records_no_trend_context(
+    db_session: Session,
+) -> None:
+    # The conftest seeds only v1, so a build performs no gating: every asset is a
+    # candidate (no indicator payload) and no trend context is recorded.
+    provider = _seed_universe(db_session, "AAPL", "MSFT")
+    agent = FakeAIPortfolioAgent(build_result=_build_result("AAPL", "MSFT"))
+    event = service.create_build_event(db_session, _params())
+
+    service.run_build_event(db_session, event.id, agent, StubBroker(), provider)
+
+    assert agent.build_calls
+    candidates = agent.build_calls[0]["candidates"]
+    assert {c["ticker"] for c in candidates} == {"AAPL", "MSFT"}
+    assert all("indicators" not in c for c in candidates)
+
+    refreshed = service.get_event(db_session, event.id)
+    assert refreshed.trend_context is None
+
+
+def _seed_gated_session(
+    db_session: Session, broker: StubBroker, provider: FakeMarketDataProvider
+) -> object:
+    """Build a v3-gated 3-holding session (AAPL, MSFT, NVDA all gate-passing)."""
+    _seed_universe(db_session, "AAPL", "MSFT", "NVDA")
+    _seed_trend_prompt(db_session)
+    for ticker in ("AAPL", "MSFT", "NVDA"):
+        _seed_snapshot(db_session, ticker, gate_pass=True)
+    agent = FakeAIPortfolioAgent(build_result=_build_result("AAPL", "MSFT", "NVDA"))
+    build_event = service.create_build_event(
+        db_session, _params(allocated_capital=50_000.0, daily_rebalancing=True)
+    )
+    service.run_build_event(db_session, build_event.id, agent, broker, provider)
+    return service.get_event(db_session, build_event.id).session_id
+
+
+def test_run_rebalance_event_gates_candidates_and_annotates_holdings(
+    db_session: Session,
+) -> None:
+    provider = _provider()
+    broker = StubBroker()
+    session_id = _seed_gated_session(db_session, broker, provider)
+    assert (
+        paper_service.get_session(db_session, session_id).rebalance_prompt_version
+        == TREND_PROMPT_VERSION
+    )
+
+    # Two extra candidates enter the universe post-build: one fails the gate, one
+    # has no snapshot. Both must be dropped from the AI's candidate set.
+    assets_service.add_asset(db_session, "TSLA", provider, broker)
+    assets_service.add_asset(db_session, "AMZN", provider, broker)
+    _seed_snapshot(db_session, "TSLA", gate_pass=False, momentum_pass=False)
+    # AMZN has no snapshot.
+
+    rebalance = _noop_rebalance()
+    rb_event = service.create_rebalance_event(db_session, session_id)
+    service.run_rebalance_event(db_session, rb_event.id, rebalance, broker, provider)
+
+    assert rebalance.rebalance_calls
+    call = rebalance.rebalance_calls[0]
+    # TSLA (fail) and AMZN (no snapshot) are hidden; only gate-passers remain.
+    assert {c["ticker"] for c in call["candidates"]} == {"AAPL", "MSFT", "NVDA"}
+    # Every holding carries its indicator + reversal payload (no hard exit).
+    assert call["holdings"]
+    for holding in call["holdings"]:
+        assert holding["indicators"] is not None
+        assert holding["reversal_flags"] is not None
+
+    refreshed = service.get_event(db_session, rb_event.id)
+    ctx = refreshed.trend_context
+    assert ctx is not None
+    dropped = {d["ticker"]: d["reason"] for d in ctx["dropped_candidates"]}
+    assert set(dropped) == {"TSLA", "AMZN"}
+    assert dropped["AMZN"] == "no snapshot"
+    assert {h["ticker"] for h in ctx["holdings"]} == {"AAPL", "MSFT", "NVDA"}
+
+
+def test_run_rebalance_event_persists_trend_context_on_failure(
+    db_session: Session,
+) -> None:
+    provider = _provider()
+    broker = StubBroker()
+    session_id = _seed_gated_session(db_session, broker, provider)
+
+    # The agent raises mid-run, after the trend context has been assembled.
+    rebalance = FakeAIPortfolioAgent(rebalance_error=RuntimeError("rebalance boom"))
+    rb_event = service.create_rebalance_event(db_session, session_id)
+    service.run_rebalance_event(db_session, rb_event.id, rebalance, broker, provider)
+
+    refreshed = service.get_event(db_session, rb_event.id)
+    assert refreshed.status == EventStatus.FAILED.value
+    # The context captured before the failure is still persisted for review.
+    assert refreshed.trend_context is not None
+    assert {h["ticker"] for h in refreshed.trend_context["holdings"]} == {
+        "AAPL",
+        "MSFT",
+        "NVDA",
+    }
+
+
+def test_run_rebalance_event_pre_v3_records_no_trend_context(
+    db_session: Session,
+) -> None:
+    # A session frozen to the conftest v1 prompt performs no gating: holdings carry
+    # no indicator payload and the event records no trend context.
+    provider = _seed_universe(db_session, "AAPL", "MSFT")
+    broker = StubBroker()
+    session_id, _ = _seed_session(db_session, broker, provider)
+
+    rebalance = _noop_rebalance()
+    rb_event = service.create_rebalance_event(db_session, session_id)
+    service.run_rebalance_event(db_session, rb_event.id, rebalance, broker, provider)
+
+    assert rebalance.rebalance_calls
+    for holding in rebalance.rebalance_calls[0]["holdings"]:
+        assert "indicators" not in holding
+        assert "reversal_flags" not in holding
+
+    refreshed = service.get_event(db_session, rb_event.id)
+    assert refreshed.trend_context is None

@@ -18,9 +18,13 @@ from cadence.api.routers import (
     paper_trading_router,
     portfolios_router,
     recommendations_router,
+    technical_indicators_router,
 )
 from cadence.config import settings
 from cadence.recommendations.background import cleanup_orphaned_runs_on_startup
+from cadence.technical_indicators.background import (
+    cleanup_orphaned_runs_on_startup as cleanup_orphaned_indicator_runs_on_startup,
+)
 
 
 @asynccontextmanager
@@ -33,6 +37,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     """
     cleanup_orphaned_runs_on_startup()
     cleanup_orphaned_events_on_startup()
+    cleanup_orphaned_indicator_runs_on_startup()
     yield
 
 
@@ -77,6 +82,7 @@ def create_app() -> FastAPI:
     app.include_router(portfolios_router, prefix="/api/v1")
     app.include_router(paper_trading_router, prefix="/api/v1")
     app.include_router(ai_portfolio_router, prefix="/api/v1")
+    app.include_router(technical_indicators_router, prefix="/api/v1")
 
     return app
 

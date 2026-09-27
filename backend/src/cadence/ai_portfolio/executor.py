@@ -59,6 +59,14 @@ class TradeResult:
             "order_status": self.order_status.value,
         }
 
+    def to_stats_dict(self) -> dict[str, Any]:
+        """Full serialization including ``filled_price`` for offline-learning stats.
+
+        Superset of :meth:`to_dict` (which omits ``filled_price``); used for the
+        run's ``run_stats`` payload, never for the UI-facing ``actions_taken``.
+        """
+        return {**self.to_dict(), "filled_price": self.filled_price}
+
 
 class AIPortfolioExecutor:
     """Sizes and places AI portfolio orders through a :class:`Broker` (long-only)."""
