@@ -90,6 +90,7 @@ class AIBuildParams:
     asset_types: str = AssetScope.BOTH.value
     daily_rebalancing: bool = False
     benchmark: str = settings.DEFAULT_BENCHMARK
+    use_technical_indicators: bool = False
 
     def to_payload(self) -> dict[str, Any]:
         return {
@@ -98,6 +99,7 @@ class AIBuildParams:
             "asset_types": self.asset_types,
             "daily_rebalancing": self.daily_rebalancing,
             "benchmark": self.benchmark,
+            "use_technical_indicators": self.use_technical_indicators,
         }
 
     @classmethod
@@ -108,6 +110,9 @@ class AIBuildParams:
             asset_types=str(payload.get("asset_types", AssetScope.BOTH.value)),
             daily_rebalancing=bool(payload.get("daily_rebalancing", False)),
             benchmark=str(payload.get("benchmark", settings.DEFAULT_BENCHMARK)),
+            use_technical_indicators=bool(
+                payload.get("use_technical_indicators", False)
+            ),
         )
 
 
@@ -280,12 +285,16 @@ def run_build_event(
         universe = assets_service.list_assets(
             session, categories=[c.value for c in allowed_categories]
         )
-        # A build freezes the active (highest) prompt version; the trend gate and
-        # its per-run context apply only once that version is the trend strategy
-        # (i.e. after the v3 migration). Before then the build stays ungated and
-        # records no trend context.
+        # The trend gate and its per-run context apply only when this build opted
+        # into the technical-indicator trend strategy AND the active (highest)
+        # prompt version is the trend strategy (i.e. after the v3 migration). When
+        # the build opts out — the default — or the active prompt predates the trend
+        # strategy, the build stays ungated and records no trend context.
         active_prompt = get_active_rebalance_prompt(session)
-        gating_enabled = active_prompt.version >= TREND_PROMPT_VERSION
+        gating_enabled = (
+            params.use_technical_indicators
+            and active_prompt.version >= TREND_PROMPT_VERSION
+        )
         snapshots = (
             ti_service.get_latest_snapshots(
                 session, [asset.id for asset in universe]
@@ -361,6 +370,7 @@ def run_build_event(
             max_allocation_pct=portfolio.max_allocation_pct,
             schedule_mode=schedule_mode,
             benchmark=Benchmark(params.benchmark),
+            use_technical_indicators=params.use_technical_indicators,
         )
         session_row.session_metadata = {
             "session_type": "ai_managed",
@@ -578,12 +588,15 @@ def run_rebalance_event(
 
         account = broker.get_account_info()
 
-        # The trend gate and its per-run context apply only when this session is
-        # frozen to the trend prompt version (or later); sessions on an earlier
-        # (pre-trend) version keep their original ungated behaviour and record no
-        # trend context.
+        # The trend gate and its per-run context apply only when this session opted
+        # into the technical-indicator trend strategy at build time AND is frozen to
+        # the trend prompt version (or later). Sessions that opted out (the default,
+        # including every session built before the opt-in existed) or on an earlier
+        # (pre-trend) prompt version keep their original ungated behaviour and record
+        # no trend context.
         gating_enabled = (
-            session_row.rebalance_prompt_version >= TREND_PROMPT_VERSION
+            session_row.use_technical_indicators
+            and session_row.rebalance_prompt_version >= TREND_PROMPT_VERSION
         )
 
         # Candidates are restricted to the session's asset scope; the full universe

@@ -112,6 +112,7 @@ describe('useChangeSessionBenchmark', () => {
       archived_at: null,
       rebalance_prompt_version: 1,
       benchmark,
+      use_technical_indicators: false,
     };
   }
 

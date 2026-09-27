@@ -1615,7 +1615,9 @@ def test_run_build_event_gates_candidates_and_records_trend_context(
     # GOOG intentionally has no snapshot -> dropped as "no snapshot".
 
     agent = FakeAIPortfolioAgent(build_result=_build_result("AAPL"))
-    event = service.create_build_event(db_session, _params())
+    event = service.create_build_event(
+        db_session, _params(use_technical_indicators=True)
+    )
     service.run_build_event(db_session, event.id, agent, StubBroker(), provider)
 
     # Only the gate-passing AAPL is shown to the AI, and it carries indicators.
@@ -1665,7 +1667,12 @@ def _seed_gated_session(
         _seed_snapshot(db_session, ticker, gate_pass=True)
     agent = FakeAIPortfolioAgent(build_result=_build_result("AAPL", "MSFT", "NVDA"))
     build_event = service.create_build_event(
-        db_session, _params(allocated_capital=50_000.0, daily_rebalancing=True)
+        db_session,
+        _params(
+            allocated_capital=50_000.0,
+            daily_rebalancing=True,
+            use_technical_indicators=True,
+        ),
     )
     service.run_build_event(db_session, build_event.id, agent, broker, provider)
     return service.get_event(db_session, build_event.id).session_id
@@ -1755,3 +1762,110 @@ def test_run_rebalance_event_pre_v3_records_no_trend_context(
 
     refreshed = service.get_event(db_session, rb_event.id)
     assert refreshed.trend_context is None
+
+
+# --------------------------------------------------------------------------- #
+# Technical-indicator opt-in: the trend strategy is off by default and disabled
+# for both build and rebalance unless the session opted in at build time.
+# --------------------------------------------------------------------------- #
+
+
+def test_run_build_event_opted_out_ignores_trend_gate(
+    db_session: Session,
+) -> None:
+    # Even with the trend prompt active and gating snapshots stored, a build that
+    # did not opt in (the default) applies no gate: every in-scope asset reaches the
+    # AI without indicator annotations, and no trend context is recorded.
+    provider = _seed_universe(db_session, "AAPL", "MSFT", "GOOG")
+    _seed_trend_prompt(db_session)
+    _seed_snapshot(db_session, "AAPL", gate_pass=True)
+    _seed_snapshot(db_session, "MSFT", gate_pass=False, regime_pass=False)
+    # GOOG has no snapshot; it would be dropped as "no snapshot" if gated.
+
+    agent = FakeAIPortfolioAgent(build_result=_build_result("AAPL"))
+    # No use_technical_indicators -> defaults to opted out.
+    event = service.create_build_event(db_session, _params())
+    service.run_build_event(db_session, event.id, agent, StubBroker(), provider)
+
+    assert agent.build_calls
+    candidates = agent.build_calls[0]["candidates"]
+    assert {c["ticker"] for c in candidates} == {"AAPL", "MSFT", "GOOG"}
+    assert all("indicators" not in c for c in candidates)
+
+    refreshed = service.get_event(db_session, event.id)
+    assert refreshed.trend_context is None
+    # The opt-out is frozen on the session.
+    session_row = paper_service.get_session(db_session, refreshed.session_id)
+    assert session_row.use_technical_indicators is False
+
+
+def test_run_rebalance_event_opted_out_ignores_trend_gate(
+    db_session: Session,
+) -> None:
+    # A session that opted out but is frozen to the trend prompt still performs no
+    # gating on rebalance: extra failing/snapshot-less candidates are NOT dropped,
+    # holdings carry no indicator/reversal context, and no trend context is recorded.
+    provider = _provider()
+    broker = StubBroker()
+    _seed_universe(db_session, "AAPL", "MSFT", "NVDA")
+    _seed_trend_prompt(db_session)
+    for ticker in ("AAPL", "MSFT", "NVDA"):
+        _seed_snapshot(db_session, ticker, gate_pass=True)
+
+    agent = FakeAIPortfolioAgent(build_result=_build_result("AAPL", "MSFT", "NVDA"))
+    build_event = service.create_build_event(
+        db_session,
+        _params(allocated_capital=50_000.0, daily_rebalancing=True),
+    )
+    service.run_build_event(db_session, build_event.id, agent, broker, provider)
+    session_id = service.get_event(db_session, build_event.id).session_id
+
+    # The session froze to the trend prompt version but opted out.
+    session_row = paper_service.get_session(db_session, session_id)
+    assert session_row.rebalance_prompt_version == TREND_PROMPT_VERSION
+    assert session_row.use_technical_indicators is False
+
+    # A gate-failing candidate enters the universe post-build; opted out, it must
+    # NOT be dropped from the AI's candidate set.
+    assets_service.add_asset(db_session, "TSLA", provider, broker)
+    _seed_snapshot(db_session, "TSLA", gate_pass=False, momentum_pass=False)
+
+    rebalance = _noop_rebalance()
+    rb_event = service.create_rebalance_event(db_session, session_id)
+    service.run_rebalance_event(db_session, rb_event.id, rebalance, broker, provider)
+
+    assert rebalance.rebalance_calls
+    call = rebalance.rebalance_calls[0]
+    assert "TSLA" in {c["ticker"] for c in call["candidates"]}
+    for candidate in call["candidates"]:
+        assert "indicators" not in candidate
+    for holding in call["holdings"]:
+        assert "indicators" not in holding
+        assert "reversal_flags" not in holding
+
+    refreshed = service.get_event(db_session, rb_event.id)
+    assert refreshed.trend_context is None
+
+
+def test_run_build_event_persists_opt_in_flag(db_session: Session) -> None:
+    # The opt-in is persisted on the session (frozen at build) and exposed on the
+    # read schema; a legacy/default build persists it as False.
+    from cadence.api.schemas import PaperTradingSessionRead
+
+    provider = _seed_universe(db_session, "AAPL", "MSFT", "NVDA")
+    _seed_trend_prompt(db_session)
+    for ticker in ("AAPL", "MSFT", "NVDA"):
+        _seed_snapshot(db_session, ticker, gate_pass=True)
+
+    agent = FakeAIPortfolioAgent(build_result=_build_result("AAPL", "MSFT", "NVDA"))
+    event = service.create_build_event(
+        db_session, _params(use_technical_indicators=True)
+    )
+    service.run_build_event(db_session, event.id, agent, StubBroker(), provider)
+
+    session_row = paper_service.get_session(
+        db_session, service.get_event(db_session, event.id).session_id
+    )
+    assert session_row.use_technical_indicators is True
+    read = PaperTradingSessionRead.model_validate(session_row)
+    assert read.use_technical_indicators is True

@@ -282,6 +282,11 @@ export interface PaperTradingSession {
   rebalance_prompt_version: number;
   /** The benchmark id this session is compared against (a catalog id, e.g. `SP500`). */
   benchmark: string;
+  /**
+   * Whether this session opted into the technical-indicator trend strategy
+   * (frozen at build time). False for sessions built before this option existed.
+   */
+  use_technical_indicators: boolean;
 }
 
 /** One entry in the fixed benchmark catalog. Mirrors `BenchmarkCatalogEntry`. */
@@ -479,6 +484,13 @@ export interface AIPortfolioBuildRequest {
   daily_rebalancing?: boolean;
   /** Benchmark id to compare the session against. Defaults to `SP500`. */
   benchmark?: string;
+  /**
+   * Opt this portfolio into the technical-indicator trend strategy (frozen at
+   * build time). When enabled, both the build and daily rebalances hard-filter
+   * candidates through the trend gate and attach holdings reversal context.
+   * Defaults to off (opt-in).
+   */
+  use_technical_indicators?: boolean;
 }
 
 /**

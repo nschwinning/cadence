@@ -99,6 +99,7 @@ describe('BuildAIPortfolioCard', () => {
       asset_types: 'both',
       daily_rebalancing: false,
       benchmark: 'SP500',
+      use_technical_indicators: false,
     });
 
     // Backend advances the event to terminal; force the poll's refetch (jsdom
@@ -127,6 +128,28 @@ describe('BuildAIPortfolioCard', () => {
     expect(mockedPost).toHaveBeenCalledWith(
       '/api/v1/ai-portfolio/build',
       expect.objectContaining({ daily_rebalancing: true }),
+    );
+  });
+
+  it('opts into the technical-indicator trend strategy when the toggle is checked', async () => {
+    mockedPost.mockResolvedValue({ data: { event_id: 'evt-1', status: 'queued' } });
+    mockedGet.mockImplementation(routeGet(() => 'running'));
+    const user = userEvent.setup();
+
+    renderWithClient(<BuildAIPortfolioCard />);
+
+    // Defaults off: the toggle starts unchecked.
+    const toggle = screen.getByRole('checkbox', {
+      name: /Use technical-indicator trend strategy/i,
+    });
+    expect(toggle).not.toBeChecked();
+
+    await user.click(toggle);
+    await user.click(screen.getByRole('button', { name: 'Build portfolio' }));
+
+    expect(mockedPost).toHaveBeenCalledWith(
+      '/api/v1/ai-portfolio/build',
+      expect.objectContaining({ use_technical_indicators: true }),
     );
   });
 

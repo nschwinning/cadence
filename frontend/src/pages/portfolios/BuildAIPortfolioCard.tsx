@@ -55,6 +55,7 @@ export function BuildAIPortfolioCard() {
   const [riskProfile, setRiskProfile] = useState<string>('balanced');
   const [assetTypes, setAssetTypes] = useState<AssetScope>('both');
   const [dailyRebalancing, setDailyRebalancing] = useState(false);
+  const [useTechnicalIndicators, setUseTechnicalIndicators] = useState(false);
   const [benchmark, setBenchmark] = useState<string>(DEFAULT_BENCHMARK);
   const [eventId, setEventId] = useState<string | null>(null);
 
@@ -90,6 +91,7 @@ export function BuildAIPortfolioCard() {
         asset_types: assetTypes,
         daily_rebalancing: dailyRebalancing,
         benchmark,
+        use_technical_indicators: useTechnicalIndicators,
       },
       { onSuccess: (res) => setEventId(res.event_id) },
     );
@@ -213,6 +215,20 @@ export function BuildAIPortfolioCard() {
               />
               Enroll in daily rebalancing
             </label>
+            <label className="flex items-center gap-2 text-sm font-medium text-slate-800">
+              <input
+                type="checkbox"
+                checked={useTechnicalIndicators}
+                onChange={(e) => setUseTechnicalIndicators(e.target.checked)}
+                className="h-4 w-4 rounded border-slate-300 text-emerald-600 focus:ring-emerald-500"
+              />
+              Use technical-indicator trend strategy
+            </label>
+            <p className="text-xs text-slate-500">
+              When enabled, the build and every rebalance only enter assets in a
+              confirmed uptrend and attach trend context to holdings. Frozen for
+              the session&apos;s lifetime.
+            </p>
           </div>
 
           {build.isError && (

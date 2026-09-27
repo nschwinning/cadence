@@ -126,6 +126,7 @@ def build_ai_portfolio_endpoint(
             if payload.benchmark is not None
             else settings.DEFAULT_BENCHMARK
         ),
+        use_technical_indicators=payload.use_technical_indicators,
     )
     try:
         event = job_runner.start_build(db, params, agent, broker, provider)

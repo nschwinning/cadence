@@ -244,6 +244,9 @@ class PaperTradingSessionRead(BaseModel):
     rebalance_prompt_version: int
     # The benchmark index this session is compared against (a catalog id).
     benchmark: str
+    # Whether the session opted into the technical-indicator trend strategy
+    # (frozen at build time). False for sessions built before this option existed.
+    use_technical_indicators: bool
 
 
 class PaperTradingSessionListResponse(BaseModel):
@@ -484,6 +487,13 @@ class AIPortfolioBuildRequest(BaseModel):
         default=None,
         description="Benchmark index to compare the session against (a catalog "
         "id). Defaults to the configured default benchmark (S&P 500).",
+    )
+    use_technical_indicators: bool = Field(
+        default=False,
+        description="Opt this portfolio into the technical-indicator trend "
+        "strategy (frozen at build time). When enabled, both the build and daily "
+        "rebalances hard-filter candidates through the trend gate and attach "
+        "holdings reversal context. Defaults to off (opt-in).",
     )
 
     @field_validator("asset_types")

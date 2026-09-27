@@ -26,6 +26,7 @@ from enum import Enum
 from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import (
+    Boolean,
     Date,
     DateTime,
     Float,
@@ -163,6 +164,16 @@ class PaperTradingSession(Base):
         _enum_column(Benchmark),
         nullable=False,
         server_default=Benchmark.SP500.value,
+    )
+    # Whether this session opts into the technical-indicator trend strategy, chosen
+    # at build time and frozen for the session's lifetime (like the rebalance-prompt
+    # version). When true, both build and rebalance apply the deterministic trend
+    # gate + holdings reversal context; when false the pre-trend candidate/holdings
+    # assembly is used and no per-run trend-decision context is recorded. Non-nullable
+    # and defaults to false (opt-in); backfilled to false for pre-existing sessions by
+    # the migration, so already-built sessions keep their prior behavior.
+    use_technical_indicators: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="false"
     )
 
     trades: Mapped[list[PaperTrade]] = relationship(

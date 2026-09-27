@@ -72,13 +72,16 @@ def create_session(
     allocated_capital: float = DEFAULT_ALLOCATED_CAPITAL,
     max_allocation_pct: float = 1.0,
     schedule_mode: ScheduleMode = ScheduleMode.SCHEDULED,
+    use_technical_indicators: bool = False,
 ) -> PaperTradingSession:
     """Create a paper-trading session for a ``(portfolio, strategy)`` pair.
 
     ``rebalance_prompt_version`` freezes the rebalance-prompt version this session
     will always use; callers pass the version that is active at build time.
     ``benchmark`` is the market index the session is compared against (the build
-    passes the chosen/default id).
+    passes the chosen/default id). ``use_technical_indicators`` freezes the
+    technical-indicator trend-strategy opt-in at build time (default off); every
+    later rebalance reads it back rather than re-deciding.
 
     Raises:
         DuplicateSessionError: if a session already exists for the same
@@ -93,6 +96,7 @@ def create_session(
         schedule_mode=schedule_mode.value,
         rebalance_prompt_version=rebalance_prompt_version,
         benchmark=benchmark.value,
+        use_technical_indicators=use_technical_indicators,
     )
     session.add(row)
     try:
