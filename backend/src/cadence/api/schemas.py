@@ -7,9 +7,10 @@ from datetime import date, datetime
 from enum import Enum
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from cadence.assets.category import AssetScope
+from cadence.config import settings
 from cadence.paper_trading.constants import Benchmark
 from cadence.portfolios.constants import PortfolioSource, RiskProfile
 
@@ -247,6 +248,12 @@ class PaperTradingSessionRead(BaseModel):
     # Whether the session opted into the technical-indicator trend strategy
     # (frozen at build time). False for sessions built before this option existed.
     use_technical_indicators: bool
+    # Whether the session opted into the automatic hard stop-loss (frozen at build
+    # time). False for sessions built before this option existed.
+    stop_loss_enabled: bool
+    # The per-session stop-loss threshold (fraction, e.g. 0.15 = 15%) frozen at
+    # build time; null when the stop-loss is disabled.
+    stop_loss_pct: float | None
 
 
 class PaperTradingSessionListResponse(BaseModel):
@@ -384,6 +391,38 @@ class SessionValueHistoryResponse(BaseModel):
     total: int
 
 
+class SessionValueComparisonPoint(BaseModel):
+    """A single (date, total value) point of a session's value history."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    snapshot_date: date
+    total_value: float
+
+
+class SessionValueComparisonSeries(BaseModel):
+    """One session's value series for the multi-session comparison chart.
+
+    ``label`` is the session's portfolio name, falling back to its strategy key.
+    ``points`` is ordered oldest date first and is empty when the session has no
+    snapshots yet. Return percentage is derived by the client from ``total_value``
+    and ``allocated_capital``.
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    session_id: uuid.UUID
+    label: str
+    allocated_capital: float
+    points: list[SessionValueComparisonPoint]
+
+
+class SessionValueComparisonResponse(BaseModel):
+    """Every non-archived session's value series, for the comparison chart."""
+
+    sessions: list[SessionValueComparisonSeries]
+
+
 class PaperTradingSessionKpisRead(BaseModel):
     """A session's live performance KPIs.
 
@@ -417,6 +456,13 @@ class AIDailySnapshotResponse(BaseModel):
     """Result of the daily snapshot fan-out: how many sessions were snapshotted."""
 
     sessions_snapshotted: int
+    session_ids: list[uuid.UUID] = Field(default_factory=list)
+
+
+class AIStopLossScanResponse(BaseModel):
+    """Result of a stop-loss scan: how many positions were stopped out."""
+
+    positions_stopped: int
     session_ids: list[uuid.UUID] = Field(default_factory=list)
 
 
@@ -495,6 +541,22 @@ class AIPortfolioBuildRequest(BaseModel):
         "rebalances hard-filter candidates through the trend gate and attach "
         "holdings reversal context. Defaults to off (opt-in).",
     )
+    stop_loss_enabled: bool = Field(
+        default=False,
+        description="Opt this portfolio into the automatic hard stop-loss (frozen "
+        "at build time). When enabled, a held position is fully exited once its live "
+        "price falls to or below avg_cost × (1 − stop_loss_pct). Defaults to off "
+        "(opt-in).",
+    )
+    stop_loss_pct: float | None = Field(
+        default=None,
+        gt=0,
+        lt=1,
+        description="Stop-loss threshold as a fraction of weighted-average cost "
+        "(e.g. 0.15 = a 15% drop triggers a whole-position exit). Applies only when "
+        "stop_loss_enabled is true; defaults to the configured default threshold "
+        "when the stop-loss is enabled without an explicit value.",
+    )
 
     @field_validator("asset_types")
     @classmethod
@@ -505,6 +567,21 @@ class AIPortfolioBuildRequest(BaseModel):
         except ValueError as exc:
             allowed = ", ".join(scope.value for scope in AssetScope)
             raise ValueError(f"asset_types must be one of: {allowed}") from exc
+
+    @model_validator(mode="after")
+    def _default_stop_loss_pct(self) -> AIPortfolioBuildRequest:
+        """Fill the stop-loss threshold from the configured default when enabled.
+
+        When the build opts into the stop-loss without an explicit threshold, the
+        global ``STOP_LOSS_DEFAULT_PCT`` applies. When the stop-loss is off, any
+        supplied threshold is dropped so a disabled session never carries one.
+        """
+        if self.stop_loss_enabled:
+            if self.stop_loss_pct is None:
+                self.stop_loss_pct = settings.STOP_LOSS_DEFAULT_PCT
+        else:
+            self.stop_loss_pct = None
+        return self
 
 
 class AIPortfolioBuildResponse(BaseModel):

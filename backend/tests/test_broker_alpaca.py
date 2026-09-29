@@ -376,3 +376,62 @@ def test_get_asset_missing_returns_none() -> None:
     )
 
     assert broker.get_asset("GHOST") is None
+
+
+def test_get_quotes_batches_equities_and_crypto() -> None:
+    """A mixed multi-symbol call issues one batched request per asset class."""
+    broker, session = _make_broker(
+        {
+            ("GET", "/v2/stocks/quotes/latest"): {
+                "quotes": {
+                    "AAPL": {"bp": 189.9, "ap": 190.1, "t": "2026-09-14T10:00:00Z"},
+                    "MSFT": {"bp": 419.5, "ap": 420.5, "t": "2026-09-14T10:00:00Z"},
+                }
+            },
+            ("GET", "/v1beta3/crypto/us/latest/quotes"): {
+                "quotes": {
+                    "BTC/USD": {
+                        "bp": 59990.0,
+                        "ap": 60010.0,
+                        "t": "2026-09-14T10:00:00Z",
+                    }
+                }
+            },
+        }
+    )
+
+    quotes = broker.get_quotes(["AAPL", "MSFT", "BTC-USD"])
+
+    # A quote per requested symbol, keyed by the canonical input.
+    assert set(quotes) == {"AAPL", "MSFT", "BTC-USD"}
+    assert quotes["AAPL"].bid == 189.9
+    assert quotes["BTC-USD"].ask == 60010.0
+    # Exactly two batched requests (one equities, one crypto) — no per-symbol fan-out.
+    assert len(session.calls) == 2
+    equity_call = next(c for c in session.calls if "stocks" in c["url"])
+    assert equity_call["params"] == {"symbols": "AAPL,MSFT"}
+    crypto_call = next(c for c in session.calls if "crypto" in c["url"])
+    assert crypto_call["params"] == {"symbols": "BTC/USD"}
+
+
+def test_get_quotes_falls_back_per_symbol_when_batch_misses() -> None:
+    """A symbol absent from the batch payload falls back to a per-symbol fetch."""
+    broker, _session = _make_broker(
+        {
+            # Batch omits GHOST entirely.
+            ("GET", "/v2/stocks/quotes/latest"): {
+                "quotes": {
+                    "AAPL": {"bp": 189.9, "ap": 190.1, "t": "2026-09-14T10:00:00Z"}
+                }
+            },
+            # Per-symbol quote endpoint resolves GHOST individually.
+            ("GET", "/v2/stocks/GHOST/quotes/latest"): {
+                "quote": {"bp": 12.4, "ap": 12.6, "t": "2026-09-14T10:00:00Z"}
+            },
+        }
+    )
+
+    quotes = broker.get_quotes(["AAPL", "GHOST"])
+
+    assert quotes["AAPL"].bid == 189.9
+    assert quotes["GHOST"].bid == 12.4

@@ -42,6 +42,8 @@ const session: PaperTradingSession = {
   rebalance_prompt_version: 1,
   benchmark: 'SP500',
   use_technical_indicators: false,
+  stop_loss_enabled: false,
+  stop_loss_pct: null,
 };
 
 function makeEvent(
@@ -434,6 +436,102 @@ describe('PaperTradingSessionPage', () => {
       '/api/v1/paper-trading/sessions/s1/reconcile',
       {},
     );
+  });
+
+  it('shows the stop-loss configuration when the session opted in', async () => {
+    const withStopLoss: PaperTradingSession = {
+      ...session,
+      stop_loss_enabled: true,
+      stop_loss_pct: 0.15,
+    };
+    mockedGet.mockImplementation((url: string) => {
+      if (url.endsWith('/paper-trading/sessions')) {
+        return Promise.resolve({ data: { items: [withStopLoss], total: 1 } });
+      }
+      if (url.endsWith('/kpis')) {
+        return Promise.resolve({ data: KPIS });
+      }
+      if (url.includes('/ai-portfolio/sessions/') && url.endsWith('/events')) {
+        return Promise.resolve({ data: [] });
+      }
+      return Promise.resolve({ data: { items: [], total: 0 } });
+    });
+
+    renderPage(<PaperTradingSessionPage />);
+    await screen.findByRole('heading', { name: 'Aggressive Jolly Wozniak' });
+
+    expect(screen.getByText('Stop-loss')).toBeInTheDocument();
+    expect(screen.getByText('15% below avg cost')).toBeInTheDocument();
+  });
+
+  it('shows the stop-loss config as Off when the session did not opt in', async () => {
+    installGet(() => 'running');
+
+    renderPage(<PaperTradingSessionPage />);
+    await screen.findByRole('heading', { name: 'Aggressive Jolly Wozniak' });
+
+    expect(screen.getByText('Stop-loss')).toBeInTheDocument();
+    expect(screen.getByText('Off')).toBeInTheDocument();
+  });
+
+  it('badges stop-loss trades and runs as stop-loss activity', async () => {
+    const stopTrade: PaperTrade = {
+      id: 'trade-sl',
+      session_id: 's1',
+      ai_portfolio_event_id: null,
+      ticker: 'AAPL',
+      side: 'sell',
+      quantity: 10,
+      price: 100,
+      notional: 1000,
+      signal_type: 'stop_loss',
+      executed_at: '2026-09-12T09:30:00Z',
+      order_id: 'ord-sl',
+      order_status: 'filled',
+      filled_price: 100,
+      filled_at: '2026-09-12T09:30:01Z',
+    };
+    const stopRun = {
+      id: 'run-sl',
+      session_id: 's1',
+      run_at: '2026-09-12T09:30:00Z',
+      run_trigger: 'stop_loss',
+      status: 'completed',
+      signals_scanned: 1,
+      signals_actionable: 1,
+      orders_executed: 1,
+      orders_skipped: 0,
+      duration_ms: 42,
+    };
+    mockedGet.mockImplementation((url: string) => {
+      if (url.endsWith('/paper-trading/sessions')) {
+        return Promise.resolve({ data: { items: [session], total: 1 } });
+      }
+      if (url.endsWith('/kpis')) {
+        return Promise.resolve({ data: KPIS });
+      }
+      if (url.includes('/ai-portfolio/sessions/') && url.endsWith('/events')) {
+        return Promise.resolve({ data: [] });
+      }
+      if (url.includes('/trades')) {
+        return Promise.resolve({ data: { items: [stopTrade], total: 1 } });
+      }
+      if (url.includes('/runs')) {
+        return Promise.resolve({ data: { items: [stopRun], total: 1 } });
+      }
+      return Promise.resolve({ data: { items: [], total: 0 } });
+    });
+
+    renderPage(<PaperTradingSessionPage />);
+    await screen.findByRole('heading', { name: 'Aggressive Jolly Wozniak' });
+
+    // Both the stop-loss trade and run render the distinct amber "Stop-loss"
+    // badge (the header also has a "Stop-loss" config label, so filter by the
+    // badge styling to count only the activity badges).
+    const badges = (await screen.findAllByText('Stop-loss')).filter((el) =>
+      el.className.includes('bg-amber-100'),
+    );
+    expect(badges).toHaveLength(2);
   });
 
   it('renders a fractional crypto trade quantity trimmed of trailing zeros', async () => {

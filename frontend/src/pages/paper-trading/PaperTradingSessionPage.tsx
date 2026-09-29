@@ -37,9 +37,31 @@ import type {
   SessionRun,
 } from '../../types/api';
 
+/**
+ * The `signal_type` / `run_trigger` value the backend records for a stop-out.
+ * Kept in sync with the backend `STOP_LOSS_SIGNAL_TYPE` / `STOP_LOSS_RUN_TRIGGER`
+ * constants so stop-loss activity can be badged in the trades and runs tables.
+ */
+const STOP_LOSS_MARKER = 'stop_loss';
+
 /** Format an ISO timestamp for display, or an em dash when absent. */
 function ts(value: string | null | undefined): string {
   return value ? new Date(value).toLocaleString() : '—';
+}
+
+/**
+ * Render a value that may be a stop-loss marker. Stop-loss activity gets a
+ * distinct amber "Stop-loss" badge; anything else renders as plain text.
+ */
+function SignalCell({ value }: { value: string }) {
+  if (value === STOP_LOSS_MARKER) {
+    return (
+      <span className="inline-flex items-center rounded-full bg-amber-100 px-2.5 py-0.5 text-xs font-medium text-amber-800">
+        Stop-loss
+      </span>
+    );
+  }
+  return <>{value}</>;
 }
 
 /** Colour a P&L value green/red/neutral. */
@@ -192,7 +214,9 @@ function TradesPanel({ sessionId }: { sessionId: string }) {
               <td className="px-4 py-3 text-right tabular-nums text-slate-700">
                 {formatCurrency(t.notional)}
               </td>
-              <td className="px-4 py-3 text-slate-700">{t.signal_type}</td>
+              <td className="px-4 py-3 text-slate-700">
+                <SignalCell value={t.signal_type} />
+              </td>
               <td className="px-4 py-3 text-slate-700">{t.order_status}</td>
               <td className="px-4 py-3 text-slate-500">{ts(t.executed_at)}</td>
             </tr>
@@ -232,7 +256,9 @@ function RunsPanel({ sessionId }: { sessionId: string }) {
           {runs.map((r: SessionRun) => (
             <tr key={r.id} className="border-b border-slate-100 hover:bg-slate-50">
               <td className="px-4 py-3 text-slate-500">{ts(r.run_at)}</td>
-              <td className="px-4 py-3 text-slate-700">{r.run_trigger}</td>
+              <td className="px-4 py-3 text-slate-700">
+                <SignalCell value={r.run_trigger} />
+              </td>
               <td className="px-4 py-3 text-slate-700">{r.status}</td>
               <td className="px-4 py-3 text-right tabular-nums text-slate-700">
                 {r.signals_scanned}
@@ -471,6 +497,16 @@ function SessionHeader({
           </dt>
           <dd className="text-sm text-slate-900">
             v{session.rebalance_prompt_version}
+          </dd>
+        </div>
+        <div>
+          <dt className="text-xs font-semibold uppercase tracking-wide text-slate-500">
+            Stop-loss
+          </dt>
+          <dd className="text-sm text-slate-900">
+            {session.stop_loss_enabled && session.stop_loss_pct != null
+              ? `${(session.stop_loss_pct * 100).toFixed(0)}% below avg cost`
+              : 'Off'}
           </dd>
         </div>
         <div>

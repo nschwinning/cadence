@@ -8,6 +8,7 @@ import {
 } from '../../api/paperTrading';
 import type { PaperTradingSession } from '../../types/api';
 import { formatCurrency } from '../../lib/format';
+import { SessionComparisonChart } from './SessionComparisonChart';
 
 /** Status pill colors per session status. */
 const STATUS_STYLES: Record<string, string> = {
@@ -115,6 +116,8 @@ export function PaperTradingPage() {
       <h1 className="text-2xl font-bold tracking-tight text-slate-900">
         Paper Trading
       </h1>
+
+      <SessionComparisonChart />
 
       <div className="rounded-lg border border-slate-200 bg-white shadow-sm">
         <div className="flex items-center gap-3 border-b border-slate-200 p-4">

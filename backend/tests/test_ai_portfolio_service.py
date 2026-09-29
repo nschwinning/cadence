@@ -7,7 +7,7 @@ provider for discovery-adds. No network is touched.
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import UTC, date, datetime, timedelta
 
 import pytest
 from agents.exceptions import MaxTurnsExceeded
@@ -41,11 +41,18 @@ from cadence.ai_portfolio.service import AIBuildParams
 from cadence.assets import service as assets_service
 from cadence.assets.market_data import AssetInfo, HistoryBar
 from cadence.assets.models import Asset
-from cadence.broker.models import AssetClass, OrderSide, OrderType, TimeInForce
+from cadence.broker.models import AssetClass, OrderSide, OrderType, Quote, TimeInForce
 from cadence.broker.stub import StubBroker
+from cadence.config import settings
 from cadence.paper_trading import service as paper_service
-from cadence.paper_trading.constants import Benchmark, ScheduleMode, SessionStatus
-from cadence.paper_trading.models import BenchmarkPrice
+from cadence.paper_trading.constants import (
+    STOP_LOSS_RUN_TRIGGER,
+    STOP_LOSS_SIGNAL_TYPE,
+    Benchmark,
+    ScheduleMode,
+    SessionStatus,
+)
+from cadence.paper_trading.models import BenchmarkPrice, StopLossQuarantine
 from cadence.portfolios import service as portfolios_service
 from cadence.technical_indicators.models import TechnicalIndicator
 
@@ -75,6 +82,53 @@ class _RecordingBroker(StubBroker):
         return super().buy(
             symbol, quantity, order_type, limit_price, time_in_force, asset_class
         )
+
+
+class _StopLossBroker(StubBroker):
+    """StubBroker whose scan quotes and market status are controllable.
+
+    ``overrides`` maps a ticker to the price the batched ``get_quotes`` should
+    report for it (a ``None`` value yields a price-less quote so the scan skips it,
+    simulating a missing quote); tickers absent from the map keep the deterministic
+    stub price. ``market_open`` drives the equity market-status guard.
+    """
+
+    def __init__(
+        self,
+        *,
+        overrides: dict[str, float | None] | None = None,
+        market_open: bool = True,
+        initial_cash: float = 1_000_000.0,
+    ) -> None:
+        super().__init__(initial_cash=initial_cash)
+        self._overrides = overrides or {}
+        self._market_open = market_open
+
+    def set_overrides(self, overrides: dict[str, float | None]) -> None:
+        self._overrides = overrides
+
+    def set_market_open(self, is_open: bool) -> None:
+        self._market_open = is_open
+
+    def is_market_open(self) -> bool:
+        return self._market_open
+
+    def get_quotes(self, symbols: list[str]) -> dict[str, Quote]:
+        result: dict[str, Quote] = {}
+        for symbol in symbols:
+            if symbol in self._overrides:
+                price = self._overrides[symbol]
+                result[symbol] = Quote(
+                    symbol=symbol,
+                    bid=price,
+                    ask=price,
+                    last=price,
+                    volume=1_000,
+                    timestamp=datetime.now(UTC),
+                )
+            else:
+                result[symbol] = self.get_quote(symbol)
+        return result
 
 
 def _crypto_provider() -> FakeMarketDataProvider:
@@ -1869,3 +1923,309 @@ def test_run_build_event_persists_opt_in_flag(db_session: Session) -> None:
     assert session_row.use_technical_indicators is True
     read = PaperTradingSessionRead.model_validate(session_row)
     assert read.use_technical_indicators is True
+
+
+# --------------------------------------------------------------------------- #
+# Stop-loss: build persistence, scan/evaluation/execution, quarantine, notify
+# --------------------------------------------------------------------------- #
+
+
+def _build_stop_loss_session(
+    db_session: Session,
+    provider: FakeMarketDataProvider,
+    *tickers: str,
+    pct: float = 0.15,
+    broker: _StopLossBroker | None = None,
+) -> tuple[object, _StopLossBroker]:
+    """Build an opted-in stop-loss session holding ``tickers`` (universe pre-seeded).
+
+    Returns the session id and the broker used, which must be reused for the scan so
+    the stub broker's in-memory positions carry over from the build's buys.
+    """
+    broker = broker or _StopLossBroker()
+    agent = FakeAIPortfolioAgent(build_result=_build_result(*tickers))
+    event = service.create_build_event(
+        db_session, _params(stop_loss_enabled=True, stop_loss_pct=pct)
+    )
+    service.run_build_event(db_session, event.id, agent, broker, provider)
+    return service.get_event(db_session, event.id).session_id, broker
+
+
+def _stop_loss_session(
+    db_session: Session, *tickers: str, pct: float = 0.15
+) -> tuple[object, _StopLossBroker]:
+    """Seed ``tickers`` into the universe and build one opted-in stop-loss session."""
+    provider = _seed_universe(db_session, *tickers)
+    return _build_stop_loss_session(db_session, provider, *tickers, pct=pct)
+
+
+def _below_trigger(entry: object, pct: float) -> float:
+    """A quote price just under the stop-loss trigger for ``entry``."""
+    return entry.avg_cost * (1 - pct) - 1.0
+
+
+def _ledger_by_ticker(db_session: Session, session_id: object) -> dict[str, object]:
+    return {p.ticker: p for p in paper_service.list_open_positions(db_session, session_id)}
+
+
+def test_run_build_event_persists_stop_loss_opt_in(db_session: Session) -> None:
+    # The stop-loss opt-in and its threshold are frozen onto the session at build.
+    provider = _seed_universe(db_session, "AAPL", "MSFT")
+    agent = FakeAIPortfolioAgent(build_result=_build_result("AAPL", "MSFT"))
+    event = service.create_build_event(
+        db_session, _params(stop_loss_enabled=True, stop_loss_pct=0.2)
+    )
+    service.run_build_event(db_session, event.id, agent, StubBroker(), provider)
+
+    session_row = paper_service.get_session(
+        db_session, service.get_event(db_session, event.id).session_id
+    )
+    assert session_row.stop_loss_enabled is True
+    assert session_row.stop_loss_pct == 0.2
+
+
+def test_run_build_event_default_disables_stop_loss(db_session: Session) -> None:
+    # A default build leaves the stop-loss off and its threshold null.
+    provider = _seed_universe(db_session, "AAPL", "MSFT")
+    agent = FakeAIPortfolioAgent(build_result=_build_result("AAPL", "MSFT"))
+    event = service.create_build_event(db_session, _params())
+    service.run_build_event(db_session, event.id, agent, StubBroker(), provider)
+
+    session_row = paper_service.get_session(
+        db_session, service.get_event(db_session, event.id).session_id
+    )
+    assert session_row.stop_loss_enabled is False
+    assert session_row.stop_loss_pct is None
+
+
+def test_scan_stop_losses_triggers_below_threshold_only(db_session: Session) -> None:
+    session_id, broker = _stop_loss_session(db_session, "AAPL", "MSFT", pct=0.15)
+    ledger = _ledger_by_ticker(db_session, session_id)
+    broker.set_overrides(
+        {
+            # AAPL breaches its trigger; MSFT stays at cost (comfortably above).
+            "AAPL": _below_trigger(ledger["AAPL"], 0.15),
+            "MSFT": ledger["MSFT"].avg_cost,
+        }
+    )
+
+    outcomes = service.scan_stop_losses(db_session, broker=broker)
+
+    assert {o.ticker for o in outcomes} == {"AAPL"}
+    remaining = set(_ledger_by_ticker(db_session, session_id))
+    assert "AAPL" not in remaining
+    assert "MSFT" in remaining
+
+
+def test_scan_stop_losses_ignores_non_opted_in_sessions(db_session: Session) -> None:
+    provider = _seed_universe(db_session, "AAPL", "MSFT")
+    broker = _StopLossBroker()
+    agent = FakeAIPortfolioAgent(build_result=_build_result("AAPL", "MSFT"))
+    event = service.create_build_event(db_session, _params())  # stop-loss OFF
+    service.run_build_event(db_session, event.id, agent, broker, provider)
+    session_id = service.get_event(db_session, event.id).session_id
+
+    ledger = _ledger_by_ticker(db_session, session_id)
+    broker.set_overrides(
+        {t: p.avg_cost * 0.1 for t, p in ledger.items()}  # far below trigger
+    )
+
+    outcomes = service.scan_stop_losses(db_session, broker=broker)
+
+    assert outcomes == []  # opted-out session is never scanned
+    assert set(_ledger_by_ticker(db_session, session_id)) == {"AAPL", "MSFT"}
+
+
+def test_scan_stop_losses_records_trade_run_closed_and_fee(
+    db_session: Session,
+) -> None:
+    session_id, broker = _stop_loss_session(db_session, "AAPL", pct=0.15)
+    fees_before = paper_service.get_session(db_session, session_id).total_fees
+    aapl = _ledger_by_ticker(db_session, session_id)["AAPL"]
+    broker.set_overrides({"AAPL": _below_trigger(aapl, 0.15)})
+
+    outcomes = service.scan_stop_losses(db_session, broker=broker)
+    assert len(outcomes) == 1
+
+    trades = paper_service.get_session_trades(db_session, session_id, limit=100)
+    stop_trade = next(t for t in trades if t.signal_type == STOP_LOSS_SIGNAL_TYPE)
+    assert stop_trade.side == OrderSide.SELL.value
+    assert stop_trade.ai_portfolio_event_id is None
+
+    runs = paper_service.get_session_runs(db_session, session_id, limit=100)
+    assert any(r.run_trigger == STOP_LOSS_RUN_TRIGGER for r in runs)
+
+    closed = paper_service.get_closed_positions(db_session, session_id, limit=100)
+    assert any(c.ticker == "AAPL" for c in closed)
+
+    fees_after = paper_service.get_session(db_session, session_id).total_fees
+    assert fees_after > fees_before  # the flat transaction cost was charged
+
+
+def _seed_and_build_mixed_stop_loss(
+    db_session: Session, pct: float = 0.15
+) -> tuple[object, _StopLossBroker]:
+    """Build an opted-in session holding one equity (AAPL) and one crypto (BTC-USD)."""
+    _seed_mixed_universe(db_session)
+    broker = _StopLossBroker()
+    agent = FakeAIPortfolioAgent(build_result=_build_result("AAPL", "BTC-USD"))
+    event = service.create_build_event(
+        db_session, _params(stop_loss_enabled=True, stop_loss_pct=pct)
+    )
+    service.run_build_event(db_session, event.id, agent, broker, _provider())
+    return service.get_event(db_session, event.id).session_id, broker
+
+
+def test_scan_stop_losses_defers_equity_when_market_closed(
+    db_session: Session,
+) -> None:
+    session_id, broker = _seed_and_build_mixed_stop_loss(db_session, pct=0.15)
+    ledger = _ledger_by_ticker(db_session, session_id)
+    broker.set_overrides(
+        {
+            "AAPL": _below_trigger(ledger["AAPL"], 0.15),
+            "BTC-USD": _below_trigger(ledger["BTC-USD"], 0.15),
+        }
+    )
+    broker.set_market_open(False)
+
+    outcomes = service.scan_stop_losses(db_session, broker=broker)
+
+    # Equity sell is deferred while the market is closed; crypto stops out anytime.
+    assert {o.ticker for o in outcomes} == {"BTC-USD"}
+    remaining = set(_ledger_by_ticker(db_session, session_id))
+    assert "AAPL" in remaining
+    assert "BTC-USD" not in remaining
+
+
+def test_scan_stop_losses_skips_missing_quote(db_session: Session) -> None:
+    session_id, broker = _stop_loss_session(db_session, "AAPL", pct=0.15)
+    # A price-less quote leaves the position untouched for the next scan.
+    broker.set_overrides({"AAPL": None})
+
+    outcomes = service.scan_stop_losses(db_session, broker=broker)
+
+    assert outcomes == []
+    assert "AAPL" in _ledger_by_ticker(db_session, session_id)
+
+
+def test_scan_stop_losses_isolates_session_failures(
+    db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    provider = _seed_universe(db_session, "AAPL", "MSFT")
+    # Both sessions share one broker so its in-memory positions cover both builds.
+    broker = _StopLossBroker()
+    s1, _ = _build_stop_loss_session(db_session, provider, "AAPL", pct=0.15, broker=broker)
+    s2, _ = _build_stop_loss_session(db_session, provider, "MSFT", pct=0.15, broker=broker)
+
+    original = service._scan_session_stop_losses
+
+    def flaky(session, session_row, **kwargs):  # type: ignore[no-untyped-def]
+        if session_row.id == s1:
+            raise RuntimeError("boom")
+        return original(session, session_row, **kwargs)
+
+    monkeypatch.setattr(service, "_scan_session_stop_losses", flaky)
+
+    ledger1 = _ledger_by_ticker(db_session, s1)
+    ledger2 = _ledger_by_ticker(db_session, s2)
+    broker.set_overrides(
+        {
+            "AAPL": _below_trigger(ledger1["AAPL"], 0.15),
+            "MSFT": _below_trigger(ledger2["MSFT"], 0.15),
+        }
+    )
+
+    outcomes = service.scan_stop_losses(db_session, broker=broker)
+
+    # The failing session is skipped; the healthy one still stops out.
+    assert {o.ticker for o in outcomes} == {"MSFT"}
+    assert "MSFT" not in _ledger_by_ticker(db_session, s2)
+
+
+def test_scan_stop_losses_quarantines_stopped_ticker(db_session: Session) -> None:
+    session_id, broker = _stop_loss_session(db_session, "AAPL", pct=0.15)
+    aapl = _ledger_by_ticker(db_session, session_id)["AAPL"]
+    broker.set_overrides({"AAPL": _below_trigger(aapl, 0.15)})
+
+    reference = datetime.now(UTC)
+    service.scan_stop_losses(db_session, broker=broker)
+
+    quarantined = paper_service.list_active_quarantined_tickers(db_session, session_id)
+    assert "AAPL" in quarantined
+
+    rows = list(
+        db_session.execute(
+            select(StopLossQuarantine).where(
+                StopLossQuarantine.session_id == session_id
+            )
+        ).scalars()
+    )
+    assert len(rows) == 1
+    expected = service._trading_days_ahead(
+        reference, settings.STOP_LOSS_COOLDOWN_TRADING_DAYS
+    )
+    assert rows[0].excluded_until.date() == expected.date()
+
+
+def test_rebalance_excludes_quarantined_not_held_ticker(db_session: Session) -> None:
+    provider = _seed_universe(db_session, "AAPL", "MSFT", "NVDA", "TSLA")
+    broker = StubBroker()
+    session_id, _ = _seed_session(db_session, broker, provider)  # holds AAPL/MSFT/NVDA
+    paper_service.add_stop_loss_quarantine(
+        db_session,
+        session_id=session_id,
+        ticker="TSLA",
+        excluded_until=datetime.now(UTC) + timedelta(days=5),
+    )
+
+    rebalance = FakeAIPortfolioAgent(rebalance_result=_flat_rebalance_result())
+    rb_event = service.create_rebalance_event(db_session, session_id)
+    service.run_rebalance_event(db_session, rb_event.id, rebalance, broker, provider)
+
+    candidates = {c["ticker"] for c in rebalance.rebalance_calls[0]["candidates"]}
+    assert "TSLA" not in candidates  # freshly quarantined, not held → excluded
+    assert {"AAPL", "MSFT", "NVDA"} <= candidates
+
+
+def test_rebalance_includes_expired_quarantine_ticker(db_session: Session) -> None:
+    provider = _seed_universe(db_session, "AAPL", "MSFT", "NVDA", "TSLA")
+    broker = StubBroker()
+    session_id, _ = _seed_session(db_session, broker, provider)
+    paper_service.add_stop_loss_quarantine(
+        db_session,
+        session_id=session_id,
+        ticker="TSLA",
+        excluded_until=datetime.now(UTC) - timedelta(days=1),  # already expired
+    )
+
+    rebalance = FakeAIPortfolioAgent(rebalance_result=_flat_rebalance_result())
+    rb_event = service.create_rebalance_event(db_session, session_id)
+    service.run_rebalance_event(db_session, rb_event.id, rebalance, broker, provider)
+
+    candidates = {c["ticker"] for c in rebalance.rebalance_calls[0]["candidates"]}
+    assert "TSLA" in candidates  # expired quarantine no longer excludes
+
+
+def test_scan_stop_losses_notifies_on_stop_out(db_session: Session) -> None:
+    session_id, broker = _stop_loss_session(db_session, "AAPL", pct=0.15)
+    aapl = _ledger_by_ticker(db_session, session_id)["AAPL"]
+    broker.set_overrides({"AAPL": _below_trigger(aapl, 0.15)})
+    notifier = RecordingNotifier()
+
+    service.scan_stop_losses(db_session, broker=broker, notifier=notifier)
+
+    assert notifier.sent  # a best-effort push was sent for the stop-out
+
+
+def test_scan_stop_losses_records_sale_when_notify_fails(db_session: Session) -> None:
+    session_id, broker = _stop_loss_session(db_session, "AAPL", pct=0.15)
+    aapl = _ledger_by_ticker(db_session, session_id)["AAPL"]
+    broker.set_overrides({"AAPL": _below_trigger(aapl, 0.15)})
+    notifier = RecordingNotifier(raises=True)  # notifier blows up
+
+    outcomes = service.scan_stop_losses(db_session, broker=broker, notifier=notifier)
+
+    # The sale is still recorded despite the notifier failure.
+    assert len(outcomes) == 1
+    assert "AAPL" not in _ledger_by_ticker(db_session, session_id)

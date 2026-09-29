@@ -26,6 +26,8 @@ from cadence.api.schemas import (
     SessionBenchmarkChangeRequest,
     SessionRunListResponse,
     SessionRunRead,
+    SessionValueComparisonResponse,
+    SessionValueComparisonSeries,
     SessionValueHistoryResponse,
     SessionValueSnapshotRead,
 )
@@ -77,6 +79,26 @@ def list_sessions(
         db, status=status_filter, include_archived=include_archived
     )
     return PaperTradingSessionListResponse(items=items, total=total)
+
+
+@router.get(
+    "/sessions/value-history-comparison",
+    response_model=SessionValueComparisonResponse,
+)
+def list_sessions_value_comparison(
+    db: DbSession,
+) -> SessionValueComparisonResponse:
+    """Return every non-archived session with its value points, for comparison.
+
+    Registered before the ``/sessions/{session_id}/...`` routes so the literal
+    ``value-history-comparison`` segment is never parsed as a session id.
+    """
+    return SessionValueComparisonResponse(
+        sessions=[
+            SessionValueComparisonSeries.model_validate(series)
+            for series in service.list_sessions_value_comparison(db)
+        ]
+    )
 
 
 def _require_session(db: Session, session_id: uuid.UUID) -> None:

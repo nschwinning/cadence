@@ -33,7 +33,7 @@ from cadence.api.routers.assets import get_market_data_provider
 from cadence.assets import service as assets_service
 from cadence.assets.market_data import AssetInfo, HistoryBar
 from cadence.broker import get_broker
-from cadence.broker.models import AssetClass, Order, OrderSide, OrderStatus
+from cadence.broker.models import AssetClass, Order, OrderSide, OrderStatus, Quote
 from cadence.broker.stub import StubBroker
 from cadence.config import settings
 from cadence.paper_trading import service as paper_service
@@ -49,6 +49,29 @@ class _ReconcileBroker:
 
     def get_order(self, order_id: str) -> Order | None:
         return self._orders.get(order_id)
+
+
+class _StopScanBroker(StubBroker):
+    """StubBroker whose batched scan quotes are overridable (for the scan endpoint)."""
+
+    def __init__(self, initial_cash: float = 1_000_000.0) -> None:
+        super().__init__(initial_cash=initial_cash)
+        self._overrides: dict[str, float | None] = {}
+
+    def set_overrides(self, overrides: dict[str, float | None]) -> None:
+        self._overrides = overrides
+
+    def get_quotes(self, symbols: list[str]) -> dict[str, Quote]:
+        result: dict[str, Quote] = {}
+        for symbol in symbols:
+            if symbol in self._overrides:
+                price = self._overrides[symbol]
+                result[symbol] = Quote(
+                    symbol=symbol, bid=price, ask=price, last=price, volume=1_000
+                )
+            else:
+                result[symbol] = self.get_quote(symbol)
+        return result
 
 
 def _provider() -> FakeMarketDataProvider:
@@ -221,6 +244,60 @@ def test_build_rejects_invalid_asset_types(
         json={"allocated_capital": 10000, "asset_types": "commodities"},
     )
     assert resp.status_code == 422
+
+
+def test_build_request_defaults_stop_loss_threshold_when_enabled() -> None:
+    from cadence.api.schemas import AIPortfolioBuildRequest
+
+    req = AIPortfolioBuildRequest(allocated_capital=100_000, stop_loss_enabled=True)
+    assert req.stop_loss_pct == settings.STOP_LOSS_DEFAULT_PCT
+
+
+def test_build_request_clears_stop_loss_threshold_when_disabled() -> None:
+    from cadence.api.schemas import AIPortfolioBuildRequest
+
+    req = AIPortfolioBuildRequest(
+        allocated_capital=100_000, stop_loss_enabled=False, stop_loss_pct=0.3
+    )
+    assert req.stop_loss_pct is None
+
+
+def test_build_request_rejects_out_of_range_stop_loss_threshold() -> None:
+    from pydantic import ValidationError
+
+    from cadence.api.schemas import AIPortfolioBuildRequest
+
+    with pytest.raises(ValidationError):
+        AIPortfolioBuildRequest(
+            allocated_capital=100_000, stop_loss_enabled=True, stop_loss_pct=1.5
+        )
+
+
+def test_build_persists_stop_loss_opt_in_via_api(
+    client: TestClient, db_session: Session
+) -> None:
+    executor = ManualExecutor(run_immediately=True)
+    _seed_universe(db_session, _provider())
+    _wire(db_session, executor)
+
+    resp = client.post(
+        "/api/v1/ai-portfolio/build",
+        json={
+            "allocated_capital": 100000,
+            "stop_loss_enabled": True,
+            "stop_loss_pct": 0.1,
+        },
+    )
+    assert resp.status_code == 202
+    executor.run_pending()
+    event_id = resp.json()["event_id"]
+    session_id = client.get(
+        f"/api/v1/ai-portfolio/build/status/{event_id}"
+    ).json()["session_id"]
+
+    session = paper_service.get_session(db_session, uuid.UUID(session_id))
+    assert session.stop_loss_enabled is True
+    assert session.stop_loss_pct == 0.1
 
 
 def test_build_status_unknown_event_404(
@@ -591,6 +668,73 @@ def test_snapshot_daily_fans_out_to_active_ai_sessions(
     body = resp.json()
     assert body["sessions_snapshotted"] == 1
     assert session_id in body["session_ids"]
+
+
+def test_scan_stop_losses_rejects_without_token(
+    client: TestClient, db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(settings, "REBALANCE_CRON_TOKEN", "secret")
+    _wire(db_session, ManualExecutor())
+    resp = client.post("/api/v1/ai-portfolio/scan-stop-losses")
+    assert resp.status_code == 403
+
+
+def test_scan_stop_losses_rejects_wrong_token(
+    client: TestClient, db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(settings, "REBALANCE_CRON_TOKEN", "secret")
+    _wire(db_session, ManualExecutor())
+    resp = client.post(
+        "/api/v1/ai-portfolio/scan-stop-losses",
+        headers={"X-Cron-Token": "wrong"},
+    )
+    assert resp.status_code == 403
+
+
+def test_scan_stop_losses_stops_out_breached_positions(
+    client: TestClient, db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(settings, "REBALANCE_CRON_TOKEN", "secret")
+    executor = ManualExecutor(run_immediately=True)
+    _seed_universe(db_session, _provider())
+    broker = _StopScanBroker()
+    _wire(db_session, executor, broker=broker)
+
+    # Build a stop-loss-enabled session (holds AAPL + MSFT).
+    resp = client.post(
+        "/api/v1/ai-portfolio/build",
+        json={
+            "allocated_capital": 100000,
+            "daily_rebalancing": True,
+            "stop_loss_enabled": True,
+            "stop_loss_pct": 0.15,
+        },
+    )
+    assert resp.status_code == 202
+    event_id = resp.json()["event_id"]
+    executor.run_pending()
+    session_id = client.get(
+        f"/api/v1/ai-portfolio/build/status/{event_id}"
+    ).json()["session_id"]
+
+    # Drive every held position below its trigger.
+    ledger = paper_service.list_open_positions(db_session, uuid.UUID(session_id))
+    broker.set_overrides(
+        {p.ticker: p.avg_cost * (1 - 0.15) - 1.0 for p in ledger}
+    )
+
+    scan = client.post(
+        "/api/v1/ai-portfolio/scan-stop-losses",
+        headers={"X-Cron-Token": "secret"},
+    )
+    assert scan.status_code == 200
+    body = scan.json()
+    assert body["positions_stopped"] == 2
+    assert session_id in body["session_ids"]
+
+    # Both positions were fully exited.
+    remaining = paper_service.list_open_positions(db_session, uuid.UUID(session_id))
+    assert remaining == []
 
 
 # --------------------------------------------------------------------------- #

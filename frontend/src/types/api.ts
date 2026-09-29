@@ -287,6 +287,16 @@ export interface PaperTradingSession {
    * (frozen at build time). False for sessions built before this option existed.
    */
   use_technical_indicators: boolean;
+  /**
+   * Whether this session opted into the hard stop-loss (frozen at build time).
+   * False for sessions built before this option existed.
+   */
+  stop_loss_enabled: boolean;
+  /**
+   * The frozen stop-loss threshold as a fraction (e.g. `0.15` = 15%), or `null`
+   * when the stop-loss is disabled.
+   */
+  stop_loss_pct: number | null;
 }
 
 /** One entry in the fixed benchmark catalog. Mirrors `BenchmarkCatalogEntry`. */
@@ -418,6 +428,30 @@ export interface SessionValueHistoryResponse {
   total: number;
 }
 
+/** One value point in a comparison series. Mirrors `SessionValueComparisonPoint`. */
+export interface SessionValueComparisonPoint {
+  /** ISO date (YYYY-MM-DD) of the snapshot. */
+  snapshot_date: string;
+  total_value: number;
+}
+
+/**
+ * One session's value history for the multi-session comparison chart.
+ * Mirrors `SessionValueComparisonSeries`. `label` is the portfolio name falling
+ * back to the strategy key; `points` is oldest-first and may be empty.
+ */
+export interface SessionValueComparisonSeries {
+  session_id: string;
+  label: string;
+  allocated_capital: number;
+  points: SessionValueComparisonPoint[];
+}
+
+/** Every non-archived session with its value points. Mirrors `SessionValueComparisonResponse`. */
+export interface SessionValueComparisonResponse {
+  sessions: SessionValueComparisonSeries[];
+}
+
 /** A session's live performance KPIs. Mirrors `PaperTradingSessionKpisRead`. */
 export interface PaperTradingSessionKpis {
   current_value: number;
@@ -491,6 +525,17 @@ export interface AIPortfolioBuildRequest {
    * Defaults to off (opt-in).
    */
   use_technical_indicators?: boolean;
+  /**
+   * Opt this portfolio into a hard stop-loss (frozen at build time). When
+   * enabled, each open position is sold in whole when its market price falls to
+   * or below `avg_cost × (1 − stop_loss_pct)`. Defaults to off (opt-in).
+   */
+  stop_loss_enabled?: boolean;
+  /**
+   * Per-session stop-loss threshold as a fraction (e.g. `0.15` = 15%). Frozen at
+   * build time. Defaults to the server-side default when enabled without one.
+   */
+  stop_loss_pct?: number | null;
 }
 
 /**

@@ -83,6 +83,16 @@ class Settings(BaseSettings):
     # ``cadence.paper_trading.constants.Benchmark`` id (e.g. "SP500" = S&P 500).
     DEFAULT_BENCHMARK: str = "SP500"
 
+    # Default stop-loss threshold applied when a session opts into the automatic
+    # hard stop-loss at build time without specifying its own percentage. Expressed
+    # as a fraction of the position's weighted-average cost (0.15 = a 15% drop
+    # triggers a whole-position exit). Single threshold for equities and crypto.
+    STOP_LOSS_DEFAULT_PCT: float = 0.15
+
+    # How long (in trading days) a stopped-out ticker is quarantined for a session
+    # so the daily rebalance cannot immediately re-buy the just-stopped position.
+    STOP_LOSS_COOLDOWN_TRADING_DAYS: int = 5
+
     # Model id the AI portfolio manager runs on.
     AI_PORTFOLIO_MODEL: str = "gpt-5-mini"
 

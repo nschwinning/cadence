@@ -60,6 +60,16 @@ def test_is_market_open_always_true() -> None:
     assert StubBroker().is_market_open() is True
 
 
+def test_get_quotes_multi_symbol_returns_priced_quote_per_symbol() -> None:
+    """A batched multi-symbol call returns a usable quote for every symbol."""
+    quotes = StubBroker().get_quotes(["AAPL", "MSFT", "BTC-USD"])
+
+    assert set(quotes) == {"AAPL", "MSFT", "BTC-USD"}
+    for symbol, quote in quotes.items():
+        assert quote.symbol == symbol
+        assert quote.last is not None and quote.last > 0
+
+
 def test_buy_updates_positions_and_cash_deterministically() -> None:
     broker = StubBroker(initial_cash=100_000.0)
     price = broker.get_quote("AAPL").last

@@ -56,6 +56,8 @@ export function BuildAIPortfolioCard() {
   const [assetTypes, setAssetTypes] = useState<AssetScope>('both');
   const [dailyRebalancing, setDailyRebalancing] = useState(false);
   const [useTechnicalIndicators, setUseTechnicalIndicators] = useState(false);
+  const [stopLossEnabled, setStopLossEnabled] = useState(false);
+  const [stopLossPct, setStopLossPct] = useState('15');
   const [benchmark, setBenchmark] = useState<string>(DEFAULT_BENCHMARK);
   const [eventId, setEventId] = useState<string | null>(null);
 
@@ -69,7 +71,18 @@ export function BuildAIPortfolioCard() {
 
   const capitalValue = Number.parseFloat(capital);
   const capitalValid = Number.isFinite(capitalValue) && capitalValue >= 1000;
-  const canSubmit = capitalValid;
+
+  // The threshold is entered as a percentage (e.g. 15 → 0.15). When the
+  // stop-loss is enabled it must be a fraction strictly between 0 and 1.
+  const stopLossPctValue = Number.parseFloat(stopLossPct);
+  const stopLossFraction = stopLossPctValue / 100;
+  const stopLossValid =
+    !stopLossEnabled ||
+    (Number.isFinite(stopLossPctValue) &&
+      stopLossFraction > 0 &&
+      stopLossFraction < 1);
+
+  const canSubmit = capitalValid && stopLossValid;
 
   // Refresh portfolios + sessions once the build reaches a terminal state.
   const settledEventId = useRef<string | null>(null);
@@ -92,6 +105,8 @@ export function BuildAIPortfolioCard() {
         daily_rebalancing: dailyRebalancing,
         benchmark,
         use_technical_indicators: useTechnicalIndicators,
+        stop_loss_enabled: stopLossEnabled,
+        stop_loss_pct: stopLossEnabled ? stopLossFraction : null,
       },
       { onSuccess: (res) => setEventId(res.event_id) },
     );
@@ -228,6 +243,40 @@ export function BuildAIPortfolioCard() {
               When enabled, the build and every rebalance only enter assets in a
               confirmed uptrend and attach trend context to holdings. Frozen for
               the session&apos;s lifetime.
+            </p>
+            <label className="flex items-center gap-2 text-sm font-medium text-slate-800">
+              <input
+                type="checkbox"
+                checked={stopLossEnabled}
+                onChange={(e) => setStopLossEnabled(e.target.checked)}
+                className="h-4 w-4 rounded border-slate-300 text-emerald-600 focus:ring-emerald-500"
+              />
+              Enable hard stop-loss
+            </label>
+            {stopLossEnabled && (
+              <div>
+                <label
+                  htmlFor="ai-stop-loss-pct"
+                  className="block text-sm font-medium text-slate-700"
+                >
+                  Stop-loss threshold (%)
+                </label>
+                <input
+                  id="ai-stop-loss-pct"
+                  type="number"
+                  min={1}
+                  max={99}
+                  step={1}
+                  value={stopLossPct}
+                  onChange={(e) => setStopLossPct(e.target.value)}
+                  className="mt-1 w-full rounded border border-slate-300 px-3 py-2 text-sm text-slate-900 focus:border-emerald-500 focus:outline-none focus:ring-1 focus:ring-emerald-500 sm:w-40"
+                />
+              </div>
+            )}
+            <p className="text-xs text-slate-500">
+              When enabled, each open position is sold in whole once its market
+              price falls to or below its average cost minus this percentage.
+              Frozen for the session&apos;s lifetime.
             </p>
           </div>
 

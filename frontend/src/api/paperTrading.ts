@@ -11,6 +11,7 @@ import type {
   PaperTradingSessionListResponse,
   SessionRunListResponse,
   SessionStatus,
+  SessionValueComparisonResponse,
   SessionValueHistoryResponse,
 } from '../types/api';
 
@@ -48,6 +49,8 @@ export const paperTradingKeys = {
     ['paper-trading', 'session', sessionId, 'positions'] as const,
   valueHistory: (sessionId: string) =>
     ['paper-trading', 'session', sessionId, 'value-history'] as const,
+  valueComparison: () =>
+    ['paper-trading', 'sessions', 'value-history-comparison'] as const,
   kpis: (sessionId: string) =>
     ['paper-trading', 'session', sessionId, 'kpis'] as const,
   orderSync: (sessionId: string) =>
@@ -150,6 +153,17 @@ export async function listSessionValueHistory(
   return data;
 }
 
+/**
+ * Fetch every non-archived session with its ordered value points, for the
+ * multi-session comparison chart (one call instead of N per-session requests).
+ */
+export async function listSessionsValueComparison(): Promise<SessionValueComparisonResponse> {
+  const { data } = await apiClient.get<SessionValueComparisonResponse>(
+    '/api/v1/paper-trading/sessions/value-history-comparison',
+  );
+  return data;
+}
+
 /** Fetch a session's live performance KPIs (value marked to market on load). */
 export async function getSessionKpis(
   sessionId: string,
@@ -223,6 +237,17 @@ export function useSessionValueHistory(sessionId: string) {
     queryKey: paperTradingKeys.valueHistory(sessionId),
     queryFn: () => listSessionValueHistory(sessionId),
     enabled: sessionId.length > 0,
+  });
+}
+
+/**
+ * React Query hook fetching the multi-session comparison value history. Does not
+ * poll — the comparison is a snapshot-driven overview, refreshed on invalidation.
+ */
+export function useSessionsValueComparison() {
+  return useQuery<SessionValueComparisonResponse>({
+    queryKey: paperTradingKeys.valueComparison(),
+    queryFn: () => listSessionsValueComparison(),
   });
 }
 

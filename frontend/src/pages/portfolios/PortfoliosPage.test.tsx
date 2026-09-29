@@ -51,6 +51,8 @@ const activeSession: PaperTradingSession = {
   rebalance_prompt_version: 1,
   benchmark: 'SP500',
   use_technical_indicators: false,
+  stop_loss_enabled: false,
+  stop_loss_pct: null,
 };
 
 /**

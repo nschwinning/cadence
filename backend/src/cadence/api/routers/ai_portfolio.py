@@ -44,6 +44,7 @@ from cadence.api.schemas import (
     AIPortfolioRunDetail,
     AIPortfolioRunListResponse,
     AIRebalanceResponse,
+    AIStopLossScanResponse,
     ClosedPositionRead,
     PaperTradeRead,
 )
@@ -127,6 +128,8 @@ def build_ai_portfolio_endpoint(
             else settings.DEFAULT_BENCHMARK
         ),
         use_technical_indicators=payload.use_technical_indicators,
+        stop_loss_enabled=payload.stop_loss_enabled,
+        stop_loss_pct=payload.stop_loss_pct,
     )
     try:
         event = job_runner.start_build(db, params, agent, broker, provider)
@@ -323,6 +326,31 @@ def snapshot_daily(
     )
     return AIDailySnapshotResponse(
         sessions_snapshotted=len(session_ids), session_ids=session_ids
+    )
+
+
+@router.post("/scan-stop-losses", response_model=AIStopLossScanResponse)
+def scan_stop_losses_endpoint(
+    db: DbSession,
+    broker: BrokerDep,
+    notifier: NotifierDep,
+    _token: Annotated[None, Depends(require_valid_cron_token)],
+) -> AIStopLossScanResponse:
+    """Scan all active opted-in sessions and stop out breached positions.
+
+    Guarded by the ``X-Cron-Token`` header. Intended to run more frequently than the
+    daily rebalance. Runs synchronously: for every active session that opted into the
+    automatic stop-loss it marks each held position against a live batched quote and
+    fully exits positions that have breached ``avg_cost × (1 − stop_loss_pct)``
+    (equity exits only when the market is open; crypto anytime). Returns how many
+    positions were stopped out and the affected sessions.
+    """
+    from cadence.ai_portfolio import service as ai_service
+
+    outcomes = ai_service.scan_stop_losses(db, broker=broker, notifier=notifier)
+    return AIStopLossScanResponse(
+        positions_stopped=len(outcomes),
+        session_ids=sorted({o.session_id for o in outcomes}),
     )
 
 

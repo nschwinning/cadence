@@ -8,11 +8,13 @@ import {
   paperTradingKeys,
   useChangeSessionBenchmark,
   useSessionOrderSync,
+  useSessionsValueComparison,
 } from './paperTrading';
 import type {
   PaperTrade,
   PaperTradeReconcileResult,
   PaperTradingSession,
+  SessionValueComparisonResponse,
 } from '../types/api';
 
 // Mock the shared axios client rather than the network.
@@ -24,6 +26,7 @@ vi.mock('./client', () => ({
   },
 }));
 
+const mockedGet = vi.mocked(apiClient.get);
 const mockedPost = vi.mocked(apiClient.post);
 const mockedPut = vi.mocked(apiClient.put);
 
@@ -86,6 +89,49 @@ describe('paperTradingKeys factory', () => {
       'benchmarks',
     ]);
   });
+
+  it('builds the value-comparison key', () => {
+    expect(paperTradingKeys.valueComparison()).toEqual([
+      'paper-trading',
+      'sessions',
+      'value-history-comparison',
+    ]);
+  });
+});
+
+describe('useSessionsValueComparison', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('GETs the comparison endpoint and returns the parsed response', async () => {
+    const response: SessionValueComparisonResponse = {
+      sessions: [
+        {
+          session_id: 'sess-1',
+          label: 'Alpha',
+          allocated_capital: 100000,
+          points: [{ snapshot_date: '2026-01-04', total_value: 101000 }],
+        },
+      ],
+    };
+    mockedGet.mockResolvedValue({ data: response });
+
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false, gcTime: 0 } },
+    });
+
+    const { result } = renderHook(() => useSessionsValueComparison(), {
+      wrapper: wrapper(queryClient),
+    });
+
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+
+    expect(mockedGet).toHaveBeenCalledWith(
+      '/api/v1/paper-trading/sessions/value-history-comparison',
+    );
+    expect(result.current.data).toEqual(response);
+  });
 });
 
 describe('useChangeSessionBenchmark', () => {
@@ -113,6 +159,8 @@ describe('useChangeSessionBenchmark', () => {
       rebalance_prompt_version: 1,
       benchmark,
       use_technical_indicators: false,
+      stop_loss_enabled: false,
+      stop_loss_pct: null,
     };
   }
 

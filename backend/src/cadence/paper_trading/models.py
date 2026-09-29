@@ -175,6 +175,19 @@ class PaperTradingSession(Base):
     use_technical_indicators: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False, server_default="false"
     )
+    # Whether this session opts into the automatic hard stop-loss, chosen at build
+    # time and frozen for the session's lifetime (like the trend opt-in). When true,
+    # the stop-loss scan fully exits any held position whose live price falls to or
+    # below ``avg_cost × (1 − stop_loss_pct)``. Non-nullable and defaults to false
+    # (opt-in); backfilled to false for pre-existing sessions by the migration, so
+    # already-built sessions behave as stop-loss off.
+    stop_loss_enabled: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="false"
+    )
+    # The stop-loss threshold as a fraction of weighted-average cost, frozen at build
+    # time. Meaningful only when ``stop_loss_enabled`` is true; nullable because a
+    # disabled session has no threshold (and pre-existing rows have none).
+    stop_loss_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
 
     trades: Mapped[list[PaperTrade]] = relationship(
         back_populates="session",
@@ -197,6 +210,11 @@ class PaperTradingSession(Base):
         passive_deletes=True,
     )
     value_snapshots: Mapped[list[SessionValueSnapshot]] = relationship(
+        back_populates="session",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+    )
+    stop_loss_quarantines: Mapped[list[StopLossQuarantine]] = relationship(
         back_populates="session",
         cascade="all, delete-orphan",
         passive_deletes=True,
@@ -496,4 +514,51 @@ class BenchmarkPrice(Base):
     close: Mapped[float] = mapped_column(Float, nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
+class StopLossQuarantine(Base):
+    """A per-session cooldown that keeps a just-stopped ticker out of rebalances.
+
+    When the automatic stop-loss fully exits a position, a row is written here with
+    ``excluded_until`` set a fixed number of trading days ahead
+    (``STOP_LOSS_COOLDOWN_TRADING_DAYS``). The daily-rebalance candidate assembly
+    filters out any candidate the session does not currently hold whose quarantine
+    has not yet expired, so the AI cannot immediately re-buy the position it was just
+    stopped out of. Rows are allowed to accumulate (one per stop-out); the assembly
+    only cares whether any unexpired row exists for a ``(session_id, ticker)``.
+    Indexed on ``(session_id, ticker)`` for that lookup.
+    """
+
+    __tablename__ = "stop_loss_quarantines"
+    __table_args__ = (
+        Index(
+            "idx_stop_loss_quarantines_session_ticker",
+            "session_id",
+            "ticker",
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        server_default=func.gen_random_uuid(),
+    )
+    session_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("paper_trading_sessions.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    ticker: Mapped[str] = mapped_column(Text, nullable=False)
+    # The moment the quarantine lapses; the ticker is excluded from rebalance
+    # candidates only while ``now < excluded_until``.
+    excluded_until: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    session: Mapped[PaperTradingSession] = relationship(
+        back_populates="stop_loss_quarantines"
     )

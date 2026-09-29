@@ -44,7 +44,7 @@ The system SHALL let a user start asynchronous AI runs (recommendations, portfol
 
 ### Requirement: Portfolio and paper-trading views
 
-The system SHALL provide views to list portfolios and open a portfolio, and to list paper-trading sessions and open a session showing its trades, runs, positions, and AI-portfolio events. The session list and the session detail header SHALL identify each session by its portfolio name as the primary label, and SHALL present the strategy as secondary context rather than the primary identifier. When a session has no resolvable portfolio name, the UI SHALL fall back to the strategy label.
+The system SHALL provide views to list portfolios and open a portfolio, and to list paper-trading sessions and open a session showing its trades, runs, positions, and AI-portfolio events. The session list and the session detail header SHALL identify each session by its portfolio name as the primary label, and SHALL present the strategy as secondary context rather than the primary identifier. When a session has no resolvable portfolio name, the UI SHALL fall back to the strategy label. The session detail view SHALL display the session's **automatic stop-loss configuration** — whether it is enabled and, when enabled, its threshold percentage. Among the session's trades and runs, those produced by the automatic stop-loss SHALL be identifiable as stop-loss activity (rather than AI-driven build or rebalance activity).
 
 #### Scenario: Inspect a paper-trading session
 
@@ -60,6 +60,16 @@ The system SHALL provide views to list portfolios and open a portfolio, and to l
 
 - **WHEN** a session has no resolvable portfolio name
 - **THEN** the UI SHALL show the strategy label in place of the portfolio name
+
+#### Scenario: Session shows its stop-loss configuration
+
+- **WHEN** a user opens a session's detail view
+- **THEN** the UI SHALL display whether the automatic stop-loss is enabled and, when enabled, its threshold percentage
+
+#### Scenario: Stop-loss activity is identifiable
+
+- **WHEN** a user views the trades and runs of a session that has been stopped out at least once
+- **THEN** the UI SHALL identify the stop-loss sale trades and stop-loss runs as stop-loss activity, distinct from AI build or rebalance activity
 
 ### Requirement: AI run history and detail views
 
@@ -222,12 +232,12 @@ The paper-trading session detail view SHALL present the session's live performan
 
 ### Requirement: AI build form asset scope and default capital
 
-The AI portfolio build form SHALL let the user choose the portfolio's asset scope — stocks only, crypto only, or both — defaulting to both, and SHALL let the user choose the session's benchmark from the fixed benchmark catalog, defaulting to S&P 500. The form SHALL also let the user opt the portfolio into the **technical-indicator trend strategy** via a toggle that defaults to **off**. The form's allocated-capital input SHALL default to the configured default amount (10,000). The chosen asset scope SHALL be sent with the build request so the resulting portfolio is restricted to the selected asset types, the chosen benchmark SHALL be sent with the build request so the session is compared against it, and the technical-indicator opt-in SHALL be sent with the build request so the resulting session applies (or omits) the trend strategy accordingly.
+The AI portfolio build form SHALL let the user choose the portfolio's asset scope — stocks only, crypto only, or both — defaulting to both, and SHALL let the user choose the session's benchmark from the fixed benchmark catalog, defaulting to S&P 500. The form SHALL also let the user opt the portfolio into the **technical-indicator trend strategy** via a toggle that defaults to **off**. The form SHALL also let the user opt the portfolio into an **automatic hard stop-loss** via a toggle that defaults to **off**, and SHALL let the user set the **stop-loss threshold percentage** (defaulting to the configured default) that applies when the stop-loss is enabled; the threshold control MAY be hidden or disabled while the stop-loss toggle is off. The form's allocated-capital input SHALL default to the configured default amount (10,000). The chosen asset scope SHALL be sent with the build request so the resulting portfolio is restricted to the selected asset types, the chosen benchmark SHALL be sent with the build request so the session is compared against it, the technical-indicator opt-in SHALL be sent with the build request so the resulting session applies (or omits) the trend strategy accordingly, and the stop-loss opt-in and (when enabled) threshold SHALL be sent with the build request so the resulting session applies (or omits) the automatic stop-loss accordingly.
 
 #### Scenario: Default form values
 
 - **WHEN** a user opens the AI portfolio build form
-- **THEN** the capital input SHALL default to 10,000, the asset scope SHALL default to both (stocks and crypto), the benchmark SHALL default to S&P 500, and the technical-indicator trend-strategy toggle SHALL default to off
+- **THEN** the capital input SHALL default to 10,000, the asset scope SHALL default to both (stocks and crypto), the benchmark SHALL default to S&P 500, the technical-indicator trend-strategy toggle SHALL default to off, and the automatic stop-loss toggle SHALL default to off
 
 #### Scenario: Selecting an asset scope
 
@@ -248,6 +258,16 @@ The AI portfolio build form SHALL let the user choose the portfolio's asset scop
 
 - **WHEN** a user submits the build form without enabling the technical-indicator toggle
 - **THEN** the UI SHALL send the build request with the opt-in off so the resulting session does not apply the trend strategy
+
+#### Scenario: Opting into the automatic stop-loss
+
+- **WHEN** a user enables the automatic stop-loss toggle, sets a threshold percentage, and submits the build form
+- **THEN** the UI SHALL send the stop-loss opt-in and the chosen threshold with the build request so the resulting session applies the automatic stop-loss
+
+#### Scenario: Leaving the stop-loss off
+
+- **WHEN** a user submits the build form without enabling the automatic stop-loss toggle
+- **THEN** the UI SHALL send the build request with the stop-loss off so the resulting session does not apply an automatic stop-loss
 
 ### Requirement: Switch a session's benchmark from the detail view
 
@@ -276,3 +296,42 @@ The application SHALL display monetary values in US dollars (`$`), consistent wi
 
 - **WHEN** the UI displays a monetary amount
 - **THEN** it SHALL be formatted as US dollars with a `$` symbol rather than another currency
+
+### Requirement: Paper-trading session comparison chart
+
+The paper-trading session list view SHALL display a **performance-comparison chart** that overlays every non-archived session (active, paused, stopped) on a shared time axis, so a user can compare sessions and see which performs best. The chart SHALL plot one line per session that has at least two value points, sharing a single y-scale across all plotted lines, and SHALL show a **legend** mapping each line's color to its session label. Sessions with fewer than two value points SHALL appear in the legend but SHALL NOT be plotted. The chart SHALL offer a **metric toggle** with two views, defaulting to the return view:
+
+- **Return %** (default): each session's line SHALL be its cumulative total-return percentage, computed from the session's total value relative to its allocated capital, so sessions with different allocated capital and start dates are compared fairly and the highest line is the best performer.
+- **Value ($)**: each session's line SHALL be its absolute total portfolio value in USD.
+
+When no non-archived session has enough value points to plot, the chart SHALL show an insufficient-data placeholder rather than an empty plot area. The chart SHALL show its own loading and error states while the comparison data is being fetched or if the fetch fails. The existing single-session value chart on the session detail view SHALL remain unchanged.
+
+#### Scenario: Comparison chart overlays non-archived sessions
+
+- **WHEN** a user opens the paper-trading session list and multiple non-archived sessions each have at least two value points
+- **THEN** the chart SHALL render one line per such session on a shared y-scale with a legend identifying each session by its label
+
+#### Scenario: Toggle between return % and absolute value
+
+- **WHEN** a user switches the metric toggle from the default return view to the value view
+- **THEN** the chart SHALL re-plot each session's line as its absolute portfolio value in USD, and switching back SHALL re-plot cumulative total-return percentage
+
+#### Scenario: Return view is the default
+
+- **WHEN** the comparison chart first renders
+- **THEN** it SHALL show the cumulative total-return percentage view by default
+
+#### Scenario: Session with too little history is legended but not plotted
+
+- **WHEN** a non-archived session has fewer than two value points
+- **THEN** that session SHALL appear in the legend but SHALL NOT be drawn as a line
+
+#### Scenario: Insufficient data placeholder
+
+- **WHEN** no non-archived session has at least two value points
+- **THEN** the chart SHALL display an insufficient-data placeholder instead of an empty plot
+
+#### Scenario: Loading and error states
+
+- **WHEN** the comparison data is loading, or the request fails
+- **THEN** the chart SHALL show a loading indicator while pending and an error state on failure, rather than a blank or broken chart

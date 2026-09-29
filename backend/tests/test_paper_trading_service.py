@@ -787,6 +787,49 @@ def test_list_value_snapshots_ascending(db_session: Session) -> None:
     assert dates == [date(2026, 1, 4), date(2026, 1, 5), date(2026, 1, 6)]
 
 
+def test_sessions_value_comparison_shapes_series(db_session: Session) -> None:
+    broker = _QuoteBroker({})
+
+    # Session A: two snapshots on distinct days (should come back oldest-first).
+    sess_a = _ai_session(db_session)
+    for day in (date(2026, 1, 6), date(2026, 1, 4)):
+        service.record_value_snapshot(
+            db_session, session_id=sess_a.id, as_of=day, broker=broker
+        )
+
+    # Session B: no snapshots yet -> included with an empty points list.
+    sess_b = _ai_session(db_session)
+
+    # Session C: archived -> excluded from the comparison entirely.
+    sess_c = _ai_session(db_session)
+    service.record_value_snapshot(
+        db_session, session_id=sess_c.id, as_of=date(2026, 1, 5), broker=broker
+    )
+    service.update_session_status(db_session, sess_c.id, SessionStatus.STOPPED)
+    service.archive_session(db_session, sess_c.id)
+
+    series = service.list_sessions_value_comparison(db_session)
+    by_id = {s.session_id: s for s in series}
+
+    # Archived session excluded; the two non-archived ones are present.
+    assert sess_c.id not in by_id
+    assert set(by_id) == {sess_a.id, sess_b.id}
+
+    # Session A carries its points oldest date first, with label + capital.
+    a = by_id[sess_a.id]
+    assert a.label == "AI"
+    assert a.allocated_capital == pytest.approx(100_000.0)
+    assert [p.snapshot_date for p in a.points] == [
+        date(2026, 1, 4),
+        date(2026, 1, 6),
+    ]
+
+    # Session B has no snapshots -> empty points, still labelled + capitalised.
+    b = by_id[sess_b.id]
+    assert b.label == "AI"
+    assert b.points == []
+
+
 def test_snapshot_row_validates_into_read_schema(db_session: Session) -> None:
     sess = _ai_session(db_session)
     _buy(db_session, sess.id, "AAPL", 10, 100.0)

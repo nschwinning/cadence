@@ -100,6 +100,8 @@ describe('BuildAIPortfolioCard', () => {
       daily_rebalancing: false,
       benchmark: 'SP500',
       use_technical_indicators: false,
+      stop_loss_enabled: false,
+      stop_loss_pct: null,
     });
 
     // Backend advances the event to terminal; force the poll's refetch (jsdom
@@ -150,6 +152,54 @@ describe('BuildAIPortfolioCard', () => {
     expect(mockedPost).toHaveBeenCalledWith(
       '/api/v1/ai-portfolio/build',
       expect.objectContaining({ use_technical_indicators: true }),
+    );
+  });
+
+  it('enables the hard stop-loss with its threshold when the toggle is checked', async () => {
+    mockedPost.mockResolvedValue({ data: { event_id: 'evt-1', status: 'queued' } });
+    mockedGet.mockImplementation(routeGet(() => 'running'));
+    const user = userEvent.setup();
+
+    renderWithClient(<BuildAIPortfolioCard />);
+
+    // Defaults off: the toggle starts unchecked and the threshold input is hidden.
+    const toggle = screen.getByRole('checkbox', {
+      name: /Enable hard stop-loss/i,
+    });
+    expect(toggle).not.toBeChecked();
+    expect(
+      screen.queryByLabelText('Stop-loss threshold (%)'),
+    ).not.toBeInTheDocument();
+
+    await user.click(toggle);
+
+    // Enabling reveals the threshold input (defaults to 15%); change it to 20%.
+    const threshold = screen.getByLabelText('Stop-loss threshold (%)');
+    expect(threshold).toHaveValue(15);
+    await user.clear(threshold);
+    await user.type(threshold, '20');
+
+    await user.click(screen.getByRole('button', { name: 'Build portfolio' }));
+
+    // The percentage is sent as a fraction.
+    expect(mockedPost).toHaveBeenCalledWith(
+      '/api/v1/ai-portfolio/build',
+      expect.objectContaining({ stop_loss_enabled: true, stop_loss_pct: 0.2 }),
+    );
+  });
+
+  it('sends the stop-loss disabled when the toggle is left off', async () => {
+    mockedPost.mockResolvedValue({ data: { event_id: 'evt-1', status: 'queued' } });
+    mockedGet.mockImplementation(routeGet(() => 'running'));
+    const user = userEvent.setup();
+
+    renderWithClient(<BuildAIPortfolioCard />);
+
+    await user.click(screen.getByRole('button', { name: 'Build portfolio' }));
+
+    expect(mockedPost).toHaveBeenCalledWith(
+      '/api/v1/ai-portfolio/build',
+      expect.objectContaining({ stop_loss_enabled: false, stop_loss_pct: null }),
     );
   });
 

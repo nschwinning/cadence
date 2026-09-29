@@ -82,6 +82,40 @@ def test_list_sessions(client: TestClient, db_session: Session) -> None:
     assert item["portfolio_name"] == "P"
 
 
+def test_list_sessions_exposes_stop_loss_config(
+    client: TestClient, db_session: Session
+) -> None:
+    # The stop-loss opt-in and threshold are surfaced read-only on the session read.
+    portfolio = portfolios_service.create_portfolio(
+        db_session, name="SL", stocks=["AAPL"]
+    )
+    sess = service.create_session(
+        db_session,
+        portfolio_id=portfolio.id,
+        strategy_key="ai_buy_hold",
+        rebalance_prompt_version=1,
+        benchmark=Benchmark.SP500,
+        stop_loss_enabled=True,
+        stop_loss_pct=0.2,
+    )
+
+    resp = client.get("/api/v1/paper-trading/sessions")
+    assert resp.status_code == 200
+    item = next(i for i in resp.json()["items"] if i["id"] == str(sess.id))
+    assert item["stop_loss_enabled"] is True
+    assert item["stop_loss_pct"] == 0.2
+
+
+def test_list_sessions_defaults_stop_loss_disabled(
+    client: TestClient, db_session: Session
+) -> None:
+    session_id = _seed(db_session)  # created without a stop-loss
+    resp = client.get("/api/v1/paper-trading/sessions")
+    item = next(i for i in resp.json()["items"] if i["id"] == str(session_id))
+    assert item["stop_loss_enabled"] is False
+    assert item["stop_loss_pct"] is None
+
+
 def test_read_back_trades_runs_positions(
     client: TestClient, db_session: Session
 ) -> None:
@@ -301,6 +335,74 @@ def test_value_history_carries_rebased_benchmark_value(
     # Rebased to allocated capital on the first snapshot date, then +20%.
     assert items[0]["benchmark_value"] == 100_000.0
     assert items[1]["benchmark_value"] == 120_000.0
+
+
+def test_value_history_comparison_lists_non_archived_sessions(
+    client: TestClient, db_session: Session
+) -> None:
+    broker = StubBroker()
+
+    # Session A: two snapshots, resolvable portfolio name.
+    port_a = portfolios_service.create_portfolio(
+        db_session, name="Alpha", stocks=["AAPL"]
+    )
+    sess_a = service.create_session(
+        db_session,
+        portfolio_id=port_a.id,
+        strategy_key="ai_buy_hold",
+        rebalance_prompt_version=1,
+        benchmark=Benchmark.SP500,
+    )
+    for day in (date(2026, 1, 6), date(2026, 1, 4)):
+        service.record_value_snapshot(
+            db_session, session_id=sess_a.id, as_of=day, broker=broker
+        )
+
+    # Session B: no snapshots yet -> included with empty points.
+    port_b = portfolios_service.create_portfolio(
+        db_session, name="Beta", stocks=["MSFT"]
+    )
+    sess_b = service.create_session(
+        db_session,
+        portfolio_id=port_b.id,
+        strategy_key="ai_buy_hold",
+        rebalance_prompt_version=1,
+        benchmark=Benchmark.SP500,
+    )
+
+    # Session C: archived -> excluded.
+    port_c = portfolios_service.create_portfolio(
+        db_session, name="Gamma", stocks=["AAPL"]
+    )
+    sess_c = service.create_session(
+        db_session,
+        portfolio_id=port_c.id,
+        strategy_key="ai_buy_hold",
+        rebalance_prompt_version=1,
+        benchmark=Benchmark.SP500,
+    )
+    service.record_value_snapshot(
+        db_session, session_id=sess_c.id, as_of=date(2026, 1, 5), broker=broker
+    )
+    service.update_session_status(db_session, sess_c.id, SessionStatus.STOPPED)
+    service.archive_session(db_session, sess_c.id)
+
+    resp = client.get("/api/v1/paper-trading/sessions/value-history-comparison")
+    assert resp.status_code == 200
+    body = resp.json()
+    by_id = {s["session_id"]: s for s in body["sessions"]}
+
+    assert str(sess_c.id) not in by_id
+    assert set(by_id) == {str(sess_a.id), str(sess_b.id)}
+
+    a = by_id[str(sess_a.id)]
+    assert a["label"] == "Alpha"
+    assert a["allocated_capital"] == pytest.approx(100_000.0)
+    assert [p["snapshot_date"] for p in a["points"]] == ["2026-01-04", "2026-01-06"]
+
+    b = by_id[str(sess_b.id)]
+    assert b["label"] == "Beta"
+    assert b["points"] == []
 
 
 class _QuoteBroker:

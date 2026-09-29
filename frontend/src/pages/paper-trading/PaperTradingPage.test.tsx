@@ -37,6 +37,8 @@ const session: PaperTradingSession = {
   rebalance_prompt_version: 1,
   benchmark: 'SP500',
   use_technical_indicators: false,
+  stop_loss_enabled: false,
+  stop_loss_pct: null,
 };
 
 function renderWithClient(ui: ReactNode) {
@@ -89,6 +91,38 @@ describe('PaperTradingPage', () => {
 
     expect(
       await screen.findByText(/No paper-trading sessions yet/i),
+    ).toBeInTheDocument();
+  });
+
+  it('renders the session comparison chart panel above the sessions list', async () => {
+    mockedGet.mockImplementation((url: string) => {
+      if (url.endsWith('/value-history-comparison')) {
+        return Promise.resolve({
+          data: {
+            sessions: [
+              {
+                session_id: 's1',
+                label: 'Aggressive Jolly Wozniak',
+                allocated_capital: 100000,
+                points: [
+                  { snapshot_date: '2026-01-04', total_value: 100000 },
+                  { snapshot_date: '2026-01-05', total_value: 101000 },
+                ],
+              },
+            ],
+          },
+        });
+      }
+      return Promise.resolve({ data: { items: [session], total: 1 } });
+    });
+
+    renderWithClient(<PaperTradingPage />);
+
+    expect(
+      await screen.findByRole('heading', { name: 'Session comparison' }),
+    ).toBeInTheDocument();
+    expect(
+      await screen.findByRole('img', { name: /return percent/i }),
     ).toBeInTheDocument();
   });
 

@@ -103,6 +103,14 @@ def benchmark_symbol(benchmark: Benchmark) -> str:
 DEFAULT_ORDER_STATUS = "filled"
 DEFAULT_RUN_TRIGGER = "scheduled"
 
+#: ``signal_type`` stamped on a paper trade produced by the automatic hard
+#: stop-loss, and the ``SessionRun`` trigger recorded for a stop-loss scan run.
+#: ``signal_type`` and the run trigger are free-text columns (not enums), so these
+#: are the canonical string constants that identify stop-loss activity — distinct
+#: from AI build/rebalance signal types — on trades and runs.
+STOP_LOSS_SIGNAL_TYPE = "stop_loss"
+STOP_LOSS_RUN_TRIGGER = "stop_loss"
+
 #: Order statuses that will never change again, so reconciliation stops
 #: re-querying them. Mirrors :attr:`cadence.broker.models.Order.is_complete`;
 #: ``submitted``, ``pending``, and ``partially_filled`` remain non-terminal.

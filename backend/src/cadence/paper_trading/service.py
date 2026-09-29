@@ -49,6 +49,7 @@ from cadence.paper_trading.models import (
     SessionPosition,
     SessionRun,
     SessionValueSnapshot,
+    StopLossQuarantine,
 )
 
 logger = logging.getLogger(__name__)
@@ -73,6 +74,8 @@ def create_session(
     max_allocation_pct: float = 1.0,
     schedule_mode: ScheduleMode = ScheduleMode.SCHEDULED,
     use_technical_indicators: bool = False,
+    stop_loss_enabled: bool = False,
+    stop_loss_pct: float | None = None,
 ) -> PaperTradingSession:
     """Create a paper-trading session for a ``(portfolio, strategy)`` pair.
 
@@ -81,7 +84,9 @@ def create_session(
     ``benchmark`` is the market index the session is compared against (the build
     passes the chosen/default id). ``use_technical_indicators`` freezes the
     technical-indicator trend-strategy opt-in at build time (default off); every
-    later rebalance reads it back rather than re-deciding.
+    later rebalance reads it back rather than re-deciding. ``stop_loss_enabled``
+    and ``stop_loss_pct`` likewise freeze the automatic hard stop-loss opt-in and
+    its threshold at build time (default off / no threshold).
 
     Raises:
         DuplicateSessionError: if a session already exists for the same
@@ -97,6 +102,8 @@ def create_session(
         rebalance_prompt_version=rebalance_prompt_version,
         benchmark=benchmark.value,
         use_technical_indicators=use_technical_indicators,
+        stop_loss_enabled=stop_loss_enabled,
+        stop_loss_pct=stop_loss_pct,
     )
     session.add(row)
     try:
@@ -569,6 +576,54 @@ def apply_fill_to_ledger(
 
 
 # --------------------------------------------------------------------------- #
+# Stop-loss cooldown quarantine
+# --------------------------------------------------------------------------- #
+
+
+def add_stop_loss_quarantine(
+    session: Session,
+    *,
+    session_id: uuid.UUID,
+    ticker: str,
+    excluded_until: datetime,
+) -> StopLossQuarantine:
+    """Record a cooldown quarantine keeping ``ticker`` out of rebalances.
+
+    Written on each stop-out; ``excluded_until`` is the moment the cooldown lapses.
+    Rows accumulate (one per stop-out) — the rebalance exclusion only checks whether
+    any unexpired row exists for the ``(session, ticker)`` pair.
+    """
+    row = StopLossQuarantine(
+        session_id=session_id,
+        ticker=ticker,
+        excluded_until=excluded_until,
+    )
+    session.add(row)
+    session.commit()
+    session.refresh(row)
+    return row
+
+
+def list_active_quarantined_tickers(
+    session: Session,
+    session_id: uuid.UUID,
+    *,
+    now: datetime | None = None,
+) -> set[str]:
+    """Return the tickers currently under an unexpired stop-loss quarantine.
+
+    A ticker is quarantined while any of its rows has ``excluded_until`` strictly in
+    the future relative to ``now`` (defaults to the current time).
+    """
+    moment = now or datetime.now(tz=UTC)
+    stmt = select(StopLossQuarantine.ticker).where(
+        StopLossQuarantine.session_id == session_id,
+        StopLossQuarantine.excluded_until > moment,
+    )
+    return set(session.execute(stmt).scalars())
+
+
+# --------------------------------------------------------------------------- #
 # Order-status reconciliation
 # --------------------------------------------------------------------------- #
 
@@ -766,7 +821,7 @@ def compute_session_value(
     for entry in ledger:
         cost = entry.avg_cost or 0.0
         cost_basis = entry.quantity * cost
-        price = _quote_price(quotes.get(entry.ticker))
+        price = quote_price(quotes.get(entry.ticker))
         if price is None:
             logger.warning(
                 "snapshot: no quote for %s (session %s); valuing at avg cost",
@@ -805,12 +860,13 @@ def compute_session_value(
     )
 
 
-def _quote_price(quote: Any) -> float | None:
+def quote_price(quote: Any) -> float | None:
     """Extract a usable price from a broker :class:`Quote`, or ``None``.
 
     Prefers the midpoint (which itself falls back to the last trade), then the
     ask. Returns ``None`` when the quote is absent or carries no price at all, so
-    the caller can fall back to the ledger cost basis.
+    the caller can fall back to the ledger cost basis. Shared by the value-snapshot
+    job and the stop-loss scan so both mark positions the same way.
     """
     if quote is None:
         return None
@@ -942,6 +998,55 @@ def list_value_history(
             ),
         )
         for snap in snapshots
+    ]
+
+
+@dataclass(frozen=True)
+class SessionComparisonPoint:
+    """A single (date, value) point of a session's value history for comparison."""
+
+    snapshot_date: date
+    total_value: float
+
+
+@dataclass(frozen=True)
+class SessionComparisonSeries:
+    """One session's value series for the multi-session comparison read.
+
+    ``label`` is the session's portfolio name, falling back to its strategy key
+    when no portfolio name resolves. ``points`` is ordered oldest date first and is
+    empty when the session has no snapshots yet.
+    """
+
+    session_id: uuid.UUID
+    label: str
+    allocated_capital: float
+    points: list[SessionComparisonPoint]
+
+
+def list_sessions_value_comparison(
+    session: Session,
+) -> list[SessionComparisonSeries]:
+    """Return every non-archived session with its value points, for comparison.
+
+    Reuses the default (non-archived) session listing for membership and each
+    session's ordered value snapshots for points, so archived sessions are excluded
+    and a session with no snapshots is returned with an empty points list.
+    """
+    return [
+        SessionComparisonSeries(
+            session_id=row.id,
+            label=row.portfolio_name or row.strategy_key,
+            allocated_capital=row.allocated_capital,
+            points=[
+                SessionComparisonPoint(
+                    snapshot_date=snap.snapshot_date,
+                    total_value=snap.total_value,
+                )
+                for snap in list_value_snapshots(session, session_id=row.id)
+            ],
+        )
+        for row in list_sessions(session, include_archived=False)
     ]
 
 

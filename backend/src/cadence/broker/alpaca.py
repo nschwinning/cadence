@@ -48,6 +48,33 @@ def _parse_iso(value: str | None) -> datetime | None:
     return datetime.fromisoformat(value)
 
 
+#: Fiat/stablecoin quote currencies that mark a canonical symbol as crypto. Kept in
+#: sync with :data:`cadence.broker.symbols._FIAT_SUFFIXES`.
+_CRYPTO_FIAT_SUFFIXES = ("USDT", "USDC", "USD", "EUR", "GBP", "USDP")
+
+
+def _is_crypto_symbol(symbol: str) -> bool:
+    """Classify a canonical symbol as crypto for batched quote routing.
+
+    Crypto canonical symbols are a base/quote pair separated by ``/`` (already the
+    Alpaca form) or ``-`` where the quote is a known fiat/stablecoin currency
+    (``BTC-USD``). An equity class-share ticker like ``BRK-B`` has a non-fiat part
+    after the dash, so it is not misclassified.
+    """
+    normalized = symbol.strip().upper()
+    if "/" in normalized:
+        return True
+    if "-" in normalized:
+        _, _, quote = normalized.rpartition("-")
+        return quote in _CRYPTO_FIAT_SUFFIXES
+    return False
+
+
+def _quote_has_price(quote: Quote) -> bool:
+    """Whether a quote carries any usable price (bid, ask, or last)."""
+    return quote.bid is not None or quote.ask is not None or quote.last is not None
+
+
 class _Session(Protocol):
     """Minimal ``requests``-compatible session used for dependency injection."""
 
@@ -374,8 +401,96 @@ class AlpacaBroker:
             return Quote(symbol=symbol)
 
     def get_quotes(self, symbols: list[str]) -> dict[str, Quote]:
-        """Get quotes for multiple symbols."""
-        return {symbol: self.get_quote(symbol) for symbol in symbols}
+        """Get quotes for multiple symbols in batched multi-symbol requests.
+
+        Equities and crypto are classified from the canonical symbol and fetched in
+        batched, comma-separated requests — Alpaca's ``/v2/stocks/quotes/latest`` and
+        ``/v1beta3/crypto/us/latest/quotes`` both accept a ``symbols`` list — so a
+        scan across many tickers costs a couple of HTTP calls rather than one per
+        symbol (respecting the rate limit). Any symbol the batch does not resolve
+        with a usable price falls back to the per-symbol :meth:`get_quote` (which
+        itself falls back from quote to latest-trade). The returned quotes are keyed
+        by the canonical input symbol.
+        """
+        if not symbols:
+            return {}
+
+        equities = [s for s in symbols if not _is_crypto_symbol(s)]
+        crypto = [s for s in symbols if _is_crypto_symbol(s)]
+
+        quotes: dict[str, Quote] = {}
+        quotes.update(self._batch_equity_quotes(equities))
+        quotes.update(self._batch_crypto_quotes(crypto))
+
+        # Per-symbol fallback for anything the batch missed or priced empty.
+        for symbol in symbols:
+            existing = quotes.get(symbol)
+            if existing is not None and _quote_has_price(existing):
+                continue
+            cls = (
+                AssetClass.CRYPTO if _is_crypto_symbol(symbol) else AssetClass.EQUITY
+            )
+            quotes[symbol] = self.get_quote(symbol, cls)
+        return quotes
+
+    def _batch_equity_quotes(self, symbols: list[str]) -> dict[str, Quote]:
+        """Fetch a batch of equity quotes in one multi-symbol request."""
+        if not symbols:
+            return {}
+        try:
+            result = self._request(
+                "GET",
+                "/v2/stocks/quotes/latest",
+                params={"symbols": ",".join(symbols)},
+                base_url=DATA_BASE_URL,
+            )
+        except (BrokerError, ValueError, KeyError, TypeError):
+            return {}
+        raw = (result or {}).get("quotes", {}) or {}
+        quotes: dict[str, Quote] = {}
+        for symbol in symbols:
+            quote_data = raw.get(symbol)
+            if not quote_data:
+                continue
+            quotes[symbol] = Quote(
+                symbol=symbol,
+                bid=float(quote_data.get("bp", 0)) or None,
+                ask=float(quote_data.get("ap", 0)) or None,
+                timestamp=_parse_iso(quote_data.get("t")),
+            )
+        return quotes
+
+    def _batch_crypto_quotes(self, symbols: list[str]) -> dict[str, Quote]:
+        """Fetch a batch of crypto quotes in one multi-symbol request."""
+        if not symbols:
+            return {}
+        # Map canonical -> Alpaca symbol so the response (keyed by Alpaca form) can
+        # be mapped back to the canonical input the caller expects.
+        alpaca_by_canonical = {
+            symbol: to_alpaca_symbol(symbol, AssetClass.CRYPTO) for symbol in symbols
+        }
+        try:
+            result = self._request(
+                "GET",
+                "/v1beta3/crypto/us/latest/quotes",
+                params={"symbols": ",".join(alpaca_by_canonical.values())},
+                base_url=DATA_BASE_URL,
+            )
+        except (BrokerError, ValueError, KeyError, TypeError):
+            return {}
+        raw = (result or {}).get("quotes", {}) or {}
+        quotes: dict[str, Quote] = {}
+        for symbol, alpaca_symbol in alpaca_by_canonical.items():
+            quote_data = raw.get(alpaca_symbol)
+            if not quote_data:
+                continue
+            quotes[symbol] = Quote(
+                symbol=symbol,
+                bid=float(quote_data.get("bp", 0)) or None,
+                ask=float(quote_data.get("ap", 0)) or None,
+                timestamp=_parse_iso(quote_data.get("t")),
+            )
+        return quotes
 
     # Convenience helpers -------------------------------------------------
     def buy(
