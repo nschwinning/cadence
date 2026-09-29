@@ -90,6 +90,36 @@ describe('SessionComparisonChart', () => {
     expect(screen.getByText(/· \$110,000\.00/)).toBeInTheDocument();
   });
 
+  it('labels the axes and switches the y-axis units with the metric', async () => {
+    renderChart([
+      series('a', 'Alpha', 100000, [
+        ['2026-01-04', 100000],
+        ['2026-01-06', 110000],
+      ]),
+    ]);
+
+    await screen.findByRole('img', { name: /return percent/i });
+    // Default return view: y-axis top tick is the max return %; x-axis is dated.
+    let yLabels = screen.getAllByTestId('chart-y-label');
+    expect(yLabels[0]).toHaveTextContent('10.00%');
+    const xLabels = screen.getAllByTestId('chart-x-label');
+    expect(xLabels.map((el) => el.textContent)).toEqual(['1/4', '1/6']);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Value $' }));
+
+    // Value view: y-axis top tick becomes the max value in USD.
+    yLabels = screen.getAllByTestId('chart-y-label');
+    expect(yLabels[0]).toHaveTextContent('$110,000.00');
+  });
+
+  it('shows no axis labels in the placeholder state', async () => {
+    renderChart([series('a', 'Alpha', 100000, [['2026-01-04', 100000]])]);
+
+    await screen.findByTestId('comparison-placeholder');
+    expect(screen.queryByTestId('chart-axes')).not.toBeInTheDocument();
+    expect(screen.queryAllByTestId('chart-y-label')).toHaveLength(0);
+  });
+
   it('legends but does not plot a session with fewer than two points', async () => {
     const { container } = renderChart([
       series('a', 'Alpha', 100000, [

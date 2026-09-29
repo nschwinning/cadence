@@ -108,6 +108,14 @@ a placeholder indicating there is not yet enough history to chart, rather than a
 or empty chart. While the value history is loading or fails to load, the view SHALL show
 a loading or error state consistent with the page's other panels.
 
+When the chart is rendered, it SHALL display a **labelled x-axis** marking calendar
+dates across the plotted history and a **labelled y-axis** marking portfolio value in
+USD, so a user can read what any point on a line represents. Axis tick labels SHALL be
+rendered legibly (not distorted by the chart's scaling). The chart SHALL also show a
+**legend** identifying which line is the session's portfolio value and which line is
+the benchmark; when the benchmark line is not drawn, the legend SHALL not imply a
+benchmark line is present.
+
 #### Scenario: Chart renders with history
 
 - **WHEN** a user opens a session that has at least two value snapshots
@@ -122,6 +130,16 @@ a loading or error state consistent with the page's other panels.
 
 - **WHEN** a session's value history has no benchmark values
 - **THEN** the view SHALL render the session's total-value line alone without error
+
+#### Scenario: Axes are labelled
+
+- **WHEN** the value chart is rendered with enough history to plot
+- **THEN** the view SHALL show dated x-axis labels and USD y-axis labels around the plot area
+
+#### Scenario: Legend identifies each line
+
+- **WHEN** the value chart is rendered
+- **THEN** the view SHALL show a legend naming the portfolio-value line and, when it is drawn, the benchmark line, each keyed to its line's colour or style
 
 #### Scenario: Not enough history
 
@@ -304,6 +322,8 @@ The paper-trading session list view SHALL display a **performance-comparison cha
 - **Return %** (default): each session's line SHALL be its cumulative total-return percentage, computed from the session's total value relative to its allocated capital, so sessions with different allocated capital and start dates are compared fairly and the highest line is the best performer.
 - **Value ($)**: each session's line SHALL be its absolute total portfolio value in USD.
 
+When the chart plots at least one line, it SHALL display a **labelled x-axis** marking calendar dates across the shared time axis and a **labelled y-axis** whose tick labels match the active metric — percentages in the Return % view and USD amounts in the Value $ view — and the y-axis labels SHALL update when the metric toggle switches. Axis tick labels SHALL be rendered legibly (not distorted by the chart's scaling).
+
 When no non-archived session has enough value points to plot, the chart SHALL show an insufficient-data placeholder rather than an empty plot area. The chart SHALL show its own loading and error states while the comparison data is being fetched or if the fetch fails. The existing single-session value chart on the session detail view SHALL remain unchanged.
 
 #### Scenario: Comparison chart overlays non-archived sessions
@@ -320,6 +340,11 @@ When no non-archived session has enough value points to plot, the chart SHALL sh
 
 - **WHEN** the comparison chart first renders
 - **THEN** it SHALL show the cumulative total-return percentage view by default
+
+#### Scenario: Axes are labelled and track the metric
+
+- **WHEN** the comparison chart plots at least one line
+- **THEN** the view SHALL show dated x-axis labels and y-axis labels formatted as percentages in the Return % view and as USD amounts in the Value $ view, and the y-axis labels SHALL change when the metric toggle is switched
 
 #### Scenario: Session with too little history is legended but not plotted
 

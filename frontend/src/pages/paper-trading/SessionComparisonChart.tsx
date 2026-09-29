@@ -1,7 +1,8 @@
 import { useState } from 'react';
 import { useSessionsValueComparison } from '../../api/paperTrading';
 import type { SessionValueComparisonSeries } from '../../types/api';
-import { formatCurrency, formatPercent } from '../../lib/format';
+import { formatAxisDate, formatCurrency, formatPercent } from '../../lib/format';
+import { ChartAxes } from './ChartAxes';
 import { Panel } from './PaperTradingSessionPage';
 
 /** Which metric the comparison chart plots. */
@@ -115,33 +116,45 @@ function ComparisonCurves({
   const y = (value: number) =>
     pad + (1 - (value - minV) / vSpan) * (height - 2 * pad);
 
+  // Y-ticks (top→bottom) formatted for the active metric — percentages in the
+  // Return % view, USD in the Value $ view — and the first/last calendar dates of
+  // the shared time domain on the x-axis. Rendered as HTML around the SVG.
+  const formatValue = metric === 'return' ? formatPercent : formatCurrency;
+  const yLabels = [maxV, (minV + maxV) / 2, minV].map((v) => formatValue(v));
+  const xLabels: [string, string] = [
+    formatAxisDate(new Date(minT).toISOString().slice(0, 10)),
+    formatAxisDate(new Date(maxT).toISOString().slice(0, 10)),
+  ];
+
   return (
-    <svg
-      viewBox={`0 0 ${width} ${height}`}
-      preserveAspectRatio="none"
-      className="h-40 w-full"
-      role="img"
-      aria-label={`Session comparison by ${
-        metric === 'return' ? 'return percent' : 'portfolio value'
-      }`}
-    >
-      {plottable.map((s) => (
-        <polyline
-          key={s.id}
-          points={s.points
-            .map((p) => `${x(p.t).toFixed(2)},${y(p.value).toFixed(2)}`)
-            .join(' ')}
-          fill="none"
-          stroke={s.color}
-          strokeWidth={2}
-          strokeLinecap="round"
-          strokeLinejoin="round"
-          vectorEffect="non-scaling-stroke"
-          aria-label={s.label}
-          data-testid="comparison-line"
-        />
-      ))}
-    </svg>
+    <ChartAxes yLabels={yLabels} xLabels={xLabels}>
+      <svg
+        viewBox={`0 0 ${width} ${height}`}
+        preserveAspectRatio="none"
+        className="h-40 w-full"
+        role="img"
+        aria-label={`Session comparison by ${
+          metric === 'return' ? 'return percent' : 'portfolio value'
+        }`}
+      >
+        {plottable.map((s) => (
+          <polyline
+            key={s.id}
+            points={s.points
+              .map((p) => `${x(p.t).toFixed(2)},${y(p.value).toFixed(2)}`)
+              .join(' ')}
+            fill="none"
+            stroke={s.color}
+            strokeWidth={2}
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            vectorEffect="non-scaling-stroke"
+            aria-label={s.label}
+            data-testid="comparison-line"
+          />
+        ))}
+      </svg>
+    </ChartAxes>
   );
 }
 

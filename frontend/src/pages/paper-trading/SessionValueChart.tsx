@@ -1,5 +1,7 @@
 import { useSessionValueHistory } from '../../api/paperTrading';
 import type { SessionValueSnapshot } from '../../types/api';
+import { formatAxisDate, formatCurrency } from '../../lib/format';
+import { ChartAxes } from './ChartAxes';
 import { Panel } from './PaperTradingSessionPage';
 
 /** Stroke colour by the equity curve's overall direction (first → last value). */
@@ -68,38 +70,95 @@ function ValueCurve({ snapshots }: { snapshots: SessionValueSnapshot[] }) {
     )
     .filter((p): p is string => p !== null);
 
+  const benchmarkDrawn = hasBenchmark && benchmarkPoints.length >= 2;
+  const trendStroke = TREND_STROKE[trendOf(snapshots)];
+
+  // Three USD y-ticks (top→bottom) from the shared value scale, and the first/last
+  // snapshot dates on the x-axis — rendered as HTML around the SVG by `ChartAxes`.
+  const yLabels = [max, (min + max) / 2, min].map((v) => formatCurrency(v));
+  const xLabels: [string, string] = [
+    formatAxisDate(snapshots[0].snapshot_date),
+    formatAxisDate(snapshots[snapshots.length - 1].snapshot_date),
+  ];
+
   return (
-    <svg
-      viewBox={`0 0 ${width} ${height}`}
-      preserveAspectRatio="none"
-      className="h-40 w-full"
-      role="img"
-      aria-label={`Portfolio value over the last ${snapshots.length} daily snapshots`}
+    <div>
+      <ChartAxes yLabels={yLabels} xLabels={xLabels}>
+        <svg
+          viewBox={`0 0 ${width} ${height}`}
+          preserveAspectRatio="none"
+          className="h-40 w-full"
+          role="img"
+          aria-label={`Portfolio value over the last ${snapshots.length} daily snapshots`}
+        >
+          {benchmarkDrawn && (
+            <polyline
+              points={benchmarkPoints.join(' ')}
+              fill="none"
+              stroke={BENCHMARK_STROKE}
+              strokeWidth={1.5}
+              strokeDasharray="4 3"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              vectorEffect="non-scaling-stroke"
+              aria-label="Benchmark value"
+              data-testid="benchmark-line"
+            />
+          )}
+          <polyline
+            points={points.join(' ')}
+            fill="none"
+            stroke={trendStroke}
+            strokeWidth={2}
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            vectorEffect="non-scaling-stroke"
+          />
+        </svg>
+      </ChartAxes>
+      <ValueLegend trendStroke={trendStroke} benchmarkDrawn={benchmarkDrawn} />
+    </div>
+  );
+}
+
+/**
+ * Legend naming the two lines on the value chart. The benchmark entry appears only
+ * when the benchmark line is actually drawn, so the legend never implies a line that
+ * is not on the chart.
+ */
+function ValueLegend({
+  trendStroke,
+  benchmarkDrawn,
+}: {
+  trendStroke: string;
+  benchmarkDrawn: boolean;
+}) {
+  return (
+    <ul
+      className="mt-4 flex flex-wrap gap-x-4 gap-y-2 text-sm text-slate-700"
+      data-testid="value-legend"
     >
-      {hasBenchmark && benchmarkPoints.length >= 2 && (
-        <polyline
-          points={benchmarkPoints.join(' ')}
-          fill="none"
-          stroke={BENCHMARK_STROKE}
-          strokeWidth={1.5}
-          strokeDasharray="4 3"
-          strokeLinecap="round"
-          strokeLinejoin="round"
-          vectorEffect="non-scaling-stroke"
-          aria-label="Benchmark value"
-          data-testid="benchmark-line"
+      <li className="flex items-center gap-2">
+        <span
+          aria-hidden="true"
+          className="inline-block h-2.5 w-2.5 rounded-full"
+          style={{ backgroundColor: trendStroke }}
         />
+        <span className="font-medium">Portfolio value</span>
+      </li>
+      {benchmarkDrawn && (
+        <li className="flex items-center gap-2" data-testid="benchmark-legend">
+          <span
+            aria-hidden="true"
+            className="inline-block h-0.5 w-4"
+            style={{
+              backgroundImage: `repeating-linear-gradient(to right, ${BENCHMARK_STROKE} 0 4px, transparent 4px 7px)`,
+            }}
+          />
+          <span className="font-medium">Benchmark</span>
+        </li>
       )}
-      <polyline
-        points={points.join(' ')}
-        fill="none"
-        stroke={TREND_STROKE[trendOf(snapshots)]}
-        strokeWidth={2}
-        strokeLinecap="round"
-        strokeLinejoin="round"
-        vectorEffect="non-scaling-stroke"
-      />
-    </svg>
+    </ul>
   );
 }
 
