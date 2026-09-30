@@ -36,12 +36,19 @@ from cadence.ai_portfolio.errors import (
     RebalancePromptNotFoundError,
     SessionNotEligibleError,
 )
-from cadence.ai_portfolio.models import RebalancePrompt
+from cadence.ai_portfolio.models import AIPortfolioEvent, RebalancePrompt
 from cadence.ai_portfolio.service import AIBuildParams
 from cadence.assets import service as assets_service
 from cadence.assets.market_data import AssetInfo, HistoryBar
 from cadence.assets.models import Asset
-from cadence.broker.models import AssetClass, OrderSide, OrderType, Quote, TimeInForce
+from cadence.broker.models import (
+    AssetClass,
+    OrderSide,
+    OrderStatus,
+    OrderType,
+    Quote,
+    TimeInForce,
+)
 from cadence.broker.stub import StubBroker
 from cadence.config import settings
 from cadence.paper_trading import service as paper_service
@@ -252,6 +259,126 @@ def test_run_build_event_success_creates_portfolio_and_session(
     assert len(runs) == 1
 
 
+def test_ai_build_params_guardrails_round_trip() -> None:
+    # The frozen guardrail config must survive to_payload -> from_payload exactly.
+    params = AIBuildParams(
+        allocated_capital=50_000.0,
+        risk_guardrails_enabled=True,
+        max_allocation_pct=0.25,
+        max_asset_class_pct=0.6,
+        min_positions=5,
+        max_invested_pct=0.9,
+    )
+    restored = AIBuildParams.from_payload(params.to_payload())
+    assert restored == params
+    assert restored.risk_guardrails_enabled is True
+    assert restored.max_allocation_pct == 0.25
+    assert restored.max_asset_class_pct == 0.6
+    assert restored.min_positions == 5
+    assert restored.max_invested_pct == 0.9
+
+
+def test_run_build_event_freezes_guardrails_and_caps_trades(
+    db_session: Session,
+) -> None:
+    provider = _seed_universe(db_session, "AAPL", "MSFT")
+    agent = FakeAIPortfolioAgent(build_result=_build_result("AAPL", "MSFT"))
+    broker = StubBroker()
+    # Per-asset cap 0.25 with class/invested caps neutral isolates the per-asset
+    # clamp: each 0.5 target is clamped to 0.25 with no uncapped name to absorb the
+    # excess, so the rest stays cash.
+    event = service.create_build_event(
+        db_session,
+        _params(
+            allocated_capital=50_000.0,
+            risk_guardrails_enabled=True,
+            max_allocation_pct=0.25,
+            max_asset_class_pct=1.0,
+            min_positions=2,
+            max_invested_pct=1.0,
+        ),
+    )
+
+    service.run_build_event(db_session, event.id, agent, broker, provider)
+
+    refreshed = service.get_event(db_session, event.id)
+    assert refreshed.status == EventStatus.SUCCEEDED.value
+
+    # The advisory caps were handed to the AI.
+    assert agent.build_calls[0]["guardrails"] is not None
+
+    # The frozen guardrail config is persisted on the session and portfolio.
+    session_row = paper_service.get_session(db_session, refreshed.session_id)
+    assert session_row.risk_guardrails_enabled is True
+    assert session_row.max_allocation_pct == 0.25
+    assert session_row.max_asset_class_pct == 1.0
+    assert session_row.min_positions == 2
+    assert session_row.max_invested_pct == 1.0
+    portfolio = portfolios_service.get_portfolio(db_session, refreshed.portfolio_id)
+    assert portfolio.max_allocation_pct == 0.25
+
+    # Trades are sized off the capped 0.25 weight, not the AI's raw 0.5.
+    trades = {
+        t.ticker: t
+        for t in paper_service.get_session_trades(
+            db_session, refreshed.session_id, limit=100
+        )
+    }
+    aapl_price = broker.get_quote("AAPL").last
+    msft_price = broker.get_quote("MSFT").last
+    assert trades["AAPL"].quantity == int(0.25 * 50_000 / aapl_price)
+    assert trades["MSFT"].quantity == int(0.25 * 50_000 / msft_price)
+
+
+def test_run_build_event_records_min_positions_observation(
+    db_session: Session,
+) -> None:
+    # The AI returns 2 names but the guardrails require 5; min positions is not
+    # fixable by clamping, so the shortfall is recorded and the build still succeeds.
+    provider = _seed_universe(db_session, "AAPL", "MSFT")
+    agent = FakeAIPortfolioAgent(build_result=_build_result("AAPL", "MSFT"))
+    event = service.create_build_event(
+        db_session,
+        _params(
+            allocated_capital=50_000.0,
+            risk_guardrails_enabled=True,
+            max_allocation_pct=0.5,
+            max_asset_class_pct=1.0,
+            min_positions=5,
+            max_invested_pct=1.0,
+        ),
+    )
+
+    service.run_build_event(db_session, event.id, agent, StubBroker(), provider)
+
+    refreshed = service.get_event(db_session, event.id)
+    assert refreshed.status == EventStatus.SUCCEEDED.value
+    observation = refreshed.run_stats["guardrails"]["min_positions"]
+    assert observation == {"required": 5, "returned": 2, "shortfall": 3}
+
+
+def test_run_build_event_guardrails_off_keeps_no_op_config(
+    db_session: Session,
+) -> None:
+    # A default (guardrails-off) build leaves the session no-op: disabled flag,
+    # null params, and the max_allocation_pct 1.0 default untouched.
+    provider = _seed_universe(db_session, "AAPL", "MSFT")
+    agent = FakeAIPortfolioAgent(build_result=_build_result("AAPL", "MSFT"))
+    event = service.create_build_event(db_session, _params())
+
+    service.run_build_event(db_session, event.id, agent, StubBroker(), provider)
+
+    refreshed = service.get_event(db_session, event.id)
+    session_row = paper_service.get_session(db_session, refreshed.session_id)
+    assert session_row.risk_guardrails_enabled is False
+    assert session_row.max_allocation_pct == 1.0
+    assert session_row.max_asset_class_pct is None
+    assert session_row.min_positions is None
+    assert session_row.max_invested_pct is None
+    assert agent.build_calls[0]["guardrails"] is None
+    assert (refreshed.run_stats or {}).get("guardrails") is None
+
+
 def test_run_build_event_persists_run_stats(db_session: Session) -> None:
     # The machine-readable run_stats payload is captured for later offline learning
     # (never surfaced in the API/UI): order counts + per-trade details incl. the
@@ -316,6 +443,74 @@ def test_run_rebalance_event_run_stats_includes_pnl_and_account(
     assert "orders" in stats and "trades" in stats
     assert "realized_pnl" in stats
     assert "account" in stats
+
+
+def _single_target(ticker: str, pct: float) -> AIRebalanceResult:
+    return AIRebalanceResult(
+        evaluation_summary="ok",
+        target_allocations=[
+            AITargetAllocation(
+                ticker=ticker,
+                company_name=ticker,
+                allocation_pct=pct,
+                investment_thesis="conviction",
+                confidence=0.9,
+            )
+        ],
+        portfolio_health="healthy",
+    )
+
+
+def test_run_rebalance_event_clamps_target_over_cap(db_session: Session) -> None:
+    # Session frozen with a 0.5 per-asset cap; a 0.5-cap build lands the 3 names
+    # under the cap (~0.333 each). The AI then targets AAPL=1.0, which the frozen
+    # cap clamps to 0.5 so AAPL is bought up to 0.5 — not the full 1.0.
+    provider = _seed_universe(db_session, "AAPL", "MSFT")
+    broker = StubBroker()
+    session_id, _ = _seed_session(
+        db_session,
+        broker,
+        provider,
+        risk_guardrails_enabled=True,
+        max_allocation_pct=0.5,
+        max_asset_class_pct=1.0,
+        min_positions=1,
+        max_invested_pct=1.0,
+    )
+
+    rebalance = FakeAIPortfolioAgent(rebalance_result=_single_target("AAPL", 1.0))
+    rb_event = service.create_rebalance_event(db_session, session_id)
+    service.run_rebalance_event(db_session, rb_event.id, rebalance, broker, provider)
+
+    # The caps were read back off the frozen session and handed to the agent.
+    assert rebalance.rebalance_calls[0]["guardrails"] is not None
+
+    price = broker.get_quote("AAPL").last
+    aapl = paper_service.get_open_position(db_session, session_id, "AAPL")
+    assert aapl is not None
+    # Clamped to the 0.5 cap, strictly below the un-clamped 1.0 target.
+    assert aapl.quantity == pytest.approx(int(50_000 * 0.5 / price))
+    assert aapl.quantity < int(50_000 * 1.0 / price)
+    # The other names are exited (target vector held only AAPL).
+    assert paper_service.get_open_position(db_session, session_id, "MSFT") is None
+
+
+def test_run_rebalance_event_opted_out_is_unclamped(db_session: Session) -> None:
+    # A session built without guardrails applies no caps at rebalance: an AAPL=1.0
+    # target sizes to the full allocation.
+    provider = _seed_universe(db_session, "AAPL", "MSFT")
+    broker = StubBroker()
+    session_id, _ = _seed_session(db_session, broker, provider)
+
+    rebalance = FakeAIPortfolioAgent(rebalance_result=_single_target("AAPL", 1.0))
+    rb_event = service.create_rebalance_event(db_session, session_id)
+    service.run_rebalance_event(db_session, rb_event.id, rebalance, broker, provider)
+
+    assert rebalance.rebalance_calls[0]["guardrails"] is None
+    price = broker.get_quote("AAPL").last
+    aapl = paper_service.get_open_position(db_session, session_id, "AAPL")
+    assert aapl is not None
+    assert aapl.quantity == pytest.approx(int(50_000 * 1.0 / price))
 
 
 def test_run_build_event_generates_distinct_portfolio_name(
@@ -2229,3 +2424,120 @@ def test_scan_stop_losses_records_sale_when_notify_fails(db_session: Session) ->
     # The sale is still recorded despite the notifier failure.
     assert len(outcomes) == 1
     assert "AAPL" not in _ledger_by_ticker(db_session, session_id)
+
+
+# --------------------------------------------------------------------------- #
+# Build-order readiness gate (defer daily rebalance until build orders fill)
+# --------------------------------------------------------------------------- #
+
+
+class _OrderBroker:
+    """Broker double whose ``get_order`` returns pre-seeded orders by id.
+
+    Only ``get_order`` is exercised by build-order reconciliation. An unseeded id
+    resolves to ``None`` (unknown order — reconciliation leaves the trade as-is).
+    """
+
+    def __init__(self, orders: dict[str, object] | None = None) -> None:
+        self._orders = orders or {}
+
+    def get_order(self, order_id: str) -> object | None:
+        return self._orders.get(order_id)
+
+
+def _session_with_build_trades(
+    db: Session,
+    trades: list[tuple[str | None, OrderStatus]],
+    *,
+    with_build_event: bool = True,
+) -> object:
+    """Create an AI session plus a build event and its trades at given statuses.
+
+    ``trades`` is a list of ``(order_id, order_status)``. When ``with_build_event``
+    is False no build event is linked (session_metadata carries no build_event_id).
+    """
+    portfolio = portfolios_service.create_portfolio(db, name="P", stocks=["AAPL"])
+    session_row = paper_service.create_session(
+        db,
+        portfolio_id=portfolio.id,
+        strategy_key="ai_buy_hold",
+        rebalance_prompt_version=1,
+        benchmark=Benchmark.SP500,
+        schedule_mode=ScheduleMode.DAILY_REBALANCING,
+    )
+    if with_build_event:
+        event = AIPortfolioEvent(
+            event_type=EventType.BUILD.value,
+            status=EventStatus.SUCCEEDED.value,
+            session_id=session_row.id,
+        )
+        db.add(event)
+        db.commit()
+        db.refresh(event)
+        session_row.session_metadata = {"build_event_id": str(event.id)}
+        db.commit()
+        for i, (order_id, status) in enumerate(trades):
+            paper_service.record_trade(
+                db,
+                session_id=session_row.id,
+                ticker=f"T{i}",
+                side=OrderSide.BUY,
+                quantity=1,
+                price=10.0,
+                signal_type="entry",
+                order_id=order_id,
+                order_status=status,
+                ai_portfolio_event_id=event.id,
+            )
+    return session_row
+
+
+def test_build_orders_settled_all_filled_is_ready(db_session: Session) -> None:
+    session_row = _session_with_build_trades(
+        db_session, [("o1", OrderStatus.FILLED), ("o2", OrderStatus.FILLED)]
+    )
+    assert service.build_orders_settled(db_session, _OrderBroker(), session_row)
+
+
+def test_build_orders_settled_pending_order_defers(db_session: Session) -> None:
+    session_row = _session_with_build_trades(
+        db_session, [("o1", OrderStatus.FILLED), ("o2", OrderStatus.SUBMITTED)]
+    )
+    # The broker still reports o2 as unknown/unsettled, so it stays non-terminal.
+    assert not service.build_orders_settled(db_session, _OrderBroker(), session_row)
+
+
+def test_build_orders_settled_no_build_event_is_ready(db_session: Session) -> None:
+    session_row = _session_with_build_trades(db_session, [], with_build_event=False)
+    assert service.build_orders_settled(db_session, _OrderBroker(), session_row)
+
+
+def test_build_orders_settled_terminal_non_filled_does_not_strand(
+    db_session: Session,
+) -> None:
+    session_row = _session_with_build_trades(
+        db_session, [("o1", OrderStatus.FILLED), ("o2", OrderStatus.CANCELLED)]
+    )
+    # A cancelled/rejected order will never fill, so it must not defer forever.
+    assert service.build_orders_settled(db_session, _OrderBroker(), session_row)
+
+
+def test_build_orders_settled_no_broker_order_id_is_ready(db_session: Session) -> None:
+    # A build trade with no broker order id has nothing to reconcile/wait on.
+    session_row = _session_with_build_trades(db_session, [(None, OrderStatus.SUBMITTED)])
+    assert service.build_orders_settled(db_session, _OrderBroker(), session_row)
+
+
+def test_build_orders_settled_fails_safe_when_reconcile_raises(
+    db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    session_row = _session_with_build_trades(
+        db_session, [("o1", OrderStatus.SUBMITTED)]
+    )
+
+    def boom(*_args: object, **_kw: object) -> object:
+        raise RuntimeError("broker unreachable")
+
+    monkeypatch.setattr(paper_service, "reconcile_session_orders", boom)
+    # Cannot confirm fills -> defer rather than rebalance on unverified state.
+    assert not service.build_orders_settled(db_session, _OrderBroker(), session_row)

@@ -16,6 +16,7 @@ run; the outcome of each ticker is a :class:`TradeResult`.
 from __future__ import annotations
 
 import logging
+from collections import defaultdict
 from dataclasses import dataclass
 from typing import Any
 
@@ -31,6 +32,165 @@ MIN_CRYPTO_NOTIONAL_USD = 1.0
 
 #: Decimal places to round fractional crypto quantities to.
 CRYPTO_QTY_PRECISION = 8
+
+#: Iteration ceiling / convergence tolerance for the guardrail water-filling loop.
+_GUARDRAIL_MAX_ITERATIONS = 100
+_GUARDRAIL_EPSILON = 1e-9
+
+
+@dataclass(frozen=True)
+class GuardrailCaps:
+    """The deterministic portfolio risk caps enforced on a target-weight vector.
+
+    All values are fractions in ``(0, 1]``; a value of ``1.0`` is a no-op for that
+    cap. The per-asset and per-class caps bound concentration; ``max_invested``
+    bounds how much of the allocated capital is deployed (the remainder is cash).
+    The minimum-position floor is *not* here — it cannot be enforced by clamping
+    (see the proposal) and is instructed/surfaced elsewhere.
+    """
+
+    max_per_asset: float
+    max_per_class: float
+    max_invested: float
+
+
+def enforce_guardrails(
+    weights: dict[str, float],
+    asset_classes: dict[str, AssetClass],
+    caps: GuardrailCaps,
+) -> dict[str, float]:
+    """Clamp, redistribute, and scale a target-weight vector to obey ``caps``.
+
+    Returns a new ``{ticker: weight}`` mapping in which no single ticker exceeds
+    ``caps.max_per_asset``, no asset class exceeds ``caps.max_per_class``, and the
+    total invested fraction does not exceed ``caps.max_invested`` — the remainder is
+    the enforced cash buffer. Only positive input weights participate; the input is
+    first normalized to sum 1.
+
+    Enforcement is an iterative water-filling fixed point: over-cap weight is removed
+    and redistributed proportionally to holdings still below their caps, alternating
+    the per-asset and per-class passes until stable, then a terminal projection
+    (per-asset clamp followed by scaling any still-over class down) guarantees a
+    feasible vector even if the loop did not converge. When the caps cannot absorb the
+    full capital (e.g. ``max_per_asset × count < 1``), the shortfall simply remains as
+    cash rather than forcing any weight past a cap.
+    """
+    positive = {t: w for t, w in weights.items() if w > 0}
+    total = sum(positive.values())
+    if total <= 0:
+        return {t: 0.0 for t in weights}
+
+    asset_cap = caps.max_per_asset
+    class_cap = caps.max_per_class
+    w = {t: v / total for t, v in positive.items()}
+
+    for _ in range(_GUARDRAIL_MAX_ITERATIONS):
+        before = dict(w)
+        w = _apply_asset_cap(w, asset_cap)
+        w = _apply_class_cap(w, asset_classes, class_cap, asset_cap)
+        if _max_abs_diff(before, w) < _GUARDRAIL_EPSILON:
+            break
+
+    # Terminal projection: guarantees feasibility regardless of loop convergence.
+    # A per-asset clamp then a scale-down of any over class never lifts a weight
+    # back above the per-asset cap (scaling multiplies by <= 1), so both caps hold.
+    w = {t: min(v, asset_cap) for t, v in w.items()}
+    w = _scale_over_classes(w, asset_classes, class_cap)
+
+    invested = sum(w.values())
+    if invested > caps.max_invested + _GUARDRAIL_EPSILON:
+        factor = caps.max_invested / invested
+        w = {t: v * factor for t, v in w.items()}
+
+    return w
+
+
+def _apply_asset_cap(weights: dict[str, float], cap: float) -> dict[str, float]:
+    """Clamp each weight to ``cap``, redistributing excess to under-cap holdings."""
+    w = dict(weights)
+    for _ in range(_GUARDRAIL_MAX_ITERATIONS):
+        over = [t for t in w if w[t] > cap + _GUARDRAIL_EPSILON]
+        if not over:
+            break
+        excess = sum(w[t] - cap for t in over)
+        for t in over:
+            w[t] = cap
+        under = [t for t in w if w[t] < cap - _GUARDRAIL_EPSILON]
+        if not under or excess <= _GUARDRAIL_EPSILON:
+            break  # no headroom to place the excess; it becomes cash
+        pool = sum(w[t] for t in under)
+        if pool <= _GUARDRAIL_EPSILON:
+            share = excess / len(under)
+            for t in under:
+                w[t] += share
+        else:
+            for t in under:
+                w[t] += excess * (w[t] / pool)
+    return w
+
+
+def _apply_class_cap(
+    weights: dict[str, float],
+    asset_classes: dict[str, AssetClass],
+    class_cap: float,
+    asset_cap: float,
+) -> dict[str, float]:
+    """Scale over-cap classes down, redistributing freed weight to under classes."""
+    w = dict(weights)
+    for _ in range(_GUARDRAIL_MAX_ITERATIONS):
+        class_sum: dict[AssetClass, float] = defaultdict(float)
+        for t, v in w.items():
+            class_sum[asset_classes.get(t, AssetClass.EQUITY)] += v
+        over = {c for c, s in class_sum.items() if s > class_cap + _GUARDRAIL_EPSILON}
+        if not over:
+            break
+        freed = 0.0
+        for c in over:
+            factor = class_cap / class_sum[c]
+            for t in [k for k in w if asset_classes.get(k, AssetClass.EQUITY) == c]:
+                freed += w[t] * (1 - factor)
+                w[t] *= factor
+        recipients = [
+            t
+            for t in w
+            if asset_classes.get(t, AssetClass.EQUITY) not in over
+            and w[t] < asset_cap - _GUARDRAIL_EPSILON
+        ]
+        if not recipients or freed <= _GUARDRAIL_EPSILON:
+            break  # no headroom in other classes; freed weight becomes cash
+        pool = sum(w[t] for t in recipients)
+        if pool <= _GUARDRAIL_EPSILON:
+            share = freed / len(recipients)
+            for t in recipients:
+                w[t] += share
+        else:
+            for t in recipients:
+                w[t] += freed * (w[t] / pool)
+    return w
+
+
+def _scale_over_classes(
+    weights: dict[str, float],
+    asset_classes: dict[str, AssetClass],
+    class_cap: float,
+) -> dict[str, float]:
+    """Scale any class whose weight exceeds ``class_cap`` down to it (no redistribute)."""
+    class_sum: dict[AssetClass, float] = defaultdict(float)
+    for t, v in weights.items():
+        class_sum[asset_classes.get(t, AssetClass.EQUITY)] += v
+    w = dict(weights)
+    for c, s in class_sum.items():
+        if s > class_cap + _GUARDRAIL_EPSILON:
+            factor = class_cap / s
+            for t in [k for k in w if asset_classes.get(k, AssetClass.EQUITY) == c]:
+                w[t] *= factor
+    return w
+
+
+def _max_abs_diff(a: dict[str, float], b: dict[str, float]) -> float:
+    """Largest per-key absolute difference between two weight maps."""
+    keys = set(a) | set(b)
+    return max((abs(a.get(k, 0.0) - b.get(k, 0.0)) for k in keys), default=0.0)
 
 
 @dataclass
@@ -79,105 +239,124 @@ class AIPortfolioExecutor:
         self,
         stocks: list[AIPortfolioStock],
         asset_classes: dict[str, AssetClass] | None = None,
+        caps: GuardrailCaps | None = None,
     ) -> list[TradeResult]:
         """Open each stock long, sizing from its normalized allocation and quote.
 
         ``asset_classes`` maps a ticker to its :class:`AssetClass`; tickers absent
-        from the map default to :attr:`AssetClass.EQUITY`.
+        from the map default to :attr:`AssetClass.EQUITY`. When ``caps`` is provided
+        (the session opted into the risk guardrails), the AI's allocations are first
+        run through :func:`enforce_guardrails` so no position exceeds the per-asset
+        cap, no class exceeds the per-class cap, and the invested fraction is bounded
+        (remainder held as cash); when ``caps`` is ``None`` the raw normalized
+        allocations are used unchanged.
         """
         classes = asset_classes or {}
-        total_alloc = sum(s.allocation_pct for s in stocks)
         results: list[TradeResult] = []
 
-        for stock in stocks:
-            cls = classes.get(stock.ticker, AssetClass.EQUITY)
-            normalized_alloc = (
-                stock.allocation_pct / total_alloc if total_alloc > 0 else 0.0
-            )
-            capital_for_stock = self.allocated_capital * normalized_alloc
-
-            try:
-                quote = self.broker.get_quote(stock.ticker, cls)
-                price = quote.last or quote.ask
-                if not price or price <= 0:
-                    results.append(
-                        TradeResult(
-                            ticker=stock.ticker,
-                            side="long",
-                            shares=0,
-                            price=None,
-                            executed=False,
-                            reason="No price available",
-                        )
-                    )
-                    continue
-
-                if cls == AssetClass.CRYPTO:
-                    qty = round(capital_for_stock / price, CRYPTO_QTY_PRECISION)
-                    if qty <= 0 or qty * price < MIN_CRYPTO_NOTIONAL_USD:
-                        results.append(
-                            TradeResult(
-                                ticker=stock.ticker,
-                                side="long",
-                                shares=0,
-                                price=price,
-                                executed=False,
-                                reason=(
-                                    f"Allocation ${capital_for_stock:.2f} below "
-                                    f"min notional ${MIN_CRYPTO_NOTIONAL_USD:.2f}"
-                                ),
-                            )
-                        )
-                        continue
-                else:
-                    qty = float(int(capital_for_stock / price))
-                    if qty < 1:
-                        results.append(
-                            TradeResult(
-                                ticker=stock.ticker,
-                                side="long",
-                                shares=0,
-                                price=price,
-                                executed=False,
-                                reason=(
-                                    f"Allocation ${capital_for_stock:.0f} too small "
-                                    f"for price ${price:.2f}"
-                                ),
-                            )
-                        )
-                        continue
-
-                order = self.broker.buy(stock.ticker, qty, asset_class=cls)
-                fill_price = order.filled_price or price
+        if caps is None:
+            total_alloc = sum(s.allocation_pct for s in stocks)
+            for stock in stocks:
+                cls = classes.get(stock.ticker, AssetClass.EQUITY)
+                normalized = (
+                    stock.allocation_pct / total_alloc if total_alloc > 0 else 0.0
+                )
                 results.append(
-                    TradeResult(
-                        ticker=stock.ticker,
-                        side="long",
-                        shares=qty,
-                        price=fill_price,
-                        executed=True,
-                        reason=f"Bought {qty} units",
-                        order_id=order.order_id,
-                        order_status=order.status,
-                        filled_price=order.filled_price,
+                    self._open_long(
+                        stock.ticker, cls, self.allocated_capital * normalized
                     )
                 )
-                logger.info("AI build: long %s %s @ ~$%.2f", qty, stock.ticker, price)
+            return results
 
-            except Exception as exc:  # noqa: BLE001 - one ticker must not abort the run
-                logger.error("AI build failed for %s: %s", stock.ticker, exc)
-                results.append(
-                    TradeResult(
-                        ticker=stock.ticker,
+        raw: dict[str, float] = {}
+        order: list[str] = []
+        for stock in stocks:
+            if stock.ticker not in raw:
+                order.append(stock.ticker)
+            raw[stock.ticker] = raw.get(stock.ticker, 0.0) + max(
+                stock.allocation_pct, 0.0
+            )
+        weights = enforce_guardrails(raw, classes, caps)
+        for ticker in order:
+            cls = classes.get(ticker, AssetClass.EQUITY)
+            results.append(
+                self._open_long(
+                    ticker, cls, self.allocated_capital * weights.get(ticker, 0.0)
+                )
+            )
+        return results
+
+    def _open_long(
+        self, ticker: str, cls: AssetClass, capital_for_stock: float
+    ) -> TradeResult:
+        """Size ``capital_for_stock`` into a whole/fractional long and place the buy."""
+        try:
+            quote = self.broker.get_quote(ticker, cls)
+            price = quote.last or quote.ask
+            if not price or price <= 0:
+                return TradeResult(
+                    ticker=ticker,
+                    side="long",
+                    shares=0,
+                    price=None,
+                    executed=False,
+                    reason="No price available",
+                )
+
+            if cls == AssetClass.CRYPTO:
+                qty = round(capital_for_stock / price, CRYPTO_QTY_PRECISION)
+                if qty <= 0 or qty * price < MIN_CRYPTO_NOTIONAL_USD:
+                    return TradeResult(
+                        ticker=ticker,
                         side="long",
                         shares=0,
-                        price=None,
+                        price=price,
                         executed=False,
-                        reason=f"Order failed: {exc}",
+                        reason=(
+                            f"Allocation ${capital_for_stock:.2f} below "
+                            f"min notional ${MIN_CRYPTO_NOTIONAL_USD:.2f}"
+                        ),
                     )
-                )
+            else:
+                qty = float(int(capital_for_stock / price))
+                if qty < 1:
+                    return TradeResult(
+                        ticker=ticker,
+                        side="long",
+                        shares=0,
+                        price=price,
+                        executed=False,
+                        reason=(
+                            f"Allocation ${capital_for_stock:.0f} too small "
+                            f"for price ${price:.2f}"
+                        ),
+                    )
 
-        return results
+            o = self.broker.buy(ticker, qty, asset_class=cls)
+            fill_price = o.filled_price or price
+            logger.info("AI build: long %s %s @ ~$%.2f", qty, ticker, price)
+            return TradeResult(
+                ticker=ticker,
+                side="long",
+                shares=qty,
+                price=fill_price,
+                executed=True,
+                reason=f"Bought {qty} units",
+                order_id=o.order_id,
+                order_status=o.status,
+                filled_price=o.filled_price,
+            )
+
+        except Exception as exc:  # noqa: BLE001 - one ticker must not abort the run
+            logger.error("AI build failed for %s: %s", ticker, exc)
+            return TradeResult(
+                ticker=ticker,
+                side="long",
+                shares=0,
+                price=None,
+                executed=False,
+                reason=f"Order failed: {exc}",
+            )
 
     def execute_rebalance(
         self,
@@ -185,6 +364,7 @@ class AIPortfolioExecutor:
         current_positions: dict[str, Position],
         asset_classes: dict[str, AssetClass] | None = None,
         market_open: bool = True,
+        caps: GuardrailCaps | None = None,
     ) -> list[TradeResult]:
         """Trade toward the AI's target weights, delta by delta.
 
@@ -193,6 +373,12 @@ class AIPortfolioExecutor:
         base as build). For each ticker in the union of held positions and
         targets, the delta between target and current becomes a buy or a sell; a
         held ticker absent from targets is fully sold.
+
+        When ``caps`` is provided (the session opted into the risk guardrails), the
+        normalized target weights are run through :func:`enforce_guardrails` before
+        sizing so no ticker exceeds the per-asset cap, no class exceeds the per-class
+        cap, and the invested fraction is bounded (remainder held as cash); when
+        ``caps`` is ``None`` the raw normalized weights are used unchanged.
 
         Sizing is class-aware: equities use whole-share deltas (skip ``|delta| <
         1``), crypto uses fractional deltas (skip when the delta's notional is
@@ -206,6 +392,9 @@ class AIPortfolioExecutor:
         for t in targets:
             norm = t.allocation_pct / total_weight if total_weight > 0 else 0.0
             target_weight[t.ticker] = target_weight.get(t.ticker, 0.0) + norm
+
+        if caps is not None:
+            target_weight = enforce_guardrails(target_weight, classes, caps)
 
         base_capital = self.allocated_capital
         tickers = sorted(set(current_positions) | set(target_weight))

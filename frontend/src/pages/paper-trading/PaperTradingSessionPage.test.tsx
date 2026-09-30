@@ -44,6 +44,10 @@ const session: PaperTradingSession = {
   use_technical_indicators: false,
   stop_loss_enabled: false,
   stop_loss_pct: null,
+  risk_guardrails_enabled: false,
+  max_asset_class_pct: null,
+  min_positions: null,
+  max_invested_pct: null,
 };
 
 function makeEvent(
@@ -101,6 +105,24 @@ const KPIS: PaperTradingSessionKpis = {
   benchmark_return_pct: 0.015,
   excess_return_pct: 0.01,
   excess_return: 1000,
+  max_drawdown: 0.1234,
+  win_rate: 0.6,
+  average_win: 320,
+  average_loss: -110,
+  best_trade: 900,
+  worst_trade: -450,
+};
+
+/** A session with no snapshots or closed positions: the new metrics are null. */
+const KPIS_NO_RISK_DATA: PaperTradingSessionKpis = {
+  ...KPIS,
+  sharpe_ratio: 1.234,
+  max_drawdown: null,
+  win_rate: null,
+  average_win: null,
+  average_loss: null,
+  best_trade: null,
+  worst_trade: null,
 };
 
 /** Route the mocked GETs by URL to the right fixture. */
@@ -124,7 +146,7 @@ function installGet(
       });
     }
     if (url.includes('/ai-portfolio/sessions/') && url.endsWith('/events')) {
-      return Promise.resolve({ data: [] });
+      return Promise.resolve({ data: { items: [], total: 0 } });
     }
     if (url.includes('/build/status/')) {
       const status = eventStatus();
@@ -196,7 +218,7 @@ describe('PaperTradingSessionPage', () => {
         return Promise.resolve({ data: KPIS });
       }
       if (url.includes('/ai-portfolio/sessions/') && url.endsWith('/events')) {
-        return Promise.resolve({ data: [] });
+        return Promise.resolve({ data: { items: [], total: 0 } });
       }
       if (url.includes('/build/status/')) {
         return Promise.resolve({ data: makeEvent('running') });
@@ -278,6 +300,46 @@ describe('PaperTradingSessionPage', () => {
     await screen.findByText('Benchmark return');
     // Both the benchmark-return and excess-return tiles fall back to the copy.
     expect(screen.getAllByText('Not yet available')).toHaveLength(2);
+  });
+
+  it('renders the risk & trade-quality group with the new tiles', async () => {
+    installGet(() => 'running');
+
+    renderPage(<PaperTradingSessionPage />);
+
+    // Both KPI groups are labelled headings.
+    expect(
+      await screen.findByRole('heading', { name: 'Performance' }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole('heading', { name: 'Risk & trade quality' }),
+    ).toBeInTheDocument();
+    // Max drawdown shows an explicit minus and is coloured as a decline.
+    const drawdown = screen.getByText(/12\.34%/);
+    expect(drawdown).toHaveClass('text-red-700');
+    expect(drawdown.textContent).toContain('−');
+    // Win rate is a neutral ratio (no P&L colour).
+    expect(screen.getByText('60.00%')).toBeInTheDocument();
+    // Average win / best trade are gains (green); average loss / worst trade are
+    // signed losses (red).
+    expect(screen.getByText('$320.00')).toHaveClass('text-emerald-700');
+    expect(screen.getByText('$900.00')).toHaveClass('text-emerald-700');
+    expect(screen.getByText('-$110.00')).toHaveClass('text-red-700');
+    expect(screen.getByText('-$450.00')).toHaveClass('text-red-700');
+  });
+
+  it('shows placeholders for the risk metrics when their inputs are absent', async () => {
+    installGet(() => 'running', KPIS_NO_RISK_DATA);
+
+    renderPage(<PaperTradingSessionPage />);
+
+    await screen.findByRole('heading', { name: 'Risk & trade quality' });
+    // All six new tiles fall back (Sharpe and the benchmark tiles are populated).
+    expect(screen.getAllByText('Not yet available')).toHaveLength(6);
+    // Each placeholder explains why via its hint.
+    expect(screen.getByText('Needs a value snapshot')).toBeInTheDocument();
+    expect(screen.getByText('No winning positions yet')).toBeInTheDocument();
+    expect(screen.getByText('No losing positions yet')).toBeInTheDocument();
   });
 
   it('switches the benchmark and reflects the new selection', async () => {
@@ -370,7 +432,7 @@ describe('PaperTradingSessionPage', () => {
         return Promise.resolve({ data: KPIS });
       }
       if (url.includes('/ai-portfolio/sessions/') && url.endsWith('/events')) {
-        return Promise.resolve({ data: [] });
+        return Promise.resolve({ data: { items: [], total: 0 } });
       }
       return Promise.resolve({ data: { items: [], total: 0 } });
     });
@@ -404,7 +466,7 @@ describe('PaperTradingSessionPage', () => {
         return Promise.resolve({ data: KPIS });
       }
       if (url.includes('/ai-portfolio/sessions/') && url.endsWith('/events')) {
-        return Promise.resolve({ data: [] });
+        return Promise.resolve({ data: { items: [], total: 0 } });
       }
       return Promise.resolve({ data: { items: [], total: 0 } });
     });
@@ -452,7 +514,7 @@ describe('PaperTradingSessionPage', () => {
         return Promise.resolve({ data: KPIS });
       }
       if (url.includes('/ai-portfolio/sessions/') && url.endsWith('/events')) {
-        return Promise.resolve({ data: [] });
+        return Promise.resolve({ data: { items: [], total: 0 } });
       }
       return Promise.resolve({ data: { items: [], total: 0 } });
     });
@@ -471,7 +533,51 @@ describe('PaperTradingSessionPage', () => {
     await screen.findByRole('heading', { name: 'Aggressive Jolly Wozniak' });
 
     expect(screen.getByText('Stop-loss')).toBeInTheDocument();
-    expect(screen.getByText('Off')).toBeInTheDocument();
+    // Both the Stop-loss and Risk-guardrails tiles read "Off" by default.
+    expect(screen.getAllByText('Off')).toHaveLength(2);
+  });
+
+  it('shows the risk-guardrail configuration when the session opted in', async () => {
+    const withGuardrails: PaperTradingSession = {
+      ...session,
+      risk_guardrails_enabled: true,
+      max_allocation_pct: 0.25,
+      max_asset_class_pct: 0.6,
+      min_positions: 5,
+      max_invested_pct: 0.95,
+    };
+    mockedGet.mockImplementation((url: string) => {
+      if (url.endsWith('/paper-trading/sessions')) {
+        return Promise.resolve({ data: { items: [withGuardrails], total: 1 } });
+      }
+      if (url.endsWith('/kpis')) {
+        return Promise.resolve({ data: KPIS });
+      }
+      if (url.includes('/ai-portfolio/sessions/') && url.endsWith('/events')) {
+        return Promise.resolve({ data: { items: [], total: 0 } });
+      }
+      return Promise.resolve({ data: { items: [], total: 0 } });
+    });
+
+    renderPage(<PaperTradingSessionPage />);
+    await screen.findByRole('heading', { name: 'Aggressive Jolly Wozniak' });
+
+    expect(screen.getByText('Risk guardrails')).toBeInTheDocument();
+    expect(screen.getByText('Max/asset: 25%')).toBeInTheDocument();
+    expect(screen.getByText('Max/class: 60%')).toBeInTheDocument();
+    expect(screen.getByText('Min positions: 5')).toBeInTheDocument();
+    expect(screen.getByText('Max invested: 95%')).toBeInTheDocument();
+  });
+
+  it('shows the risk-guardrail config as Off when the session did not opt in', async () => {
+    installGet(() => 'running');
+
+    renderPage(<PaperTradingSessionPage />);
+    await screen.findByRole('heading', { name: 'Aggressive Jolly Wozniak' });
+
+    expect(screen.getByText('Risk guardrails')).toBeInTheDocument();
+    // Both Stop-loss and Risk guardrails read "Off" for the default session.
+    expect(screen.getAllByText('Off')).toHaveLength(2);
   });
 
   it('badges stop-loss trades and runs as stop-loss activity', async () => {
@@ -511,7 +617,7 @@ describe('PaperTradingSessionPage', () => {
         return Promise.resolve({ data: KPIS });
       }
       if (url.includes('/ai-portfolio/sessions/') && url.endsWith('/events')) {
-        return Promise.resolve({ data: [] });
+        return Promise.resolve({ data: { items: [], total: 0 } });
       }
       if (url.includes('/trades')) {
         return Promise.resolve({ data: { items: [stopTrade], total: 1 } });
@@ -532,6 +638,95 @@ describe('PaperTradingSessionPage', () => {
       el.className.includes('bg-amber-100'),
     );
     expect(badges).toHaveLength(2);
+  });
+
+  it('shows the AI events server total, not just the current page length', async () => {
+    const oneEvent = makeEvent('succeeded');
+    mockedGet.mockImplementation((url: string) => {
+      if (url.endsWith('/paper-trading/sessions')) {
+        return Promise.resolve({ data: { items: [session], total: 1 } });
+      }
+      if (url.endsWith('/kpis')) {
+        return Promise.resolve({ data: KPIS });
+      }
+      if (url.includes('/ai-portfolio/sessions/') && url.endsWith('/events')) {
+        // One row on this page, but twelve across all pages.
+        return Promise.resolve({ data: { items: [oneEvent], total: 12 } });
+      }
+      return Promise.resolve({ data: { items: [], total: 0 } });
+    });
+
+    renderPage(<PaperTradingSessionPage />);
+    await screen.findByRole('heading', { name: 'Aggressive Jolly Wozniak' });
+
+    // The panel header and pagination summary both reflect the server total (12),
+    // even though the current page holds a single event (page size 5 -> 3 pages).
+    expect(await screen.findByText('12 total')).toBeInTheDocument();
+    expect(screen.getByText('Showing 1–5 of 12 events')).toBeInTheDocument();
+    expect(screen.getByText('Page 1 of 3')).toBeInTheDocument();
+  });
+
+  it('requests the next page offset when browsing the trades table', async () => {
+    const tradeRows = Array.from({ length: 10 }, (_, i) => ({
+      id: `trade-${i}`,
+      session_id: 's1',
+      ai_portfolio_event_id: null,
+      ticker: 'AAPL',
+      side: 'buy',
+      quantity: 1,
+      price: 100,
+      notional: 100,
+      signal_type: 'entry',
+      executed_at: '2026-09-12T09:30:00Z',
+      order_id: `ord-${i}`,
+      order_status: 'filled',
+      filled_price: 100,
+      filled_at: '2026-09-12T09:30:01Z',
+    }));
+    mockedGet.mockImplementation((url: string) => {
+      if (url.endsWith('/paper-trading/sessions')) {
+        return Promise.resolve({ data: { items: [session], total: 1 } });
+      }
+      if (url.endsWith('/kpis')) {
+        return Promise.resolve({ data: KPIS });
+      }
+      if (url.includes('/ai-portfolio/sessions/') && url.endsWith('/events')) {
+        return Promise.resolve({ data: { items: [], total: 0 } });
+      }
+      if (url.includes('/trades')) {
+        return Promise.resolve({ data: { items: tradeRows, total: 25 } });
+      }
+      return Promise.resolve({ data: { items: [], total: 0 } });
+    });
+    mockedPost.mockResolvedValue({
+      data: {
+        trades_seen: 0,
+        trades_reconciled: 0,
+        trades_filled: 0,
+        trades_basis_corrected: 0,
+        trades: [],
+      },
+    });
+    const user = userEvent.setup();
+
+    renderPage(<PaperTradingSessionPage />);
+    // Wait until the trades page has loaded (empty panels render no pagination).
+    await screen.findByText('Showing 1–10 of 25 trades');
+
+    // The trades panel is the only one with data, so its Next control is the
+    // sole one on the page.
+    const nextButtons = screen
+      .getAllByRole('button', { name: 'Next page' })
+      .filter((b) => !(b as HTMLButtonElement).disabled);
+    expect(nextButtons).toHaveLength(1);
+
+    await user.click(nextButtons[0]);
+
+    // Page 2 requests offset = pageSize (10) with the fixed trades page size.
+    expect(mockedGet).toHaveBeenCalledWith(
+      '/api/v1/paper-trading/sessions/s1/trades',
+      { params: { limit: 10, offset: 10 } },
+    );
   });
 
   it('renders a fractional crypto trade quantity trimmed of trailing zeros', async () => {
@@ -556,7 +751,7 @@ describe('PaperTradingSessionPage', () => {
         return Promise.resolve({ data: { items: [session], total: 1 } });
       }
       if (url.includes('/ai-portfolio/sessions/') && url.endsWith('/events')) {
-        return Promise.resolve({ data: [] });
+        return Promise.resolve({ data: { items: [], total: 0 } });
       }
       if (url.endsWith('/kpis')) {
         return Promise.resolve({ data: KPIS });

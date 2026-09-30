@@ -47,6 +47,111 @@ const TERMINAL_META: Record<
   },
 };
 
+/** Human-readable labels for the in-flight event status badge. */
+const STATUS_LABELS: Record<string, string> = {
+  queued: 'Queued',
+  running: 'Running',
+  succeeded: 'Succeeded',
+  partial: 'Partial',
+  skipped: 'Skipped',
+  failed: 'Failed',
+};
+
+function humanizeStatus(status: string): string {
+  return STATUS_LABELS[status] ?? status;
+}
+
+/**
+ * A labelled number input with an inline unit adornment ($ prefix or % suffix)
+ * and a hint line that doubles as its inline validation message (red when the
+ * field is invalid). The unit stays in the visible label too so it is part of
+ * the accessible name.
+ */
+function NumberField({
+  id,
+  label,
+  unit,
+  unitSide = 'suffix',
+  value,
+  onChange,
+  min,
+  max,
+  step,
+  hint,
+  invalid = false,
+}: {
+  id: string;
+  label: string;
+  unit?: string;
+  unitSide?: 'prefix' | 'suffix';
+  value: string;
+  onChange: (value: string) => void;
+  min?: number;
+  max?: number;
+  step?: number;
+  hint?: string;
+  invalid?: boolean;
+}) {
+  const hintId = hint ? `${id}-hint` : undefined;
+  const borderClass = invalid
+    ? 'border-red-400 focus:border-red-500 focus:ring-red-500'
+    : 'border-slate-300 focus:border-emerald-500 focus:ring-emerald-500';
+  const padClass =
+    unit === undefined
+      ? 'px-3'
+      : unitSide === 'prefix'
+        ? 'pl-7 pr-3'
+        : 'pl-3 pr-8';
+  return (
+    <div>
+      <label
+        htmlFor={id}
+        className="block text-sm font-medium text-slate-700"
+      >
+        {label}
+      </label>
+      <div className="relative mt-1">
+        {unit !== undefined && unitSide === 'prefix' && (
+          <span
+            aria-hidden="true"
+            className="pointer-events-none absolute inset-y-0 left-0 flex items-center pl-3 text-sm text-slate-400"
+          >
+            {unit}
+          </span>
+        )}
+        <input
+          id={id}
+          type="number"
+          min={min}
+          max={max}
+          step={step}
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+          aria-invalid={invalid || undefined}
+          aria-describedby={hintId}
+          className={`w-full rounded border py-2 text-sm text-slate-900 focus:outline-none focus:ring-1 ${padClass} ${borderClass}`}
+        />
+        {unit !== undefined && unitSide === 'suffix' && (
+          <span
+            aria-hidden="true"
+            className="pointer-events-none absolute inset-y-0 right-0 flex items-center pr-3 text-sm text-slate-400"
+          >
+            {unit}
+          </span>
+        )}
+      </div>
+      {hint && (
+        <p
+          id={hintId}
+          className={`mt-1 text-xs ${invalid ? 'text-red-700' : 'text-slate-500'}`}
+        >
+          {hint}
+        </p>
+      )}
+    </div>
+  );
+}
+
 export function BuildAIPortfolioCard() {
   const queryClient = useQueryClient();
   const build = useBuildAIPortfolio();
@@ -58,6 +163,11 @@ export function BuildAIPortfolioCard() {
   const [useTechnicalIndicators, setUseTechnicalIndicators] = useState(false);
   const [stopLossEnabled, setStopLossEnabled] = useState(false);
   const [stopLossPct, setStopLossPct] = useState('15');
+  const [guardrailsEnabled, setGuardrailsEnabled] = useState(false);
+  const [maxAssetPct, setMaxAssetPct] = useState('25');
+  const [maxAssetClassPct, setMaxAssetClassPct] = useState('60');
+  const [minPositions, setMinPositions] = useState('5');
+  const [maxInvestedPct, setMaxInvestedPct] = useState('95');
   const [benchmark, setBenchmark] = useState<string>(DEFAULT_BENCHMARK);
   const [eventId, setEventId] = useState<string | null>(null);
 
@@ -82,7 +192,35 @@ export function BuildAIPortfolioCard() {
       stopLossFraction > 0 &&
       stopLossFraction < 1);
 
-  const canSubmit = capitalValid && stopLossValid;
+  // Guardrail parameters are entered as percentages (max per asset / class /
+  // invested) plus an integer minimum position count. When enabled each
+  // percentage must be a fraction in (0, 1] and the minimum must be >= 1.
+  const maxAssetFraction = Number.parseFloat(maxAssetPct) / 100;
+  const maxAssetClassFraction = Number.parseFloat(maxAssetClassPct) / 100;
+  const maxInvestedFraction = Number.parseFloat(maxInvestedPct) / 100;
+  const minPositionsValue = Number.parseInt(minPositions, 10);
+  const fractionInRange = (f: number) => Number.isFinite(f) && f > 0 && f <= 1;
+  const minPositionsValid =
+    Number.isInteger(minPositionsValue) && minPositionsValue >= 1;
+  const guardrailsValid =
+    !guardrailsEnabled ||
+    (fractionInRange(maxAssetFraction) &&
+      fractionInRange(maxAssetClassFraction) &&
+      fractionInRange(maxInvestedFraction) &&
+      minPositionsValid);
+
+  const canSubmit = capitalValid && stopLossValid && guardrailsValid;
+
+  // Per-field invalid flags drive the inline red hints (only surfaced once the
+  // relevant toggle is on so untouched, hidden fields never look erroneous).
+  const capitalInvalid = !capitalValid;
+  const stopLossInvalid = stopLossEnabled && !stopLossValid;
+  const maxAssetInvalid = guardrailsEnabled && !fractionInRange(maxAssetFraction);
+  const maxAssetClassInvalid =
+    guardrailsEnabled && !fractionInRange(maxAssetClassFraction);
+  const maxInvestedInvalid =
+    guardrailsEnabled && !fractionInRange(maxInvestedFraction);
+  const minPositionsInvalid = guardrailsEnabled && !minPositionsValid;
 
   // Refresh portfolios + sessions once the build reaches a terminal state.
   const settledEventId = useRef<string | null>(null);
@@ -107,6 +245,11 @@ export function BuildAIPortfolioCard() {
         use_technical_indicators: useTechnicalIndicators,
         stop_loss_enabled: stopLossEnabled,
         stop_loss_pct: stopLossEnabled ? stopLossFraction : null,
+        risk_guardrails_enabled: guardrailsEnabled,
+        max_allocation_pct: guardrailsEnabled ? maxAssetFraction : null,
+        max_asset_class_pct: guardrailsEnabled ? maxAssetClassFraction : null,
+        min_positions: guardrailsEnabled ? minPositionsValue : null,
+        max_invested_pct: guardrailsEnabled ? maxInvestedFraction : null,
       },
       { onSuccess: (res) => setEventId(res.event_id) },
     );
@@ -138,24 +281,20 @@ export function BuildAIPortfolioCard() {
             weight and researching new assets as it sees fit.
           </p>
 
+          {/* Essentials */}
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-            <div>
-              <label
-                htmlFor="ai-capital"
-                className="block text-sm font-medium text-slate-700"
-              >
-                Capital ($)
-              </label>
-              <input
-                id="ai-capital"
-                type="number"
-                min={1000}
-                step={1000}
-                value={capital}
-                onChange={(e) => setCapital(e.target.value)}
-                className="mt-1 w-full rounded border border-slate-300 px-3 py-2 text-sm text-slate-900 focus:border-emerald-500 focus:outline-none focus:ring-1 focus:ring-emerald-500"
-              />
-            </div>
+            <NumberField
+              id="ai-capital"
+              label="Capital ($)"
+              unit="$"
+              unitSide="prefix"
+              min={1000}
+              step={1000}
+              value={capital}
+              onChange={setCapital}
+              hint="Minimum $1,000."
+              invalid={capitalInvalid}
+            />
             <div>
               <label
                 htmlFor="ai-risk"
@@ -220,7 +359,8 @@ export function BuildAIPortfolioCard() {
             </div>
           </div>
 
-          <div className="flex flex-col gap-2">
+          {/* Daily rebalancing — the primary operating mode. */}
+          <div className="flex flex-col gap-1">
             <label className="flex items-center gap-2 text-sm font-medium text-slate-800">
               <input
                 type="checkbox"
@@ -230,55 +370,155 @@ export function BuildAIPortfolioCard() {
               />
               Enroll in daily rebalancing
             </label>
-            <label className="flex items-center gap-2 text-sm font-medium text-slate-800">
-              <input
-                type="checkbox"
-                checked={useTechnicalIndicators}
-                onChange={(e) => setUseTechnicalIndicators(e.target.checked)}
-                className="h-4 w-4 rounded border-slate-300 text-emerald-600 focus:ring-emerald-500"
-              />
-              Use technical-indicator trend strategy
-            </label>
             <p className="text-xs text-slate-500">
-              When enabled, the build and every rebalance only enter assets in a
-              confirmed uptrend and attach trend context to holdings. Frozen for
-              the session&apos;s lifetime.
-            </p>
-            <label className="flex items-center gap-2 text-sm font-medium text-slate-800">
-              <input
-                type="checkbox"
-                checked={stopLossEnabled}
-                onChange={(e) => setStopLossEnabled(e.target.checked)}
-                className="h-4 w-4 rounded border-slate-300 text-emerald-600 focus:ring-emerald-500"
-              />
-              Enable hard stop-loss
-            </label>
-            {stopLossEnabled && (
-              <div>
-                <label
-                  htmlFor="ai-stop-loss-pct"
-                  className="block text-sm font-medium text-slate-700"
-                >
-                  Stop-loss threshold (%)
-                </label>
-                <input
-                  id="ai-stop-loss-pct"
-                  type="number"
-                  min={1}
-                  max={99}
-                  step={1}
-                  value={stopLossPct}
-                  onChange={(e) => setStopLossPct(e.target.value)}
-                  className="mt-1 w-full rounded border border-slate-300 px-3 py-2 text-sm text-slate-900 focus:border-emerald-500 focus:outline-none focus:ring-1 focus:ring-emerald-500 sm:w-40"
-                />
-              </div>
-            )}
-            <p className="text-xs text-slate-500">
-              When enabled, each open position is sold in whole once its market
-              price falls to or below its average cost minus this percentage.
-              Frozen for the session&apos;s lifetime.
+              When enabled, the AI re-weights the portfolio toward fresh targets
+              every trading day. You can still rebalance manually at any time.
             </p>
           </div>
+
+          {/* Advanced / risk controls — all frozen at build for the session. */}
+          <fieldset className="flex flex-col gap-4 border-t border-slate-200 pt-4">
+            <legend className="text-xs font-semibold uppercase tracking-wide text-slate-500">
+              Advanced / risk controls
+            </legend>
+            <p className="-mt-1 text-xs text-slate-500">
+              These settings are frozen for the session&apos;s lifetime.
+            </p>
+
+            {/* Technical-indicator strategy. */}
+            <div className="flex flex-col gap-1">
+              <label className="flex items-center gap-2 text-sm font-medium text-slate-800">
+                <input
+                  type="checkbox"
+                  checked={useTechnicalIndicators}
+                  onChange={(e) => setUseTechnicalIndicators(e.target.checked)}
+                  className="h-4 w-4 rounded border-slate-300 text-emerald-600 focus:ring-emerald-500"
+                />
+                Use technical-indicator trend strategy
+              </label>
+              <p className="text-xs text-slate-500">
+                When enabled, the build and every rebalance only enter assets in
+                a confirmed uptrend and attach trend context to holdings.
+              </p>
+            </div>
+
+            {/* Hard stop-loss. */}
+            <div className="flex flex-col gap-1">
+              <label className="flex items-center gap-2 text-sm font-medium text-slate-800">
+                <input
+                  type="checkbox"
+                  checked={stopLossEnabled}
+                  onChange={(e) => setStopLossEnabled(e.target.checked)}
+                  aria-expanded={stopLossEnabled}
+                  aria-controls="ai-stop-loss-panel"
+                  className="h-4 w-4 rounded border-slate-300 text-emerald-600 focus:ring-emerald-500"
+                />
+                Enable hard stop-loss
+              </label>
+              <p className="text-xs text-slate-500">
+                When enabled, each open position is sold in whole once its market
+                price falls to or below its average cost minus this percentage.
+              </p>
+              {stopLossEnabled && (
+                <div
+                  id="ai-stop-loss-panel"
+                  className="ml-6 mt-1 border-l-2 border-slate-100 pl-4"
+                >
+                  <div className="sm:w-48">
+                    <NumberField
+                      id="ai-stop-loss-pct"
+                      label="Stop-loss threshold (%)"
+                      unit="%"
+                      min={1}
+                      max={99}
+                      step={1}
+                      value={stopLossPct}
+                      onChange={setStopLossPct}
+                      hint="Between 1% and 99% below average cost."
+                      invalid={stopLossInvalid}
+                    />
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* Deterministic risk guardrails. */}
+            <div className="flex flex-col gap-1">
+              <label className="flex items-center gap-2 text-sm font-medium text-slate-800">
+                <input
+                  type="checkbox"
+                  checked={guardrailsEnabled}
+                  onChange={(e) => setGuardrailsEnabled(e.target.checked)}
+                  aria-expanded={guardrailsEnabled}
+                  aria-controls="ai-guardrails-panel"
+                  className="h-4 w-4 rounded border-slate-300 text-emerald-600 focus:ring-emerald-500"
+                />
+                Enable risk guardrails
+              </label>
+              <p className="text-xs text-slate-500">
+                When enabled, the target weights are deterministically clamped so
+                no single asset or asset class exceeds its cap and the invested
+                share stays within the ceiling (the rest held as cash). The
+                minimum-positions target is given to the AI as guidance.
+              </p>
+              {guardrailsEnabled && (
+                <div
+                  id="ai-guardrails-panel"
+                  className="ml-6 mt-1 border-l-2 border-slate-100 pl-4"
+                >
+                  <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                    <NumberField
+                      id="ai-max-asset-pct"
+                      label="Max per asset (%)"
+                      unit="%"
+                      min={1}
+                      max={100}
+                      step={1}
+                      value={maxAssetPct}
+                      onChange={setMaxAssetPct}
+                      hint="Cap on any single position (one ticker)."
+                      invalid={maxAssetInvalid}
+                    />
+                    <NumberField
+                      id="ai-max-asset-class-pct"
+                      label="Max per asset class (%)"
+                      unit="%"
+                      min={1}
+                      max={100}
+                      step={1}
+                      value={maxAssetClassPct}
+                      onChange={setMaxAssetClassPct}
+                      hint="Cap on the stocks or crypto bucket."
+                      invalid={maxAssetClassInvalid}
+                    />
+                    <NumberField
+                      id="ai-min-positions"
+                      label="Min positions"
+                      min={1}
+                      max={50}
+                      step={1}
+                      value={minPositions}
+                      onChange={setMinPositions}
+                      hint="Target number of holdings (count)."
+                      invalid={minPositionsInvalid}
+                    />
+                    <NumberField
+                      id="ai-max-invested-pct"
+                      label="Max invested (%)"
+                      unit="%"
+                      min={1}
+                      max={100}
+                      step={1}
+                      value={maxInvestedPct}
+                      onChange={setMaxInvestedPct}
+                      hint="Remainder is held as cash."
+                      invalid={maxInvestedInvalid}
+                    />
+                  </div>
+                </div>
+              )}
+            </div>
+          </fieldset>
 
           {build.isError && (
             <p
@@ -289,12 +529,17 @@ export function BuildAIPortfolioCard() {
             </p>
           )}
 
-          <div className="flex justify-end">
+          <div className="flex flex-wrap items-center justify-end gap-3">
+            {!canSubmit && (
+              <p className="text-xs text-red-700">
+                Fix the highlighted fields before building.
+              </p>
+            )}
             <button
               type="submit"
               disabled={!canSubmit || build.isPending}
               aria-busy={build.isPending}
-              className="rounded bg-emerald-500 px-4 py-2 font-medium text-white hover:bg-emerald-600 disabled:cursor-not-allowed disabled:opacity-50"
+              className="rounded bg-emerald-500 px-4 py-2 font-medium text-white hover:bg-emerald-600 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 focus-visible:ring-offset-1 disabled:cursor-not-allowed disabled:opacity-50"
             >
               {build.isPending ? 'Starting…' : 'Build portfolio'}
             </button>
@@ -318,7 +563,7 @@ export function BuildAIPortfolioCard() {
             Building portfolio…
           </span>
           <span className="inline-flex w-fit items-center rounded-full bg-slate-100 px-2.5 py-0.5 text-xs font-medium text-slate-700">
-            status: {status ?? 'queued'}
+            Status: {humanizeStatus(status ?? 'queued')}
           </span>
           <p className="text-xs text-slate-500">
             The AI is selecting and sizing positions. This updates automatically.

@@ -30,7 +30,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from cadence.agents.tools import record_web_searches
-from cadence.ai_portfolio.agent import AIPortfolioAgent
+from cadence.ai_portfolio.agent import AIPortfolioAgent, GuardrailInstruction
 from cadence.ai_portfolio.constants import (
     AI_STRATEGY_KEY,
     TREND_PROMPT_VERSION,
@@ -43,7 +43,11 @@ from cadence.ai_portfolio.errors import (
     RebalancePromptNotFoundError,
     SessionNotEligibleError,
 )
-from cadence.ai_portfolio.executor import AIPortfolioExecutor, TradeResult
+from cadence.ai_portfolio.executor import (
+    AIPortfolioExecutor,
+    GuardrailCaps,
+    TradeResult,
+)
 from cadence.ai_portfolio.models import AIPortfolioEvent, RebalancePrompt
 from cadence.assets import service as assets_service
 from cadence.assets.category import AssetCategory, AssetScope, scope_categories
@@ -61,6 +65,7 @@ from cadence.paper_trading.benchmark import (
 from cadence.paper_trading.constants import (
     STOP_LOSS_RUN_TRIGGER,
     STOP_LOSS_SIGNAL_TYPE,
+    TERMINAL_ORDER_STATUSES,
     Benchmark,
     RunStatus,
     ScheduleMode,
@@ -95,6 +100,11 @@ class AIBuildParams:
     use_technical_indicators: bool = False
     stop_loss_enabled: bool = False
     stop_loss_pct: float | None = None
+    risk_guardrails_enabled: bool = False
+    max_allocation_pct: float | None = None
+    max_asset_class_pct: float | None = None
+    min_positions: int | None = None
+    max_invested_pct: float | None = None
 
     def to_payload(self) -> dict[str, Any]:
         return {
@@ -106,11 +116,20 @@ class AIBuildParams:
             "use_technical_indicators": self.use_technical_indicators,
             "stop_loss_enabled": self.stop_loss_enabled,
             "stop_loss_pct": self.stop_loss_pct,
+            "risk_guardrails_enabled": self.risk_guardrails_enabled,
+            "max_allocation_pct": self.max_allocation_pct,
+            "max_asset_class_pct": self.max_asset_class_pct,
+            "min_positions": self.min_positions,
+            "max_invested_pct": self.max_invested_pct,
         }
 
     @classmethod
     def from_payload(cls, payload: dict[str, Any]) -> AIBuildParams:
         raw_pct = payload.get("stop_loss_pct")
+        max_asset = payload.get("max_allocation_pct")
+        max_class = payload.get("max_asset_class_pct")
+        min_pos = payload.get("min_positions")
+        max_inv = payload.get("max_invested_pct")
         return cls(
             allocated_capital=float(payload.get("allocated_capital", 10000.0)),
             risk_profile=str(payload.get("risk_profile", "balanced")),
@@ -122,6 +141,13 @@ class AIBuildParams:
             ),
             stop_loss_enabled=bool(payload.get("stop_loss_enabled", False)),
             stop_loss_pct=None if raw_pct is None else float(raw_pct),
+            risk_guardrails_enabled=bool(
+                payload.get("risk_guardrails_enabled", False)
+            ),
+            max_allocation_pct=None if max_asset is None else float(max_asset),
+            max_asset_class_pct=None if max_class is None else float(max_class),
+            min_positions=None if min_pos is None else int(min_pos),
+            max_invested_pct=None if max_inv is None else float(max_inv),
         )
 
 
@@ -139,16 +165,30 @@ def get_event(session: Session, event_id: uuid.UUID) -> AIPortfolioEvent:
 
 
 def list_session_events(
-    session: Session, session_id: uuid.UUID, *, limit: int = 20
+    session: Session, session_id: uuid.UUID, *, limit: int = 20, offset: int = 0
 ) -> list[AIPortfolioEvent]:
-    """Return a session's AI events (build + rebalances), newest first."""
+    """Return a session's AI events (build + rebalances), newest first.
+
+    Paginated via ``limit``/``offset`` (pair with :func:`count_session_events`).
+    """
     stmt = (
         select(AIPortfolioEvent)
         .where(AIPortfolioEvent.session_id == session_id)
         .order_by(AIPortfolioEvent.created_at.desc(), AIPortfolioEvent.id.desc())
         .limit(limit)
+        .offset(offset)
     )
     return list(session.execute(stmt).scalars())
+
+
+def count_session_events(session: Session, session_id: uuid.UUID) -> int:
+    """Count a session's AI events."""
+    stmt = (
+        select(func.count())
+        .select_from(AIPortfolioEvent)
+        .where(AIPortfolioEvent.session_id == session_id)
+    )
+    return session.execute(stmt).scalar_one()
 
 
 def list_ai_runs(
@@ -261,6 +301,56 @@ def get_inflight_rebalance_event(
     return session.execute(stmt).scalars().first()
 
 
+def build_orders_settled(
+    session: Session, broker: Broker, session_row: PaperTradingSession
+) -> bool:
+    """Return whether a session's initial build orders have all settled.
+
+    A freshly-built session is not ready for daily rebalancing until the broker
+    orders its build placed have all reached a terminal state — filled, or
+    cancelled/rejected (a cancelled/rejected order will never fill, so it does not
+    keep the session waiting). Readiness is judged from the *broker's* fill status,
+    not the optimistic local ledger: the session's non-terminal orders are first
+    reconciled against the broker (reusing
+    :func:`paper_service.reconcile_session_orders`) so the recorded status is fresh
+    even when the separate reconcile cron has not run first.
+
+    A session whose build placed no orders that need to settle — an all-cash build,
+    a build with no recorded build event, or one whose orders have already settled
+    (for example under an immediate-fill broker) — is ready immediately, so this
+    gate can never permanently strand a session.
+
+    Fails safe: if reconciliation raises, the session is reported not ready
+    (deferred to a later trigger) rather than rebalanced on unverified state.
+    """
+    metadata = session_row.session_metadata or {}
+    raw_build_event_id = metadata.get("build_event_id")
+    if raw_build_event_id is None:
+        return True  # No build event recorded — nothing to wait on.
+    try:
+        build_event_id = uuid.UUID(str(raw_build_event_id))
+    except (ValueError, TypeError):
+        return True
+
+    try:
+        paper_service.reconcile_session_orders(session, broker, session_row.id)
+    except Exception:  # Fail safe toward not trading on unverified state.
+        logger.warning(
+            "build-order readiness: reconcile failed for session %s; deferring",
+            session_row.id,
+            exc_info=True,
+        )
+        return False
+
+    build_trades = paper_service.get_trades_by_event(session, build_event_id)
+    for trade in build_trades:
+        if trade.order_id is None:
+            continue  # No broker order to track — nothing to wait on.
+        if trade.order_status not in TERMINAL_ORDER_STATUSES:
+            return False
+    return True
+
+
 # --------------------------------------------------------------------------- #
 # Build flow
 # --------------------------------------------------------------------------- #
@@ -324,9 +414,18 @@ def run_build_event(
                 "holdings": [],
             }
 
+        build_guardrails = _guardrail_instruction(
+            enabled=params.risk_guardrails_enabled,
+            max_asset_pct=params.max_allocation_pct,
+            max_asset_class_pct=params.max_asset_class_pct,
+            min_positions=params.min_positions,
+            max_invested_pct=params.max_invested_pct,
+        )
         with record_web_searches() as research:
             result = agent.build(
-                candidates=candidates, risk_profile=params.risk_profile
+                candidates=candidates,
+                risk_profile=params.risk_profile,
+                guardrails=build_guardrails,
             )
         agent_output = result.model_dump(mode="json")
 
@@ -352,6 +451,14 @@ def run_build_event(
             risk_profile=params.risk_profile,
             existing_names=portfolios_service.list_portfolio_names(session),
         )
+        # The per-asset guardrail cap repurposes ``max_allocation_pct`` (a no-op
+        # 1.0 when guardrails are off) so both the portfolio and session freeze it.
+        per_asset_cap = (
+            params.max_allocation_pct
+            if params.risk_guardrails_enabled
+            and params.max_allocation_pct is not None
+            else 1.0
+        )
         portfolio = portfolios_service.create_portfolio(
             session,
             name=portfolio_name,
@@ -359,7 +466,7 @@ def run_build_event(
             source=PortfolioSource.AI_MANAGED,
             description=result.overall_thesis[:500],
             risk_profile=_risk_profile(params.risk_profile),
-            max_allocation_pct=1.0,
+            max_allocation_pct=per_asset_cap,
             source_run_id=str(event.id),
         )
 
@@ -382,6 +489,10 @@ def run_build_event(
             use_technical_indicators=params.use_technical_indicators,
             stop_loss_enabled=params.stop_loss_enabled,
             stop_loss_pct=params.stop_loss_pct,
+            risk_guardrails_enabled=params.risk_guardrails_enabled,
+            max_asset_class_pct=params.max_asset_class_pct,
+            min_positions=params.min_positions,
+            max_invested_pct=params.max_invested_pct,
         )
         session_row.session_metadata = {
             "session_type": "ai_managed",
@@ -398,9 +509,15 @@ def run_build_event(
         # per-ticker class map threaded into the executor.
         asset_classes = _asset_class_map(assets_service.list_assets(session))
 
+        caps = _guardrail_caps(
+            enabled=params.risk_guardrails_enabled,
+            max_asset_pct=params.max_allocation_pct,
+            max_asset_class_pct=params.max_asset_class_pct,
+            max_invested_pct=params.max_invested_pct,
+        )
         executor = AIPortfolioExecutor(broker, params.allocated_capital)
         trade_results = executor.execute_build(
-            result.stocks, asset_classes=asset_classes
+            result.stocks, asset_classes=asset_classes, caps=caps
         )
 
         executed = _record_trades(
@@ -442,6 +559,10 @@ def run_build_event(
                 executed=executed,
                 all_executed=all_executed,
                 trend_context=trend_context,
+                guardrail_observations=_min_positions_observation(
+                    build_guardrails,
+                    sum(1 for s in result.stocks if s.allocation_pct > 0),
+                ),
             ),
         )
         logger.info(
@@ -678,6 +799,13 @@ def run_rebalance_event(
         prompt = get_rebalance_prompt_by_version(
             session, session_row.rebalance_prompt_version
         )
+        rebalance_guardrails = _guardrail_instruction(
+            enabled=bool(session_row.risk_guardrails_enabled),
+            max_asset_pct=session_row.max_allocation_pct,
+            max_asset_class_pct=session_row.max_asset_class_pct,
+            min_positions=session_row.min_positions,
+            max_invested_pct=session_row.max_invested_pct,
+        )
         with record_web_searches() as research:
             result = agent.rebalance(
                 holdings=holdings,
@@ -686,6 +814,7 @@ def run_rebalance_event(
                 risk_profile=risk_profile,
                 instructions=prompt.instructions,
                 input_template=prompt.input_template,
+                guardrails=rebalance_guardrails,
             )
         agent_output = result.model_dump(mode="json")
 
@@ -713,12 +842,21 @@ def run_rebalance_event(
         # Rebuild the class map so any discovered crypto target is classified.
         asset_classes = _asset_class_map(assets_service.list_assets(session))
 
+        # Read the guardrail config back off the frozen session row; a disabled or
+        # pre-migration session yields no caps and the executor stays normalize-only.
+        caps = _guardrail_caps(
+            enabled=bool(session_row.risk_guardrails_enabled),
+            max_asset_pct=session_row.max_allocation_pct,
+            max_asset_class_pct=session_row.max_asset_class_pct,
+            max_invested_pct=session_row.max_invested_pct,
+        )
         executor = AIPortfolioExecutor(broker, session_row.allocated_capital)
         trade_results = executor.execute_rebalance(
             targets=result.target_allocations,
             current_positions=positions,
             asset_classes=asset_classes,
             market_open=market_open,
+            caps=caps,
         )
 
         executed, realized_pnl = _apply_rebalance_trades(
@@ -770,6 +908,14 @@ def run_rebalance_event(
                 realized_pnl=realized_pnl,
                 account_summary=account_summary,
                 trend_context=trend_context,
+                guardrail_observations=_min_positions_observation(
+                    rebalance_guardrails,
+                    sum(
+                        1
+                        for t in result.target_allocations
+                        if t.allocation_pct > 0
+                    ),
+                ),
             ),
         )
         logger.info("AI rebalance %s completed: %s trades executed", event.id, executed)
@@ -1497,6 +1643,56 @@ def _asset_class_map(assets: list[Asset]) -> dict[str, AssetClass]:
     }
 
 
+def _guardrail_caps(
+    *,
+    enabled: bool,
+    max_asset_pct: float | None,
+    max_asset_class_pct: float | None,
+    max_invested_pct: float | None,
+) -> GuardrailCaps | None:
+    """Build :class:`GuardrailCaps` from a frozen guardrail config, or ``None``.
+
+    Returns ``None`` when guardrails are disabled (or the frozen config predates
+    the feature) so the executor keeps its normalize-only path. A missing cap
+    (``None`` while enabled) is treated as no-op (1.0) for that dimension.
+    """
+    if not enabled:
+        return None
+    return GuardrailCaps(
+        max_per_asset=max_asset_pct if max_asset_pct is not None else 1.0,
+        max_per_class=(
+            max_asset_class_pct if max_asset_class_pct is not None else 1.0
+        ),
+        max_invested=max_invested_pct if max_invested_pct is not None else 1.0,
+    )
+
+
+def _guardrail_instruction(
+    *,
+    enabled: bool,
+    max_asset_pct: float | None,
+    max_asset_class_pct: float | None,
+    min_positions: int | None,
+    max_invested_pct: float | None,
+) -> GuardrailInstruction | None:
+    """Build the advisory :class:`GuardrailInstruction` told to the AI, or ``None``.
+
+    Returns ``None`` when guardrails are disabled so the prompt carries no
+    guardrail block. Includes ``min_positions`` (which the deterministic clamp
+    cannot enforce) so the AI can plan to meet the diversification floor.
+    """
+    if not enabled:
+        return None
+    return GuardrailInstruction(
+        max_per_asset=max_asset_pct if max_asset_pct is not None else 1.0,
+        max_per_class=(
+            max_asset_class_pct if max_asset_class_pct is not None else 1.0
+        ),
+        min_positions=min_positions if min_positions is not None else 1,
+        max_invested=max_invested_pct if max_invested_pct is not None else 1.0,
+    )
+
+
 def _involves_crypto(
     positions: dict[str, Position],
     target_tickers: list[str],
@@ -1941,13 +2137,15 @@ def _build_run_stats(
     realized_pnl: float | None = None,
     account_summary: dict[str, Any] | None = None,
     trend_context: dict[str, Any] | None = None,
+    guardrail_observations: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Assemble the machine-readable run-outcome blob for offline learning.
 
     Captures order counts, full per-trade details (including ``filled_price``,
     which ``actions_taken`` drops), the run's realized P&L and account/valuation
-    snapshot where applicable, and trend-gate counts derived from
-    ``trend_context``. Deliberately not exposed via the API/UI (see
+    snapshot where applicable, trend-gate counts derived from ``trend_context``,
+    and any guardrail observations (e.g. the AI returning fewer holdings than the
+    configured minimum). Deliberately not exposed via the API/UI (see
     ``AIPortfolioEvent.run_stats``).
     """
     stats: dict[str, Any] = {
@@ -1969,7 +2167,32 @@ def _build_run_stats(
             "dropped": len(trend_context.get("dropped_candidates", [])),
             "holdings": len(trend_context.get("holdings", [])),
         }
+    if guardrail_observations:
+        stats["guardrails"] = guardrail_observations
     return stats
+
+
+def _min_positions_observation(
+    guardrails: GuardrailInstruction | None, num_positions: int
+) -> dict[str, Any] | None:
+    """Return a min-positions guardrail observation when the AI under-diversified.
+
+    Min positions is not enforced by fabricating holdings (see design D3); when
+    the AI returns fewer positions than the configured minimum the shortfall is
+    recorded here for offline learning and the run still succeeds. Returns
+    ``None`` when guardrails are off or the minimum is met.
+    """
+    if guardrails is None:
+        return None
+    if num_positions >= guardrails.min_positions:
+        return None
+    return {
+        "min_positions": {
+            "required": guardrails.min_positions,
+            "returned": num_positions,
+            "shortfall": guardrails.min_positions - num_positions,
+        }
+    }
 
 
 def _elapsed_ms(t0: float) -> int:

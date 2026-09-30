@@ -7,6 +7,7 @@ import type {
   AIPortfolioBuildRequest,
   AIPortfolioBuildResponse,
   AIPortfolioEvent,
+  AIPortfolioEventListResponse,
   AIPortfolioRunDetail,
   AIPortfolioRunListResponse,
   AIRebalanceResponse,
@@ -42,8 +43,10 @@ export const aiPortfolioKeys = {
   all: ['ai-portfolio'] as const,
   buildStatus: (eventId: string) =>
     ['ai-portfolio', 'build-status', eventId] as const,
-  sessionEvents: (sessionId: string) =>
+  sessionEventsPrefix: (sessionId: string) =>
     ['ai-portfolio', 'session', sessionId, 'events'] as const,
+  sessionEvents: (sessionId: string, offset = 0) =>
+    ['ai-portfolio', 'session', sessionId, 'events', offset] as const,
   runs: (query: AIRunsQuery) => ['ai-portfolio', 'runs', query] as const,
   runDetail: (eventId: string) =>
     ['ai-portfolio', 'runs', 'detail', eventId] as const,
@@ -108,14 +111,14 @@ export async function closeSession(
   return data;
 }
 
-/** Fetch a session's AI events (build + rebalances), newest first. */
+/** Fetch a page of a session's AI events (build + rebalances), newest first. */
 export async function listSessionEvents(
   sessionId: string,
-  limit = 20,
-): Promise<AIPortfolioEvent[]> {
-  const { data } = await apiClient.get<AIPortfolioEvent[]>(
+  { limit = 20, offset = 0 }: { limit?: number; offset?: number } = {},
+): Promise<AIPortfolioEventListResponse> {
+  const { data } = await apiClient.get<AIPortfolioEventListResponse>(
     `/api/v1/ai-portfolio/sessions/${encodeURIComponent(sessionId)}/events`,
-    { params: { limit } },
+    { params: { limit, offset } },
   );
   return data;
 }
@@ -169,7 +172,7 @@ export function useRebalanceSession(sessionId: string) {
     mutationFn: () => rebalanceSession(sessionId),
     onSuccess: () => {
       queryClient.invalidateQueries({
-        queryKey: aiPortfolioKeys.sessionEvents(sessionId),
+        queryKey: aiPortfolioKeys.sessionEventsPrefix(sessionId),
       });
       queryClient.invalidateQueries({
         queryKey: paperTradingKeys.all,
@@ -189,7 +192,7 @@ export function useCloseSession(sessionId: string) {
     mutationFn: () => closeSession(sessionId),
     onSuccess: () => {
       queryClient.invalidateQueries({
-        queryKey: aiPortfolioKeys.sessionEvents(sessionId),
+        queryKey: aiPortfolioKeys.sessionEventsPrefix(sessionId),
       });
       queryClient.invalidateQueries({ queryKey: aiPortfolioKeys.all });
       queryClient.invalidateQueries({ queryKey: paperTradingKeys.all });
@@ -217,11 +220,18 @@ export function useBuildStatus(eventId: string | null) {
   });
 }
 
-/** React Query hook listing a session's AI events. */
-export function useSessionEvents(sessionId: string) {
-  return useQuery<AIPortfolioEvent[]>({
-    queryKey: aiPortfolioKeys.sessionEvents(sessionId),
-    queryFn: () => listSessionEvents(sessionId),
+/**
+ * React Query hook listing one page of a session's AI events. The `offset` is
+ * part of the query key so paging refetches, while the mutations below invalidate
+ * by the session-scoped events prefix so the currently-viewed page refreshes.
+ */
+export function useSessionEvents(
+  sessionId: string,
+  { limit, offset = 0 }: { limit?: number; offset?: number } = {},
+) {
+  return useQuery<AIPortfolioEventListResponse>({
+    queryKey: aiPortfolioKeys.sessionEvents(sessionId, offset),
+    queryFn: () => listSessionEvents(sessionId, { limit, offset }),
     enabled: sessionId.length > 0,
   });
 }

@@ -7,7 +7,7 @@ Keeps AI-managed paper portfolios current by letting the AI re-evaluate holdings
 
 ### Requirement: Rebalance a session
 
-The system SHALL rebalance a single active AI-managed session: read its current live positions and account summary, assemble candidate tickers from the current asset universe **restricted to the session's persisted asset scope** (stocks only, crypto only, or both — enriched with name, sector, category, and eligibility), and ask the AI — **using the session's persisted risk profile** (conservative, balanced, or aggressive), defaulting to balanced when none is persisted — to produce a set of long-only target allocations — fractions in [0, 1] that sum to approximately 1.0 — for the whole portfolio. Candidate tickers the session does not currently hold that are **currently quarantined for the session by a recent stop-loss** (their cooldown has not yet expired) SHALL be excluded from the candidate set presented to the AI, regardless of the trend opt-in, so that a just-stopped position is not immediately re-entered; a quarantine whose cooldown has expired SHALL no longer exclude its ticker; a ticker the session still holds SHALL NOT be excluded by a quarantine. The technical-indicator trend strategy SHALL be applied to the rebalance **only when the session opted into it** (the opt-in frozen at build time; a session with no persisted opt-in SHALL be treated as opted out). **When the session opted in**: candidate tickers the session does not currently hold SHALL be **hard-filtered by the deterministic trend gate** derived from each asset's latest stored technical-indicator snapshot — a candidate whose uptrend gate does not pass SHALL be dropped from the candidate set and SHALL NOT be presented to the AI, so that new positions are only ever entered in confirmed uptrends; a candidate that has no stored indicator snapshot (its trend cannot be established) SHALL be treated as failing the gate and dropped; the candidates that survive the gate SHALL be annotated with their trend indicators; and for each ticker the session currently holds, the system SHALL attach the holding's full indicator set and deterministic reversal flags to the AI's input and let the **AI decide** whether to sell, trim, or hold; holdings SHALL NOT be hard-exited by the trend gate. **When the session did not opt in**: no trend gate SHALL be applied — every in-scope candidate the session does not hold SHALL be presented to the AI without indicator annotations, and holdings SHALL NOT carry indicator or reversal context. The AI MAY research and propose assets not currently in the universe (discovery is always enabled), which SHALL be added to the universe on a best-effort basis bounded by a configured maximum number of new assets per run; **a discovered asset whose category falls outside the session's asset scope SHALL be rejected — not added and not traded**, and — **only when the session opted into the trend strategy** — a discovered asset that does not pass the trend gate SHALL likewise be excluded from the candidate set presented to the AI. When a session has no persisted asset scope (for example a session built before this capability existed), the rebalance SHALL treat its scope as both. The system SHALL then re-weight the portfolio toward those targets: for each ticker it SHALL compare the currently held share count with the target share count implied by the allocation and the allocated capital, and apply the difference as a brokerage order — buying to increase a position, selling to reduce it, and fully selling any held position that is absent from the targets or given an allocation of ~0. Trivial fractional differences (less than one whole share) SHALL be skipped. The AI's research SHALL be cost-bounded per run by a configured maximum number of reasoning turns and a hard cap on the number of web searches. The rebalance SHALL be processed in the background and recorded as an AI-portfolio event and a session run.
+The system SHALL rebalance a single active AI-managed session: read its current live positions and account summary, assemble candidate tickers from the current asset universe **restricted to the session's persisted asset scope** (stocks only, crypto only, or both — enriched with name, sector, category, and eligibility), and ask the AI — **using the session's persisted risk profile** (conservative, balanced, or aggressive), defaulting to balanced when none is persisted — to produce a set of long-only target allocations — fractions in [0, 1] that sum to approximately 1.0 — for the whole portfolio. Candidate tickers the session does not currently hold that are **currently quarantined for the session by a recent stop-loss** (their cooldown has not yet expired) SHALL be excluded from the candidate set presented to the AI, regardless of the trend opt-in, so that a just-stopped position is not immediately re-entered; a quarantine whose cooldown has expired SHALL no longer exclude its ticker; a ticker the session still holds SHALL NOT be excluded by a quarantine. The technical-indicator trend strategy SHALL be applied to the rebalance **only when the session opted into it** (the opt-in frozen at build time; a session with no persisted opt-in SHALL be treated as opted out). **When the session opted in**: candidate tickers the session does not currently hold SHALL be **hard-filtered by the deterministic trend gate** derived from each asset's latest stored technical-indicator snapshot — a candidate whose uptrend gate does not pass SHALL be dropped from the candidate set and SHALL NOT be presented to the AI, so that new positions are only ever entered in confirmed uptrends; a candidate that has no stored indicator snapshot (its trend cannot be established) SHALL be treated as failing the gate and dropped; the candidates that survive the gate SHALL be annotated with their trend indicators; and for each ticker the session currently holds, the system SHALL attach the holding's full indicator set and deterministic reversal flags to the AI's input and let the **AI decide** whether to sell, trim, or hold; holdings SHALL NOT be hard-exited by the trend gate. **When the session did not opt in**: no trend gate SHALL be applied — every in-scope candidate the session does not hold SHALL be presented to the AI without indicator annotations, and holdings SHALL NOT carry indicator or reversal context. **When the session opted into the risk guardrails** (the opt-in and parameters frozen at build time; a session with no persisted guardrail setting SHALL be treated as opted out), the AI SHALL be told the guardrail caps (maximum per asset, maximum per asset class, minimum number of positions, and maximum invested percentage) so it can plan within them. The AI MAY research and propose assets not currently in the universe (discovery is always enabled), which SHALL be added to the universe on a best-effort basis bounded by a configured maximum number of new assets per run; **a discovered asset whose category falls outside the session's asset scope SHALL be rejected — not added and not traded**, and — **only when the session opted into the trend strategy** — a discovered asset that does not pass the trend gate SHALL likewise be excluded from the candidate set presented to the AI. When a session has no persisted asset scope (for example a session built before this capability existed), the rebalance SHALL treat its scope as both. **When the session opted into the risk guardrails, the system SHALL deterministically enforce them on the AI's target-allocation vector before computing target share counts** so that no single ticker exceeds the maximum-per-asset cap, no asset class exceeds the maximum-per-class cap, and the total invested fraction does not exceed the maximum invested percentage (the remainder held as cash) — excess weight removed by a per-asset or per-class cap SHALL be redistributed proportionally to the tickers still below their caps, and when the caps cannot absorb the full capital the shortfall SHALL remain as cash; the deterministic enforcement is the guarantee and the caps given to the AI are advisory. The minimum-number-of-positions guardrail SHALL NOT be enforced by fabricating holdings the AI did not target: it is applied as the AI instruction above plus the diversification floor implied by the maximum-per-asset cap, and when the AI targets fewer holdings than the configured minimum the shortfall SHALL be recorded as a guardrail observation on the run rather than failing the rebalance. The system SHALL then re-weight the portfolio toward those (guardrail-enforced) targets: for each ticker it SHALL compare the currently held share count with the target share count implied by the allocation and the allocated capital, and apply the difference as a brokerage order — buying to increase a position, selling to reduce it, and fully selling any held position that is absent from the targets or given an allocation of ~0. Trivial fractional differences (less than one whole share) SHALL be skipped. The AI's research SHALL be cost-bounded per run by a configured maximum number of reasoning turns and a hard cap on the number of web searches. The rebalance SHALL be processed in the background and recorded as an AI-portfolio event and a session run.
 
 #### Scenario: Rebalance applies AI decisions
 
@@ -23,6 +23,16 @@ The system SHALL rebalance a single active AI-managed session: read its current 
 
 - **WHEN** a rebalance runs for a session that was built with a non-default risk profile (for example aggressive or conservative)
 - **THEN** the AI SHALL be asked to rebalance toward that persisted risk profile rather than a fixed default, and a session built before this behaviour existed (no persisted risk profile) SHALL be treated as balanced
+
+#### Scenario: Rebalance enforces the session's frozen guardrails
+
+- **WHEN** a rebalance runs for a session that was built with the risk guardrails enabled and the AI returns target allocations that exceed the maximum-per-asset cap, exceed the maximum-per-class cap, or would invest more than the maximum invested percentage
+- **THEN** the system SHALL clamp and redistribute the target weights so no ticker exceeds the per-asset cap and no class exceeds the per-class cap, SHALL scale them so the invested fraction does not exceed the maximum invested percentage (holding the remainder as cash), and SHALL compute target share counts from the enforced weights
+
+#### Scenario: Rebalance ignores guardrails when opted out
+
+- **WHEN** a rebalance runs for a session that was not built with the risk guardrails (including a session built before the guardrails existed)
+- **THEN** the system SHALL apply no allocation caps and SHALL trade toward the AI's target allocations unchanged by any guardrail
 
 #### Scenario: Recently stopped tickers are excluded during cooldown
 
@@ -70,17 +80,56 @@ The system SHALL record, per session, whether it is enrolled in daily rebalancin
 
 ### Requirement: Cron-guarded daily rebalance trigger
 
-The system SHALL expose an endpoint that triggers a rebalance for every active session enrolled in daily rebalancing. The endpoint SHALL be protected by a shared-secret token supplied in a request header; a missing or incorrect token SHALL be rejected, and when the configured token is empty every request SHALL be rejected. The endpoint SHALL start the per-session rebalances in the background, skip sessions that already have a rebalance running, and return immediately with which sessions were triggered and which were skipped.
+The system SHALL expose an endpoint that triggers a rebalance for every active session enrolled in daily rebalancing. The endpoint SHALL be protected by a shared-secret token supplied in a request header; a missing or incorrect token SHALL be rejected, and when the configured token is empty every request SHALL be rejected. The endpoint SHALL start the per-session rebalances in the background, skip sessions that already have a rebalance running, **skip sessions that are not yet ready for daily rebalancing because their initial build orders have not all filled (see "Defer a session until its build orders have filled")**, and return immediately with which sessions were triggered and which were skipped. **A session skipped because its build orders have not yet filled SHALL be reported as skipped, distinctly from a session skipped because a rebalance is already running, so its deferral is observable; such a session SHALL be picked up by a later trigger once its build orders have filled.**
 
 #### Scenario: Valid token triggers all enrolled sessions
 
 - **WHEN** the endpoint is called with the correct token
-- **THEN** the system SHALL start a rebalance for each active enrolled session (skipping any already running) and respond with the triggered and skipped session ids
+- **THEN** the system SHALL start a rebalance for each active enrolled session that is ready (skipping any already running and any whose build orders have not yet filled) and respond with the triggered and skipped session ids
 
 #### Scenario: Invalid or missing token
 
 - **WHEN** the endpoint is called without a token or with an incorrect token, or the configured token is empty
 - **THEN** the system SHALL reject the request and SHALL NOT start any rebalance
+
+#### Scenario: Freshly-built session with unfilled build orders is skipped
+
+- **WHEN** the endpoint is called and an active enrolled session's initial build orders have not all reached a terminal filled state
+- **THEN** the system SHALL NOT start a rebalance for that session and SHALL report it among the skipped sessions
+
+#### Scenario: Session included once its build orders fill
+
+- **WHEN** the endpoint is called and an active enrolled session's initial build orders have all reached a terminal filled state
+- **THEN** the system SHALL start a rebalance for that session (unless one is already running)
+
+### Requirement: Defer a session until its build orders have filled
+
+The system SHALL treat a freshly-built AI-managed session as **not yet ready for daily rebalancing** until the broker orders placed by its initial build have all reached a terminal filled/settled state, and SHALL treat it as ready once they have. Readiness SHALL be determined from the **actual broker fill status** of the session's initial build orders — not from an elapsed-run count, a wall-clock delay, or the optimistic local ledger. Before deciding readiness the system SHALL refresh those build orders' statuses against the broker (reconciling their recorded status with the broker's current order state), because the separate order-reconciliation trigger is not guaranteed to have run first. A session whose initial build placed **no orders that need to settle** — an all-cash build, or a build whose orders have already reached a terminal filled state (for example under an immediate-fill broker) — SHALL be considered ready immediately, so that this readiness gate never permanently strands a session. A build order that reached a terminal non-filled state (for example cancelled or rejected) SHALL NOT keep the session deferred, since it will never fill. This readiness gate governs only the automatic daily rebalance trigger; it SHALL NOT block a manually-requested single-session rebalance.
+
+#### Scenario: Build orders still unfilled
+
+- **WHEN** readiness is evaluated for a session whose initial build orders are still in a non-terminal state (for example placed while the market was closed and still submitted/pending at the broker)
+- **THEN** the system SHALL report the session as not yet ready for daily rebalancing
+
+#### Scenario: Build orders have filled
+
+- **WHEN** readiness is evaluated for a session whose initial build orders have all reached a terminal filled state (confirmed against the broker)
+- **THEN** the system SHALL report the session as ready for daily rebalancing
+
+#### Scenario: No build orders to wait on
+
+- **WHEN** readiness is evaluated for a session whose initial build placed no orders that need to settle (an all-cash build, or one whose orders already filled — for example under an immediate-fill broker)
+- **THEN** the system SHALL report the session as ready immediately
+
+#### Scenario: Terminal non-filled build order does not strand the session
+
+- **WHEN** readiness is evaluated for a session whose initial build orders have all reached a terminal state, some filled and any remainder cancelled or rejected
+- **THEN** the system SHALL NOT keep the session deferred on account of the non-filled orders and SHALL report it as ready
+
+#### Scenario: Manual rebalance is not deferred
+
+- **WHEN** a rebalance is requested manually for a session whose initial build orders have not yet filled
+- **THEN** the readiness gate SHALL NOT block the manual rebalance
 
 ### Requirement: Execution guarded by market status
 

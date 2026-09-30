@@ -25,6 +25,7 @@ from cadence.ai_portfolio.agent import (
     AIPortfolioStock,
     AIRebalanceResult,
     AITargetAllocation,
+    GuardrailInstruction,
     PositionSide,
     _build_portfolio_input,
     _build_rebalance_input,
@@ -141,6 +142,26 @@ def test_build_portfolio_input_reflects_universe_and_risk() -> None:
     assert "AAPL" in prompt
 
 
+def test_build_portfolio_input_includes_guardrails_when_enabled() -> None:
+    guardrails = GuardrailInstruction(
+        max_per_asset=0.25,
+        max_per_class=0.6,
+        min_positions=5,
+        max_invested=0.9,
+    )
+    prompt = _build_portfolio_input([{"ticker": "AAPL"}], "balanced", guardrails)
+    assert "Risk guardrails" in prompt
+    assert "25%" in prompt  # max per asset
+    assert "60%" in prompt  # max per class
+    assert "5" in prompt  # min positions
+    assert "90%" in prompt  # max invested
+
+
+def test_build_portfolio_input_omits_guardrails_when_absent() -> None:
+    prompt = _build_portfolio_input([{"ticker": "AAPL"}], "balanced")
+    assert "Risk guardrails" not in prompt
+
+
 def _load_seed_migration() -> ModuleType:
     """Load the seed migration module by path to read its embedded seed text."""
     path = (
@@ -185,6 +206,40 @@ def test_build_rebalance_input_renders_template_sections() -> None:
     assert '"ticker": "MSFT"' in prompt
     assert "{" + "risk_profile" + "}" not in prompt
     assert "{holdings_json}" not in prompt
+
+
+def test_build_rebalance_input_includes_guardrails_when_enabled() -> None:
+    template = _load_seed_migration()._SEED_INPUT_TEMPLATE
+    guardrails = GuardrailInstruction(
+        max_per_asset=0.2,
+        max_per_class=0.5,
+        min_positions=4,
+        max_invested=0.95,
+    )
+    prompt = _build_rebalance_input(
+        template,
+        holdings=[{"ticker": "AAPL"}],
+        account_summary={"cash_available": 1000},
+        candidates=[{"ticker": "MSFT"}],
+        risk_profile="balanced",
+        guardrails=guardrails,
+    )
+    assert "Risk guardrails" in prompt
+    assert "20%" in prompt
+    assert "50%" in prompt
+    assert "95%" in prompt
+
+
+def test_build_rebalance_input_omits_guardrails_when_absent() -> None:
+    template = _load_seed_migration()._SEED_INPUT_TEMPLATE
+    prompt = _build_rebalance_input(
+        template,
+        holdings=[{"ticker": "AAPL"}],
+        account_summary={"cash_available": 1000},
+        candidates=[{"ticker": "MSFT"}],
+        risk_profile="balanced",
+    )
+    assert "Risk guardrails" not in prompt
 
 
 def test_seeded_rebalance_prompt_matches_legacy_output() -> None:

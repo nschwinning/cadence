@@ -192,11 +192,13 @@ class FakeAIPortfolioAgent:
         self,
         candidates: list[dict[str, Any]],
         risk_profile: str,
+        guardrails: Any = None,
     ) -> AIPortfolioBuildResult:
         self.build_calls.append(
             {
                 "candidates": candidates,
                 "risk_profile": risk_profile,
+                "guardrails": guardrails,
             }
         )
         self._emit_research()
@@ -213,6 +215,7 @@ class FakeAIPortfolioAgent:
         risk_profile: str = "balanced",
         instructions: str = "",
         input_template: str = "",
+        guardrails: Any = None,
     ) -> AIRebalanceResult:
         self.rebalance_calls.append(
             {
@@ -222,6 +225,7 @@ class FakeAIPortfolioAgent:
                 "risk_profile": risk_profile,
                 "instructions": instructions,
                 "input_template": input_template,
+                "guardrails": guardrails,
             }
         )
         self._emit_research()

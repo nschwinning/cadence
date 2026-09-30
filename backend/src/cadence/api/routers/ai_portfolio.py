@@ -40,6 +40,7 @@ from cadence.api.schemas import (
     AIDailySnapshotResponse,
     AIPortfolioBuildRequest,
     AIPortfolioBuildResponse,
+    AIPortfolioEventListResponse,
     AIPortfolioEventRead,
     AIPortfolioRunDetail,
     AIPortfolioRunListResponse,
@@ -130,6 +131,11 @@ def build_ai_portfolio_endpoint(
         use_technical_indicators=payload.use_technical_indicators,
         stop_loss_enabled=payload.stop_loss_enabled,
         stop_loss_pct=payload.stop_loss_pct,
+        risk_guardrails_enabled=payload.risk_guardrails_enabled,
+        max_allocation_pct=payload.max_allocation_pct,
+        max_asset_class_pct=payload.max_asset_class_pct,
+        min_positions=payload.min_positions,
+        max_invested_pct=payload.max_invested_pct,
     )
     try:
         event = job_runner.start_build(db, params, agent, broker, provider)
@@ -239,10 +245,15 @@ def rebalance_daily(
     """Rebalance every active session enrolled in daily rebalancing.
 
     Guarded by the ``X-Cron-Token`` header. Each enrolled session's rebalance runs
-    as a background job; sessions already rebalancing are skipped. A ``notifier``
-    is threaded to each job so executed rebalances (and failures) are pushed —
-    this is what distinguishes the daily path from the silent manual trigger.
+    as a background job; sessions already rebalancing are skipped. A freshly-built
+    session whose initial build orders have not yet filled is deferred — rebalancing
+    it against a not-yet-real position state would trade on unsettled holdings — and
+    picked up by a later trigger once its orders settle. A ``notifier`` is threaded
+    to each job so executed rebalances (and failures) are pushed — this is what
+    distinguishes the daily path from the silent manual trigger.
     """
+    from cadence.ai_portfolio import service as ai_service
+
     sessions = paper_service.list_sessions(db, status=SessionStatus.ACTIVE, limit=500)
     targets = [
         s
@@ -253,7 +264,11 @@ def rebalance_daily(
 
     triggered: list[uuid.UUID] = []
     skipped: list[uuid.UUID] = []
+    deferred: list[uuid.UUID] = []
     for session_row in targets:
+        if not ai_service.build_orders_settled(db, broker, session_row):
+            deferred.append(session_row.id)
+            continue
         _event, started = job_runner.start_rebalance(
             db, session_row.id, agent, broker, provider, notifier=notifier
         )
@@ -266,6 +281,7 @@ def rebalance_daily(
         sessions_triggered=len(triggered),
         session_ids=triggered,
         skipped_already_running=skipped,
+        skipped_awaiting_build_fill=deferred,
     )
 
 
@@ -380,20 +396,25 @@ def fetch_benchmarks(
 
 @router.get(
     "/sessions/{session_id}/events",
-    response_model=list[AIPortfolioEventRead],
+    response_model=AIPortfolioEventListResponse,
 )
 def list_session_events(
     session_id: uuid.UUID,
     db: DbSession,
     limit: Annotated[int, Query(ge=1, le=100)] = 20,
-) -> list[AIPortfolioEventRead]:
-    """Return a session's AI events (build + rebalances), newest first."""
+    offset: Annotated[int, Query(ge=0)] = 0,
+) -> AIPortfolioEventListResponse:
+    """Return a page of a session's AI events (build + rebalances), newest first."""
     from cadence.ai_portfolio import service as ai_service
 
-    return [
-        AIPortfolioEventRead.model_validate(event)
-        for event in ai_service.list_session_events(db, session_id, limit=limit)
-    ]
+    events = ai_service.list_session_events(
+        db, session_id, limit=limit, offset=offset
+    )
+    total = ai_service.count_session_events(db, session_id)
+    return AIPortfolioEventListResponse(
+        items=[AIPortfolioEventRead.model_validate(event) for event in events],
+        total=total,
+    )
 
 
 @router.get("/runs", response_model=AIPortfolioRunListResponse)

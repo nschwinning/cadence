@@ -254,6 +254,15 @@ class PaperTradingSessionRead(BaseModel):
     # The per-session stop-loss threshold (fraction, e.g. 0.15 = 15%) frozen at
     # build time; null when the stop-loss is disabled.
     stop_loss_pct: float | None
+    # Whether the session opted into the deterministic risk guardrails (frozen at
+    # build time). False for sessions built before this option existed.
+    risk_guardrails_enabled: bool
+    # The frozen guardrail parameters (fractions, e.g. 0.25 = 25%), null when the
+    # guardrails are disabled. The per-asset cap reuses ``max_allocation_pct``
+    # above (1.0 = no cap when guardrails off).
+    max_asset_class_pct: float | None
+    min_positions: int | None
+    max_invested_pct: float | None
 
 
 class PaperTradingSessionListResponse(BaseModel):
@@ -437,6 +446,13 @@ class PaperTradingSessionKpisRead(BaseModel):
     ``excess_return`` is that excess in absolute terms (net-of-fees dollar gain minus
     the benchmark's dollar gain on the same capital). All three are ``None`` when the
     benchmark has insufficient stored prices.
+
+    ``max_drawdown`` is the largest peak-to-trough decline of the daily NAV series as
+    a non-negative fraction (``None`` without snapshots). ``win_rate`` is the fraction
+    of closed positions with realised P&L > 0; ``average_win``/``average_loss`` the
+    mean realised P&L of winning/losing closed positions; ``best_trade``/``worst_trade``
+    the max/min realised P&L. The trade figures are ``None`` with no closed positions,
+    and a win/loss average is ``None`` when that side has no members.
     """
 
     current_value: float
@@ -450,6 +466,12 @@ class PaperTradingSessionKpisRead(BaseModel):
     benchmark_return_pct: float | None
     excess_return_pct: float | None
     excess_return: float | None
+    max_drawdown: float | None
+    win_rate: float | None
+    average_win: float | None
+    average_loss: float | None
+    best_trade: float | None
+    worst_trade: float | None
 
 
 class AIDailySnapshotResponse(BaseModel):
@@ -557,6 +579,47 @@ class AIPortfolioBuildRequest(BaseModel):
         "stop_loss_enabled is true; defaults to the configured default threshold "
         "when the stop-loss is enabled without an explicit value.",
     )
+    risk_guardrails_enabled: bool = Field(
+        default=False,
+        description="Opt this portfolio into the deterministic risk guardrails "
+        "(frozen at build time). When enabled, both the build and daily rebalances "
+        "clamp/redistribute/scale the AI's target weights to the caps below. "
+        "Defaults to off (opt-in).",
+    )
+    max_allocation_pct: float | None = Field(
+        default=None,
+        gt=0,
+        le=1,
+        description="Maximum fraction of the portfolio any single asset may hold. "
+        "Applies only when risk_guardrails_enabled is true; defaults to the "
+        "configured default when the guardrails are enabled without an explicit "
+        "value.",
+    )
+    max_asset_class_pct: float | None = Field(
+        default=None,
+        gt=0,
+        le=1,
+        description="Maximum fraction of the portfolio any single asset class may "
+        "hold. Applies only when risk_guardrails_enabled is true; defaults to the "
+        "configured default when enabled without an explicit value.",
+    )
+    min_positions: int | None = Field(
+        default=None,
+        ge=1,
+        description="Minimum number of positions the AI is asked to hold (a "
+        "diversification floor; surfaced rather than fabricated when the AI returns "
+        "fewer). Applies only when risk_guardrails_enabled is true; defaults to the "
+        "configured default when enabled without an explicit value.",
+    )
+    max_invested_pct: float | None = Field(
+        default=None,
+        gt=0,
+        le=1,
+        description="Maximum fraction of the allocated capital that may be invested "
+        "(the remainder is held as a cash buffer). Applies only when "
+        "risk_guardrails_enabled is true; defaults to the configured default when "
+        "enabled without an explicit value.",
+    )
 
     @field_validator("asset_types")
     @classmethod
@@ -583,6 +646,32 @@ class AIPortfolioBuildRequest(BaseModel):
             self.stop_loss_pct = None
         return self
 
+    @model_validator(mode="after")
+    def _default_guardrails(self) -> AIPortfolioBuildRequest:
+        """Fill guardrail parameters from configured defaults when enabled.
+
+        When the build opts into the guardrails without explicit parameters, the
+        global ``GUARDRAIL_DEFAULT_*`` values apply. When the guardrails are off,
+        any supplied parameters are dropped so a disabled session never carries them.
+        """
+        if self.risk_guardrails_enabled:
+            if self.max_allocation_pct is None:
+                self.max_allocation_pct = settings.GUARDRAIL_DEFAULT_MAX_ASSET_PCT
+            if self.max_asset_class_pct is None:
+                self.max_asset_class_pct = (
+                    settings.GUARDRAIL_DEFAULT_MAX_ASSET_CLASS_PCT
+                )
+            if self.min_positions is None:
+                self.min_positions = settings.GUARDRAIL_DEFAULT_MIN_POSITIONS
+            if self.max_invested_pct is None:
+                self.max_invested_pct = settings.GUARDRAIL_DEFAULT_MAX_INVESTED_PCT
+        else:
+            self.max_allocation_pct = None
+            self.max_asset_class_pct = None
+            self.min_positions = None
+            self.max_invested_pct = None
+        return self
+
 
 class AIPortfolioBuildResponse(BaseModel):
     """Accepted response for a queued build."""
@@ -605,6 +694,9 @@ class AIDailyRebalanceResponse(BaseModel):
     sessions_triggered: int
     session_ids: list[uuid.UUID] = Field(default_factory=list)
     skipped_already_running: list[uuid.UUID] = Field(default_factory=list)
+    #: Freshly-built sessions deferred because their build orders have not yet
+    #: filled; picked up by a later trigger once they settle.
+    skipped_awaiting_build_fill: list[uuid.UUID] = Field(default_factory=list)
 
 
 class AIPortfolioEventRead(BaseModel):
@@ -632,6 +724,13 @@ class AIPortfolioEventRead(BaseModel):
 
 class AIPortfolioRunListResponse(BaseModel):
     """A page of AI runs (build + rebalance events) plus the matching total."""
+
+    items: list[AIPortfolioEventRead]
+    total: int
+
+
+class AIPortfolioEventListResponse(BaseModel):
+    """A page of a session's AI-portfolio events plus the matching total."""
 
     items: list[AIPortfolioEventRead]
     total: int

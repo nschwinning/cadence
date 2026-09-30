@@ -188,6 +188,30 @@ class PaperTradingSession(Base):
     # time. Meaningful only when ``stop_loss_enabled`` is true; nullable because a
     # disabled session has no threshold (and pre-existing rows have none).
     stop_loss_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # Whether this session opts into the deterministic portfolio risk guardrails,
+    # chosen at build time and frozen for the session's lifetime (like the stop-loss
+    # opt-in). When true, both build and rebalance clamp/redistribute/scale the AI's
+    # target-weight vector so no asset exceeds ``max_allocation_pct``, no asset class
+    # exceeds ``max_asset_class_pct``, and the invested fraction does not exceed
+    # ``max_invested_pct`` (remainder held as cash). The per-asset cap reuses the
+    # existing ``max_allocation_pct`` column (kept at 1.0 = no cap when disabled).
+    # Non-nullable and defaults to false (opt-in); backfilled to false for pre-existing
+    # sessions by the migration, so already-built sessions keep their prior behavior.
+    risk_guardrails_enabled: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="false"
+    )
+    # The maximum fraction of the portfolio any single asset class may hold, frozen at
+    # build time. Meaningful only when ``risk_guardrails_enabled`` is true; nullable
+    # because a disabled session has no cap (and pre-existing rows have none).
+    max_asset_class_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # The minimum number of positions the AI is asked to hold, frozen at build time.
+    # Surfaced/logged rather than fabricated when the AI returns fewer names. Meaningful
+    # only when ``risk_guardrails_enabled`` is true; nullable (disabled/pre-existing).
+    min_positions: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # The maximum fraction of the allocated capital that may be invested (the remainder
+    # is held as a cash buffer), frozen at build time. Meaningful only when
+    # ``risk_guardrails_enabled`` is true; nullable (disabled/pre-existing rows).
+    max_invested_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
 
     trades: Mapped[list[PaperTrade]] = relationship(
         back_populates="session",

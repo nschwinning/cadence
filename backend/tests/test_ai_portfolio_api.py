@@ -273,6 +273,104 @@ def test_build_request_rejects_out_of_range_stop_loss_threshold() -> None:
         )
 
 
+def test_build_request_defaults_guardrail_params_when_enabled() -> None:
+    from cadence.api.schemas import AIPortfolioBuildRequest
+
+    req = AIPortfolioBuildRequest(
+        allocated_capital=100_000, risk_guardrails_enabled=True
+    )
+    assert req.max_allocation_pct == settings.GUARDRAIL_DEFAULT_MAX_ASSET_PCT
+    assert req.max_asset_class_pct == settings.GUARDRAIL_DEFAULT_MAX_ASSET_CLASS_PCT
+    assert req.min_positions == settings.GUARDRAIL_DEFAULT_MIN_POSITIONS
+    assert req.max_invested_pct == settings.GUARDRAIL_DEFAULT_MAX_INVESTED_PCT
+
+
+def test_build_request_keeps_explicit_guardrail_params() -> None:
+    from cadence.api.schemas import AIPortfolioBuildRequest
+
+    req = AIPortfolioBuildRequest(
+        allocated_capital=100_000,
+        risk_guardrails_enabled=True,
+        max_allocation_pct=0.2,
+        max_asset_class_pct=0.5,
+        min_positions=8,
+        max_invested_pct=0.8,
+    )
+    assert req.max_allocation_pct == 0.2
+    assert req.max_asset_class_pct == 0.5
+    assert req.min_positions == 8
+    assert req.max_invested_pct == 0.8
+
+
+def test_build_request_clears_guardrail_params_when_disabled() -> None:
+    from cadence.api.schemas import AIPortfolioBuildRequest
+
+    req = AIPortfolioBuildRequest(
+        allocated_capital=100_000,
+        risk_guardrails_enabled=False,
+        max_allocation_pct=0.2,
+        max_asset_class_pct=0.5,
+        min_positions=8,
+        max_invested_pct=0.8,
+    )
+    assert req.max_allocation_pct is None
+    assert req.max_asset_class_pct is None
+    assert req.min_positions is None
+    assert req.max_invested_pct is None
+
+
+def test_build_request_rejects_out_of_range_guardrail_params() -> None:
+    from pydantic import ValidationError
+
+    from cadence.api.schemas import AIPortfolioBuildRequest
+
+    with pytest.raises(ValidationError):
+        AIPortfolioBuildRequest(
+            allocated_capital=100_000,
+            risk_guardrails_enabled=True,
+            max_allocation_pct=1.5,
+        )
+    with pytest.raises(ValidationError):
+        AIPortfolioBuildRequest(
+            allocated_capital=100_000,
+            risk_guardrails_enabled=True,
+            min_positions=0,
+        )
+
+
+def test_build_persists_guardrail_opt_in_via_api(
+    client: TestClient, db_session: Session
+) -> None:
+    executor = ManualExecutor(run_immediately=True)
+    _seed_universe(db_session, _provider())
+    _wire(db_session, executor)
+
+    resp = client.post(
+        "/api/v1/ai-portfolio/build",
+        json={
+            "allocated_capital": 100000,
+            "risk_guardrails_enabled": True,
+            "max_allocation_pct": 0.3,
+            "max_asset_class_pct": 0.5,
+            "min_positions": 4,
+            "max_invested_pct": 0.85,
+        },
+    )
+    assert resp.status_code == 202
+    executor.run_pending()
+    event_id = resp.json()["event_id"]
+    session_id = client.get(
+        f"/api/v1/ai-portfolio/build/status/{event_id}"
+    ).json()["session_id"]
+
+    session = paper_service.get_session(db_session, uuid.UUID(session_id))
+    assert session.risk_guardrails_enabled is True
+    assert session.max_allocation_pct == 0.3
+    assert session.max_asset_class_pct == 0.5
+    assert session.min_positions == 4
+    assert session.max_invested_pct == 0.85
+
+
 def test_build_persists_stop_loss_opt_in_via_api(
     client: TestClient, db_session: Session
 ) -> None:
@@ -340,8 +438,32 @@ def test_session_rebalance_and_events_listing(
 
     events = client.get(f"/api/v1/ai-portfolio/sessions/{session_id}/events")
     assert events.status_code == 200
-    types = {e["event_type"] for e in events.json()}
+    body = events.json()
+    # The events read is wrapped {items, total} like the other session lists.
+    assert body["total"] >= 2  # at least the build + rebalance events
+    types = {e["event_type"] for e in body["items"]}
     assert "rebalance" in types
+
+    # Pagination: one row per page, offset advances the window, total is stable.
+    first = client.get(
+        f"/api/v1/ai-portfolio/sessions/{session_id}/events",
+        params={"limit": 1, "offset": 0},
+    ).json()
+    second = client.get(
+        f"/api/v1/ai-portfolio/sessions/{session_id}/events",
+        params={"limit": 1, "offset": 1},
+    ).json()
+    assert first["total"] == second["total"] == body["total"]
+    assert len(first["items"]) == len(second["items"]) == 1
+    assert first["items"][0]["id"] != second["items"][0]["id"]
+
+    # Offset past the end -> empty page, true total preserved.
+    beyond = client.get(
+        f"/api/v1/ai-portfolio/sessions/{session_id}/events",
+        params={"limit": 1, "offset": 999},
+    ).json()
+    assert beyond["total"] == body["total"]
+    assert beyond["items"] == []
 
 
 def test_session_rebalance_skips_when_already_running(
@@ -558,6 +680,85 @@ def test_rebalance_daily_fans_out_to_enrolled_sessions(
     body = resp.json()
     assert body["sessions_triggered"] == 1
     assert session_id in body["session_ids"]
+
+
+def _mark_build_orders_unfilled(db_session: Session, session_id: str) -> None:
+    """Flip a session's recorded build orders back to a non-terminal status."""
+    trades = paper_service.get_session_trades(
+        db_session, uuid.UUID(session_id), limit=100
+    )
+    for trade in trades:
+        trade.order_status = OrderStatus.SUBMITTED.value
+    db_session.commit()
+
+
+def test_rebalance_daily_defers_session_with_unfilled_build_orders(
+    client: TestClient, db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(settings, "REBALANCE_CRON_TOKEN", "secret")
+    executor = ManualExecutor(run_immediately=True)
+    _seed_universe(db_session, _provider())
+    _wire(db_session, executor)
+    session_id = _build_session(client, executor)
+    _mark_build_orders_unfilled(db_session, session_id)
+
+    # The broker still reports the build orders as unknown/unsettled, so the
+    # freshly-built session must be deferred rather than rebalanced.
+    app.dependency_overrides[get_broker] = lambda: _ReconcileBroker({})
+    resp = client.post(
+        "/api/v1/ai-portfolio/rebalance-daily",
+        headers={"X-Cron-Token": "secret"},
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["sessions_triggered"] == 0
+    assert session_id not in body["session_ids"]
+    assert session_id in body["skipped_awaiting_build_fill"]
+
+
+def test_rebalance_daily_includes_session_once_build_orders_fill(
+    client: TestClient, db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(settings, "REBALANCE_CRON_TOKEN", "secret")
+    executor = ManualExecutor(run_immediately=True)
+    _seed_universe(db_session, _provider())
+    _, shared_broker = _wire(db_session, executor)
+    session_id = _build_session(client, executor)
+    _mark_build_orders_unfilled(db_session, session_id)
+
+    # First run: orders unsettled at the broker -> deferred.
+    app.dependency_overrides[get_broker] = lambda: _ReconcileBroker({})
+    first = client.post(
+        "/api/v1/ai-portfolio/rebalance-daily",
+        headers={"X-Cron-Token": "secret"},
+    ).json()
+    assert session_id in first["skipped_awaiting_build_fill"]
+    assert first["sessions_triggered"] == 0
+
+    # Orders fill: the build broker still holds them as FILLED, so reconciliation
+    # at the next trigger clears the gate and the session is included.
+    app.dependency_overrides[get_broker] = lambda: shared_broker
+    second = client.post(
+        "/api/v1/ai-portfolio/rebalance-daily",
+        headers={"X-Cron-Token": "secret"},
+    ).json()
+    assert session_id in second["session_ids"]
+    assert session_id not in second["skipped_awaiting_build_fill"]
+
+
+def test_manual_rebalance_not_deferred_by_unfilled_build_orders(
+    client: TestClient, db_session: Session
+) -> None:
+    executor = ManualExecutor()
+    _seed_universe(db_session, _provider())
+    _wire(db_session, executor)
+    session_id = _build_session(client, executor)
+    _mark_build_orders_unfilled(db_session, session_id)
+
+    # The readiness gate governs only the daily cron; a manual rebalance proceeds.
+    resp = client.post(f"/api/v1/ai-portfolio/sessions/{session_id}/rebalance")
+    assert resp.status_code == 200
+    assert resp.json()["started"] is True
 
 
 def test_reconcile_daily_rejects_without_token(

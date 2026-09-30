@@ -161,6 +161,10 @@ describe('useChangeSessionBenchmark', () => {
       use_technical_indicators: false,
       stop_loss_enabled: false,
       stop_loss_pct: null,
+      risk_guardrails_enabled: false,
+      max_asset_class_pct: null,
+      min_positions: null,
+      max_invested_pct: null,
     };
   }
 
@@ -293,7 +297,7 @@ describe('useSessionOrderSync polling', () => {
 
     await vi.advanceTimersByTimeAsync(0);
     expect(invalidate).toHaveBeenCalledWith({
-      queryKey: paperTradingKeys.trades('sess-1'),
+      queryKey: paperTradingKeys.tradesPrefix('sess-1'),
     });
   });
 });

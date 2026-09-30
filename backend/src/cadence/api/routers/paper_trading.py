@@ -184,12 +184,15 @@ def list_session_trades(
     session_id: uuid.UUID,
     db: DbSession,
     limit: int = 100,
+    offset: Annotated[int, Query(ge=0)] = 0,
 ) -> PaperTradeListResponse:
     """Return a session's trades, most recent first."""
     _require_session(db, session_id)
     items = [
         PaperTradeRead.model_validate(row)
-        for row in service.get_session_trades(db, session_id, limit=limit)
+        for row in service.get_session_trades(
+            db, session_id, limit=limit, offset=offset
+        )
     ]
     total = service.count_session_trades(db, session_id)
     return PaperTradeListResponse(items=items, total=total)
@@ -200,12 +203,15 @@ def list_session_runs(
     session_id: uuid.UUID,
     db: DbSession,
     limit: int = 50,
+    offset: Annotated[int, Query(ge=0)] = 0,
 ) -> SessionRunListResponse:
     """Return a session's run history, most recent first."""
     _require_session(db, session_id)
     items = [
         SessionRunRead.model_validate(row)
-        for row in service.get_session_runs(db, session_id, limit=limit)
+        for row in service.get_session_runs(
+            db, session_id, limit=limit, offset=offset
+        )
     ]
     total = service.count_session_runs(db, session_id)
     return SessionRunListResponse(items=items, total=total)
@@ -219,12 +225,15 @@ def list_session_positions(
     session_id: uuid.UUID,
     db: DbSession,
     limit: int = 100,
+    offset: Annotated[int, Query(ge=0)] = 0,
 ) -> ClosedPositionListResponse:
     """Return a session's closed positions, most recently exited first."""
     _require_session(db, session_id)
     items = [
         ClosedPositionRead.model_validate(row)
-        for row in service.get_closed_positions(db, session_id, limit=limit)
+        for row in service.get_closed_positions(
+            db, session_id, limit=limit, offset=offset
+        )
     ]
     total = service.count_closed_positions(db, session_id)
     return ClosedPositionListResponse(items=items, total=total)
@@ -261,6 +270,12 @@ def get_session_kpis(
         benchmark_return_pct=kpis.benchmark_return_pct,
         excess_return_pct=kpis.excess_return_pct,
         excess_return=kpis.excess_return,
+        max_drawdown=kpis.max_drawdown,
+        win_rate=kpis.win_rate,
+        average_win=kpis.average_win,
+        average_loss=kpis.average_loss,
+        best_trade=kpis.best_trade,
+        worst_trade=kpis.worst_trade,
     )
 
 

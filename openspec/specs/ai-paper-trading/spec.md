@@ -26,7 +26,7 @@ The system SHALL access the brokerage through a single abstraction exposing acco
 
 ### Requirement: Build an AI portfolio and execute it as paper trades
 
-The system SHALL accept a request to build an AI portfolio over the current asset universe and an amount of capital to allocate, with options for risk profile, whether the portfolio is enrolled in daily rebalancing, an **asset scope** selecting which asset types the portfolio may hold: stocks only, crypto only, or both, whether the portfolio **uses the technical-indicator trend strategy** (an opt-in that defaults to off when not specified), whether the portfolio **enables an automatic hard stop-loss** (an opt-in that defaults to off when not specified) together with a **stop-loss threshold percentage** (defaulting to a configured default when the stop-loss is enabled without an explicit threshold), and an optional **benchmark index** (from the fixed benchmark catalog) the session's performance is compared against. The asset scope SHALL default to both (the whole supported universe) when not specified, the allocated capital SHALL default to a configured default amount, and the benchmark SHALL default to a configured default benchmark (S&P 500) when not specified. A benchmark selection outside the catalog SHALL be rejected. The request SHALL NOT accept a candidate ticker list or per-position allocation caps. The AI SHALL be given as candidates every asset in the universe **whose category is within the selected asset scope** (enriched with name, sector, category, and eligibility). **When the session opts into the technical-indicator trend strategy**, the candidate set SHALL additionally be restricted to assets whose latest stored technical-indicator snapshot passes the deterministic uptrend trend gate — a candidate whose gate does not pass, or that has no stored snapshot, SHALL be dropped and SHALL NOT be presented to the AI, so that a portfolio is only ever initialised with assets in a confirmed uptrend — and the surviving candidates SHALL be annotated with their trend indicators. **When the session does not opt in, no trend gate SHALL be applied and every in-scope candidate SHALL be presented to the AI without indicator annotations.** The AI MAY research and propose assets not currently in the universe (discovery is always enabled), and SHALL produce long-only target holdings whose allocations are fractions in [0, 1] that sum to approximately 1.0 (an allocation of ~0 excludes a holding). Newly discovered tickers SHALL be added to the universe on a best-effort basis, bounded by a configured maximum number of new assets per run, **and a discovered asset whose category falls outside the selected asset scope SHALL be rejected — not added and not traded**, and — **only when the session opted into the trend strategy** — a discovered asset that does not pass the trend gate SHALL likewise be excluded from the candidate set; if an in-scope add fails the ticker SHALL still be eligible for the portfolio. The selected asset scope SHALL be persisted with the session so that later automated rebalances honour the same scope. The selected technical-indicator opt-in SHALL be persisted (frozen) with the session so that later automated rebalances apply the same choice; a session with no persisted opt-in (for example one built before this option existed) SHALL be treated as opted out. The selected stop-loss opt-in and, when enabled, its threshold percentage SHALL be persisted (frozen) with the session so the automatic stop-loss applies for the session's lifetime; a session with no persisted stop-loss setting (for example one built before this option existed) SHALL be treated as having the stop-loss disabled. The selected benchmark SHALL be persisted with the session so the session can be compared against that benchmark over its lifetime. The request SHALL be processed in the background and SHALL return immediately with an event identifier for polling. Execution SHALL: ask the AI for target holdings and allocations, create a portfolio **with a generated distinct name** and a paper-trading session, size each position from the allocated capital and a current quote, submit the corresponding buy orders through the brokerage, and record each executed trade and a run summary. The generated portfolio name SHALL be human-friendly and SHALL be distinct from the names of existing portfolios, so that portfolios and their sessions can be told apart; the name MAY reflect the selected risk profile. The AI's research SHALL be cost-bounded per run by a configured maximum number of reasoning turns and a hard cap on the number of web searches.
+The system SHALL accept a request to build an AI portfolio over the current asset universe and an amount of capital to allocate, with options for risk profile, whether the portfolio is enrolled in daily rebalancing, an **asset scope** selecting which asset types the portfolio may hold: stocks only, crypto only, or both, whether the portfolio **uses the technical-indicator trend strategy** (an opt-in that defaults to off when not specified), whether the portfolio **enables an automatic hard stop-loss** (an opt-in that defaults to off when not specified) together with a **stop-loss threshold percentage** (defaulting to a configured default when the stop-loss is enabled without an explicit threshold), whether the portfolio **enables portfolio risk guardrails** (an opt-in that defaults to off when not specified) together with the guardrail parameters — a **maximum percentage per asset**, a **maximum percentage per asset class**, a **minimum number of positions**, and a **maximum invested percentage** (cash buffer) — each defaulting to a configured default when the guardrails are enabled without an explicit value, and an optional **benchmark index** (from the fixed benchmark catalog) the session's performance is compared against. The asset scope SHALL default to both (the whole supported universe) when not specified, the allocated capital SHALL default to a configured default amount, and the benchmark SHALL default to a configured default benchmark (S&P 500) when not specified. A benchmark selection outside the catalog SHALL be rejected. The request SHALL NOT accept a candidate ticker list. The request MAY carry the guardrail parameters described above; it SHALL NOT accept any other per-position allocation cap. The AI SHALL be given as candidates every asset in the universe **whose category is within the selected asset scope** (enriched with name, sector, category, and eligibility). **When the session opts into the technical-indicator trend strategy**, the candidate set SHALL additionally be restricted to assets whose latest stored technical-indicator snapshot passes the deterministic uptrend trend gate — a candidate whose gate does not pass, or that has no stored snapshot, SHALL be dropped and SHALL NOT be presented to the AI, so that a portfolio is only ever initialised with assets in a confirmed uptrend — and the surviving candidates SHALL be annotated with their trend indicators. **When the session does not opt in, no trend gate SHALL be applied and every in-scope candidate SHALL be presented to the AI without indicator annotations.** The AI MAY research and propose assets not currently in the universe (discovery is always enabled), and SHALL produce long-only target holdings whose allocations are fractions in [0, 1] that sum to approximately 1.0 (an allocation of ~0 excludes a holding). Newly discovered tickers SHALL be added to the universe on a best-effort basis, bounded by a configured maximum number of new assets per run, **and a discovered asset whose category falls outside the selected asset scope SHALL be rejected — not added and not traded**, and — **only when the session opted into the trend strategy** — a discovered asset that does not pass the trend gate SHALL likewise be excluded from the candidate set; if an in-scope add fails the ticker SHALL still be eligible for the portfolio. **When the session opted into the risk guardrails, the AI SHALL additionally be told the guardrail caps (maximum per asset, maximum per asset class, minimum number of positions, and maximum invested percentage) so it can plan within them.** The selected asset scope SHALL be persisted with the session so that later automated rebalances honour the same scope. The selected technical-indicator opt-in SHALL be persisted (frozen) with the session so that later automated rebalances apply the same choice; a session with no persisted opt-in (for example one built before this option existed) SHALL be treated as opted out. The selected stop-loss opt-in and, when enabled, its threshold percentage SHALL be persisted (frozen) with the session so the automatic stop-loss applies for the session's lifetime; a session with no persisted stop-loss setting (for example one built before this option existed) SHALL be treated as having the stop-loss disabled. The selected risk-guardrail opt-in and, when enabled, its parameters (maximum per asset, maximum per asset class, minimum number of positions, maximum invested percentage) SHALL be persisted (frozen) with the session so the same guardrails apply for the session's lifetime; a session with no persisted guardrail setting (for example one built before this option existed) SHALL be treated as having the guardrails disabled. The selected benchmark SHALL be persisted with the session so the session can be compared against that benchmark over its lifetime. The request SHALL be processed in the background and SHALL return immediately with an event identifier for polling. Execution SHALL: ask the AI for target holdings and allocations, create a portfolio **with a generated distinct name** and a paper-trading session, **when the guardrails are enabled deterministically enforce them on the target-weight vector before sizing** so that no single holding exceeds the maximum-per-asset cap, no asset class exceeds the maximum-per-class cap, and the total invested fraction does not exceed the maximum invested percentage (the remainder held as cash) — excess weight removed by a per-asset or per-class cap SHALL be redistributed proportionally to the holdings still below their caps, and when the caps cannot absorb the full capital the shortfall SHALL remain as cash — size each position from the allocated capital and a current quote, submit the corresponding buy orders through the brokerage, and record each executed trade and a run summary. The deterministic guardrail enforcement is the guarantee; the caps given to the AI are advisory only. The minimum-number-of-positions guardrail SHALL NOT be enforced by fabricating holdings the AI did not pick: it is applied as the AI instruction above plus the diversification floor implied by the maximum-per-asset cap, and when the AI returns fewer holdings than the configured minimum the shortfall SHALL be recorded as a guardrail observation on the run rather than causing the build to fail. The generated portfolio name SHALL be human-friendly and SHALL be distinct from the names of existing portfolios, so that portfolios and their sessions can be told apart; the name MAY reflect the selected risk profile. The AI's research SHALL be cost-bounded per run by a configured maximum number of reasoning turns and a hard cap on the number of web searches.
 
 #### Scenario: Queue a build
 
@@ -72,6 +72,36 @@ The system SHALL accept a request to build an AI portfolio over the current asse
 
 - **WHEN** a client requests a build enabling the stop-loss, optionally with a threshold percentage
 - **THEN** the system SHALL persist the stop-loss as enabled on the created session, using the given threshold or the configured default when none is given
+
+#### Scenario: Guardrails disabled by default
+
+- **WHEN** a client requests a build without enabling the risk guardrails
+- **THEN** the system SHALL persist the session with the risk guardrails disabled and SHALL apply no allocation caps during the build
+
+#### Scenario: Build persists the guardrail settings
+
+- **WHEN** a client requests a build enabling the risk guardrails, optionally with parameters
+- **THEN** the system SHALL persist the guardrails as enabled on the created session, using the given maximum-per-asset, maximum-per-class, minimum-positions, and maximum-invested values or the configured defaults when any is not given
+
+#### Scenario: Build clamps an over-cap holding
+
+- **WHEN** a build with guardrails enabled receives AI target allocations in which a single holding exceeds the maximum-per-asset cap
+- **THEN** the system SHALL reduce that holding to the cap and redistribute the excess weight to the remaining holdings still below their caps before sizing the positions
+
+#### Scenario: Build caps an over-concentrated asset class
+
+- **WHEN** a build with guardrails enabled receives AI target allocations whose combined weight in one asset class exceeds the maximum-per-class cap
+- **THEN** the system SHALL reduce that class's combined weight to the cap and redistribute the excess to holdings in other classes still below their caps before sizing
+
+#### Scenario: Build holds back a cash buffer
+
+- **WHEN** a build with guardrails enabled has a maximum invested percentage below 100%
+- **THEN** the system SHALL scale the target weights so the total invested does not exceed the maximum invested percentage and SHALL leave the remainder as cash
+
+#### Scenario: Build records a minimum-positions shortfall without fabricating holdings
+
+- **WHEN** a build with guardrails enabled receives AI target allocations containing fewer holdings than the configured minimum number of positions
+- **THEN** the system SHALL NOT invent additional holdings and SHALL record the shortfall as a guardrail observation on the run while completing the build with the AI's holdings (after clamping)
 
 #### Scenario: Scope restricts the candidate universe
 
@@ -138,7 +168,9 @@ The system SHALL persist, per paper-trading session, the executed trades (ticker
 
 ### Requirement: Read paper-trading session data
 
-The system SHALL let a client list paper-trading sessions and read a session's trades, runs, positions, its AI-portfolio events, and its daily portfolio-value snapshots. A session returned to a client SHALL include the name of the portfolio it trades so the client can identify the session by portfolio; when the portfolio cannot be resolved the name SHALL be absent (null) rather than causing an error. A session returned to a client SHALL include the benchmark it is compared against. A session returned to a client SHALL include its stop-loss configuration: whether the automatic stop-loss is enabled and, when enabled, its threshold percentage. An AI-portfolio event returned to a client SHALL include the AI's reasoning output and its persisted research transcript. A trade or closed position returned to a client SHALL include the reference to the AI-portfolio event that produced it, when present. A session's value history SHALL be returned ordered oldest snapshot first, and each snapshot in the returned history SHALL carry the value of a buy-and-hold of the session's allocated capital in the session's benchmark as of that snapshot's date, derived from the stored benchmark price series and rebased so the benchmark equals the allocated capital on the session's first snapshot date. When the benchmark has no stored price on or before a snapshot's date, that snapshot's benchmark value SHALL be absent (null) rather than causing an error.
+The system SHALL let a client list paper-trading sessions and read a session's trades, runs, positions, its AI-portfolio events, and its daily portfolio-value snapshots. A session returned to a client SHALL include the name of the portfolio it trades so the client can identify the session by portfolio; when the portfolio cannot be resolved the name SHALL be absent (null) rather than causing an error. A session returned to a client SHALL include the benchmark it is compared against. A session returned to a client SHALL include its stop-loss configuration: whether the automatic stop-loss is enabled and, when enabled, its threshold percentage. A session returned to a client SHALL include its risk-guardrail configuration: whether the risk guardrails are enabled and, when enabled, the maximum percentage per asset, the maximum percentage per asset class, the minimum number of positions, and the maximum invested percentage. An AI-portfolio event returned to a client SHALL include the AI's reasoning output and its persisted research transcript. A trade or closed position returned to a client SHALL include the reference to the AI-portfolio event that produced it, when present. A session's value history SHALL be returned ordered oldest snapshot first, and each snapshot in the returned history SHALL carry the value of a buy-and-hold of the session's allocated capital in the session's benchmark as of that snapshot's date, derived from the stored benchmark price series and rebased so the benchmark equals the allocated capital on the session's first snapshot date. When the benchmark has no stored price on or before a snapshot's date, that snapshot's benchmark value SHALL be absent (null) rather than causing an error.
+
+Each of a session's tabular list reads — its trades, runs, closed positions, and AI-portfolio events — SHALL support paging via a caller-supplied page size (limit) and a zero-based offset, returning at most the page size of rows starting at the offset within the read's existing ordering, together with the total number of rows recorded for that session and list. The AI-portfolio event read SHALL return its rows wrapped together with that total, in the same shape as the trades, runs, and closed-position reads (rather than a bare list without a total). Reads that source data for computed metrics rather than for a table — such as the closed-position profit-and-loss series behind the session KPIs — SHALL remain unpaged.
 
 #### Scenario: Inspect a session
 
@@ -160,10 +192,30 @@ The system SHALL let a client list paper-trading sessions and read a session's t
 - **WHEN** a client lists sessions or reads a single session
 - **THEN** each returned session SHALL include whether its automatic stop-loss is enabled and, when enabled, its threshold percentage
 
+#### Scenario: Session reports its guardrail configuration
+
+- **WHEN** a client lists sessions or reads a single session
+- **THEN** each returned session SHALL include whether its risk guardrails are enabled and, when enabled, the maximum percentage per asset, the maximum percentage per asset class, the minimum number of positions, and the maximum invested percentage
+
 #### Scenario: Event includes reasoning and research
 
 - **WHEN** a client reads an AI-portfolio event
 - **THEN** the returned event SHALL include the AI reasoning output and the persisted research transcript
+
+#### Scenario: Read a page of a session's list
+
+- **WHEN** a client requests a session's trades, runs, closed positions, or AI-portfolio events with a page size and an offset
+- **THEN** the system SHALL return at most that many rows starting at the given offset within the read's existing ordering, together with the total number of rows recorded for that session and list
+
+#### Scenario: Event read reports its total
+
+- **WHEN** a client reads a session's AI-portfolio events
+- **THEN** the response SHALL contain the requested page of events wrapped together with the total number of events recorded for that session
+
+#### Scenario: Offset beyond the end returns an empty page with the true total
+
+- **WHEN** a client requests a page whose offset is at or beyond the number of recorded rows for one of these lists
+- **THEN** the system SHALL return an empty page of rows together with the true total for that session and list
 
 #### Scenario: Read session value history
 
@@ -972,3 +1024,47 @@ The system SHALL provide a read that returns, in a single response, the value hi
 
 - **WHEN** a session in the comparison read has no resolvable portfolio name
 - **THEN** that session's label SHALL be its strategy key rather than an empty value
+
+### Requirement: Session risk and trade-effectiveness KPIs
+
+The per-session KPI read SHALL additionally report a session's maximum drawdown, win rate, average win, average loss, best trade, and worst trade, each computed on read from data already recorded for the session and reported as absent (null) when its inputs are insufficient.
+
+**Maximum drawdown** SHALL be the largest peak-to-trough decline in the session's portfolio value, expressed as a non-negative fraction of the running peak, computed over the session's daily value-snapshot series ordered by date: tracking the running maximum value and the deepest proportional drop below it. It SHALL be reported as absent when the session has no value snapshots, and SHALL be zero when the value series only ever rose (never declined below a prior peak).
+
+**Win rate** SHALL be the fraction of the session's closed positions whose realized profit-and-loss is strictly greater than zero, expressed in [0, 1]. It SHALL be reported as absent when the session has no closed positions.
+
+**Average win** SHALL be the mean realized profit-and-loss of the session's closed positions with realized P&L strictly greater than zero, and **average loss** SHALL be the mean realized profit-and-loss of the session's closed positions with realized P&L strictly less than zero. Average win SHALL be reported as absent when the session has no winning closed positions; average loss SHALL be reported as absent when it has no losing closed positions.
+
+**Best trade** SHALL be the maximum, and **worst trade** the minimum, realized profit-and-loss across the session's closed positions. Both SHALL be reported as absent when the session has no closed positions.
+
+These figures SHALL NOT change how value snapshots or closed positions are recorded, and SHALL require no new stored fields.
+
+#### Scenario: Maximum drawdown from the value series
+
+- **WHEN** the KPIs are read for a session whose daily value snapshots rise to a peak and then decline before partially recovering
+- **THEN** the read SHALL report the maximum drawdown as the deepest peak-to-trough decline expressed as a fraction of the running peak
+
+#### Scenario: Drawdown is zero for a monotonically rising series
+
+- **WHEN** the KPIs are read for a session whose value snapshots never fall below a prior peak
+- **THEN** the read SHALL report a maximum drawdown of zero
+
+#### Scenario: Drawdown absent without snapshots
+
+- **WHEN** the KPIs are read for a session that has no value snapshots
+- **THEN** the read SHALL report the maximum drawdown as absent
+
+#### Scenario: Win rate and trade averages from closed positions
+
+- **WHEN** the KPIs are read for a session with a mix of winning and losing closed positions
+- **THEN** the read SHALL report the win rate as the fraction of closed positions with realized P&L above zero, the average win as the mean realized P&L of the winners, the average loss as the mean realized P&L of the losers, the best trade as the maximum realized P&L, and the worst trade as the minimum realized P&L
+
+#### Scenario: Trade metrics absent without closed positions
+
+- **WHEN** the KPIs are read for a session that has no closed positions
+- **THEN** the read SHALL report win rate, average win, average loss, best trade, and worst trade all as absent
+
+#### Scenario: Average win or average loss absent when one side is empty
+
+- **WHEN** the KPIs are read for a session whose closed positions are all winners (or all losers)
+- **THEN** the read SHALL report a win rate and the populated side's average, and SHALL report the empty side's average (average loss when all winners, or average win when all losers) as absent

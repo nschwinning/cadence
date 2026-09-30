@@ -76,6 +76,10 @@ def create_session(
     use_technical_indicators: bool = False,
     stop_loss_enabled: bool = False,
     stop_loss_pct: float | None = None,
+    risk_guardrails_enabled: bool = False,
+    max_asset_class_pct: float | None = None,
+    min_positions: int | None = None,
+    max_invested_pct: float | None = None,
 ) -> PaperTradingSession:
     """Create a paper-trading session for a ``(portfolio, strategy)`` pair.
 
@@ -87,6 +91,12 @@ def create_session(
     later rebalance reads it back rather than re-deciding. ``stop_loss_enabled``
     and ``stop_loss_pct`` likewise freeze the automatic hard stop-loss opt-in and
     its threshold at build time (default off / no threshold).
+    ``risk_guardrails_enabled`` freezes the opt-in for the deterministic portfolio
+    risk guardrails; when enabled, ``max_allocation_pct`` (per-asset cap),
+    ``max_asset_class_pct``, ``min_positions``, and ``max_invested_pct`` freeze the
+    guardrail parameters. When disabled these params stay None / ``max_allocation_pct``
+    stays its 1.0 no-op default, and every later rebalance reads them back rather
+    than re-deciding.
 
     Raises:
         DuplicateSessionError: if a session already exists for the same
@@ -104,6 +114,10 @@ def create_session(
         use_technical_indicators=use_technical_indicators,
         stop_loss_enabled=stop_loss_enabled,
         stop_loss_pct=stop_loss_pct,
+        risk_guardrails_enabled=risk_guardrails_enabled,
+        max_asset_class_pct=max_asset_class_pct,
+        min_positions=min_positions,
+        max_invested_pct=max_invested_pct,
     )
     session.add(row)
     try:
@@ -309,13 +323,18 @@ def get_session_trades(
     session_id: uuid.UUID,
     *,
     limit: int = 100,
+    offset: int = 0,
 ) -> list[PaperTrade]:
-    """Return a session's trades, most recent first."""
+    """Return a session's trades, most recent first.
+
+    Paginated via ``limit``/``offset`` (pair with :func:`count_session_trades`).
+    """
     stmt = (
         select(PaperTrade)
         .where(PaperTrade.session_id == session_id)
         .order_by(PaperTrade.executed_at.desc(), PaperTrade.id.desc())
         .limit(limit)
+        .offset(offset)
     )
     return list(session.execute(stmt).scalars())
 
@@ -366,13 +385,18 @@ def get_session_runs(
     session_id: uuid.UUID,
     *,
     limit: int = 50,
+    offset: int = 0,
 ) -> list[SessionRun]:
-    """Return a session's run history, most recent first."""
+    """Return a session's run history, most recent first.
+
+    Paginated via ``limit``/``offset`` (pair with :func:`count_session_runs`).
+    """
     stmt = (
         select(SessionRun)
         .where(SessionRun.session_id == session_id)
         .order_by(SessionRun.run_at.desc(), SessionRun.id.desc())
         .limit(limit)
+        .offset(offset)
     )
     return list(session.execute(stmt).scalars())
 
@@ -434,13 +458,26 @@ def get_closed_positions(
     session_id: uuid.UUID,
     *,
     limit: int = 100,
+    offset: int = 0,
 ) -> list[ClosedPosition]:
-    """Return a session's closed positions, most recently exited first."""
+    """Return a session's closed positions, most recently exited first.
+
+    Paginated via ``limit``/``offset`` (pair with :func:`count_closed_positions`).
+    """
     stmt = (
         select(ClosedPosition)
         .where(ClosedPosition.session_id == session_id)
         .order_by(ClosedPosition.exit_date.desc(), ClosedPosition.id.desc())
         .limit(limit)
+        .offset(offset)
+    )
+    return list(session.execute(stmt).scalars())
+
+
+def list_closed_position_pnls(session: Session, session_id: uuid.UUID) -> list[float]:
+    """Return every closed position's realised P&L for a session (unbounded)."""
+    stmt = select(ClosedPosition.realized_pnl).where(
+        ClosedPosition.session_id == session_id
     )
     return list(session.execute(stmt).scalars())
 
@@ -1077,6 +1114,59 @@ def sharpe_ratio(
     return float(mean_excess / stdev * (SHARPE_TRADING_DAYS_PER_YEAR**0.5))
 
 
+def max_drawdown(values: Sequence[float]) -> float | None:
+    """Largest peak-to-trough decline over a date-ordered value series.
+
+    Returns the deepest drop below a running peak as a non-negative fraction of
+    that peak, ``0.0`` for a series that never falls below a prior peak, and
+    ``None`` for an empty series. A non-positive running peak contributes no
+    drawdown (guards the division).
+    """
+    if not values:
+        return None
+    peak = values[0]
+    max_dd = 0.0
+    for value in values:
+        peak = max(peak, value)
+        if peak > 0:
+            drop = (peak - value) / peak
+            max_dd = max(max_dd, drop)
+    return max_dd
+
+
+@dataclass(frozen=True)
+class ClosedPositionStats:
+    """Win-rate and trade-quality figures over closed-position realised P&L.
+
+    ``win_rate`` is the fraction of positions with P&L > 0 (over all positions);
+    ``average_win``/``average_loss`` the mean of the strictly-positive/negative
+    subsets; ``best_trade``/``worst_trade`` the max/min P&L. Each field is
+    ``None`` when its input is empty — all ``None`` with no positions, and a
+    win/loss average ``None`` when that side has no members.
+    """
+
+    win_rate: float | None
+    average_win: float | None
+    average_loss: float | None
+    best_trade: float | None
+    worst_trade: float | None
+
+
+def closed_position_stats(pnls: Sequence[float]) -> ClosedPositionStats:
+    """Compute :class:`ClosedPositionStats` from closed-position realised P&L."""
+    if not pnls:
+        return ClosedPositionStats(None, None, None, None, None)
+    wins = [p for p in pnls if p > 0]
+    losses = [p for p in pnls if p < 0]
+    return ClosedPositionStats(
+        win_rate=len(wins) / len(pnls),
+        average_win=statistics.fmean(wins) if wins else None,
+        average_loss=statistics.fmean(losses) if losses else None,
+        best_trade=max(pnls),
+        worst_trade=min(pnls),
+    )
+
+
 @dataclass(frozen=True)
 class SessionKpis:
     """A session's headline performance KPIs at request time.
@@ -1096,6 +1186,14 @@ class SessionKpis:
     gain minus what a costless buy-and-hold of the benchmark would have gained on the
     same capital. All three are ``None`` when the benchmark has insufficient stored
     prices.
+
+    ``max_drawdown`` is the largest peak-to-trough decline of the daily NAV series
+    as a non-negative fraction (``None`` without snapshots). ``win_rate`` is the
+    fraction of closed positions with realised P&L > 0; ``average_win`` and
+    ``average_loss`` the mean realised P&L of the winning/losing closed positions;
+    ``best_trade`` and ``worst_trade`` the max/min realised P&L. The trade figures
+    are ``None`` when the session has no closed positions, and the win/loss average
+    is ``None`` when that side has no members.
     """
 
     current_value: float
@@ -1109,6 +1207,12 @@ class SessionKpis:
     benchmark_return_pct: float | None
     excess_return_pct: float | None
     excess_return: float | None
+    max_drawdown: float | None
+    win_rate: float | None
+    average_win: float | None
+    average_loss: float | None
+    best_trade: float | None
+    worst_trade: float | None
 
 
 def session_kpis(
@@ -1159,6 +1263,11 @@ def session_kpis(
         excess_return_pct * allocated if excess_return_pct is not None else None
     )
 
+    drawdown = max_drawdown([snap.total_value for snap in snapshots])
+    trade_stats = closed_position_stats(
+        list_closed_position_pnls(session, session_id)
+    )
+
     return SessionKpis(
         current_value=valuation.total_value,
         realised_pnl=session_row.total_pnl,
@@ -1171,4 +1280,10 @@ def session_kpis(
         benchmark_return_pct=benchmark_return_pct,
         excess_return_pct=excess_return_pct,
         excess_return=excess_return,
+        max_drawdown=drawdown,
+        win_rate=trade_stats.win_rate,
+        average_win=trade_stats.average_win,
+        average_loss=trade_stats.average_loss,
+        best_trade=trade_stats.best_trade,
+        worst_trade=trade_stats.worst_trade,
     )

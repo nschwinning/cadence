@@ -53,6 +53,10 @@ const activeSession: PaperTradingSession = {
   use_technical_indicators: false,
   stop_loss_enabled: false,
   stop_loss_pct: null,
+  risk_guardrails_enabled: false,
+  max_asset_class_pct: null,
+  min_positions: null,
+  max_invested_pct: null,
 };
 
 /**

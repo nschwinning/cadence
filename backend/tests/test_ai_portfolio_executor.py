@@ -5,7 +5,11 @@ from __future__ import annotations
 import pytest
 
 from cadence.ai_portfolio.agent import AIPortfolioStock, AITargetAllocation
-from cadence.ai_portfolio.executor import AIPortfolioExecutor
+from cadence.ai_portfolio.executor import (
+    AIPortfolioExecutor,
+    GuardrailCaps,
+    enforce_guardrails,
+)
 from cadence.broker.base import OrderError
 from cadence.broker.models import AssetClass, OrderType, Position, TimeInForce
 from cadence.broker.stub import StubBroker
@@ -360,3 +364,142 @@ def test_execute_close_isolates_per_ticker_failures() -> None:
 def test_position_helper_import_available() -> None:
     # Sanity: the Position model used to size positions is importable.
     assert Position(symbol="X", quantity=0.0, avg_cost=0.0).symbol == "X"
+
+
+# --------------------------------------------------------------------------- #
+# Deterministic risk guardrails (enforce_guardrails + executor seams)
+# --------------------------------------------------------------------------- #
+
+
+def _classes(**kw: AssetClass) -> dict[str, AssetClass]:
+    return dict(kw)
+
+
+def _no_class_caps(max_per_asset: float, max_invested: float = 1.0) -> GuardrailCaps:
+    return GuardrailCaps(
+        max_per_asset=max_per_asset, max_per_class=1.0, max_invested=max_invested
+    )
+
+
+def test_enforce_guardrails_no_caps_is_normalization_only() -> None:
+    w = enforce_guardrails(
+        {"A": 2.0, "B": 2.0},
+        _classes(A=AssetClass.EQUITY, B=AssetClass.EQUITY),
+        GuardrailCaps(max_per_asset=1.0, max_per_class=1.0, max_invested=1.0),
+    )
+    assert w == pytest.approx({"A": 0.5, "B": 0.5})
+
+
+def test_enforce_guardrails_clamps_and_redistributes_per_asset() -> None:
+    # A wants 80%, cap 40% -> A pinned to 40%, excess flows to B and C.
+    w = enforce_guardrails(
+        {"A": 0.8, "B": 0.1, "C": 0.1},
+        _classes(A=AssetClass.EQUITY, B=AssetClass.EQUITY, C=AssetClass.EQUITY),
+        _no_class_caps(0.4),
+    )
+    assert w["A"] == pytest.approx(0.4)
+    assert w["B"] == pytest.approx(0.3)
+    assert w["C"] == pytest.approx(0.3)
+    assert sum(w.values()) == pytest.approx(1.0)
+
+
+def test_enforce_guardrails_caps_asset_class() -> None:
+    # Two crypto names sum to 100% raw; per-class cap 50% shifts half to the equity.
+    w = enforce_guardrails(
+        {"BTC": 0.5, "ETH": 0.5, "AAA": 0.0001},
+        _classes(BTC=AssetClass.CRYPTO, ETH=AssetClass.CRYPTO, AAA=AssetClass.EQUITY),
+        GuardrailCaps(max_per_asset=1.0, max_per_class=0.5, max_invested=1.0),
+    )
+    crypto = w["BTC"] + w["ETH"]
+    assert crypto == pytest.approx(0.5, abs=1e-6)
+    assert w["AAA"] == pytest.approx(0.5, abs=1e-6)
+    assert sum(w.values()) == pytest.approx(1.0)
+
+
+def test_enforce_guardrails_holds_cash_buffer() -> None:
+    w = enforce_guardrails(
+        {"A": 0.5, "B": 0.5},
+        _classes(A=AssetClass.EQUITY, B=AssetClass.EQUITY),
+        GuardrailCaps(max_per_asset=1.0, max_per_class=1.0, max_invested=0.9),
+    )
+    assert sum(w.values()) == pytest.approx(0.9)
+    assert w["A"] == pytest.approx(0.45)
+    assert w["B"] == pytest.approx(0.45)
+
+
+def test_enforce_guardrails_infeasible_caps_leave_cash() -> None:
+    # 2 assets, 30% cap each -> at most 60% investable; the rest stays as cash.
+    w = enforce_guardrails(
+        {"A": 0.5, "B": 0.5},
+        _classes(A=AssetClass.EQUITY, B=AssetClass.EQUITY),
+        _no_class_caps(0.3),
+    )
+    assert w["A"] == pytest.approx(0.3)
+    assert w["B"] == pytest.approx(0.3)
+    assert sum(w.values()) == pytest.approx(0.6)
+
+
+def test_enforce_guardrails_respects_both_caps_at_fixed_point() -> None:
+    # Adversarial: per-asset 0.5, per-class 0.5, three names two of which share a class.
+    classes = _classes(
+        BTC=AssetClass.CRYPTO, ETH=AssetClass.CRYPTO, AAA=AssetClass.EQUITY
+    )
+    w = enforce_guardrails(
+        {"BTC": 0.6, "ETH": 0.3, "AAA": 0.1},
+        classes,
+        GuardrailCaps(max_per_asset=0.5, max_per_class=0.5, max_invested=1.0),
+    )
+    assert all(v <= 0.5 + 1e-9 for v in w.values())
+    assert (w["BTC"] + w["ETH"]) <= 0.5 + 1e-9
+    assert sum(w.values()) == pytest.approx(1.0, abs=1e-6)
+
+
+def test_enforce_guardrails_empty_when_no_positive_weights() -> None:
+    assert enforce_guardrails({"A": 0.0}, _classes(A=AssetClass.EQUITY),
+                              _no_class_caps(0.5)) == {"A": 0.0}
+
+
+def test_execute_build_with_caps_bounds_per_asset_notional() -> None:
+    # AAA wants 90%; a 40% per-asset cap bounds its notional to 40% of capital.
+    broker = StubBroker()
+    price = broker.get_quote("AAA", AssetClass.EQUITY).last
+    ex = AIPortfolioExecutor(broker, allocated_capital=10_000)
+    results = ex.execute_build(
+        [_stock("AAA", 0.9), _stock("BBB", 0.05), _stock("CCC", 0.05)],
+        asset_classes={
+            "AAA": AssetClass.EQUITY,
+            "BBB": AssetClass.EQUITY,
+            "CCC": AssetClass.EQUITY,
+        },
+        caps=_no_class_caps(0.4),
+    )
+    by = {r.ticker: r for r in results}
+    assert by["AAA"].shares == pytest.approx(int(0.4 * 10_000 / price))
+    assert by["AAA"].executed
+
+
+def test_execute_rebalance_with_caps_bounds_target_shares() -> None:
+    broker = StubBroker()
+    price = broker.get_quote("AAA", AssetClass.EQUITY).last
+    ex = AIPortfolioExecutor(broker, allocated_capital=10_000)
+    results = ex.execute_rebalance(
+        [_target("AAA", 0.9), _target("BBB", 0.1)],
+        current_positions={},
+        asset_classes={"AAA": AssetClass.EQUITY, "BBB": AssetClass.EQUITY},
+        caps=_no_class_caps(0.4),
+    )
+    by = {r.ticker: r for r in results}
+    assert by["AAA"].shares == pytest.approx(int(0.4 * 10_000 / price))
+
+
+def test_execute_build_without_caps_unchanged() -> None:
+    # No caps: AAA keeps its full 90% weight (36 shares of ~$245 from $10k).
+    broker = StubBroker()
+    price = broker.get_quote("AAA", AssetClass.EQUITY).last
+    ex = AIPortfolioExecutor(broker, allocated_capital=10_000)
+    results = ex.execute_build(
+        [_stock("AAA", 0.9), _stock("BBB", 0.1)],
+        asset_classes={"AAA": AssetClass.EQUITY, "BBB": AssetClass.EQUITY},
+    )
+    by = {r.ticker: r for r in results}
+    assert by["AAA"].shares == pytest.approx(int(0.9 * 10_000 / price))

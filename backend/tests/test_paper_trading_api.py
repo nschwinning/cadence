@@ -116,6 +116,51 @@ def test_list_sessions_defaults_stop_loss_disabled(
     assert item["stop_loss_pct"] is None
 
 
+def test_list_sessions_exposes_guardrail_config(
+    client: TestClient, db_session: Session
+) -> None:
+    # The frozen risk-guardrail opt-in and parameters are surfaced read-only.
+    portfolio = portfolios_service.create_portfolio(
+        db_session, name="GR", stocks=["AAPL"], max_allocation_pct=0.25
+    )
+    sess = service.create_session(
+        db_session,
+        portfolio_id=portfolio.id,
+        strategy_key="ai_buy_hold",
+        rebalance_prompt_version=1,
+        benchmark=Benchmark.SP500,
+        max_allocation_pct=0.25,
+        risk_guardrails_enabled=True,
+        max_asset_class_pct=0.6,
+        min_positions=5,
+        max_invested_pct=0.9,
+    )
+
+    resp = client.get("/api/v1/paper-trading/sessions")
+    assert resp.status_code == 200
+    item = next(i for i in resp.json()["items"] if i["id"] == str(sess.id))
+    assert item["risk_guardrails_enabled"] is True
+    assert item["max_allocation_pct"] == 0.25
+    assert item["max_asset_class_pct"] == 0.6
+    assert item["min_positions"] == 5
+    assert item["max_invested_pct"] == 0.9
+
+
+def test_list_sessions_defaults_guardrails_disabled(
+    client: TestClient, db_session: Session
+) -> None:
+    # A session created before/without guardrails reports them off with null params
+    # and the no-op 1.0 per-asset cap.
+    session_id = _seed(db_session)
+    resp = client.get("/api/v1/paper-trading/sessions")
+    item = next(i for i in resp.json()["items"] if i["id"] == str(session_id))
+    assert item["risk_guardrails_enabled"] is False
+    assert item["max_allocation_pct"] == 1.0
+    assert item["max_asset_class_pct"] is None
+    assert item["min_positions"] is None
+    assert item["max_invested_pct"] is None
+
+
 def test_read_back_trades_runs_positions(
     client: TestClient, db_session: Session
 ) -> None:
@@ -143,6 +188,64 @@ def test_read_back_trades_runs_positions(
     assert pbody["total"] == 1
     assert pbody["items"][0]["realized_pnl"] == 25.0
     assert pbody["items"][0]["holding_days"] == 7
+
+
+def test_trades_runs_positions_paginate_by_limit_and_offset(
+    client: TestClient, db_session: Session
+) -> None:
+    # Seed a session with several trades, runs, and closed positions, then page.
+    session_id = _seed(db_session)  # already has 1 of each
+    for i in range(4):  # -> 5 of each in total
+        service.record_trade(
+            db_session,
+            session_id=session_id,
+            ticker="MSFT",
+            side=OrderSide.BUY,
+            quantity=1,
+            price=float(i + 1),
+            signal_type="entry",
+        )
+        service.record_session_run(
+            db_session, session_id=session_id, signals_scanned=i, orders_executed=1
+        )
+        entry = datetime(2026, 2, i + 1, tzinfo=UTC)
+        service.record_closed_position(
+            db_session,
+            session_id=session_id,
+            ticker="MSFT",
+            quantity=1,
+            entry_price=1.0,
+            exit_price=2.0,
+            entry_date=entry,
+            exit_date=entry + timedelta(days=1),
+        )
+
+    base = f"/api/v1/paper-trading/sessions/{session_id}"
+    for path in ("trades", "runs", "positions"):
+        first = client.get(f"{base}/{path}", params={"limit": 2, "offset": 0})
+        assert first.status_code == 200
+        fbody = first.json()
+        assert fbody["total"] == 5
+        assert len(fbody["items"]) == 2
+
+        second = client.get(f"{base}/{path}", params={"limit": 2, "offset": 2})
+        assert second.json()["total"] == 5
+        assert len(second.json()["items"]) == 2
+        # The window advanced: the two pages do not overlap.
+        first_ids = {i["id"] for i in fbody["items"]}
+        second_ids = {i["id"] for i in second.json()["items"]}
+        assert first_ids.isdisjoint(second_ids)
+
+        # Offset past the end -> empty page, true total preserved.
+        beyond = client.get(f"{base}/{path}", params={"limit": 2, "offset": 99})
+        assert beyond.json()["total"] == 5
+        assert beyond.json()["items"] == []
+
+        # A negative offset is rejected.
+        assert (
+            client.get(f"{base}/{path}", params={"limit": 2, "offset": -1}).status_code
+            == 422
+        )
 
 
 def test_status_filter(client: TestClient, db_session: Session) -> None:
@@ -452,6 +555,12 @@ def test_session_kpis_returns_live_figures(
         "benchmark_return_pct",
         "excess_return_pct",
         "excess_return",
+        "max_drawdown",
+        "win_rate",
+        "average_win",
+        "average_loss",
+        "best_trade",
+        "worst_trade",
     }
     # Ledger buy above did not go through record_trade, so no fees accrued.
     assert body["total_fees"] == 0.0
@@ -468,6 +577,13 @@ def test_session_kpis_returns_live_figures(
     assert body["benchmark_return_pct"] is None
     assert body["excess_return_pct"] is None
     assert body["excess_return"] is None
+    # No value snapshots and no closed positions -> the new metrics are withheld.
+    assert body["max_drawdown"] is None
+    assert body["win_rate"] is None
+    assert body["average_win"] is None
+    assert body["average_loss"] is None
+    assert body["best_trade"] is None
+    assert body["worst_trade"] is None
 
 
 def test_session_kpis_benchmark_comparison_from_stored_prices(

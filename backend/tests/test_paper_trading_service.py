@@ -988,6 +988,139 @@ def test_session_kpis_unknown_session_raises(db_session: Session) -> None:
         )
 
 
+# --------------------------------------------------------------------------- #
+# Max drawdown (pure helper)
+# --------------------------------------------------------------------------- #
+
+
+def test_max_drawdown_rise_then_fall() -> None:
+    # Peak 120, trough 90 -> (120-90)/120 = 0.25, despite a later partial recovery.
+    assert service.max_drawdown([100, 120, 90, 105]) == pytest.approx(0.25)
+
+
+def test_max_drawdown_monotonic_rise_is_zero() -> None:
+    assert service.max_drawdown([100, 110, 130]) == pytest.approx(0.0)
+
+
+def test_max_drawdown_empty_is_none() -> None:
+    assert service.max_drawdown([]) is None
+
+
+def test_max_drawdown_non_positive_peak_contributes_nothing() -> None:
+    # A zero/negative running peak is guarded (no divide-by-zero), yielding 0.0.
+    assert service.max_drawdown([0.0, 0.0]) == pytest.approx(0.0)
+
+
+# --------------------------------------------------------------------------- #
+# Closed-position stats (pure helper)
+# --------------------------------------------------------------------------- #
+
+
+def test_closed_position_stats_mixed() -> None:
+    stats = service.closed_position_stats([100.0, -40.0, 60.0, -20.0])
+    assert stats.win_rate == pytest.approx(0.5)  # 2 of 4 positive
+    assert stats.average_win == pytest.approx(80.0)  # mean(100, 60)
+    assert stats.average_loss == pytest.approx(-30.0)  # mean(-40, -20)
+    assert stats.best_trade == pytest.approx(100.0)
+    assert stats.worst_trade == pytest.approx(-40.0)
+
+
+def test_closed_position_stats_empty_all_none() -> None:
+    stats = service.closed_position_stats([])
+    assert stats.win_rate is None
+    assert stats.average_win is None
+    assert stats.average_loss is None
+    assert stats.best_trade is None
+    assert stats.worst_trade is None
+
+
+def test_closed_position_stats_all_winners_has_no_average_loss() -> None:
+    stats = service.closed_position_stats([10.0, 20.0])
+    assert stats.win_rate == pytest.approx(1.0)
+    assert stats.average_win == pytest.approx(15.0)
+    assert stats.average_loss is None
+    assert stats.best_trade == pytest.approx(20.0)
+    assert stats.worst_trade == pytest.approx(10.0)
+
+
+def test_closed_position_stats_all_losers_has_no_average_win() -> None:
+    stats = service.closed_position_stats([-10.0, -20.0])
+    assert stats.win_rate == pytest.approx(0.0)
+    assert stats.average_win is None
+    assert stats.average_loss == pytest.approx(-15.0)
+    assert stats.best_trade == pytest.approx(-10.0)
+    assert stats.worst_trade == pytest.approx(-20.0)
+
+
+def _add_value_snapshot(
+    db_session: Session, session_id: object, day: date, total_value: float
+) -> None:
+    """Insert a value snapshot carrying a NAV total for drawdown tests."""
+    db_session.add(
+        SessionValueSnapshot(
+            session_id=session_id,
+            snapshot_date=day,
+            total_value=total_value,
+            cash_value=total_value,
+            positions_value=0.0,
+            daily_pnl=0.0,
+            daily_pnl_pct=0.0,
+            positions=[],
+        )
+    )
+    db_session.commit()
+
+
+def _close_position(
+    db_session: Session, session_id: object, ticker: str, realized: float
+) -> None:
+    """Record a closed position whose realized P&L equals ``realized``."""
+    service.record_closed_position(
+        db_session,
+        session_id=session_id,
+        ticker=ticker,
+        quantity=1.0,
+        entry_price=100.0,
+        exit_price=100.0 + realized,  # (exit - entry) * 1 == realized
+        entry_date=datetime(2026, 1, 1, tzinfo=UTC),
+        exit_date=datetime(2026, 1, 5, tzinfo=UTC),
+    )
+
+
+def test_session_kpis_drawdown_and_trade_metrics(db_session: Session) -> None:
+    sess = _ai_session(db_session)
+    base = date(2026, 1, 1)
+    for i, value in enumerate([100_000.0, 110_000.0, 88_000.0, 99_000.0]):
+        _add_value_snapshot(db_session, sess.id, base + timedelta(days=i), value)
+    _close_position(db_session, sess.id, "AAA", 100.0)
+    _close_position(db_session, sess.id, "BBB", -40.0)
+    _close_position(db_session, sess.id, "CCC", 60.0)
+
+    kpis = service.session_kpis(
+        db_session, session_id=sess.id, broker=_QuoteBroker({})
+    )
+    # Deepest drop: 110k -> 88k = 0.2.
+    assert kpis.max_drawdown == pytest.approx(0.2)
+    assert kpis.win_rate == pytest.approx(2 / 3)
+    assert kpis.average_win == pytest.approx(80.0)
+    assert kpis.average_loss == pytest.approx(-40.0)
+    assert kpis.best_trade == pytest.approx(100.0)
+    assert kpis.worst_trade == pytest.approx(-40.0)
+
+
+def test_session_kpis_new_metrics_none_without_data(db_session: Session) -> None:
+    sess = _ai_session(db_session)  # no snapshots, no closed positions
+    kpis = service.session_kpis(
+        db_session, session_id=sess.id, broker=_QuoteBroker({})
+    )
+    assert kpis.max_drawdown is None
+    assert kpis.win_rate is None
+    assert kpis.average_win is None
+    assert kpis.average_loss is None
+    assert kpis.best_trade is None
+    assert kpis.worst_trade is None
+
+
 def test_portfolio_name_resolves_from_linked_portfolio(
     db_session: Session,
 ) -> None:

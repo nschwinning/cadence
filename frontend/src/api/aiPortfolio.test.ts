@@ -52,11 +52,25 @@ describe('aiPortfolioKeys factory', () => {
       'build-status',
       'evt-1',
     ]);
+    expect(aiPortfolioKeys.sessionEventsPrefix('sess-1')).toEqual([
+      'ai-portfolio',
+      'session',
+      'sess-1',
+      'events',
+    ]);
     expect(aiPortfolioKeys.sessionEvents('sess-1')).toEqual([
       'ai-portfolio',
       'session',
       'sess-1',
       'events',
+      0,
+    ]);
+    expect(aiPortfolioKeys.sessionEvents('sess-1', 5)).toEqual([
+      'ai-portfolio',
+      'session',
+      'sess-1',
+      'events',
+      5,
     ]);
   });
 });

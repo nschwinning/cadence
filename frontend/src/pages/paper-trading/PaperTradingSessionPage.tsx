@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import {
   DEFAULT_SESSIONS_PARAMS,
@@ -27,6 +28,7 @@ import {
   ArchiveFeedback,
 } from './SessionArchiveCard';
 import { SessionValueChart } from './SessionValueChart';
+import { Pagination } from '../../components/Pagination';
 import { StatTile } from '../../components/dashboard/StatTile';
 import { formatCurrency, formatPercent, formatQuantity } from '../../lib/format';
 import type {
@@ -44,9 +46,22 @@ import type {
  */
 const STOP_LOSS_MARKER = 'stop_loss';
 
+// Fixed page sizes for the session-detail tables (not user-adjustable): AI events
+// and runs are lower-volume, so they page 5 at a time; trades and closed positions
+// page 10. Page 1 shows the most-recent rows (the reads are newest-first).
+const EVENTS_PAGE_SIZE = 5;
+const RUNS_PAGE_SIZE = 5;
+const TRADES_PAGE_SIZE = 10;
+const POSITIONS_PAGE_SIZE = 10;
+
 /** Format an ISO timestamp for display, or an em dash when absent. */
 function ts(value: string | null | undefined): string {
   return value ? new Date(value).toLocaleString() : '—';
+}
+
+/** Format a fraction (0.25) as a whole-number percentage ("25%"), or an em dash. */
+function pct(value: number | null | undefined): string {
+  return value == null ? '—' : `${(value * 100).toFixed(0)}%`;
 }
 
 /**
@@ -128,6 +143,7 @@ export function Panel({
   isEmpty,
   emptyText,
   children,
+  footer,
 }: {
   title: string;
   count?: number;
@@ -136,6 +152,8 @@ export function Panel({
   isEmpty: boolean;
   emptyText: string;
   children: React.ReactNode;
+  /** Optional card footer (e.g. pagination) shown below loaded content only. */
+  footer?: React.ReactNode;
 }) {
   return (
     <div className="rounded-lg border border-slate-200 bg-white shadow-sm">
@@ -162,23 +180,40 @@ export function Panel({
         <p className="p-6 text-slate-500">{emptyText}</p>
       )}
       {!isPending && !isError && !isEmpty && (
-        <div className="overflow-x-auto">{children}</div>
+        <>
+          <div className="overflow-x-auto">{children}</div>
+          {footer}
+        </>
       )}
     </div>
   );
 }
 
 function TradesPanel({ sessionId }: { sessionId: string }) {
-  const { data, isPending, isError } = useSessionTrades(sessionId);
+  const [page, setPage] = useState(0);
+  const { data, isPending, isError } = useSessionTrades(sessionId, {
+    limit: TRADES_PAGE_SIZE,
+    offset: page * TRADES_PAGE_SIZE,
+  });
   const trades = data?.items ?? [];
+  const total = data?.total ?? 0;
   return (
     <Panel
       title="Trades"
       count={data?.total}
       isPending={isPending}
       isError={isError}
-      isEmpty={trades.length === 0}
+      isEmpty={total === 0}
       emptyText="No trades recorded yet."
+      footer={
+        <Pagination
+          page={page}
+          pageSize={TRADES_PAGE_SIZE}
+          total={total}
+          onPageChange={setPage}
+          label="trades"
+        />
+      }
     >
       <table className="w-full min-w-[760px] border-collapse text-sm">
         <thead>
@@ -228,16 +263,30 @@ function TradesPanel({ sessionId }: { sessionId: string }) {
 }
 
 function RunsPanel({ sessionId }: { sessionId: string }) {
-  const { data, isPending, isError } = useSessionRuns(sessionId);
+  const [page, setPage] = useState(0);
+  const { data, isPending, isError } = useSessionRuns(sessionId, {
+    limit: RUNS_PAGE_SIZE,
+    offset: page * RUNS_PAGE_SIZE,
+  });
   const runs = data?.items ?? [];
+  const total = data?.total ?? 0;
   return (
     <Panel
       title="Runs"
       count={data?.total}
       isPending={isPending}
       isError={isError}
-      isEmpty={runs.length === 0}
+      isEmpty={total === 0}
       emptyText="No runs recorded yet."
+      footer={
+        <Pagination
+          page={page}
+          pageSize={RUNS_PAGE_SIZE}
+          total={total}
+          onPageChange={setPage}
+          label="runs"
+        />
+      }
     >
       <table className="w-full min-w-[760px] border-collapse text-sm">
         <thead>
@@ -284,16 +333,30 @@ function RunsPanel({ sessionId }: { sessionId: string }) {
 }
 
 function PositionsPanel({ sessionId }: { sessionId: string }) {
-  const { data, isPending, isError } = useSessionPositions(sessionId);
+  const [page, setPage] = useState(0);
+  const { data, isPending, isError } = useSessionPositions(sessionId, {
+    limit: POSITIONS_PAGE_SIZE,
+    offset: page * POSITIONS_PAGE_SIZE,
+  });
   const positions = data?.items ?? [];
+  const total = data?.total ?? 0;
   return (
     <Panel
       title="Closed positions"
       count={data?.total}
       isPending={isPending}
       isError={isError}
-      isEmpty={positions.length === 0}
+      isEmpty={total === 0}
       emptyText="No closed positions yet."
+      footer={
+        <Pagination
+          page={page}
+          pageSize={POSITIONS_PAGE_SIZE}
+          total={total}
+          onPageChange={setPage}
+          label="closed positions"
+        />
+      }
     >
       <table className="w-full min-w-[760px] border-collapse text-sm">
         <thead>
@@ -351,16 +414,30 @@ function PositionsPanel({ sessionId }: { sessionId: string }) {
 }
 
 function EventsPanel({ sessionId }: { sessionId: string }) {
-  const { data, isPending, isError } = useSessionEvents(sessionId);
-  const events = data ?? [];
+  const [page, setPage] = useState(0);
+  const { data, isPending, isError } = useSessionEvents(sessionId, {
+    limit: EVENTS_PAGE_SIZE,
+    offset: page * EVENTS_PAGE_SIZE,
+  });
+  const events = data?.items ?? [];
+  const total = data?.total ?? 0;
   return (
     <Panel
       title="AI events"
-      count={events.length}
+      count={total}
       isPending={isPending}
       isError={isError}
-      isEmpty={events.length === 0}
+      isEmpty={total === 0}
       emptyText="No AI events yet."
+      footer={
+        <Pagination
+          page={page}
+          pageSize={EVENTS_PAGE_SIZE}
+          total={total}
+          onPageChange={setPage}
+          label="events"
+        />
+      }
     >
       <table className="w-full min-w-[640px] border-collapse text-sm">
         <thead>
@@ -510,6 +587,26 @@ function SessionHeader({
           </dd>
         </div>
         <div>
+          <dt className="text-xs font-semibold uppercase tracking-wide text-slate-500">
+            Risk guardrails
+          </dt>
+          <dd className="text-sm text-slate-900">
+            {session.risk_guardrails_enabled ? (
+              <ul className="space-y-0.5">
+                <li>Max/asset: {pct(session.max_allocation_pct)}</li>
+                <li>Max/class: {pct(session.max_asset_class_pct)}</li>
+                <li>
+                  Min positions:{' '}
+                  {session.min_positions == null ? '—' : session.min_positions}
+                </li>
+                <li>Max invested: {pct(session.max_invested_pct)}</li>
+              </ul>
+            ) : (
+              'Off'
+            )}
+          </dd>
+        </div>
+        <div>
           <BenchmarkSwitcher sessionId={sessionId} current={session.benchmark} />
         </div>
       </dl>
@@ -524,10 +621,11 @@ function PnlValue({ value }: { value: number }) {
 }
 
 /**
- * Live performance KPI tiles: value, realised/unrealised P&L, fees, total return,
- * Sharpe, plus the benchmark return and excess return versus the session's
- * benchmark. The benchmark tiles read "Not yet available" until enough stored
- * prices exist to compute them.
+ * Session KPI tiles in two groups: "Performance" (value, realised/unrealised P&L,
+ * fees, total return, Sharpe, benchmark and excess return) and "Risk & trade
+ * quality" (maximum drawdown, win rate, average win/loss, best/worst trade). Tiles
+ * read "Not yet available" until their inputs exist (stored prices for the
+ * benchmark; value snapshots for drawdown; closed positions for the trade metrics).
  */
 function KpiRow({ sessionId }: { sessionId: string }) {
   const { data, isPending, isError } = useSessionKpis(sessionId);
@@ -577,43 +675,154 @@ function KpiRow({ sessionId }: { sessionId: string }) {
       </>
     );
 
+  // Max drawdown arrives as a non-negative magnitude; show an explicit minus and
+  // red when non-zero so it reads as a decline rather than a gain (neutral at 0).
+  const maxDrawdown =
+    data.max_drawdown === null ? (
+      'Not yet available'
+    ) : data.max_drawdown === 0 ? (
+      '0.00%'
+    ) : (
+      <span className="text-red-700">−{formatPercent(data.max_drawdown)}</span>
+    );
+  const winRate =
+    data.win_rate === null ? 'Not yet available' : formatPercent(data.win_rate);
+
   return (
-    <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
-      <StatTile label="Current value" value={formatCurrency(data.current_value)} />
-      <StatTile label="Realised P&L" value={<PnlValue value={data.realised_pnl} />} />
-      <StatTile
-        label="Unrealised P&L"
-        value={<PnlValue value={data.unrealised_pnl} />}
-      />
-      <StatTile
-        label="Transaction fees"
-        value={formatCurrency(data.total_fees)}
-        hint="$1 per executed trade"
-      />
-      <StatTile
-        label="Total return"
-        value={
-          <span className={pnlClass(data.total_return_pct)}>
-            {formatPercent(data.total_return_pct)}
-          </span>
-        }
-        hint={<PnlValue value={data.total_return} />}
-      />
-      <StatTile
-        label="Sharpe ratio"
-        value={sharpe}
-        hint={
-          data.sharpe_ratio === null
-            ? 'Needs more daily history'
-            : 'Annualised, from daily NAV'
-        }
-      />
-      <StatTile
-        label="Benchmark return"
-        value={benchmarkReturn}
-        hint={`${benchmarkName}, buy & hold`}
-      />
-      <StatTile label="Excess return" value={excessReturn} hint={excessHint} />
+    <div className="flex flex-col gap-6">
+      <section role="group" aria-labelledby="kpi-performance">
+        <h3
+          id="kpi-performance"
+          className="mb-3 text-sm font-semibold uppercase tracking-wide text-slate-500"
+        >
+          Performance
+        </h3>
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
+          <StatTile label="Current value" value={formatCurrency(data.current_value)} />
+          <StatTile
+            label="Realised P&L"
+            value={<PnlValue value={data.realised_pnl} />}
+          />
+          <StatTile
+            label="Unrealised P&L"
+            value={<PnlValue value={data.unrealised_pnl} />}
+          />
+          <StatTile
+            label="Transaction fees"
+            value={formatCurrency(data.total_fees)}
+            hint="$1 per executed trade"
+          />
+          <StatTile
+            label="Total return"
+            value={
+              <span className={pnlClass(data.total_return_pct)}>
+                {formatPercent(data.total_return_pct)}
+              </span>
+            }
+            hint={<PnlValue value={data.total_return} />}
+          />
+          <StatTile
+            label="Sharpe ratio"
+            value={sharpe}
+            hint={
+              data.sharpe_ratio === null
+                ? 'Needs more daily history'
+                : 'Annualised, from daily NAV'
+            }
+          />
+          <StatTile
+            label="Benchmark return"
+            value={benchmarkReturn}
+            hint={`${benchmarkName}, buy & hold`}
+          />
+          <StatTile label="Excess return" value={excessReturn} hint={excessHint} />
+        </div>
+      </section>
+
+      <section role="group" aria-labelledby="kpi-risk">
+        <h3
+          id="kpi-risk"
+          className="mb-3 text-sm font-semibold uppercase tracking-wide text-slate-500"
+        >
+          Risk & trade quality
+        </h3>
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
+          <StatTile
+            label="Maximum drawdown"
+            value={maxDrawdown}
+            hint={
+              data.max_drawdown === null
+                ? 'Needs a value snapshot'
+                : 'Peak-to-trough, daily NAV'
+            }
+          />
+          <StatTile
+            label="Win rate"
+            value={winRate}
+            hint={
+              data.win_rate === null ? 'No closed positions yet' : 'of closed positions'
+            }
+          />
+          <StatTile
+            label="Average win"
+            value={
+              data.average_win === null ? (
+                'Not yet available'
+              ) : (
+                <PnlValue value={data.average_win} />
+              )
+            }
+            hint={
+              data.average_win === null
+                ? 'No winning positions yet'
+                : 'per winning position'
+            }
+          />
+          <StatTile
+            label="Average loss"
+            value={
+              data.average_loss === null ? (
+                'Not yet available'
+              ) : (
+                <PnlValue value={data.average_loss} />
+              )
+            }
+            hint={
+              data.average_loss === null
+                ? 'No losing positions yet'
+                : 'per losing position'
+            }
+          />
+          <StatTile
+            label="Best trade"
+            value={
+              data.best_trade === null ? (
+                'Not yet available'
+              ) : (
+                <PnlValue value={data.best_trade} />
+              )
+            }
+            hint={
+              data.best_trade === null ? 'No closed positions yet' : 'Largest realised gain'
+            }
+          />
+          <StatTile
+            label="Worst trade"
+            value={
+              data.worst_trade === null ? (
+                'Not yet available'
+              ) : (
+                <PnlValue value={data.worst_trade} />
+              )
+            }
+            hint={
+              data.worst_trade === null
+                ? 'No closed positions yet'
+                : 'Largest realised loss'
+            }
+          />
+        </div>
+      </section>
     </div>
   );
 }

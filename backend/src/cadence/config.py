@@ -93,6 +93,22 @@ class Settings(BaseSettings):
     # so the daily rebalance cannot immediately re-buy the just-stopped position.
     STOP_LOSS_COOLDOWN_TRADING_DAYS: int = 5
 
+    # Default portfolio risk-guardrail parameters applied when a session opts into
+    # the guardrails at build time without specifying its own values. The guardrails
+    # deterministically cap the AI's target-weight vector on both the build and the
+    # rebalance paths; these are the frozen defaults, expressed as fractions in
+    # (0, 1] (and a whole-number count for the position floor).
+    #: Maximum fraction of the portfolio any single asset may hold (0.25 = 25%).
+    GUARDRAIL_DEFAULT_MAX_ASSET_PCT: float = 0.25
+    #: Maximum fraction of the portfolio any single asset class may hold (0.60 = 60%).
+    GUARDRAIL_DEFAULT_MAX_ASSET_CLASS_PCT: float = 0.60
+    #: Minimum number of positions the AI is asked to hold (a diversification floor;
+    #: surfaced/logged rather than fabricated when the AI returns fewer names).
+    GUARDRAIL_DEFAULT_MIN_POSITIONS: int = 5
+    #: Maximum fraction of the allocated capital that may be invested (the remainder
+    #: is held as a cash buffer; 0.95 = keep at least 5% cash).
+    GUARDRAIL_DEFAULT_MAX_INVESTED_PCT: float = 0.95
+
     # Model id the AI portfolio manager runs on.
     AI_PORTFOLIO_MODEL: str = "gpt-5-mini"
 

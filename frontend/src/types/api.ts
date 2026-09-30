@@ -297,6 +297,19 @@ export interface PaperTradingSession {
    * when the stop-loss is disabled.
    */
   stop_loss_pct: number | null;
+  /**
+   * Whether this session opted into the deterministic risk guardrails (frozen at
+   * build time). False for sessions built before this option existed.
+   */
+  risk_guardrails_enabled: boolean;
+  /**
+   * The frozen guardrail parameters as fractions (e.g. `0.25` = 25%), or `null`
+   * when the guardrails are disabled. The per-asset cap reuses `max_allocation_pct`
+   * above (`1.0` = no cap when guardrails off).
+   */
+  max_asset_class_pct: number | null;
+  min_positions: number | null;
+  max_invested_pct: number | null;
 }
 
 /** One entry in the fixed benchmark catalog. Mirrors `BenchmarkCatalogEntry`. */
@@ -481,6 +494,21 @@ export interface PaperTradingSessionKpis {
    * capital. Null when the benchmark return is unavailable.
    */
   excess_return: number | null;
+  /**
+   * Largest peak-to-trough decline of the daily NAV series, as a non-negative
+   * fraction. Null when the session has no value snapshots.
+   */
+  max_drawdown: number | null;
+  /** Fraction of closed positions with realised P&L > 0. Null with none closed. */
+  win_rate: number | null;
+  /** Mean realised P&L of winning closed positions. Null with no winners. */
+  average_win: number | null;
+  /** Mean realised P&L of losing closed positions. Null with no losers. */
+  average_loss: number | null;
+  /** Largest single winning closed-position P&L. Null with none closed. */
+  best_trade: number | null;
+  /** Largest single losing closed-position P&L (signed). Null with none closed. */
+  worst_trade: number | null;
 }
 
 // --------------------------------------------------------------------------- //
@@ -536,6 +564,25 @@ export interface AIPortfolioBuildRequest {
    * build time. Defaults to the server-side default when enabled without one.
    */
   stop_loss_pct?: number | null;
+  /**
+   * Opt this portfolio into the deterministic risk guardrails (frozen at build
+   * time). When enabled the target-weight vector is clamped so no asset/class
+   * exceeds its cap and the invested fraction stays within the ceiling. Defaults
+   * to off (opt-in).
+   */
+  risk_guardrails_enabled?: boolean;
+  /**
+   * Maximum fraction of capital for a single asset (e.g. `0.25` = 25%). Applies
+   * only when `risk_guardrails_enabled`; defaults to the server-side default when
+   * enabled without one.
+   */
+  max_allocation_pct?: number | null;
+  /** Maximum fraction of capital for a single asset class. As above. */
+  max_asset_class_pct?: number | null;
+  /** Minimum number of positions the AI is asked to hold. As above. */
+  min_positions?: number | null;
+  /** Maximum invested fraction; the remainder is held as cash. As above. */
+  max_invested_pct?: number | null;
 }
 
 /**
@@ -578,6 +625,11 @@ export interface AIDailyRebalanceResponse {
   sessions_triggered: number;
   session_ids: string[];
   skipped_already_running: string[];
+  /**
+   * Freshly-built sessions deferred because their build orders have not yet
+   * filled; picked up by a later trigger once they settle.
+   */
+  skipped_awaiting_build_fill: string[];
 }
 
 /**
@@ -653,6 +705,15 @@ export interface AITrendContext {
 
 /** A page of AI runs plus the matching total. Mirrors `AIPortfolioRunListResponse`. */
 export interface AIPortfolioRunListResponse {
+  items: AIPortfolioEvent[];
+  total: number;
+}
+
+/**
+ * A page of a session's AI-portfolio events plus the matching total. Mirrors the
+ * backend `AIPortfolioEventListResponse` envelope for the session events read.
+ */
+export interface AIPortfolioEventListResponse {
   items: AIPortfolioEvent[];
   total: number;
 }

@@ -102,6 +102,11 @@ describe('BuildAIPortfolioCard', () => {
       use_technical_indicators: false,
       stop_loss_enabled: false,
       stop_loss_pct: null,
+      risk_guardrails_enabled: false,
+      max_allocation_pct: null,
+      max_asset_class_pct: null,
+      min_positions: null,
+      max_invested_pct: null,
     });
 
     // Backend advances the event to terminal; force the poll's refetch (jsdom
@@ -200,6 +205,71 @@ describe('BuildAIPortfolioCard', () => {
     expect(mockedPost).toHaveBeenCalledWith(
       '/api/v1/ai-portfolio/build',
       expect.objectContaining({ stop_loss_enabled: false, stop_loss_pct: null }),
+    );
+  });
+
+  it('enables risk guardrails with their parameters when the toggle is checked', async () => {
+    mockedPost.mockResolvedValue({ data: { event_id: 'evt-1', status: 'queued' } });
+    mockedGet.mockImplementation(routeGet(() => 'running'));
+    const user = userEvent.setup();
+
+    renderWithClient(<BuildAIPortfolioCard />);
+
+    // Defaults off: the toggle starts unchecked and the params are hidden.
+    const toggle = screen.getByRole('checkbox', {
+      name: /Enable risk guardrails/i,
+    });
+    expect(toggle).not.toBeChecked();
+    expect(screen.queryByLabelText('Max per asset (%)')).not.toBeInTheDocument();
+
+    await user.click(toggle);
+
+    // Enabling reveals the four params with their percentage/count defaults.
+    const maxAsset = screen.getByLabelText('Max per asset (%)');
+    const maxClass = screen.getByLabelText('Max per asset class (%)');
+    const minPositions = screen.getByLabelText('Min positions');
+    const maxInvested = screen.getByLabelText('Max invested (%)');
+    expect(maxAsset).toHaveValue(25);
+    expect(maxClass).toHaveValue(60);
+    expect(minPositions).toHaveValue(5);
+    expect(maxInvested).toHaveValue(95);
+
+    await user.clear(maxAsset);
+    await user.type(maxAsset, '20');
+
+    await user.click(screen.getByRole('button', { name: 'Build portfolio' }));
+
+    // Percentages are sent as fractions; the minimum is an integer count.
+    expect(mockedPost).toHaveBeenCalledWith(
+      '/api/v1/ai-portfolio/build',
+      expect.objectContaining({
+        risk_guardrails_enabled: true,
+        max_allocation_pct: 0.2,
+        max_asset_class_pct: 0.6,
+        min_positions: 5,
+        max_invested_pct: 0.95,
+      }),
+    );
+  });
+
+  it('sends the guardrails disabled when the toggle is left off', async () => {
+    mockedPost.mockResolvedValue({ data: { event_id: 'evt-1', status: 'queued' } });
+    mockedGet.mockImplementation(routeGet(() => 'running'));
+    const user = userEvent.setup();
+
+    renderWithClient(<BuildAIPortfolioCard />);
+
+    await user.click(screen.getByRole('button', { name: 'Build portfolio' }));
+
+    expect(mockedPost).toHaveBeenCalledWith(
+      '/api/v1/ai-portfolio/build',
+      expect.objectContaining({
+        risk_guardrails_enabled: false,
+        max_allocation_pct: null,
+        max_asset_class_pct: null,
+        min_positions: null,
+        max_invested_pct: null,
+      }),
     );
   });
 

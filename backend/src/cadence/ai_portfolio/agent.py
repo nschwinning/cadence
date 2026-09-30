@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from dataclasses import dataclass
 from enum import Enum
 from typing import Any, Protocol, runtime_checkable
 
@@ -108,6 +109,34 @@ class AIRebalanceResult(BaseModel):
 # --------------------------------------------------------------------------- #
 
 
+@dataclass(frozen=True)
+class GuardrailInstruction:
+    """Advisory guardrail caps told to the AI so it can plan within them.
+
+    These are advisory only: the deterministic clamp in the executor is the actual
+    guarantee. When guardrails are disabled the caller passes ``None`` and no
+    guardrail text is added to the prompt.
+    """
+
+    max_per_asset: float
+    max_per_class: float
+    min_positions: int
+    max_invested: float
+
+
+def _guardrails_block(guardrails: GuardrailInstruction) -> str:
+    """Render the advisory guardrail caps appended to a build/rebalance prompt."""
+    return (
+        "\nRisk guardrails (plan within these; they are enforced deterministically "
+        "after you respond):\n"
+        f"- Maximum per single asset: {guardrails.max_per_asset:.0%} of capital\n"
+        f"- Maximum per asset class: {guardrails.max_per_class:.0%} of capital\n"
+        f"- Minimum number of positions: {guardrails.min_positions}\n"
+        "- Maximum invested (remainder held as cash): "
+        f"{guardrails.max_invested:.0%} of capital\n"
+    )
+
+
 def _builder_instructions() -> str:
     return f"""
 You are a seasoned investment portfolio manager building a long-term buy-and-hold portfolio.
@@ -161,13 +190,15 @@ def _render(template: str, **values: str) -> str:
 def _build_portfolio_input(
     candidates: list[dict[str, Any]],
     risk_profile: str,
+    guardrails: GuardrailInstruction | None = None,
 ) -> str:
     candidates_json = json.dumps(candidates, indent=2)
+    guardrails_block = _guardrails_block(guardrails) if guardrails else ""
     return f"""
 Build a {risk_profile} long-only buy-and-hold portfolio allocating over the candidate universe below.
 You may also discover a bounded number of assets beyond this list.
 allocation_pct values across all picks must sum to approximately 1.0.
-
+{guardrails_block}
 Candidate universe (JSON):
 {candidates_json}
 """
@@ -179,15 +210,23 @@ def _build_rebalance_input(
     account_summary: dict[str, Any],
     candidates: list[dict[str, Any]],
     risk_profile: str,
+    guardrails: GuardrailInstruction | None = None,
 ) -> str:
-    """Render the versioned rebalance ``input_template`` with the run's values."""
-    return _render(
+    """Render the versioned rebalance ``input_template`` with the run's values.
+
+    When guardrails are enabled the advisory caps block is appended after the
+    rendered template so the AI can plan within the frozen caps.
+    """
+    rendered = _render(
         input_template,
         risk_profile=risk_profile,
         holdings_json=json.dumps(holdings, indent=2),
         account_json=json.dumps(account_summary, indent=2),
         candidates_json=json.dumps(candidates, indent=2),
     )
+    if guardrails:
+        rendered = f"{rendered}\n{_guardrails_block(guardrails)}"
+    return rendered
 
 
 # --------------------------------------------------------------------------- #
@@ -198,14 +237,20 @@ def _build_rebalance_input(
 def build_ai_portfolio(
     candidates: list[dict[str, Any]],
     risk_profile: str = "balanced",
+    guardrails: GuardrailInstruction | None = None,
 ) -> AIPortfolioBuildResult:
     """Run the builder agent and return its validated :class:`AIPortfolioBuildResult`."""
-    return asyncio.run(_run_build(candidates=candidates, risk_profile=risk_profile))
+    return asyncio.run(
+        _run_build(
+            candidates=candidates, risk_profile=risk_profile, guardrails=guardrails
+        )
+    )
 
 
 async def _run_build(
     candidates: list[dict[str, Any]],
     risk_profile: str,
+    guardrails: GuardrailInstruction | None = None,
 ) -> AIPortfolioBuildResult:
     agent = build_agent(
         name="AIPortfolioBuilderAgent",
@@ -219,7 +264,7 @@ async def _run_build(
         result = await asyncio.wait_for(
             Runner.run(
                 agent,
-                _build_portfolio_input(candidates, risk_profile),
+                _build_portfolio_input(candidates, risk_profile, guardrails),
                 max_turns=settings.AI_PORTFOLIO_MAX_TURNS,
             ),
             timeout=BUILD_TIMEOUT_SECONDS,
@@ -235,13 +280,15 @@ def rebalance_ai_portfolio(
     risk_profile: str,
     instructions: str,
     input_template: str,
+    guardrails: GuardrailInstruction | None = None,
 ) -> AIRebalanceResult:
     """Run the rebalance agent and return its validated :class:`AIRebalanceResult`.
 
     ``instructions`` and ``input_template`` are the active versioned prompt loaded
     from the database by the caller; both may carry ``{name}`` placeholders that
     are filled here (the reasoning/discovery caps on the instructions; the run
-    values on the input template).
+    values on the input template). ``guardrails`` (when set) appends the advisory
+    cap block to the rendered input.
     """
     return asyncio.run(
         _run_rebalance(
@@ -251,6 +298,7 @@ def rebalance_ai_portfolio(
             risk_profile=risk_profile,
             instructions=instructions,
             input_template=input_template,
+            guardrails=guardrails,
         )
     )
 
@@ -262,6 +310,7 @@ async def _run_rebalance(
     risk_profile: str,
     instructions: str,
     input_template: str,
+    guardrails: GuardrailInstruction | None = None,
 ) -> AIRebalanceResult:
     agent = build_agent(
         name="AIRebalanceEvaluatorAgent",
@@ -280,7 +329,12 @@ async def _run_rebalance(
             Runner.run(
                 agent,
                 _build_rebalance_input(
-                    input_template, holdings, account_summary, candidates, risk_profile
+                    input_template,
+                    holdings,
+                    account_summary,
+                    candidates,
+                    risk_profile,
+                    guardrails,
                 ),
                 max_turns=settings.AI_PORTFOLIO_MAX_TURNS,
             ),
@@ -308,8 +362,12 @@ class AIPortfolioAgent(Protocol):
         self,
         candidates: list[dict[str, Any]],
         risk_profile: str,
+        guardrails: GuardrailInstruction | None = None,
     ) -> AIPortfolioBuildResult:
-        """Return a structured portfolio the agent built from the candidates."""
+        """Return a structured portfolio the agent built from the candidates.
+
+        ``guardrails`` (when set) tells the AI the advisory caps to plan within.
+        """
         ...
 
     def rebalance(
@@ -320,11 +378,13 @@ class AIPortfolioAgent(Protocol):
         risk_profile: str,
         instructions: str,
         input_template: str,
+        guardrails: GuardrailInstruction | None = None,
     ) -> AIRebalanceResult:
         """Return the agent's structured rebalance target weights.
 
         ``instructions``/``input_template`` are the active versioned prompt the
         caller loaded from the database (both may carry ``{name}`` placeholders).
+        ``guardrails`` (when set) tells the AI the advisory caps to plan within.
         """
         ...
 
@@ -336,8 +396,11 @@ class OpenAIAIPortfolioAgent:
         self,
         candidates: list[dict[str, Any]],
         risk_profile: str,
+        guardrails: GuardrailInstruction | None = None,
     ) -> AIPortfolioBuildResult:
-        return build_ai_portfolio(candidates=candidates, risk_profile=risk_profile)
+        return build_ai_portfolio(
+            candidates=candidates, risk_profile=risk_profile, guardrails=guardrails
+        )
 
     def rebalance(
         self,
@@ -347,6 +410,7 @@ class OpenAIAIPortfolioAgent:
         risk_profile: str,
         instructions: str,
         input_template: str,
+        guardrails: GuardrailInstruction | None = None,
     ) -> AIRebalanceResult:
         return rebalance_ai_portfolio(
             holdings=holdings,
@@ -355,4 +419,5 @@ class OpenAIAIPortfolioAgent:
             risk_profile=risk_profile,
             instructions=instructions,
             input_template=input_template,
+            guardrails=guardrails,
         )

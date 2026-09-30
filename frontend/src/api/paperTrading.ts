@@ -41,12 +41,18 @@ export const paperTradingKeys = {
   all: ['paper-trading'] as const,
   sessions: (params: SessionsListParams) =>
     ['paper-trading', 'sessions', params] as const,
-  trades: (sessionId: string) =>
+  tradesPrefix: (sessionId: string) =>
     ['paper-trading', 'session', sessionId, 'trades'] as const,
-  runs: (sessionId: string) =>
+  trades: (sessionId: string, offset = 0) =>
+    ['paper-trading', 'session', sessionId, 'trades', offset] as const,
+  runsPrefix: (sessionId: string) =>
     ['paper-trading', 'session', sessionId, 'runs'] as const,
-  positions: (sessionId: string) =>
+  runs: (sessionId: string, offset = 0) =>
+    ['paper-trading', 'session', sessionId, 'runs', offset] as const,
+  positionsPrefix: (sessionId: string) =>
     ['paper-trading', 'session', sessionId, 'positions'] as const,
+  positions: (sessionId: string, offset = 0) =>
+    ['paper-trading', 'session', sessionId, 'positions', offset] as const,
   valueHistory: (sessionId: string) =>
     ['paper-trading', 'session', sessionId, 'value-history'] as const,
   valueComparison: () =>
@@ -107,38 +113,38 @@ export async function reconcileSession(
   return data;
 }
 
-/** Fetch a session's trades, most recent first. */
+/** Fetch a page of a session's trades, most recent first. */
 export async function listSessionTrades(
   sessionId: string,
-  limit = 100,
+  { limit = 100, offset = 0 }: { limit?: number; offset?: number } = {},
 ): Promise<PaperTradeListResponse> {
   const { data } = await apiClient.get<PaperTradeListResponse>(
     `/api/v1/paper-trading/sessions/${encodeURIComponent(sessionId)}/trades`,
-    { params: { limit } },
+    { params: { limit, offset } },
   );
   return data;
 }
 
-/** Fetch a session's run history, most recent first. */
+/** Fetch a page of a session's run history, most recent first. */
 export async function listSessionRuns(
   sessionId: string,
-  limit = 50,
+  { limit = 50, offset = 0 }: { limit?: number; offset?: number } = {},
 ): Promise<SessionRunListResponse> {
   const { data } = await apiClient.get<SessionRunListResponse>(
     `/api/v1/paper-trading/sessions/${encodeURIComponent(sessionId)}/runs`,
-    { params: { limit } },
+    { params: { limit, offset } },
   );
   return data;
 }
 
-/** Fetch a session's closed positions, most recently exited first. */
+/** Fetch a page of a session's closed positions, most recently exited first. */
 export async function listSessionPositions(
   sessionId: string,
-  limit = 100,
+  { limit = 100, offset = 0 }: { limit?: number; offset?: number } = {},
 ): Promise<ClosedPositionListResponse> {
   const { data } = await apiClient.get<ClosedPositionListResponse>(
     `/api/v1/paper-trading/sessions/${encodeURIComponent(sessionId)}/positions`,
-    { params: { limit } },
+    { params: { limit, offset } },
   );
   return data;
 }
@@ -204,29 +210,38 @@ export function useSessions(
   });
 }
 
-/** React Query hook fetching a session's trades. */
-export function useSessionTrades(sessionId: string) {
+/** React Query hook fetching one page of a session's trades. */
+export function useSessionTrades(
+  sessionId: string,
+  { limit, offset = 0 }: { limit?: number; offset?: number } = {},
+) {
   return useQuery<PaperTradeListResponse>({
-    queryKey: paperTradingKeys.trades(sessionId),
-    queryFn: () => listSessionTrades(sessionId),
+    queryKey: paperTradingKeys.trades(sessionId, offset),
+    queryFn: () => listSessionTrades(sessionId, { limit, offset }),
     enabled: sessionId.length > 0,
   });
 }
 
-/** React Query hook fetching a session's run history. */
-export function useSessionRuns(sessionId: string) {
+/** React Query hook fetching one page of a session's run history. */
+export function useSessionRuns(
+  sessionId: string,
+  { limit, offset = 0 }: { limit?: number; offset?: number } = {},
+) {
   return useQuery<SessionRunListResponse>({
-    queryKey: paperTradingKeys.runs(sessionId),
-    queryFn: () => listSessionRuns(sessionId),
+    queryKey: paperTradingKeys.runs(sessionId, offset),
+    queryFn: () => listSessionRuns(sessionId, { limit, offset }),
     enabled: sessionId.length > 0,
   });
 }
 
-/** React Query hook fetching a session's closed positions. */
-export function useSessionPositions(sessionId: string) {
+/** React Query hook fetching one page of a session's closed positions. */
+export function useSessionPositions(
+  sessionId: string,
+  { limit, offset = 0 }: { limit?: number; offset?: number } = {},
+) {
   return useQuery<ClosedPositionListResponse>({
-    queryKey: paperTradingKeys.positions(sessionId),
-    queryFn: () => listSessionPositions(sessionId),
+    queryKey: paperTradingKeys.positions(sessionId, offset),
+    queryFn: () => listSessionPositions(sessionId, { limit, offset }),
     enabled: sessionId.length > 0,
   });
 }
@@ -318,10 +333,10 @@ export function useSessionOrderSync(sessionId: string) {
   useEffect(() => {
     if (!reconciled) return;
     queryClient.invalidateQueries({
-      queryKey: paperTradingKeys.trades(sessionId),
+      queryKey: paperTradingKeys.tradesPrefix(sessionId),
     });
     queryClient.invalidateQueries({
-      queryKey: paperTradingKeys.positions(sessionId),
+      queryKey: paperTradingKeys.positionsPrefix(sessionId),
     });
     queryClient.invalidateQueries({
       queryKey: paperTradingKeys.valueHistory(sessionId),
