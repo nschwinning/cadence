@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { useSessionsValueComparison } from '../../api/paperTrading';
 import type { SessionValueComparisonSeries } from '../../types/api';
 import { formatAxisDate, formatCurrency, formatPercent } from '../../lib/format';
+import { categoricalColor } from '../../lib/palette';
 import { ChartAxes } from './ChartAxes';
 import { Panel } from './PaperTradingSessionPage';
 
@@ -9,23 +10,12 @@ import { Panel } from './PaperTradingSessionPage';
 type Metric = 'return' | 'value';
 
 /**
- * Categorical palette assigned per session by list order, so each session keeps
- * a stable colour across both metrics and in the legend (including legend-only
- * sessions that are not plotted).
+ * Each session is colored by list order (via the shared categorical palette) so
+ * it keeps a stable colour across both metrics and in the legend (including
+ * legend-only sessions that are not plotted).
  */
-const SERIES_PALETTE = [
-  '#2563eb',
-  '#059669',
-  '#d97706',
-  '#dc2626',
-  '#7c3aed',
-  '#0891b2',
-  '#db2777',
-  '#65a30d',
-] as const;
-
 function colorFor(index: number): string {
-  return SERIES_PALETTE[index % SERIES_PALETTE.length];
+  return categoricalColor(index);
 }
 
 /** A single plotted point in the current metric's units, on a calendar x-axis. */
@@ -108,8 +98,11 @@ function ComparisonCurves({
   const minT = Math.min(...times);
   const maxT = Math.max(...times);
   const tSpan = maxT - minT || 1;
-  const minV = Math.min(...values);
-  const maxV = Math.max(...values);
+  // In the Return % view, force 0 into the y-domain so the break-even baseline is
+  // always on screen even when every session is up (or down) over the window.
+  const showBaseline = metric === 'return';
+  const minV = Math.min(...values, showBaseline ? 0 : Infinity);
+  const maxV = Math.max(...values, showBaseline ? 0 : -Infinity);
   const vSpan = maxV - minV || 1;
 
   const x = (t: number) => pad + ((t - minT) / tSpan) * (width - 2 * pad);
@@ -137,6 +130,20 @@ function ComparisonCurves({
           metric === 'return' ? 'return percent' : 'portfolio value'
         }`}
       >
+        {showBaseline && (
+          <line
+            x1={pad}
+            x2={width - pad}
+            y1={y(0)}
+            y2={y(0)}
+            stroke="#94a3b8"
+            strokeWidth={1}
+            strokeDasharray="4 3"
+            vectorEffect="non-scaling-stroke"
+            aria-label="0% baseline"
+            data-testid="comparison-baseline"
+          />
+        )}
         {plottable.map((s) => (
           <polyline
             key={s.id}

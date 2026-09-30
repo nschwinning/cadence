@@ -312,7 +312,10 @@ class SessionRun(Base):
     """A record of a single scan/rebalance run of a session."""
 
     __tablename__ = "session_runs"
-    __table_args__ = (Index("idx_session_runs_session", "session_id", "run_at"),)
+    __table_args__ = (
+        Index("idx_session_runs_session", "session_id", "run_at"),
+        Index("idx_session_runs_ai_event", "ai_portfolio_event_id"),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
@@ -323,6 +326,14 @@ class SessionRun(Base):
         UUID(as_uuid=True),
         ForeignKey("paper_trading_sessions.id", ondelete="CASCADE"),
         nullable=False,
+    )
+    # The AI build/rebalance event that produced this run, when applicable.
+    # Nullable: stop-loss and scheduled/manual scanner runs and legacy rows leave
+    # it empty. SET NULL on event deletion so a run outlives the audit row.
+    ai_portfolio_event_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("ai_portfolio_events.id", ondelete="SET NULL"),
+        nullable=True,
     )
     run_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False

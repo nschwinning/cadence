@@ -257,6 +257,8 @@ def test_run_build_event_success_creates_portfolio_and_session(
 
     runs = paper_service.get_session_runs(db_session, refreshed.session_id, limit=10)
     assert len(runs) == 1
+    # The build run references the AI event that produced it, so the UI can link it.
+    assert runs[0].ai_portfolio_event_id == event.id
 
 
 def test_ai_build_params_guardrails_round_trip() -> None:
@@ -704,7 +706,10 @@ def test_run_rebalance_event_market_closed_is_skipped(db_session: Session) -> No
     assert rebalance.rebalance_calls == []
 
     runs = paper_service.get_session_runs(db_session, session_id, limit=100)
-    assert any(r.details and r.details[0].get("skipped") for r in runs)
+    skipped = next(r for r in runs if r.details and r.details[0].get("skipped"))
+    assert skipped.details is not None and skipped.details[0].get("skipped")
+    # Even the market-closed skip run references the AI event that produced it.
+    assert skipped.ai_portfolio_event_id == rb_event.id
 
 
 def _flat_rebalance_result() -> AIRebalanceResult:
@@ -2248,7 +2253,9 @@ def test_scan_stop_losses_records_trade_run_closed_and_fee(
     assert stop_trade.ai_portfolio_event_id is None
 
     runs = paper_service.get_session_runs(db_session, session_id, limit=100)
-    assert any(r.run_trigger == STOP_LOSS_RUN_TRIGGER for r in runs)
+    stop_run = next(r for r in runs if r.run_trigger == STOP_LOSS_RUN_TRIGGER)
+    # A deterministic stop-loss run has no producing AI event, so it stays null.
+    assert stop_run.ai_portfolio_event_id is None
 
     closed = paper_service.get_closed_positions(db_session, session_id, limit=100)
     assert any(c.ticker == "AAPL" for c in closed)

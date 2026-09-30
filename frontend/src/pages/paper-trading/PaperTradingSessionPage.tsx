@@ -304,7 +304,18 @@ function RunsPanel({ sessionId }: { sessionId: string }) {
         <tbody>
           {runs.map((r: SessionRun) => (
             <tr key={r.id} className="border-b border-slate-100 hover:bg-slate-50">
-              <td className="px-4 py-3 text-slate-500">{ts(r.run_at)}</td>
+              <td className="px-4 py-3">
+                {r.ai_portfolio_event_id ? (
+                  <Link
+                    to={`/runs/${r.ai_portfolio_event_id}`}
+                    className="text-emerald-700 hover:text-emerald-800 hover:underline focus:outline-none focus:ring-1 focus:ring-emerald-500"
+                  >
+                    {ts(r.run_at)}
+                  </Link>
+                ) : (
+                  <span className="text-slate-500">{ts(r.run_at)}</span>
+                )}
+              </td>
               <td className="px-4 py-3 text-slate-700">
                 <SignalCell value={r.run_trigger} />
               </td>

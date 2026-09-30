@@ -22,7 +22,7 @@ const metrics: DashboardMetrics = {
     eligible: 90,
     ineligible: 30,
     by_category: [
-      { key: 'stock', count: 100 },
+      { key: 'stock', count: 60 },
       { key: 'etf', count: 20 },
     ],
     by_sector: [{ key: 'technology', count: 40 }],

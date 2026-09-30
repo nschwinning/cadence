@@ -538,6 +538,7 @@ def run_build_event(
             status=RunStatus.SUCCESS,
             run_trigger="ai_build",
             duration_ms=_elapsed_ms(t0),
+            ai_portfolio_event_id=event.id,
         )
         paper_service.update_session_last_run(
             session, session_row.id, trades_delta=executed
@@ -706,6 +707,7 @@ def run_rebalance_event(
                 status=RunStatus.SUCCESS,
                 run_trigger="ai_rebalance",
                 duration_ms=_elapsed_ms(t0),
+                ai_portfolio_event_id=event.id,
             )
             _finish_event(
                 session,
@@ -874,6 +876,7 @@ def run_rebalance_event(
             status=RunStatus.SUCCESS,
             run_trigger="ai_rebalance",
             duration_ms=_elapsed_ms(t0),
+            ai_portfolio_event_id=event.id,
         )
         paper_service.update_session_last_run(
             session, session_id, trades_delta=executed, pnl_delta=realized_pnl
@@ -1028,6 +1031,7 @@ def close_session(
             status=RunStatus.SUCCESS,
             run_trigger="ai_close",
             duration_ms=_elapsed_ms(t0),
+            ai_portfolio_event_id=event.id,
         )
         paper_service.update_session_last_run(
             session, session_id, trades_delta=executed, pnl_delta=realized_pnl

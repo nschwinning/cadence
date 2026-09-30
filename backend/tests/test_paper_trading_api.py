@@ -179,6 +179,8 @@ def test_read_back_trades_runs_positions(
     rbody = runs.json()
     assert rbody["total"] == 1
     assert rbody["items"][0]["signals_scanned"] == 3
+    # A non-AI run (recorded without an event) exposes a null AI-event reference.
+    assert rbody["items"][0]["ai_portfolio_event_id"] is None
 
     positions = client.get(
         f"/api/v1/paper-trading/sessions/{session_id}/positions"

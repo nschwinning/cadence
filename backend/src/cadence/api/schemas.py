@@ -328,6 +328,9 @@ class SessionRunRead(BaseModel):
 
     id: uuid.UUID
     session_id: uuid.UUID
+    # The AI build/rebalance event that produced this run, when applicable
+    # (null for stop-loss and scheduled/manual runs).
+    ai_portfolio_event_id: uuid.UUID | None
     run_at: datetime
     signals_scanned: int
     signals_actionable: int

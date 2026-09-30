@@ -44,7 +44,7 @@ The system SHALL let a user start asynchronous AI runs (recommendations, portfol
 
 ### Requirement: Portfolio and paper-trading views
 
-The system SHALL provide views to list portfolios and open a portfolio, and to list paper-trading sessions and open a session showing its trades, runs, positions, and AI-portfolio events. The session list and the session detail header SHALL identify each session by its portfolio name as the primary label, and SHALL present the strategy as secondary context rather than the primary identifier. When a session has no resolvable portfolio name, the UI SHALL fall back to the strategy label. The session detail view SHALL display the session's **automatic stop-loss configuration** — whether it is enabled and, when enabled, its threshold percentage. The session detail view SHALL display the session's **risk-guardrail configuration** — whether the guardrails are enabled and, when enabled, the maximum percentage per asset, the maximum percentage per asset class, the minimum number of positions, and the maximum invested percentage. Among the session's trades and runs, those produced by the automatic stop-loss SHALL be identifiable as stop-loss activity (rather than AI-driven build or rebalance activity).
+The system SHALL provide views to list portfolios and open a portfolio, and to list paper-trading sessions and open a session showing its trades, runs, positions, and AI-portfolio events. The session list and the session detail header SHALL identify each session by its portfolio name as the primary label, and SHALL present the strategy as secondary context rather than the primary identifier. When a session has no resolvable portfolio name, the UI SHALL fall back to the strategy label. The session detail view SHALL display the session's **automatic stop-loss configuration** — whether it is enabled and, when enabled, its threshold percentage. The session detail view SHALL display the session's **risk-guardrail configuration** — whether the guardrails are enabled and, when enabled, the maximum percentage per asset, the maximum percentage per asset class, the minimum number of positions, and the maximum invested percentage. Among the session's trades and runs, those produced by the automatic stop-loss SHALL be identifiable as stop-loss activity (rather than AI-driven build or rebalance activity). On the session detail view, a run that was produced by an AI build or rebalance SHALL link to that run's detail view; a run not backed by an AI-portfolio event SHALL remain non-interactive.
 
 On the session detail view, each of the four tables — AI-portfolio events, trades, closed positions, and runs — SHALL show one fixed-size page of rows at a time rather than a single unbounded list, with the first page showing the most recent rows. The default page size SHALL be 5 rows for the AI-portfolio events and runs tables and 10 rows for the trades and closed-positions tables. Each table SHALL provide page-through navigation (moving to the previous and next page, without infinite scroll) and SHALL indicate the user's position within the whole (for example, the current page relative to the total number of pages or rows). When a table has no more than one page of rows, its navigation SHALL convey that there are no further pages. Paging one table SHALL NOT change the page shown by the other tables.
 
@@ -82,6 +82,16 @@ On the session detail view, each of the four tables — AI-portfolio events, tra
 
 - **WHEN** a user views the trades and runs of a session that has been stopped out at least once
 - **THEN** the UI SHALL identify the stop-loss sale trades and stop-loss runs as stop-loss activity, distinct from AI build or rebalance activity
+
+#### Scenario: AI-driven run links to its detail view
+
+- **WHEN** a user views the runs table of a session and a run was produced by an AI build or rebalance
+- **THEN** the UI SHALL present that run row as a link that opens the run's detail view
+
+#### Scenario: Non-AI run is not linked
+
+- **WHEN** a user views the runs table of a session and a run was not produced by an AI build or rebalance (for example an automatic stop-loss run)
+- **THEN** the UI SHALL present that run row as non-interactive text with no link
 
 #### Scenario: Tables show one page at a time
 
@@ -411,3 +421,31 @@ The paper-trading session-detail page SHALL display KPI tiles for the session's 
 
 - **WHEN** a user views the detail page for a session whose KPI read reports one or more of these metrics as absent
 - **THEN** each affected tile SHALL display a neutral placeholder instead of a numeric value
+
+### Requirement: Dashboard asset-composition donut charts
+
+The dashboard SHALL present the asset universe's composition by category and by sector each as a donut (ring) chart rather than a ranked count list. Each chart SHALL render one slice per breakdown entry, with the slice's angular size proportional to that entry's share of the breakdown's total count. Each chart SHALL display the breakdown's total count at its center and SHALL provide a legend mapping each slice's color to its human-readable label.
+
+Hovering (or otherwise focusing) a slice SHALL reveal detail for that entry: its human-readable label, its exact count, and its percentage of the breakdown's total. The percentage SHALL be computed on the client from the counts; the chart SHALL NOT require any new data from the metrics endpoint.
+
+When a breakdown has no entries, the dashboard SHALL show an empty-state message in place of the chart rather than an empty or broken chart.
+
+#### Scenario: Composition shown as donut charts
+
+- **WHEN** a user opens the dashboard and the asset universe has categorized and sectored assets
+- **THEN** the UI SHALL render the by-category and by-sector breakdowns each as a donut chart whose slices are sized by each entry's share of the total, with the total count shown at the center and a legend identifying each slice
+
+#### Scenario: Slice hover reveals exact value and percentage
+
+- **WHEN** a user hovers or focuses a slice of a breakdown donut chart
+- **THEN** the UI SHALL show that entry's human-readable label, its exact count, and its percentage of the breakdown's total
+
+#### Scenario: Percentages sum across the breakdown
+
+- **WHEN** a breakdown donut chart is displayed
+- **THEN** each slice's percentage SHALL be that entry's count divided by the sum of all entries' counts in the breakdown, derived on the client without additional data from the metrics endpoint
+
+#### Scenario: Empty breakdown
+
+- **WHEN** a breakdown has no entries
+- **THEN** the UI SHALL show an empty-state message instead of a donut chart

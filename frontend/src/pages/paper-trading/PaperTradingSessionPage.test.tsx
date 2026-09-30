@@ -600,6 +600,7 @@ describe('PaperTradingSessionPage', () => {
     const stopRun = {
       id: 'run-sl',
       session_id: 's1',
+      ai_portfolio_event_id: null,
       run_at: '2026-09-12T09:30:00Z',
       run_trigger: 'stop_loss',
       status: 'completed',
@@ -638,6 +639,63 @@ describe('PaperTradingSessionPage', () => {
       el.className.includes('bg-amber-100'),
     );
     expect(badges).toHaveLength(2);
+  });
+
+  it('links AI-driven runs to their detail page and leaves non-AI runs plain', async () => {
+    const aiRun = {
+      id: 'run-ai',
+      session_id: 's1',
+      ai_portfolio_event_id: 'evt-9',
+      run_at: '2026-09-12T09:30:00Z',
+      run_trigger: 'ai_rebalance',
+      status: 'completed',
+      signals_scanned: 4,
+      signals_actionable: 2,
+      orders_executed: 2,
+      orders_skipped: 0,
+      duration_ms: 88,
+    };
+    const scanRun = {
+      id: 'run-scan',
+      session_id: 's1',
+      ai_portfolio_event_id: null,
+      run_at: '2026-09-11T09:30:00Z',
+      run_trigger: 'scheduled',
+      status: 'completed',
+      signals_scanned: 1,
+      signals_actionable: 0,
+      orders_executed: 0,
+      orders_skipped: 0,
+      duration_ms: 12,
+    };
+    mockedGet.mockImplementation((url: string) => {
+      if (url.endsWith('/paper-trading/sessions')) {
+        return Promise.resolve({ data: { items: [session], total: 1 } });
+      }
+      if (url.endsWith('/kpis')) {
+        return Promise.resolve({ data: KPIS });
+      }
+      if (url.includes('/ai-portfolio/sessions/') && url.endsWith('/events')) {
+        return Promise.resolve({ data: { items: [], total: 0 } });
+      }
+      if (url.includes('/runs')) {
+        return Promise.resolve({ data: { items: [aiRun, scanRun], total: 2 } });
+      }
+      return Promise.resolve({ data: { items: [], total: 0 } });
+    });
+
+    renderPage(<PaperTradingSessionPage />);
+    // Wait for the run rows to render (the AI run's duration is unique) before
+    // asserting on links, so we don't race the runs query.
+    await screen.findByText('88 ms');
+
+    // The AI run's timestamp cell links to its run detail; the scheduled run has
+    // no producing AI event, so exactly one run links to /runs/.
+    const runLinks = screen
+      .getAllByRole('link')
+      .filter((el) => el.getAttribute('href')?.startsWith('/runs/'));
+    expect(runLinks).toHaveLength(1);
+    expect(runLinks[0]).toHaveAttribute('href', '/runs/evt-9');
   });
 
   it('shows the AI events server total, not just the current page length', async () => {

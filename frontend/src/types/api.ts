@@ -363,6 +363,8 @@ export interface PaperTradeReconcileResult {
 export interface SessionRun {
   id: string;
   session_id: string;
+  /** The AI build/rebalance event that produced this run, or null for stop-loss and scheduled/manual runs. */
+  ai_portfolio_event_id: string | null;
   run_at: string;
   signals_scanned: number;
   signals_actionable: number;

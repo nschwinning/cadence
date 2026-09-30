@@ -361,6 +361,7 @@ def record_session_run(
     status: RunStatus = RunStatus.SUCCESS,
     run_trigger: str = "scheduled",
     duration_ms: int | None = None,
+    ai_portfolio_event_id: uuid.UUID | None = None,
 ) -> SessionRun:
     """Record a session run (a single scan/rebalance)."""
     run = SessionRun(
@@ -373,6 +374,7 @@ def record_session_run(
         status=status.value,
         run_trigger=run_trigger,
         duration_ms=duration_ms,
+        ai_portfolio_event_id=ai_portfolio_event_id,
     )
     session.add(run)
     session.commit()

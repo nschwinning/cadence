@@ -112,6 +112,43 @@ describe('SessionComparisonChart', () => {
     expect(yLabels[0]).toHaveTextContent('$110,000.00');
   });
 
+  it('draws a 0% baseline in the return view and drops it in the value view', async () => {
+    const { container } = renderChart([
+      series('a', 'Alpha', 100000, [
+        ['2026-01-04', 100000],
+        ['2026-01-05', 110000],
+      ]),
+    ]);
+
+    await screen.findByRole('img', { name: /return percent/i });
+    expect(
+      container.querySelectorAll('[data-testid="comparison-baseline"]'),
+    ).toHaveLength(1);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Value $' }));
+
+    // The $ view has no 0% baseline.
+    expect(
+      container.querySelectorAll('[data-testid="comparison-baseline"]'),
+    ).toHaveLength(0);
+  });
+
+  it('keeps 0% in the return-view domain even when every session is up', async () => {
+    // Both points are gains (+5%, +10%), so without forcing 0 the domain would
+    // start at 5%; the baseline expansion pins the bottom tick to 0%.
+    renderChart([
+      series('a', 'Alpha', 100000, [
+        ['2026-01-04', 105000],
+        ['2026-01-05', 110000],
+      ]),
+    ]);
+
+    await screen.findByRole('img', { name: /return percent/i });
+    const yLabels = screen.getAllByTestId('chart-y-label');
+    expect(yLabels[0]).toHaveTextContent('10.00%');
+    expect(yLabels[yLabels.length - 1]).toHaveTextContent('0.00%');
+  });
+
   it('shows no axis labels in the placeholder state', async () => {
     renderChart([series('a', 'Alpha', 100000, [['2026-01-04', 100000]])]);
 
