@@ -20,6 +20,7 @@ dependencies = [
     "serpapi>=1.0.2",
     "truststore>=0.10.4",
     "requests>=2.32",
+    "httpx>=0.28",
 ]
 
 [dependency-groups]
@@ -27,7 +28,6 @@ dev = [
     "pytest>=8.3",
     "ruff>=0.7",
     "mypy>=1.13",
-    "httpx>=0.28",
     "types-requests",
 ]
 
