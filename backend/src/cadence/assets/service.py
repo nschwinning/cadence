@@ -30,6 +30,7 @@ from cadence.assets.metrics import derive_metrics
 from cadence.assets.models import Asset, AssetDailySnapshot
 from cadence.broker.base import Broker
 from cadence.broker.models import AssetClass
+from cadence.price_history import service as price_history_service
 
 
 def normalize_ticker(ticker: str) -> str:
@@ -154,6 +155,12 @@ def add_asset(
     session.add(asset)
     session.commit()
     session.refresh(asset)
+
+    # Backfill the new asset's daily close history (bounded lookback) so range
+    # returns are available immediately. Best-effort: a provider failure leaves
+    # the asset added with no history rather than failing the add.
+    price_history_service.backfill(session, provider, asset)
+
     return asset
 
 

@@ -6,7 +6,7 @@ import { MemoryRouter } from 'react-router-dom';
 import type { ReactNode } from 'react';
 import { AssetsPage } from './AssetsPage';
 import { apiClient } from '../../api/client';
-import type { Asset, AssetPage } from '../../types/api';
+import type { Asset, AssetPage, DashboardMetrics } from '../../types/api';
 
 vi.mock('../../api/client', () => ({
   apiClient: { get: vi.fn(), post: vi.fn(), delete: vi.fn() },
@@ -182,5 +182,37 @@ describe('AssetsPage', () => {
     expect(
       await screen.findByText('That asset already exists in your universe.'),
     ).toBeInTheDocument();
+  });
+
+  it('renders the by-category and by-sector composition donut tiles from dashboard metrics', async () => {
+    const metrics: DashboardMetrics = {
+      assets: {
+        total: 120,
+        eligible: 90,
+        ineligible: 30,
+        by_category: [
+          { key: 'stock', count: 100 },
+          { key: 'crypto', count: 20 },
+        ],
+        by_sector: [{ key: 'technology', count: 40 }],
+      },
+      portfolio_count: 0,
+      paper_trading: { active_sessions: 0, recent_trades: 0 },
+    };
+    mockedGet.mockImplementation((url: string) => {
+      if (url.includes('/dashboard/metrics')) {
+        return Promise.resolve({ data: metrics });
+      }
+      return Promise.resolve(page([apple]));
+    });
+
+    renderWithClient(<AssetsPage />);
+
+    // Two equal-sized composition tiles, identified by their section labels.
+    expect(await screen.findByText('By category')).toBeInTheDocument();
+    expect(screen.getByText('By sector')).toBeInTheDocument();
+    // Each donut shows its breakdown total in the center (120 category, 40 sector).
+    expect(screen.getByText('120')).toBeInTheDocument();
+    expect(screen.getByText('40')).toBeInTheDocument();
   });
 });

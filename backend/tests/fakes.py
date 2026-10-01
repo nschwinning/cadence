@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from concurrent.futures import Future
+from datetime import date, timedelta
 from typing import Any
 
 from cadence.agents.tools import note_web_search
@@ -19,6 +20,27 @@ from cadence.recommendations.agent import (
     build_recommendation_prompt,
 )
 from cadence.recommendations.composition import UniverseComposition
+
+
+def _synthetic_series(
+    ticker: str, start: date, end: date
+) -> list[tuple[date, float]]:
+    """Deterministic per-ticker daily close series over ``[start, end]``.
+
+    Stable across calls (no randomness): the base level is derived from the
+    ticker and each day drifts by a fixed small step, so offline/stub mode
+    yields a reproducible series per ticker.
+    """
+
+    base = 50.0 + float(sum(ord(ch) for ch in ticker) % 50)
+    out: list[tuple[date, float]] = []
+    day = start
+    step = 0
+    while day <= end:
+        out.append((day, round(base * (1.0 + 0.0005 * step), 4)))
+        day += timedelta(days=1)
+        step += 1
+    return out
 
 
 class FakeMarketDataProvider:
@@ -44,6 +66,9 @@ class FakeMarketDataProvider:
         history_by_ticker: dict[str, list[HistoryBar]] | None = None,
         history_error_by_ticker: dict[str, Exception] | None = None,
         info_error_by_ticker: dict[str, Exception] | None = None,
+        daily_closes_by_ticker: dict[str, list[tuple[date, float]]] | None = None,
+        daily_closes_error: Exception | None = None,
+        synthetic_closes: bool = False,
     ) -> None:
         self._info = info
         self._history = history or []
@@ -59,8 +84,16 @@ class FakeMarketDataProvider:
         # Per-ticker info errors drive the dotted->dash class-share fallback:
         # raise for ``BRK.B`` but succeed for ``BRK-B``.
         self._info_error_by_ticker = info_error_by_ticker or {}
+        # Price-history batch closes: explicit per-ticker series win; otherwise a
+        # synthetic deterministic series (when enabled) or the closes derived
+        # from configured history bars are returned, so backfill/ingestion paths
+        # work offline. A ticker with no source is simply absent from the result.
+        self._daily_closes_by_ticker = daily_closes_by_ticker or {}
+        self._daily_closes_error = daily_closes_error
+        self._synthetic_closes = synthetic_closes
         self.detail_calls = 0
         self.history_calls: list[str] = []
+        self.daily_closes_calls: list[list[str]] = []
 
     def fetch_info(self, ticker: str) -> AssetInfo:
         if ticker in self._info_error_by_ticker:
@@ -86,6 +119,33 @@ class FakeMarketDataProvider:
         if currency.upper() == "USD":
             return 1.0
         return self._fx_rates[currency.upper()]
+
+    def fetch_daily_closes(
+        self, tickers: list[str], start: date, end: date
+    ) -> dict[str, list[tuple[date, float]]]:
+        self.daily_closes_calls.append(list(tickers))
+        if self._daily_closes_error is not None:
+            raise self._daily_closes_error
+        result: dict[str, list[tuple[date, float]]] = {}
+        for ticker in tickers:
+            series = self._daily_closes_for(ticker, start, end)
+            if series:
+                result[ticker] = sorted(series)
+        return result
+
+    def _daily_closes_for(
+        self, ticker: str, start: date, end: date
+    ) -> list[tuple[date, float]]:
+        if ticker in self._daily_closes_by_ticker:
+            return [
+                (day, close)
+                for day, close in self._daily_closes_by_ticker[ticker]
+                if start <= day <= end
+            ]
+        if self._synthetic_closes:
+            return _synthetic_series(ticker, start, end)
+        bars = self._history_by_ticker.get(ticker, self._history)
+        return [(bar.date, bar.close) for bar in bars if start <= bar.date <= end]
 
     def fetch_detail(self, ticker: str) -> AssetDetailData:
         self.detail_calls += 1

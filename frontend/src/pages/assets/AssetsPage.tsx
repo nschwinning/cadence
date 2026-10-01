@@ -14,6 +14,8 @@ import {
 } from '../../api/assets';
 import { CategoryBadge, CATEGORY_STYLES } from '../../components/CategoryBadge';
 import { SectorBadge, SECTOR_STYLES } from '../../components/SectorBadge';
+import { BreakdownTile } from '../../components/dashboard/BreakdownTile';
+import { useDashboardMetrics } from '../../api/dashboard';
 import { RecommendAssetsCard } from './RecommendAssetsCard';
 import type {
   Asset,
@@ -38,6 +40,11 @@ function formatUsd(value: number | null): string {
 function formatYears(value: number | null): string {
   if (value === null || Number.isNaN(value)) return '—';
   return `${value.toFixed(1)} yrs`;
+}
+
+/** Turn a raw slug/key ("financial-services", "no sector") into a display label. */
+function humanize(key: string): string {
+  return key.replace(/[-_]/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
 }
 
 /**
@@ -319,6 +326,7 @@ function readStoredPageSize(): AssetPageSize {
 
 export function AssetsPage() {
   const addAsset = useAddAsset();
+  const { data: metrics } = useDashboardMetrics();
 
   const [ticker, setTicker] = useState('');
   const [search, setSearch] = useState('');
@@ -489,6 +497,22 @@ export function AssetsPage() {
         {/* Recommend-assets section */}
         <RecommendAssetsCard onViewUniverse={focusUniverse} />
       </div>
+
+      {/* Composition donuts — equal-sized tiles, sourced from the metrics read. */}
+      {metrics?.assets && (
+        <div className="grid grid-cols-1 gap-6 sm:grid-cols-2">
+          <BreakdownTile
+            title="By category"
+            entries={metrics.assets.by_category}
+            formatKey={humanize}
+          />
+          <BreakdownTile
+            title="By sector"
+            entries={metrics.assets.by_sector}
+            formatKey={humanize}
+          />
+        </div>
+      )}
 
       {/* List section */}
       <div className="rounded-lg border border-slate-200 bg-white shadow-sm">

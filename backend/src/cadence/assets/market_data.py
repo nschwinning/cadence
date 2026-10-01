@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, timedelta
 from typing import Protocol, runtime_checkable
 
 from cadence.assets.constants import DETAIL_HISTORY_TRADING_DAYS
@@ -112,6 +112,22 @@ class MarketDataProvider(Protocol):
         """
         ...
 
+    def fetch_daily_closes(
+        self, tickers: list[str], start: date, end: date
+    ) -> dict[str, list[tuple[date, float]]]:
+        """Return daily closes per ticker over ``[start, end]`` (ascending).
+
+        Batch form used by price-history backfill/ingestion. The result maps each
+        ticker to its ``(date, close)`` points sorted ascending; a ticker the
+        provider could not supply data for is simply absent from the mapping
+        (its data gap does not fail the others). An empty ``tickers`` list
+        returns an empty mapping.
+
+        Raises:
+            MarketDataUnavailableError: on a wholesale provider/network failure.
+        """
+        ...
+
     def fetch_fx_rate(self, currency: str) -> float:
         """Return the ``currency`` -> USD conversion rate (1.0 for USD).
 
@@ -211,6 +227,53 @@ class YFinanceMarketDataProvider:
 
         bars.sort(key=lambda bar: bar.date)
         return bars
+
+    def fetch_daily_closes(
+        self, tickers: list[str], start: date, end: date
+    ) -> dict[str, list[tuple[date, float]]]:
+        if not tickers:
+            return {}
+
+        import yfinance as yf
+
+        try:
+            # yfinance treats ``end`` as exclusive; add a day to include it.
+            frame = yf.download(
+                tickers,
+                start=start,
+                end=end + timedelta(days=1),
+                auto_adjust=False,
+                progress=False,
+                group_by="ticker",
+                threads=True,
+            )
+        except Exception as exc:
+            raise MarketDataUnavailableError(
+                "Could not fetch daily closes"
+            ) from exc
+
+        if frame is None or frame.empty:
+            return {}
+
+        result: dict[str, list[tuple[date, float]]] = {}
+        single = len(tickers) == 1
+        for ticker in tickers:
+            try:
+                # A single-ticker download has flat (field) columns; a multi
+                # download groups by ticker: (ticker, field).
+                closes = frame["Close"] if single else frame[ticker]["Close"]
+            except (KeyError, IndexError):
+                continue
+            points: list[tuple[date, float]] = []
+            for index, value in closes.items():
+                close = self._as_float(value)
+                if close is None:
+                    continue
+                points.append((index.date(), close))
+            if points:
+                points.sort(key=lambda point: point[0])
+                result[ticker] = points
+        return result
 
     def fetch_fx_rate(self, currency: str) -> float:
         currency = currency.upper()

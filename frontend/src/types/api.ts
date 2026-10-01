@@ -763,3 +763,158 @@ export interface DashboardMetrics {
   portfolio_count: number;
   paper_trading: PaperTradingMetrics;
 }
+
+// --------------------------------------------------------------------------- //
+// Dashboard overview (range-scoped)
+// --------------------------------------------------------------------------- //
+
+/**
+ * The global broker-style range selector. Wire values mirror the backend
+ * `DashboardRange` enum and are sent verbatim as the `range` query param.
+ */
+export type DashboardRange = '1D' | '1W' | '1M' | 'YTD' | '1Y' | 'Max';
+
+/** All ranges in display order, for rendering the selector. */
+export const DASHBOARD_RANGES: readonly DashboardRange[] = [
+  '1D',
+  '1W',
+  '1M',
+  'YTD',
+  '1Y',
+  'Max',
+] as const;
+
+/** One (date, value) point of a session's range-windowed value series. */
+export interface DashboardSessionValuePoint {
+  date: string; // ISO YYYY-MM-DD
+  value: number;
+}
+
+/** A single active session's range-scoped performance. Mirrors `DashboardSessionPerformance`. */
+export interface DashboardSessionPerformance {
+  id: string;
+  label: string;
+  allocated_capital: number;
+  current_value: number;
+  pnl: number;
+  fees: number;
+  points: DashboardSessionValuePoint[];
+}
+
+/** A reference to a single AI run for the automation summary. */
+export interface DashboardAutomationRun {
+  id: string;
+  event_type: string;
+  status: string;
+  created_at: string; // ISO datetime
+  session_id: string | null;
+}
+
+/** Health of the AI rebalance automation, scoped to the selected range. */
+export interface DashboardAutomationSummary {
+  latest_run: DashboardAutomationRun | null;
+  in_flight: boolean;
+  failed_in_range: number;
+  next_run_approx: string; // ISO datetime
+  next_run_is_approximate: boolean;
+}
+
+/** One AI run in the recent-activity feed. */
+export interface DashboardActivityEntry {
+  id: string;
+  session_id: string | null;
+  session_label: string | null;
+  kind: string;
+  status: string;
+  created_at: string; // ISO datetime
+}
+
+/** Current composition of the asset universe (range-independent). */
+export interface DashboardUniverseBalance {
+  total: number;
+  eligible: number;
+  ineligible: number;
+  sectors_count: number;
+  top_sector_key: string | null;
+  top_sector_share: number;
+  top_category_key: string | null;
+  top_category_share: number;
+}
+
+/** One asset's market return over the range, for the performer rankings. */
+export interface DashboardPerformerEntry {
+  asset_id: number;
+  ticker: string;
+  name: string | null;
+  return_pct: number;
+}
+
+/** Best and worst tracked assets by market return over the range. */
+export interface DashboardUniversePerformers {
+  best: DashboardPerformerEntry[];
+  worst: DashboardPerformerEntry[];
+}
+
+/** The full range-scoped overview from `GET /api/v1/dashboard/overview`. */
+export interface DashboardOverview {
+  range: DashboardRange;
+  sessions: DashboardSessionPerformance[];
+  automation: DashboardAutomationSummary;
+  recent_activity: DashboardActivityEntry[];
+  universe_balance: DashboardUniverseBalance;
+  universe_performers: DashboardUniversePerformers;
+}
+
+// --- Technical-indicator configuration (read-only) -------------------------
+
+/** One period/lookback parameter defining an indicator. */
+export interface IndicatorParam {
+  name: string;
+  value: number;
+}
+
+/** A single indicator in the computed set with its defining parameters. */
+export interface IndicatorInfo {
+  key: string;
+  label: string;
+  params: IndicatorParam[];
+}
+
+/**
+ * One trend-gate condition. `threshold` is null for comparisons between two
+ * indicators (e.g. SMA50 > SMA200).
+ */
+export interface GateCondition {
+  description: string;
+  threshold: number | null;
+}
+
+/** The deterministic uptrend gate: regime + momentum conditions and rules. */
+export interface TrendGateConfig {
+  description: string;
+  regime: GateCondition[];
+  momentum: GateCondition[];
+  obv_bonus: string;
+  missing_indicator_rule: string;
+}
+
+/** One reversal flag and what sets it. */
+export interface ReversalFlagInfo {
+  key: string;
+  label: string;
+  description: string;
+}
+
+/** The reversal-flag definitions plus their tunable thresholds. */
+export interface ReversalFlagsConfig {
+  flags: ReversalFlagInfo[];
+  rsi_overbought: number;
+  slope_flatten_eps: number;
+}
+
+/** The full read-only config from `GET /api/v1/technical-indicators/config`. */
+export interface TechnicalIndicatorConfig {
+  indicators: IndicatorInfo[];
+  trend_gate: TrendGateConfig;
+  reversal_flags: ReversalFlagsConfig;
+}

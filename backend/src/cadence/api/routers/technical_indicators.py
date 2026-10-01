@@ -14,8 +14,12 @@ from fastapi import APIRouter, Depends, status
 from sqlalchemy.orm import Session
 
 from cadence.api.routers.ai_portfolio import require_valid_cron_token
-from cadence.api.schemas import TechnicalIndicatorRunResponse
+from cadence.api.schemas import (
+    TechnicalIndicatorConfig,
+    TechnicalIndicatorRunResponse,
+)
 from cadence.database import get_db
+from cadence.technical_indicators import service
 from cadence.technical_indicators.background import (
     TechnicalIndicatorJobRunner,
     default_job_runner,
@@ -35,6 +39,18 @@ DbSession = Annotated[Session, Depends(get_db)]
 JobRunner = Annotated[
     TechnicalIndicatorJobRunner, Depends(get_technical_indicator_job_runner)
 ]
+
+
+@router.get("/config", response_model=TechnicalIndicatorConfig)
+def get_indicator_config() -> TechnicalIndicatorConfig:
+    """Return the configured technical-indicator setup for display.
+
+    A plain read (NOT cron-guarded): the indicator set with its period/lookback
+    parameters, the deterministic uptrend trend-gate rules and thresholds, and
+    the reversal-flag definitions and thresholds, sourced from the live
+    configuration. Does not start or alter any computation.
+    """
+    return TechnicalIndicatorConfig.model_validate(service.get_indicator_config())
 
 
 @router.post(

@@ -191,3 +191,45 @@ def test_fetch_history_reads_full_ohlcv_bar(monkeypatch) -> None:
     assert first.close == 11.5
     assert first.adj_close == 5.75
     assert first.volume == 1000.0
+
+
+def test_fetch_daily_closes_multi_ticker(monkeypatch) -> None:
+    from datetime import date
+
+    index = pd.to_datetime(["2024-01-02", "2024-01-03"])
+    columns = pd.MultiIndex.from_tuples([("AAA", "Close"), ("BBB", "Close")])
+    frame = pd.DataFrame(
+        [[10.0, 20.0], [11.0, 21.0]], index=index, columns=columns
+    )
+    monkeypatch.setattr(yf, "download", lambda *a, **k: frame)
+
+    result = YFinanceMarketDataProvider().fetch_daily_closes(
+        ["AAA", "BBB"], date(2024, 1, 2), date(2024, 1, 3)
+    )
+
+    assert result["AAA"] == [(date(2024, 1, 2), 10.0), (date(2024, 1, 3), 11.0)]
+    assert result["BBB"] == [(date(2024, 1, 2), 20.0), (date(2024, 1, 3), 21.0)]
+
+
+def test_fetch_daily_closes_single_ticker_flat_columns(monkeypatch) -> None:
+    from datetime import date
+
+    index = pd.to_datetime(["2024-01-02", "2024-01-03"])
+    frame = pd.DataFrame({"Close": [10.0, 11.0]}, index=index)
+    monkeypatch.setattr(yf, "download", lambda *a, **k: frame)
+
+    result = YFinanceMarketDataProvider().fetch_daily_closes(
+        ["AAA"], date(2024, 1, 2), date(2024, 1, 3)
+    )
+
+    assert result == {"AAA": [(date(2024, 1, 2), 10.0), (date(2024, 1, 3), 11.0)]}
+
+
+def test_fetch_daily_closes_empty_tickers_returns_empty() -> None:
+    from datetime import date
+
+    result = YFinanceMarketDataProvider().fetch_daily_closes(
+        [], date(2024, 1, 2), date(2024, 1, 3)
+    )
+
+    assert result == {}

@@ -74,9 +74,10 @@ export function BreakdownTile({
       {entries.length === 0 || total === 0 ? (
         <p className="mt-3 text-sm text-slate-400">No data yet</p>
       ) : (
-        <div className="mt-4 flex flex-col gap-4 sm:flex-row sm:items-center">
-          {/* Donut */}
-          <div className="relative mx-auto h-40 w-40 shrink-0">
+        <div className="mt-4 flex justify-center">
+          {/* Donut — slice identity is revealed on hover/keyboard focus (center
+              overlay + aria-label); there is no persistent legend. */}
+          <div className="relative h-40 w-40 shrink-0">
             <svg
               viewBox={`0 0 ${VIEWBOX} ${VIEWBOX}`}
               className="h-full w-full"
@@ -155,46 +156,6 @@ export function BreakdownTile({
               )}
             </div>
           </div>
-
-          {/* Legend */}
-          <ul className="flex min-w-0 flex-1 flex-col gap-1">
-            {slices.map((s) => {
-              const isActive = s.entry.key === activeKey;
-              return (
-                <li key={s.entry.key}>
-                  <button
-                    type="button"
-                    className={`flex w-full items-center gap-2 rounded px-1 py-0.5 text-left outline-none focus:ring-1 focus:ring-slate-400 ${
-                      isActive ? 'bg-slate-50' : ''
-                    }`}
-                    onMouseEnter={() => detail(s.entry.key)}
-                    onMouseLeave={clearDetail}
-                    onFocus={() => detail(s.entry.key)}
-                    onBlur={clearDetail}
-                    aria-label={`${s.label}: ${s.entry.count.toLocaleString()} (${formatPercent(
-                      s.pct / 100,
-                      1,
-                    )})`}
-                  >
-                    <span
-                      aria-hidden="true"
-                      className="inline-block h-2.5 w-2.5 shrink-0 rounded-sm"
-                      style={{ backgroundColor: s.color }}
-                    />
-                    <span className="min-w-0 flex-1 truncate text-sm text-slate-600">
-                      {s.label}
-                    </span>
-                    <span className="text-sm font-semibold tabular-nums text-slate-900">
-                      {s.entry.count.toLocaleString()}
-                    </span>
-                    <span className="w-14 shrink-0 text-right text-xs tabular-nums text-slate-500">
-                      {formatPercent(s.pct / 100, 1)}
-                    </span>
-                  </button>
-                </li>
-              );
-            })}
-          </ul>
         </div>
       )}
     </section>

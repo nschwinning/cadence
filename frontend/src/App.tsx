@@ -9,6 +9,7 @@ import { PaperTradingPage } from './pages/paper-trading/PaperTradingPage';
 import { PaperTradingSessionPage } from './pages/paper-trading/PaperTradingSessionPage';
 import { RunsPage } from './pages/runs/RunsPage';
 import { RunDetailPage } from './pages/runs/RunDetailPage';
+import { TechnicalIndicatorsPage } from './pages/technical-indicators/TechnicalIndicatorsPage';
 
 export function App() {
   return (
@@ -23,6 +24,10 @@ export function App() {
         <Route path="paper-trading/:id" element={<PaperTradingSessionPage />} />
         <Route path="runs" element={<RunsPage />} />
         <Route path="runs/:id" element={<RunDetailPage />} />
+        <Route
+          path="technical-indicators"
+          element={<TechnicalIndicatorsPage />}
+        />
       </Route>
     </Routes>
   );

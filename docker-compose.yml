@@ -28,7 +28,10 @@ services:
       CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:5174}
       # AI recommender credentials/config, forwarded from the root .env.
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      # Web-search provider for the agent web_search tool (serpapi | serper).
+      WEB_SEARCH_PROVIDER: ${WEB_SEARCH_PROVIDER:-serpapi}
       SERP_API_KEY: ${SERP_API_KEY:-}
+      SERPER_API_KEY: ${SERPER_API_KEY:-}
       RECOMMENDER_MODEL: ${RECOMMENDER_MODEL:-gpt-5-mini}
       # Offline stub recommender toggle (empty/off by default). Enable for the
       # end-to-end smoke or local dev when OpenAI/SerpAPI keys are absent.

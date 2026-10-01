@@ -1,12 +1,17 @@
-"""Agent tools. Currently a SerpAPI-backed ``web_search`` function tool.
+"""Agent tools. A provider-configurable ``web_search`` function tool.
 
 Follows the trading-bot ``agent/tools.py`` pattern: the search is a blocking
-SerpAPI call pushed onto a thread and awaited under a timeout, gated on
-``SERP_API_KEY``. The tool raises a clear error when the key is missing so a run
-fails cleanly rather than silently returning nothing.
+call pushed onto a thread and awaited under a timeout. The backend search
+provider is chosen by ``settings.WEB_SEARCH_PROVIDER`` — ``serpapi`` (the SerpAPI
+SDK, keyed by ``SERP_API_KEY``) or ``serper`` (an HTTP POST to serper.dev, keyed
+by ``SERPER_API_KEY``). Each provider raises a clear error when its own key is
+missing so a run fails cleanly rather than silently returning nothing; an
+unrecognised provider value also raises.
 
-The raw SerpAPI payload is large (search metadata, pagination, related
-questions, ads, …). Returning it verbatim on every call floods the agent's
+Both providers normalise their raw response to the SAME trimmed shape so the
+persisted research transcript and the UI that renders it are unaffected by the
+choice. The raw payloads are large (search metadata, pagination, related
+questions, ads, …); returning them verbatim on every call floods the agent's
 context and, across many searches in one run, overflows the model's context
 window. So we trim each response down to the few fields the agent actually needs
 — the top organic results plus any answer box / knowledge-graph snippet.
@@ -20,12 +25,16 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from typing import Any
 
+import httpx
 import serpapi
 from agents.tool import function_tool
 
 from cadence.config import settings
 
 SEARCH_TIMEOUT_SECONDS = 30
+
+#: Serper (serper.dev) Google-search endpoint used by the ``serper`` provider.
+SERPER_SEARCH_URL = "https://google.serper.dev/search"
 
 #: How many organic results to keep per search. Enough to inform the agent
 #: without ballooning the context.
@@ -139,13 +148,113 @@ def _trim_serp_payload(raw: dict[str, Any]) -> dict[str, Any]:
     return trimmed
 
 
+def _trim_serper_payload(raw: dict[str, Any]) -> dict[str, Any]:
+    """Reduce a raw Serper (serper.dev) Google payload to the shared trimmed shape.
+
+    Serper uses different top-level keys than SerpAPI (``organic`` /
+    ``answerBox`` / ``knowledgeGraph``); this maps them onto the exact same
+    ``organic_results`` / ``answer_box`` / ``knowledge_graph`` shape
+    :func:`_trim_serp_payload` emits, so downstream consumers see one shape
+    regardless of provider.
+    """
+    trimmed: dict[str, Any] = {}
+
+    # Surface a backend-reported error so the agent can react instead of hanging.
+    if raw.get("error"):
+        trimmed["error"] = raw["error"]
+
+    organic = raw.get("organic")
+    if isinstance(organic, list):
+        trimmed["organic_results"] = [
+            _compact(item, ("title", "link", "snippet"))
+            for item in organic[:MAX_ORGANIC_RESULTS]
+            if isinstance(item, dict)
+        ]
+
+    answer_box = raw.get("answerBox")
+    if isinstance(answer_box, dict):
+        compact = _compact(answer_box, ("title", "answer", "snippet"))
+        if compact:
+            trimmed["answer_box"] = compact
+
+    knowledge_graph = raw.get("knowledgeGraph")
+    if isinstance(knowledge_graph, dict):
+        compact = _compact(knowledge_graph, ("title", "type", "description"))
+        if compact:
+            trimmed["knowledge_graph"] = compact
+
+    return trimmed
+
+
+def _search_serpapi(query: str) -> dict[str, Any]:
+    """Run a blocking SerpAPI Google search and return the trimmed payload.
+
+    Raises ``ValueError`` when ``SERP_API_KEY`` is unset so a run fails cleanly.
+    """
+    serp_api_key = settings.SERP_API_KEY
+    if not serp_api_key:
+        raise ValueError(
+            "SERP_API_KEY is not set. Add it to your environment or .env file."
+        )
+
+    client = serpapi.Client(api_key=serp_api_key)
+    results = client.search(
+        {
+            "engine": "google",
+            "q": query,
+            "google_domain": "google.com",
+            "hl": "en",
+            "gl": "us",
+            "num": MAX_ORGANIC_RESULTS,
+        }
+    )
+    raw: dict[str, Any] = results.as_dict()
+    return _trim_serp_payload(raw)
+
+
+def _search_serper(query: str) -> dict[str, Any]:
+    """Run a blocking Serper (serper.dev) Google search and return the trimmed payload.
+
+    Raises ``ValueError`` when ``SERPER_API_KEY`` is unset so a run fails cleanly.
+    A non-200 response or transport error is converted to an ``{"error": ...}``
+    result — mirroring how a SerpAPI error surfaces — so the agent sees a uniform
+    error field rather than an exception.
+    """
+    serper_api_key = settings.SERPER_API_KEY
+    if not serper_api_key:
+        raise ValueError(
+            "SERPER_API_KEY is not set. Add it to your environment or .env file."
+        )
+
+    try:
+        response = httpx.post(
+            SERPER_SEARCH_URL,
+            headers={"X-API-KEY": serper_api_key},
+            json={"q": query, "num": MAX_ORGANIC_RESULTS, "gl": "us", "hl": "en"},
+            timeout=SEARCH_TIMEOUT_SECONDS,
+        )
+    except httpx.HTTPError as exc:
+        return {"error": f"Serper request failed: {exc}"}
+
+    if response.status_code != httpx.codes.OK:
+        return {"error": f"Serper returned HTTP {response.status_code}"}
+
+    raw: dict[str, Any] = response.json()
+    return _trim_serper_payload(raw)
+
+
 async def _run_web_search(query: str) -> dict[str, Any]:
     """Core web-search implementation shared by the tool and its unit tests.
 
     Honors the per-run budget installed by :func:`web_search_budget`: once the
-    budget is exhausted this returns an error dict WITHOUT contacting SerpAPI, so
-    a run cannot exceed its configured search cap. When a budget is set and has
-    remaining capacity it is decremented before the search proceeds.
+    budget is exhausted this returns an error dict WITHOUT contacting any
+    provider, so a run cannot exceed its configured search cap. When a budget is
+    set and has remaining capacity it is decremented before the search proceeds.
+
+    Dispatches on :data:`settings.WEB_SEARCH_PROVIDER` to the SerpAPI or Serper
+    backend; an unrecognised value raises ``ValueError``. Both providers are run
+    on a worker thread under the shared timeout and normalise to the same trimmed
+    shape before being recorded in the research log.
     """
     remaining = _web_search_budget.get()
     if remaining is not None:
@@ -154,30 +263,20 @@ async def _run_web_search(query: str) -> dict[str, Any]:
             return {"error": BUDGET_EXHAUSTED_MESSAGE}
         _web_search_budget.set(remaining - 1)
 
-    serp_api_key = settings.SERP_API_KEY
-    if not serp_api_key:
+    provider = settings.WEB_SEARCH_PROVIDER
+    if provider == "serpapi":
+        search = _search_serpapi
+    elif provider == "serper":
+        search = _search_serper
+    else:
         raise ValueError(
-            "SERP_API_KEY is not set. Add it to your environment or .env file."
+            f"WEB_SEARCH_PROVIDER has an unrecognised value {provider!r}; "
+            "expected 'serpapi' or 'serper'."
         )
-
-    def _search() -> dict[str, Any]:
-        client = serpapi.Client(api_key=serp_api_key)
-        results = client.search(
-            {
-                "engine": "google",
-                "q": query,
-                "google_domain": "google.com",
-                "hl": "en",
-                "gl": "us",
-                "num": MAX_ORGANIC_RESULTS,
-            }
-        )
-        raw: dict[str, Any] = results.as_dict()
-        return _trim_serp_payload(raw)
 
     loop = asyncio.get_event_loop()
     trimmed = await asyncio.wait_for(
-        loop.run_in_executor(None, _search),
+        loop.run_in_executor(None, search, query),
         timeout=SEARCH_TIMEOUT_SECONDS,
     )
     note_web_search(query, trimmed, error=trimmed.get("error"))
@@ -186,8 +285,9 @@ async def _run_web_search(query: str) -> dict[str, Any]:
 
 @function_tool(
     description_override=(
-        "Search Google via SerpAPI and return the top organic results "
-        "(title, link, snippet) plus any answer box or knowledge-graph snippet."
+        "Search Google (via the configured provider, SerpAPI or Serper) and "
+        "return the top organic results (title, link, snippet) plus any answer "
+        "box or knowledge-graph snippet."
     )
 )
 async def web_search(query: str) -> dict[str, Any]:

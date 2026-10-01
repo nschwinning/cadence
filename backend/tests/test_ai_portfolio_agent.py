@@ -407,6 +407,7 @@ def test_web_search_budget_stops_calling_serpapi_once_exhausted(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _CountingSerpClient.calls = 0
+    monkeypatch.setattr(settings, "WEB_SEARCH_PROVIDER", "serpapi")
     monkeypatch.setattr(settings, "SERP_API_KEY", "test-key")
     monkeypatch.setattr(tools_module.serpapi, "Client", _CountingSerpClient)
 
@@ -430,6 +431,7 @@ def test_web_search_without_budget_is_unbounded(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _CountingSerpClient.calls = 0
+    monkeypatch.setattr(settings, "WEB_SEARCH_PROVIDER", "serpapi")
     monkeypatch.setattr(settings, "SERP_API_KEY", "test-key")
     monkeypatch.setattr(tools_module.serpapi, "Client", _CountingSerpClient)
 
@@ -439,3 +441,122 @@ def test_web_search_without_budget_is_unbounded(
 
     asyncio.run(_drive())
     assert _CountingSerpClient.calls == 5
+
+
+# --------------------------------------------------------------------------- #
+# Web-search provider dispatch (Serper + unknown; httpx monkeypatched — no network)
+# --------------------------------------------------------------------------- #
+
+
+class _FakeSerperResponse:
+    """Minimal stand-in for an ``httpx.Response`` from serper.dev."""
+
+    def __init__(self, payload: dict[str, Any], status_code: int = 200) -> None:
+        self._payload = payload
+        self.status_code = status_code
+
+    def json(self) -> dict[str, Any]:
+        return self._payload
+
+
+def test_serper_provider_is_used_and_normalises_results(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(settings, "WEB_SEARCH_PROVIDER", "serper")
+    monkeypatch.setattr(settings, "SERPER_API_KEY", "serper-key")
+
+    captured: dict[str, Any] = {}
+
+    def _fake_post(url: str, **kwargs: Any) -> _FakeSerperResponse:
+        captured["url"] = url
+        captured["headers"] = kwargs.get("headers")
+        captured["json"] = kwargs.get("json")
+        return _FakeSerperResponse(
+            {
+                "organic": [
+                    {
+                        "title": "Serper result",
+                        "link": "https://example.com/s",
+                        "snippet": "A snippet",
+                        "position": 1,
+                    }
+                ],
+                "answerBox": {"answer": "42"},
+            }
+        )
+
+    monkeypatch.setattr(tools_module.httpx, "post", _fake_post)
+
+    result = asyncio.run(_run_web_search("what is x"))
+
+    assert captured["url"] == tools_module.SERPER_SEARCH_URL
+    assert captured["headers"] == {"X-API-KEY": "serper-key"}
+    assert captured["json"]["q"] == "what is x"
+    assert result["organic_results"] == [
+        {
+            "title": "Serper result",
+            "link": "https://example.com/s",
+            "snippet": "A snippet",
+        }
+    ]
+    assert result["answer_box"] == {"answer": "42"}
+
+
+def test_serper_missing_key_raises_provider_named_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(settings, "WEB_SEARCH_PROVIDER", "serper")
+    monkeypatch.setattr(settings, "SERPER_API_KEY", "")
+
+    with pytest.raises(ValueError, match="SERPER_API_KEY is not set"):
+        asyncio.run(_run_web_search("q"))
+
+
+def test_serper_non_200_surfaces_error_not_exception(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(settings, "WEB_SEARCH_PROVIDER", "serper")
+    monkeypatch.setattr(settings, "SERPER_API_KEY", "serper-key")
+
+    def _fake_post(url: str, **kwargs: Any) -> _FakeSerperResponse:
+        return _FakeSerperResponse({}, status_code=401)
+
+    monkeypatch.setattr(tools_module.httpx, "post", _fake_post)
+
+    result = asyncio.run(_run_web_search("q"))
+    assert "error" in result
+    assert "401" in result["error"]
+
+
+def test_unrecognised_provider_raises(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(settings, "WEB_SEARCH_PROVIDER", "bing")
+
+    with pytest.raises(ValueError, match="unrecognised value"):
+        asyncio.run(_run_web_search("q"))
+
+
+def test_serper_budget_short_circuits_before_provider(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(settings, "WEB_SEARCH_PROVIDER", "serper")
+    monkeypatch.setattr(settings, "SERPER_API_KEY", "serper-key")
+
+    calls = {"n": 0}
+
+    def _fake_post(url: str, **kwargs: Any) -> _FakeSerperResponse:
+        calls["n"] += 1
+        return _FakeSerperResponse({"organic": []})
+
+    monkeypatch.setattr(tools_module.httpx, "post", _fake_post)
+
+    async def _drive() -> list[dict[str, Any]]:
+        with web_search_budget(1):
+            return [
+                await _run_web_search("q1"),
+                await _run_web_search("q2"),  # over budget
+            ]
+
+    results = asyncio.run(_drive())
+
+    assert calls["n"] == 1  # second search never reached Serper
+    assert results[1] == {"error": BUDGET_EXHAUSTED_MESSAGE}

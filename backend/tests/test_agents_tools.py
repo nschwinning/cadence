@@ -5,6 +5,7 @@ from __future__ import annotations
 from cadence.agents.tools import (
     MAX_ORGANIC_RESULTS,
     _trim_serp_payload,
+    _trim_serper_payload,
     note_web_search,
     record_web_searches,
 )
@@ -64,6 +65,53 @@ def test_trim_includes_answer_box_and_knowledge_graph_when_present() -> None:
 def test_trim_surfaces_serpapi_error() -> None:
     trimmed = _trim_serp_payload({"error": "Invalid API key."})
     assert trimmed["error"] == "Invalid API key."
+
+
+def _raw_serper_result(i: int) -> dict[str, object]:
+    return {
+        "position": i,
+        "title": f"Result {i}",
+        "link": f"https://example.com/{i}",
+        "snippet": f"Snippet {i}",
+        "sitelinks": [{"title": "x", "link": "y"}],
+    }
+
+
+def test_trim_serper_normalises_to_the_shared_shape() -> None:
+    # Serper uses organic / answerBox / knowledgeGraph; the trimmed output must
+    # match what _trim_serp_payload produces so downstream consumers see one shape.
+    raw = {
+        "searchParameters": {"q": "x"},
+        "organic": [_raw_serper_result(i) for i in range(10)],
+        "answerBox": {"title": "t", "answer": "42", "extra": "drop"},
+        "knowledgeGraph": {
+            "title": "Acme Corp",
+            "type": "Company",
+            "description": "A company.",
+            "imageUrl": "drop-me",
+        },
+    }
+
+    trimmed = _trim_serper_payload(raw)
+
+    assert set(trimmed) == {"organic_results", "answer_box", "knowledge_graph"}
+    assert len(trimmed["organic_results"]) == MAX_ORGANIC_RESULTS
+    assert trimmed["organic_results"][0] == {
+        "title": "Result 0",
+        "link": "https://example.com/0",
+        "snippet": "Snippet 0",
+    }
+    assert trimmed["answer_box"] == {"title": "t", "answer": "42"}
+    assert trimmed["knowledge_graph"] == {
+        "title": "Acme Corp",
+        "type": "Company",
+        "description": "A company.",
+    }
+
+
+def test_trim_serper_surfaces_error() -> None:
+    trimmed = _trim_serper_payload({"error": "Unauthorized."})
+    assert trimmed["error"] == "Unauthorized."
 
 
 def test_record_web_searches_captures_each_note() -> None:

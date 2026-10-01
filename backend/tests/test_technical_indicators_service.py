@@ -11,6 +11,7 @@ from cadence.assets.category import AssetCategory
 from cadence.assets.market_data import HistoryBar
 from cadence.assets.models import Asset
 from cadence.config import settings
+from cadence.technical_indicators import constants as c
 from cadence.technical_indicators import service
 from cadence.technical_indicators.background import (
     TechnicalIndicatorJobRunner,
@@ -229,3 +230,54 @@ class _noop_ctx:
 
     def __exit__(self, *exc: object) -> None:
         return None
+
+
+def test_get_indicator_config_reflects_constants() -> None:
+    """The config projection reports the live constant values and full sets."""
+    cfg = service.get_indicator_config()
+
+    keys = {ind.key for ind in cfg.indicators}
+    assert {
+        "sma_50",
+        "sma_200",
+        "ema_20",
+        "macd",
+        "rsi_14",
+        "roc_120",
+        "obv",
+        "bb_pctb",
+        "bb_width",
+    } <= keys
+    assert len(cfg.indicators) == 17
+
+    params = {
+        ind.key: {p.name: p.value for p in ind.params} for ind in cfg.indicators
+    }
+    assert params["sma_50"]["period"] == c.SMA_SHORT
+    assert params["sma_200"]["period"] == c.SMA_LONG
+    assert params["ema_20"]["span"] == c.EMA_SPAN
+    assert params["macd"] == {
+        "fast": c.MACD_FAST,
+        "slow": c.MACD_SLOW,
+        "signal": c.MACD_SIGNAL,
+    }
+    assert params["rsi_14"]["period"] == c.RSI_PERIOD
+    assert params["roc_120"]["period"] == c.ROC_PERIOD
+    assert params["bb_pctb"] == {"period": c.BB_PERIOD, "std": c.BB_STD}
+
+    regime_thresholds = [cond.threshold for cond in cfg.trend_gate.regime]
+    assert c.SMA_SLOPE_MIN in regime_thresholds
+    momentum_thresholds = [cond.threshold for cond in cfg.trend_gate.momentum]
+    assert c.MACD_HIST_MIN in momentum_thresholds
+    assert c.RSI_MOMENTUM_MIN in momentum_thresholds
+    assert c.ROC_MOMENTUM_MIN in momentum_thresholds
+
+    assert cfg.reversal_flags.rsi_overbought == c.RSI_OVERBOUGHT
+    assert cfg.reversal_flags.slope_flatten_eps == c.SLOPE_FLATTEN_EPS
+    assert {f.key for f in cfg.reversal_flags.flags} == {
+        "macd_hist_rollover",
+        "rsi_rollover",
+        "return_decel",
+        "obv_price_divergence",
+        "sma200_slope_flattening",
+    }

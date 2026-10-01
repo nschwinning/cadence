@@ -682,6 +682,58 @@ def test_rebalance_daily_fans_out_to_enrolled_sessions(
     assert session_id in body["session_ids"]
 
 
+def test_rebalance_daily_ingests_price_history(
+    client: TestClient, db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from datetime import UTC, datetime, timedelta
+
+    from cadence.price_history.models import PriceHistory
+
+    monkeypatch.setattr(settings, "REBALANCE_CRON_TOKEN", "secret")
+    executor = ManualExecutor(run_immediately=True)
+    provider = _provider()
+    provider._synthetic_closes = True  # deterministic closes over any window
+    _seed_universe(db_session, provider)
+    _wire(db_session, executor, provider=provider)
+    _build_session(client, executor)
+
+    resp = client.post(
+        "/api/v1/ai-portfolio/rebalance-daily",
+        headers={"X-Cron-Token": "secret"},
+    )
+    assert resp.status_code == 200
+
+    # The ingestion pass appended closes within the recent daily window.
+    recent = (
+        db_session.query(PriceHistory)
+        .filter(PriceHistory.date >= datetime.now(tz=UTC).date() - timedelta(days=7))
+        .count()
+    )
+    assert recent > 0
+
+
+def test_rebalance_daily_ingestion_error_does_not_change_response(
+    client: TestClient, db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(settings, "REBALANCE_CRON_TOKEN", "secret")
+    executor = ManualExecutor(run_immediately=True)
+    provider = _provider()
+    _seed_universe(db_session, provider)
+    _wire(db_session, executor, provider=provider)
+    session_id = _build_session(client, executor)
+    # Make the price-history ingestion blow up; the rebalance response must stand.
+    provider._daily_closes_error = RuntimeError("ingestion down")
+
+    resp = client.post(
+        "/api/v1/ai-portfolio/rebalance-daily",
+        headers={"X-Cron-Token": "secret"},
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["sessions_triggered"] == 1
+    assert session_id in body["session_ids"]
+
+
 def _mark_build_orders_unfilled(db_session: Session, session_id: str) -> None:
     """Flip a session's recorded build orders back to a non-terminal status."""
     trades = paper_service.get_session_trades(

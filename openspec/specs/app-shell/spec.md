@@ -422,23 +422,30 @@ The paper-trading session-detail page SHALL display KPI tiles for the session's 
 - **WHEN** a user views the detail page for a session whose KPI read reports one or more of these metrics as absent
 - **THEN** each affected tile SHALL display a neutral placeholder instead of a numeric value
 
-### Requirement: Dashboard asset-composition donut charts
+### Requirement: Asset-composition donut charts
 
-The dashboard SHALL present the asset universe's composition by category and by sector each as a donut (ring) chart rather than a ranked count list. Each chart SHALL render one slice per breakdown entry, with the slice's angular size proportional to that entry's share of the breakdown's total count. Each chart SHALL display the breakdown's total count at its center and SHALL provide a legend mapping each slice's color to its human-readable label.
+The Assets page SHALL present the asset universe's composition by category and by sector each as a donut (ring) chart. Each chart SHALL render one slice per breakdown entry, with the slice's angular size proportional to that entry's share of the breakdown's total count, and SHALL display the breakdown's total count at its center. The two charts SHALL be rendered as equal-sized tiles.
 
-Hovering (or otherwise focusing) a slice SHALL reveal detail for that entry: its human-readable label, its exact count, and its percentage of the breakdown's total. The percentage SHALL be computed on the client from the counts; the chart SHALL NOT require any new data from the metrics endpoint.
+Slice identity SHALL be revealed on hover or keyboard focus rather than through a persistent legend: hovering or focusing a slice SHALL reveal that entry's human-readable label, its exact count, and its percentage of the breakdown's total. The percentage SHALL be computed on the client from the counts; the charts SHALL NOT require any new data from the metrics endpoint.
 
-When a breakdown has no entries, the dashboard SHALL show an empty-state message in place of the chart rather than an empty or broken chart.
+When a breakdown has no entries, the page SHALL show an empty-state message in place of the chart rather than an empty or broken chart.
 
-#### Scenario: Composition shown as donut charts
+The Dashboard SHALL NOT render these asset-composition donut charts.
 
-- **WHEN** a user opens the dashboard and the asset universe has categorized and sectored assets
-- **THEN** the UI SHALL render the by-category and by-sector breakdowns each as a donut chart whose slices are sized by each entry's share of the total, with the total count shown at the center and a legend identifying each slice
+#### Scenario: Composition shown as equal-sized donut charts on the Assets page
+
+- **WHEN** a user opens the Assets page and the asset universe has categorized and sectored assets
+- **THEN** the UI SHALL render the by-category and by-sector breakdowns each as a donut chart whose slices are sized by each entry's share of the total, with the total count shown at the center, and the two charts SHALL be equal-sized tiles
 
 #### Scenario: Slice hover reveals exact value and percentage
 
 - **WHEN** a user hovers or focuses a slice of a breakdown donut chart
 - **THEN** the UI SHALL show that entry's human-readable label, its exact count, and its percentage of the breakdown's total
+
+#### Scenario: No persistent legend
+
+- **WHEN** a breakdown donut chart is displayed
+- **THEN** the chart SHALL NOT render a persistent list mapping each slice's color to its label; slice identity is available only on hover or keyboard focus
 
 #### Scenario: Percentages sum across the breakdown
 
@@ -449,3 +456,110 @@ When a breakdown has no entries, the dashboard SHALL show an empty-state message
 
 - **WHEN** a breakdown has no entries
 - **THEN** the UI SHALL show an empty-state message instead of a donut chart
+
+#### Scenario: Dashboard no longer shows the donut charts
+
+- **WHEN** a user opens the Dashboard
+- **THEN** the asset-composition donut charts SHALL NOT appear there
+
+### Requirement: Dashboard global range selector
+
+The Dashboard SHALL present a single range selector offering the choices `1D`, `1W`, `1M`, `YTD`, `1Y`, and `Max`, with one range active at a time. Changing the selected range SHALL drive every range-dependent section of the Dashboard (performance tiles, equity curve, portfolio leaderboard, automation failed-run count, recent activity, and universe performers) so that the whole view answers for the same horizon. The universe balance summary is range-independent and SHALL NOT change with the selector.
+
+#### Scenario: Selecting a range updates the whole dashboard
+
+- **WHEN** a user selects a different range
+- **THEN** the performance tiles, equity curve, leaderboard, recent activity, and universe performers SHALL all refresh to that range while the universe balance summary stays unchanged
+
+### Requirement: Dashboard aggregate performance tiles
+
+The Dashboard SHALL present hero performance tiles aggregated over the active sessions currently selected in the equity curve: total current value, profit/loss over the selected range, money-weighted return over the selected range, and fees incurred within the range. The tiles SHALL reflect the current portfolio selection and the selected range.
+
+#### Scenario: Tiles reflect range and selection
+
+- **WHEN** a user changes the range or the set of selected portfolios
+- **THEN** the hero tiles SHALL recompute to show aggregate value, range profit/loss, money-weighted range return, and range fees for the selected sessions
+
+### Requirement: Dashboard combined equity curve
+
+The Dashboard SHALL present a combined equity curve as a single line equal to the summed value of the selected active sessions over the selected range, on a common date axis. A session SHALL contribute zero before its first recorded value (carry-forward thereafter). The Dashboard SHALL offer a selectable list of the active sessions, all selected by default, letting the user include or exclude each session; the selection SHALL also drive the hero tiles and the leaderboard. Toggling a session SHALL re-aggregate from already-fetched per-session data without issuing a new request per toggle. When no session is selected, the chart SHALL show an empty state instead of a line.
+
+#### Scenario: Summed line over selected sessions
+
+- **WHEN** the Dashboard renders the equity curve with one or more sessions selected
+- **THEN** it SHALL plot a single line equal to the sum of the selected sessions' values across the range, each session contributing zero before its first recorded value
+
+#### Scenario: Toggling a session re-aggregates without refetch
+
+- **WHEN** a user includes or excludes a session in the equity curve
+- **THEN** the line, hero tiles, and leaderboard SHALL recompute from already-fetched data without a new request per toggle
+
+#### Scenario: No sessions selected
+
+- **WHEN** no session is selected
+- **THEN** the equity curve SHALL show an empty state rather than a line
+
+### Requirement: Dashboard portfolio leaderboard
+
+The Dashboard SHALL present a leaderboard table of the selected active sessions, sorted by return over the selected range in descending order (best first). Each row SHALL show the portfolio's name, current value, range profit/loss, range return, and range fees, using the same money-weighted basis as the hero tiles, and SHALL link to that session's detail view. Return direction SHALL be visually distinguished (for example gains and losses colored differently). Deselecting a session in the equity curve SHALL remove it from the leaderboard.
+
+#### Scenario: Sessions ranked by range return
+
+- **WHEN** the Dashboard renders the leaderboard for a range
+- **THEN** it SHALL list the selected sessions sorted by range return descending, each row showing name, value, range profit/loss, range return, and range fees, and linking to that session's detail view
+
+#### Scenario: Selection narrows the leaderboard
+
+- **WHEN** a user deselects a session
+- **THEN** that session SHALL no longer appear in the leaderboard
+
+### Requirement: Dashboard automation panel
+
+The Dashboard SHALL present an automation panel showing the latest rebalance run's status and relative time with a link to that run, an indicator when a run is currently in flight, the count of failed runs within the selected range, and the approximate next scheduled run. The next run SHALL be labeled as approximate.
+
+#### Scenario: Automation health shown
+
+- **WHEN** the Dashboard renders the automation panel
+- **THEN** it SHALL show the latest rebalance run (status, relative time, link), an in-flight indicator when applicable, the failed-run count within the range, and an approximate next-run time
+
+### Requirement: Dashboard recent activity feed
+
+The Dashboard SHALL present a recent-activity feed listing AI runs (build, rebalance, close) across sessions within the selected range, newest first and capped at a maximum count. Each entry SHALL show its kind, status, session label, relative time, and a link to that run.
+
+#### Scenario: Recent activity listed
+
+- **WHEN** the Dashboard renders the recent-activity feed for a range
+- **THEN** it SHALL list the most recent AI runs within that range, newest first and capped, each showing kind, status, session label, relative time, and a link to the run
+
+### Requirement: Dashboard universe section
+
+The Dashboard SHALL present a universe section with a range-independent balance summary and range-dependent performers. The balance summary SHALL show the eligible versus ineligible split, the number of sectors represented, the largest sector's share, and the largest category's share. The performers SHALL show the best and worst tracked assets by market return over the selected range.
+
+#### Scenario: Balance summary and performers shown
+
+- **WHEN** the Dashboard renders the universe section
+- **THEN** it SHALL show the current eligibility split, sectors represented, and largest sector and category shares, alongside the best and worst tracked assets by market return over the selected range
+
+#### Scenario: Performers follow the range
+
+- **WHEN** a user changes the selected range
+- **THEN** the best/worst performers SHALL update to that range while the balance summary stays unchanged
+
+### Requirement: Technical Indicators navigation entry and info page
+
+The application shell SHALL offer a top-level "Technical Indicators" navigation entry that opens a dedicated page, and SHALL mark it active when that page is shown, consistent with the shell's other navigation entries. The page SHALL present the configured technical-indicator setup as read-only information obtained from the backend configuration — not editable and not per-asset. It SHALL display the indicator set with each indicator's period/lookback parameters, the deterministic uptrend trend-gate rules and their thresholds (regime conditions, momentum conditions, the soft rising-volume bonus, and that a missing required indicator fails the gate), and the reversal-flag definitions and their thresholds, organised into readable grouped sections. While the configuration is loading the page SHALL show a loading state, and if the request fails it SHALL show an error state rather than a blank or broken page.
+
+#### Scenario: Navigate to the Technical Indicators page
+
+- **WHEN** a user selects the Technical Indicators navigation entry
+- **THEN** the application SHALL render the Technical Indicators page within the shell and mark the entry active without a full page reload
+
+#### Scenario: Configured setup displayed
+
+- **WHEN** the Technical Indicators page loads the configuration successfully
+- **THEN** it SHALL display the indicator set with their period/lookback parameters, the trend-gate rules and thresholds, and the reversal-flag definitions and thresholds in grouped sections
+
+#### Scenario: Loading and error states
+
+- **WHEN** the configuration is loading or the request fails
+- **THEN** the page SHALL show a loading state while pending and an error state on failure instead of the configuration

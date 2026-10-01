@@ -277,6 +277,19 @@ def rebalance_daily(
         else:
             skipped.append(session_row.id)
 
+    # Append the latest daily closes for all tracked assets (piggybacks this
+    # cron's after-close slots). Wrapped so an ingestion failure cannot abort the
+    # rebalance run or change its response.
+    try:
+        from cadence.assets import service as assets_service
+        from cadence.price_history import service as price_history_service
+
+        price_history_service.ingest_latest(db, provider, assets_service.list_assets(db))
+    except Exception:
+        logger.warning(
+            "rebalance-daily: price-history ingestion failed", exc_info=True
+        )
+
     return AIDailyRebalanceResponse(
         sessions_triggered=len(triggered),
         session_ids=triggered,

@@ -59,7 +59,8 @@ Trigger the daily rebalance manually against a host backend:
 Configured via the root `.env` (see `.env.example`):
 
 - `DATABASE_URL`, `TEST_DATABASE_URL`, `CORS_ORIGINS`
-- AI recommender: `OPENAI_API_KEY`, `SERP_API_KEY`, `RECOMMENDER_MODEL`,
+- AI recommender: `OPENAI_API_KEY`, `WEB_SEARCH_PROVIDER` (`serpapi` default |
+  `serper`), `SERP_API_KEY`, `SERPER_API_KEY`, `RECOMMENDER_MODEL`,
   `RECOMMENDER_STUB`
 - AI portfolio / Alpaca: `AI_PORTFOLIO_MODEL`, `ALPACA_API_KEY`,
   `ALPACA_SECRET_KEY`, `ALPACA_PAPER`, `ALPACA_STUB`

@@ -11,6 +11,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 from cadence.assets.category import AssetScope
 from cadence.config import settings
+from cadence.dashboard.constants import DashboardRange
 from cadence.paper_trading.constants import Benchmark
 from cadence.portfolios.constants import PortfolioSource, RiskProfile
 
@@ -503,6 +504,79 @@ class TechnicalIndicatorRunResponse(BaseModel):
     started: bool
 
 
+class IndicatorParamRead(BaseModel):
+    """One period/lookback parameter defining an indicator."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    name: str
+    value: int | float
+
+
+class IndicatorInfoRead(BaseModel):
+    """A single indicator in the computed set with its defining parameters."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    key: str
+    label: str
+    params: list[IndicatorParamRead]
+
+
+class GateConditionRead(BaseModel):
+    """One condition of the trend gate; ``threshold`` is null for comparisons
+    between two indicators (e.g. SMA50 > SMA200)."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    description: str
+    threshold: float | None = None
+
+
+class TrendGateConfigRead(BaseModel):
+    """The deterministic uptrend gate: regime + momentum conditions, the soft OBV
+    bonus, and the missing-indicator rule."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    description: str
+    regime: list[GateConditionRead]
+    momentum: list[GateConditionRead]
+    obv_bonus: str
+    missing_indicator_rule: str
+
+
+class ReversalFlagInfoRead(BaseModel):
+    """One reversal flag and what sets it."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    key: str
+    label: str
+    description: str
+
+
+class ReversalFlagsConfigRead(BaseModel):
+    """The reversal-flag definitions plus their tunable thresholds."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    flags: list[ReversalFlagInfoRead]
+    rsi_overbought: float
+    slope_flatten_eps: float
+
+
+class TechnicalIndicatorConfig(BaseModel):
+    """The read-only technical-indicator configuration: the indicator set, the
+    trend-gate rules + thresholds, and the reversal-flag definitions."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    indicators: list[IndicatorInfoRead]
+    trend_gate: TrendGateConfigRead
+    reversal_flags: ReversalFlagsConfigRead
+
+
 class BenchmarkCatalogEntry(BaseModel):
     """One selectable benchmark index: its stable id and display name."""
 
@@ -806,3 +880,121 @@ class DashboardMetrics(BaseModel):
     assets: AssetUniverseMetrics
     portfolio_count: int
     paper_trading: PaperTradingMetrics
+
+
+# --------------------------------------------------------------------------- #
+# Dashboard overview (range-scoped)                                            #
+# --------------------------------------------------------------------------- #
+
+
+class DashboardSessionValuePoint(BaseModel):
+    """One (date, value) point of a session's range-windowed value series."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    date: date
+    value: float
+
+
+class DashboardSessionPerformance(BaseModel):
+    """A single active session's range-scoped performance data.
+
+    ``pnl``/``fees`` are relative to the selected range; ``points`` is the value
+    series windowed to the range (oldest first) for the client to sum and
+    re-aggregate on selection changes without re-fetching.
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    label: str
+    allocated_capital: float
+    current_value: float
+    pnl: float
+    fees: float
+    points: list[DashboardSessionValuePoint]
+
+
+class DashboardAutomationRun(BaseModel):
+    """A reference to a single AI run for the automation summary."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    event_type: str
+    status: str
+    created_at: datetime
+    session_id: uuid.UUID | None = None
+
+
+class DashboardAutomationSummary(BaseModel):
+    """Health of the AI rebalance automation, scoped to the selected range."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    latest_run: DashboardAutomationRun | None = None
+    in_flight: bool
+    failed_in_range: int
+    next_run_approx: datetime
+    next_run_is_approximate: bool
+
+
+class DashboardActivityEntry(BaseModel):
+    """One AI run in the recent-activity feed."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    session_id: uuid.UUID | None = None
+    session_label: str | None = None
+    kind: str
+    status: str
+    created_at: datetime
+
+
+class DashboardUniverseBalance(BaseModel):
+    """Current composition of the asset universe (range-independent)."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    total: int
+    eligible: int
+    ineligible: int
+    sectors_count: int
+    top_sector_key: str | None = None
+    top_sector_share: float
+    top_category_key: str | None = None
+    top_category_share: float
+
+
+class DashboardPerformerEntry(BaseModel):
+    """One asset's market return over the range, for the performer rankings."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    asset_id: int
+    ticker: str
+    name: str | None = None
+    return_pct: float
+
+
+class DashboardUniversePerformers(BaseModel):
+    """Best and worst tracked assets by market return over the range."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    best: list[DashboardPerformerEntry]
+    worst: list[DashboardPerformerEntry]
+
+
+class DashboardOverview(BaseModel):
+    """The full range-scoped dashboard overview payload."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    range: DashboardRange
+    sessions: list[DashboardSessionPerformance]
+    automation: DashboardAutomationSummary
+    recent_activity: list[DashboardActivityEntry]
+    universe_balance: DashboardUniverseBalance
+    universe_performers: DashboardUniversePerformers

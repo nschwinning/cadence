@@ -42,7 +42,13 @@ class Settings(BaseSettings):
     # AI asset recommender. Keys are optional so the app boots without them;
     # a recommendation run fails cleanly when a required key is missing.
     OPENAI_API_KEY: str = ""
+    # Web-search backend for the agents' ``web_search`` tool. ``serpapi`` uses the
+    # SerpAPI SDK + ``SERP_API_KEY``; ``serper`` POSTs to serper.dev with
+    # ``SERPER_API_KEY``. Defaults to ``serpapi`` so existing deployments are
+    # unaffected; switching to Serper requires setting both this and SERPER_API_KEY.
+    WEB_SEARCH_PROVIDER: str = "serpapi"
     SERP_API_KEY: str = ""
+    SERPER_API_KEY: str = ""
     RECOMMENDER_MODEL: str = "gpt-5-mini"
     # Opt-in offline stub for the recommender agent (no OpenAI/SerpAPI calls).
     # Intended for the Docker end-to-end smoke and local development; leave off
@@ -77,6 +83,12 @@ class Settings(BaseSettings):
     # Applied at the single point where a trade is recorded and accumulated on the
     # session; set to 0 to disable.
     TRANSACTION_COST_USD: float = 1.0
+
+    # Bounded lookback (in years) used when backfilling an asset's daily close
+    # history on add, and the window the daily price-history ingestion pass
+    # fetches from. Caps backfill cost / provider rate-limit exposure; the
+    # Dashboard's per-asset range returns read from whatever history accrues.
+    PRICE_HISTORY_BACKFILL_YEARS: int = 5
 
     # Default benchmark index a newly built paper-trading session is compared
     # against, and the fallback for existing sessions. Must be a valid

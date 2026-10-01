@@ -1,19 +1,24 @@
+import { useEffect, useRef, useState } from 'react';
 import { useHealth } from '../../api/health';
-import { useDashboardMetrics } from '../../api/dashboard';
-import { StatTile } from '../../components/dashboard/StatTile';
-import { BreakdownTile } from '../../components/dashboard/BreakdownTile';
+import { useDashboardOverview } from '../../api/dashboard';
+import type { DashboardRange } from '../../types/api';
+import { RangeSelector } from './RangeSelector';
+import { HeroTiles } from './HeroTiles';
+import { CombinedEquityChart } from './CombinedEquityChart';
+import { PortfolioLeaderboard } from './PortfolioLeaderboard';
+import { AutomationPanel } from './AutomationPanel';
+import { RecentActivityFeed } from './RecentActivityFeed';
+import { UniverseSection } from './UniverseSection';
 
 /**
- * Dashboard — the landing view. Surfaces an at-a-glance overview of the asset
- * universe (size, eligibility, per-category/sector breakdowns), portfolio count,
- * and paper-trading activity from the live metrics endpoint, with backend health
- * shown as a compact top-right indicator.
+ * Dashboard — the daily-driver landing view. A global broker-style range selector
+ * drives every section: hero performance tiles, the combined equity curve (with a
+ * portfolio selection that also filters the tiles and leaderboard), the portfolio
+ * leaderboard, the automation panel and recent-activity feed, and the universe
+ * section. All figures aggregate over ACTIVE paper-trading sessions only and come
+ * from a single range-scoped overview fetch; selection changes re-aggregate on the
+ * client without refetching.
  */
-
-/** Turn a raw slug/key ("financial-services", "no sector") into a display label. */
-function humanize(key: string): string {
-  return key.replace(/[-_]/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
-}
 
 /** Compact backend/database status indicator shown in the header. */
 function HealthIndicator() {
@@ -49,20 +54,61 @@ function HealthIndicator() {
 }
 
 export function DashboardPage() {
-  const { data, isPending, isError } = useDashboardMetrics();
+  const [range, setRange] = useState<DashboardRange>('1M');
+  const { data, isPending, isError } = useDashboardOverview(range);
+
+  const sessions = data?.sessions ?? [];
+  const sessionIds = sessions.map((s) => s.id);
+  const idsKey = sessionIds.join(',');
+
+  // Selection filters the whole dashboard. New sessions default to selected;
+  // deselections persist across range changes; vanished sessions are dropped.
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const knownIdsRef = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    // Snapshot the previously-known ids before updating the ref: the functional
+    // state update below is deferred to render, so it must not read the ref after
+    // we reassign it (that would hide every newly-arrived session).
+    const known = knownIdsRef.current;
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      for (const id of sessionIds) {
+        if (!known.has(id)) next.add(id);
+      }
+      for (const id of [...next]) {
+        if (!sessionIds.includes(id)) next.delete(id);
+      }
+      return next;
+    });
+    knownIdsRef.current = new Set(sessionIds);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [idsKey]);
+
+  const toggle = (id: string) =>
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+
+  const selectedSessions = sessions.filter((s) => selectedIds.has(s.id));
 
   return (
     <section className="flex flex-col gap-6">
       <div className="flex flex-wrap items-center justify-between gap-3">
-        <h1 className="text-2xl font-bold tracking-tight text-slate-900">
-          Dashboard
-        </h1>
+        <div className="flex flex-wrap items-center gap-4">
+          <h1 className="text-2xl font-bold tracking-tight text-slate-900">
+            Dashboard
+          </h1>
+          <RangeSelector value={range} onChange={setRange} />
+        </div>
         <HealthIndicator />
       </div>
 
       {isPending && (
         <p role="status" aria-live="polite" className="text-lg text-slate-500">
-          Loading overview metrics…
+          Loading overview…
         </p>
       )}
 
@@ -71,65 +117,40 @@ export function DashboardPage() {
           role="alert"
           className="max-w-md rounded-lg border border-red-300 bg-red-50 p-4 text-red-800"
         >
-          <p className="font-semibold">Metrics unavailable</p>
+          <p className="font-semibold">Overview unavailable</p>
           <p className="mt-1 text-sm">
-            The dashboard metrics could not be loaded. Please try again later.
+            The dashboard overview could not be loaded. Please try again later.
           </p>
         </div>
       )}
 
       {!isPending && !isError && data && (
         <div className="flex flex-col gap-6">
-          {/* Universe summary tiles */}
-          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
-            <StatTile
-              label="Universe size"
-              value={data.assets.total.toLocaleString()}
-              hint="total assets tracked"
-            />
-            <StatTile
-              label="Eligible assets"
-              value={data.assets.eligible.toLocaleString()}
-              hint={`of ${data.assets.total.toLocaleString()} total`}
-            />
-            <StatTile
-              label="Ineligible assets"
-              value={data.assets.ineligible.toLocaleString()}
-              hint="failed one or more criteria"
-            />
+          {sessions.length === 0 && (
+            <p className="text-slate-500">
+              No active paper-trading sessions. Start one to see performance here.
+            </p>
+          )}
+
+          <HeroTiles sessions={selectedSessions} range={range} />
+
+          <CombinedEquityChart
+            sessions={sessions}
+            selectedIds={selectedIds}
+            onToggle={toggle}
+          />
+
+          <PortfolioLeaderboard sessions={selectedSessions} />
+
+          <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
+            <AutomationPanel automation={data.automation} />
+            <RecentActivityFeed entries={data.recent_activity} />
           </div>
 
-          {/* Activity tiles */}
-          <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
-            <StatTile
-              label="Portfolios"
-              value={data.portfolio_count.toLocaleString()}
-            />
-            <StatTile
-              label="Active sessions"
-              value={data.paper_trading.active_sessions.toLocaleString()}
-              hint="paper-trading"
-            />
-            <StatTile
-              label="Recent trades"
-              value={data.paper_trading.recent_trades.toLocaleString()}
-              hint="paper-trading"
-            />
-          </div>
-
-          {/* Breakdown tiles */}
-          <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-            <BreakdownTile
-              title="By category"
-              entries={data.assets.by_category}
-              formatKey={humanize}
-            />
-            <BreakdownTile
-              title="By sector"
-              entries={data.assets.by_sector}
-              formatKey={humanize}
-            />
-          </div>
+          <UniverseSection
+            balance={data.universe_balance}
+            performers={data.universe_performers}
+          />
         </div>
       )}
     </section>

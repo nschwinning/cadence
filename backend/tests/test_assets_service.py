@@ -100,6 +100,35 @@ def test_add_asset_success_persists_and_normalizes(db_session: Session) -> None:
     assert [a.ticker for a in service.list_assets(db_session)] == ["TSCO"]
 
 
+def _price_history_count(db_session: Session, asset_id: int) -> int:
+    from cadence.price_history.models import PriceHistory
+
+    return (
+        db_session.query(PriceHistory)
+        .filter(PriceHistory.asset_id == asset_id)
+        .count()
+    )
+
+
+def test_add_asset_backfills_price_history(db_session: Session) -> None:
+    # The eligible provider's history includes a bar within the bounded lookback,
+    # so a successful add stores at least one daily close for the asset.
+    asset = service.add_asset(db_session, "HIST", _eligible_provider(), _broker())
+
+    assert _price_history_count(db_session, asset.id) > 0
+
+
+def test_add_asset_succeeds_when_backfill_fails(db_session: Session) -> None:
+    provider = _eligible_provider()
+    provider._daily_closes_error = RuntimeError("history provider down")
+
+    asset = service.add_asset(db_session, "NOHIST", provider, _broker())
+
+    assert asset.id is not None
+    assert asset.ticker == "NOHIST"
+    assert _price_history_count(db_session, asset.id) == 0
+
+
 def test_add_asset_persists_company_profile_fields(db_session: Session) -> None:
     asset = service.add_asset(
         db_session,

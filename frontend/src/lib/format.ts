@@ -52,3 +52,26 @@ export function formatAxisDate(iso: string): string {
   if (!Number.isFinite(month) || !Number.isFinite(day)) return iso;
   return `${month}/${day}`;
 }
+
+/**
+ * Format an ISO datetime as a compact, human relative time (e.g. `just now`,
+ * `5m ago`, `3h ago`, `2d ago`), falling back to an absolute locale date for
+ * anything older than a week or a future time. Used by the dashboard automation
+ * panel and activity feed where a precise timestamp is less useful than recency.
+ */
+export function formatRelativeTime(iso: string, now: Date = new Date()): string {
+  const then = new Date(iso);
+  const ms = then.getTime();
+  if (!Number.isFinite(ms)) return iso;
+  const diffMs = now.getTime() - ms;
+  if (diffMs < 0) return then.toLocaleString();
+  const seconds = Math.floor(diffMs / 1000);
+  if (seconds < 45) return 'just now';
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h ago`;
+  const days = Math.floor(hours / 24);
+  if (days < 7) return `${days}d ago`;
+  return then.toLocaleDateString();
+}

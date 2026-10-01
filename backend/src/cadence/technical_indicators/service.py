@@ -16,6 +16,7 @@ inline.
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
 from datetime import UTC, datetime
 
 from sqlalchemy import delete, select
@@ -23,6 +24,7 @@ from sqlalchemy.orm import Session
 
 from cadence.assets.market_data import MarketDataProvider
 from cadence.assets.models import Asset
+from cadence.technical_indicators import constants as c
 from cadence.technical_indicators.compute import IndicatorSnapshot, compute_snapshot
 from cadence.technical_indicators.constants import RunPhase
 from cadence.technical_indicators.models import (
@@ -31,6 +33,242 @@ from cadence.technical_indicators.models import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+# --- Read-only configuration projection -------------------------------------
+# The trend strategy's indicator set, gate rules, and reversal-flag definitions
+# live in constants.py. The dataclasses below project that configuration into a
+# self-describing, display-ready structure (labels + numeric values sourced from
+# the constants, never duplicated) that the read endpoint serves verbatim.
+
+
+@dataclass(frozen=True)
+class IndicatorParam:
+    """One period/lookback parameter defining an indicator."""
+
+    name: str
+    value: int | float
+
+
+@dataclass(frozen=True)
+class IndicatorInfo:
+    """A single indicator in the computed set with its defining parameters."""
+
+    key: str
+    label: str
+    params: tuple[IndicatorParam, ...]
+
+
+@dataclass(frozen=True)
+class GateCondition:
+    """One condition of the trend gate; ``threshold`` is absent for comparisons
+    between two indicators (e.g. SMA50 > SMA200)."""
+
+    description: str
+    threshold: float | None
+
+
+@dataclass(frozen=True)
+class TrendGateInfo:
+    """The deterministic uptrend gate: its regime and momentum conditions, the
+    soft OBV bonus, and the missing-indicator rule."""
+
+    description: str
+    regime: tuple[GateCondition, ...]
+    momentum: tuple[GateCondition, ...]
+    obv_bonus: str
+    missing_indicator_rule: str
+
+
+@dataclass(frozen=True)
+class ReversalFlagInfo:
+    """One reversal flag and what sets it."""
+
+    key: str
+    label: str
+    description: str
+
+
+@dataclass(frozen=True)
+class ReversalFlagsInfo:
+    """The reversal-flag definitions plus their tunable thresholds."""
+
+    flags: tuple[ReversalFlagInfo, ...]
+    rsi_overbought: float
+    slope_flatten_eps: float
+
+
+@dataclass(frozen=True)
+class IndicatorConfig:
+    """The full read-only technical-indicator configuration."""
+
+    indicators: tuple[IndicatorInfo, ...]
+    trend_gate: TrendGateInfo
+    reversal_flags: ReversalFlagsInfo
+
+
+def get_indicator_config() -> IndicatorConfig:
+    """Project the configured indicator set, trend gate, and reversal flags.
+
+    Pure (no DB access): every numeric value is read from :mod:`constants` so the
+    result always reflects the live configuration rather than a duplicated copy.
+    """
+    indicators = (
+        IndicatorInfo(
+            "sma_50",
+            "Simple moving average (short)",
+            (IndicatorParam("period", c.SMA_SHORT),),
+        ),
+        IndicatorInfo(
+            "sma_200",
+            "Simple moving average (long)",
+            (IndicatorParam("period", c.SMA_LONG),),
+        ),
+        IndicatorInfo("close_sma200", "Price / SMA200 ratio", ()),
+        IndicatorInfo("sma50_sma200", "SMA50 / SMA200 ratio", ()),
+        IndicatorInfo(
+            "sma200_slope",
+            "SMA200 slope",
+            (IndicatorParam("window", c.SLOPE_WINDOW),),
+        ),
+        IndicatorInfo(
+            "ema_20",
+            "Exponential moving average",
+            (IndicatorParam("span", c.EMA_SPAN),),
+        ),
+        IndicatorInfo(
+            "macd",
+            "MACD (line / signal / histogram)",
+            (
+                IndicatorParam("fast", c.MACD_FAST),
+                IndicatorParam("slow", c.MACD_SLOW),
+                IndicatorParam("signal", c.MACD_SIGNAL),
+            ),
+        ),
+        IndicatorInfo(
+            "rsi_14", "Wilder RSI", (IndicatorParam("period", c.RSI_PERIOD),)
+        ),
+        IndicatorInfo(
+            "roc_120", "Rate of change", (IndicatorParam("period", c.ROC_PERIOD),)
+        ),
+        IndicatorInfo("obv", "On-balance volume (OBV)", ()),
+        IndicatorInfo(
+            "obv_change_20d",
+            "OBV change",
+            (IndicatorParam("window", c.OBV_CHANGE_WINDOW),),
+        ),
+        IndicatorInfo(
+            "vol_ratio_50",
+            "Volume ratio vs average volume",
+            (IndicatorParam("period", c.AVG_VOL_PERIOD),),
+        ),
+        IndicatorInfo(
+            "dist_high_52w",
+            "Distance from 52-week high",
+            (IndicatorParam("period", c.HIGH_52W),),
+        ),
+        IndicatorInfo(
+            "drawdown_from_max",
+            "Drawdown from trailing max",
+            (IndicatorParam("period", c.DRAWDOWN_PERIOD),),
+        ),
+        IndicatorInfo(
+            "hvol_20",
+            "Historical volatility (annualised)",
+            (
+                IndicatorParam("period", c.HVOL_PERIOD),
+                IndicatorParam("trading_days", c.TRADING_DAYS),
+            ),
+        ),
+        IndicatorInfo(
+            "bb_pctb",
+            "Bollinger %b",
+            (
+                IndicatorParam("period", c.BB_PERIOD),
+                IndicatorParam("std", c.BB_STD),
+            ),
+        ),
+        IndicatorInfo(
+            "bb_width",
+            "Bollinger bandwidth",
+            (
+                IndicatorParam("period", c.BB_PERIOD),
+                IndicatorParam("std", c.BB_STD),
+            ),
+        ),
+    )
+    trend_gate = TrendGateInfo(
+        description=(
+            "Deterministic uptrend verdict. The gate passes only when BOTH the "
+            "regime and the momentum checks pass."
+        ),
+        regime=(
+            GateCondition("Latest close is above the 200-day SMA", None),
+            GateCondition("SMA50 is above SMA200", None),
+            GateCondition(
+                f"SMA200 slope is at least {c.SMA_SLOPE_MIN}", c.SMA_SLOPE_MIN
+            ),
+        ),
+        momentum=(
+            GateCondition(
+                f"MACD histogram is above {c.MACD_HIST_MIN}", c.MACD_HIST_MIN
+            ),
+            GateCondition(
+                f"Wilder RSI is above {c.RSI_MOMENTUM_MIN}", c.RSI_MOMENTUM_MIN
+            ),
+            GateCondition(
+                f"Rate of change (120d) is above {c.ROC_MOMENTUM_MIN}",
+                c.ROC_MOMENTUM_MIN,
+            ),
+        ),
+        obv_bonus=(
+            "Rising 20-day OBV is a soft confirmation signal only — it is not "
+            "required for the gate to pass."
+        ),
+        missing_indicator_rule=(
+            "If any indicator a check requires is unavailable (insufficient "
+            "history), that check fails and the gate does not pass."
+        ),
+    )
+    reversal_flags = ReversalFlagsInfo(
+        flags=(
+            ReversalFlagInfo(
+                "macd_hist_rollover",
+                "MACD histogram rollover",
+                "The MACD histogram turned down versus the prior bar.",
+            ),
+            ReversalFlagInfo(
+                "rsi_rollover",
+                "RSI rollover",
+                f"RSI was at or above {c.RSI_OVERBOUGHT} (overbought) and turned "
+                "down.",
+            ),
+            ReversalFlagInfo(
+                "return_decel",
+                "Return deceleration",
+                "5-day return acceleration is non-positive — momentum is fading.",
+            ),
+            ReversalFlagInfo(
+                "obv_price_divergence",
+                "OBV / price divergence",
+                f"Price printed a new {c.DIVERGENCE_LOOKBACK}-day high but OBV did "
+                "not confirm it.",
+            ),
+            ReversalFlagInfo(
+                "sma200_slope_flattening",
+                "SMA200 slope flattening",
+                f"SMA200 slope fell below {c.SLOPE_FLATTEN_EPS} (near-zero or "
+                "declining).",
+            ),
+        ),
+        rsi_overbought=c.RSI_OVERBOUGHT,
+        slope_flatten_eps=c.SLOPE_FLATTEN_EPS,
+    )
+    return IndicatorConfig(
+        indicators=indicators,
+        trend_gate=trend_gate,
+        reversal_flags=reversal_flags,
+    )
 
 
 def create_run(session: Session) -> TechnicalIndicatorRun:
