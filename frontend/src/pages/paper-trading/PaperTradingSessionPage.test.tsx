@@ -99,6 +99,7 @@ const KPIS: PaperTradingSessionKpis = {
   realised_pnl: 750,
   unrealised_pnl: -200,
   total_fees: 12,
+  daily_avg_transaction_cost: 4,
   total_return: 2500,
   total_return_pct: 0.025,
   sharpe_ratio: null,
@@ -262,8 +263,29 @@ describe('PaperTradingSessionPage', () => {
     // Transaction fees tile shows the cumulative cost.
     expect(screen.getByText('Transaction fees')).toBeInTheDocument();
     expect(screen.getByText('$12.00')).toBeInTheDocument();
+    // Daily average transaction cost tile shows the per-snapshot-day figure.
+    expect(screen.getByText('Daily avg. transaction cost')).toBeInTheDocument();
+    expect(screen.getByText('$4.00')).toBeInTheDocument();
+    expect(screen.getByText('Fees per snapshot day')).toBeInTheDocument();
     // Sharpe is null -> fallback copy.
     expect(screen.getByText('Not yet available')).toBeInTheDocument();
+  });
+
+  it('shows the daily avg. transaction cost fallback until a snapshot exists', async () => {
+    // Sharpe present so the only "Not yet available" copy comes from the daily tile.
+    installGet(() => 'running', {
+      ...KPIS,
+      sharpe_ratio: 1.234,
+      daily_avg_transaction_cost: null,
+    });
+
+    renderPage(<PaperTradingSessionPage />);
+
+    expect(
+      await screen.findByText('Daily avg. transaction cost'),
+    ).toBeInTheDocument();
+    expect(screen.getByText('Not yet available')).toBeInTheDocument();
+    expect(screen.getByText('Needs a snapshot day')).toBeInTheDocument();
   });
 
   it('shows the computed Sharpe ratio when available', async () => {

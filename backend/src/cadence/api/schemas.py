@@ -474,6 +474,8 @@ class PaperTradingSessionKpisRead(BaseModel):
     minus marked-to-market positions value); ``realised_pnl``
     the cumulative gross realised P&L; ``unrealised_pnl`` the live mark-to-market on
     open positions; ``total_fees`` the cumulative per-trade transaction cost;
+    ``daily_avg_transaction_cost`` the cumulative fees divided by the number of
+    recorded daily value snapshots (``None`` until the session has a snapshot);
     ``total_return`` the absolute gain/loss versus allocated capital and
     ``total_return_pct`` the same as a fraction; ``sharpe_ratio`` is ``None`` until
     the session has accumulated enough daily history. ``benchmark`` is the session's
@@ -496,6 +498,7 @@ class PaperTradingSessionKpisRead(BaseModel):
     realised_pnl: float
     unrealised_pnl: float
     total_fees: float
+    daily_avg_transaction_cost: float | None
     total_return: float
     total_return_pct: float
     sharpe_ratio: float | None

@@ -964,6 +964,49 @@ def test_session_kpis_net_of_fees_and_gross_realised(db_session: Session) -> Non
     assert kpis.realised_pnl == pytest.approx(0.0)
 
 
+def test_session_kpis_daily_avg_transaction_cost(db_session: Session) -> None:
+    sess = _ai_session(db_session)
+    for _ in range(3):
+        service.record_trade(
+            db_session,
+            session_id=sess.id,
+            ticker="AAPL",
+            side=OrderSide.BUY,
+            quantity=1,
+            price=10.0,
+            signal_type="entry",
+        )
+    fees = 3 * settings.TRANSACTION_COST_USD
+    base = date(2026, 1, 1)
+    for i in range(4):  # four recorded snapshot days
+        _add_snapshot(db_session, sess.id, base + timedelta(days=i), 0.0)
+    kpis = service.session_kpis(
+        db_session, session_id=sess.id, broker=_QuoteBroker({"AAPL": 10.0})
+    )
+    # Cumulative fees spread over the number of snapshot days.
+    assert kpis.daily_avg_transaction_cost == pytest.approx(fees / 4)
+
+
+def test_session_kpis_daily_avg_transaction_cost_none_without_snapshots(
+    db_session: Session,
+) -> None:
+    sess = _ai_session(db_session)
+    service.record_trade(
+        db_session,
+        session_id=sess.id,
+        ticker="AAPL",
+        side=OrderSide.BUY,
+        quantity=1,
+        price=10.0,
+        signal_type="entry",
+    )
+    kpis = service.session_kpis(
+        db_session, session_id=sess.id, broker=_QuoteBroker({"AAPL": 10.0})
+    )
+    # No snapshots yet -> daily average is not yet available (no divide-by-zero).
+    assert kpis.daily_avg_transaction_cost is None
+
+
 def test_session_kpis_sharpe_none_until_enough_history(db_session: Session) -> None:
     sess = _ai_session(db_session)
     base = date(2026, 1, 1)

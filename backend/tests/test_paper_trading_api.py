@@ -556,6 +556,7 @@ def test_session_kpis_returns_live_figures(
         "realised_pnl",
         "unrealised_pnl",
         "total_fees",
+        "daily_avg_transaction_cost",
         "total_return",
         "total_return_pct",
         "sharpe_ratio",
@@ -572,6 +573,8 @@ def test_session_kpis_returns_live_figures(
     }
     # Ledger buy above did not go through record_trade, so no fees accrued.
     assert body["total_fees"] == 0.0
+    # No daily snapshots yet -> daily average transaction cost withheld.
+    assert body["daily_avg_transaction_cost"] is None
     assert body["current_value"] == 100_200.0
     # Unallocated cash = live value minus the 10 AAPL @ $120 ($1,200) position.
     assert body["unallocated_cash"] == 99_000.0

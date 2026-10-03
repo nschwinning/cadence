@@ -497,6 +497,11 @@ export interface PaperTradingSessionKpis {
   unrealised_pnl: number;
   /** Cumulative per-trade transaction cost charged to date. */
   total_fees: number;
+  /**
+   * Cumulative fees divided by the number of recorded daily value snapshots.
+   * Null until the session has at least one snapshot.
+   */
+  daily_avg_transaction_cost: number | null;
   total_return: number;
   total_return_pct: number;
   /** Null until the session has enough daily history to compute it. */

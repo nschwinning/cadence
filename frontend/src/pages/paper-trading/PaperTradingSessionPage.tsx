@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, type ComponentProps } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import {
   DEFAULT_SESSIONS_PARAMS,
@@ -633,12 +633,19 @@ function PnlValue({ value }: { value: number }) {
 }
 
 /**
- * Session KPI tiles in two groups: "Performance" (value, realised/unrealised P&L,
- * fees, total return, Sharpe, benchmark and excess return) and "Risk & trade
- * quality" (maximum drawdown, win rate, average win/loss, best/worst trade). Tiles
- * read "Not yet available" until their inputs exist (stored prices for the
- * benchmark; value snapshots for drawdown; closed positions for the trade metrics).
+ * Session KPI tiles in two groups: "Performance" (value, cash, realised/unrealised
+ * P&L, fees, daily average transaction cost, total return, Sharpe, benchmark and
+ * excess return — ten tiles laid out five per row) and "Risk & trade quality"
+ * (maximum drawdown, win rate, average win/loss, best/worst trade). Tiles read
+ * "Not yet available" until their inputs exist (snapshots for the daily average
+ * cost and drawdown; stored prices for the benchmark; closed positions for the
+ * trade metrics). All tiles use the compact density.
  */
+// Session KPI tiles are always rendered at the compact density.
+function KpiTile(props: Omit<ComponentProps<typeof StatTile>, 'size'>) {
+  return <StatTile size="compact" {...props} />;
+}
+
 function KpiRow({ sessionId }: { sessionId: string }) {
   const { data, isPending, isError } = useSessionKpis(sessionId);
   const { data: benchmarks } = useBenchmarks();
@@ -699,6 +706,10 @@ function KpiRow({ sessionId }: { sessionId: string }) {
     );
   const winRate =
     data.win_rate === null ? 'Not yet available' : formatPercent(data.win_rate);
+  const dailyAvgCost =
+    data.daily_avg_transaction_cost === null
+      ? 'Not yet available'
+      : formatCurrency(data.daily_avg_transaction_cost);
 
   return (
     <div className="flex flex-col gap-6">
@@ -709,27 +720,36 @@ function KpiRow({ sessionId }: { sessionId: string }) {
         >
           Performance
         </h3>
-        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
-          <StatTile label="Current value" value={formatCurrency(data.current_value)} />
-          <StatTile
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-5">
+          <KpiTile label="Current value" value={formatCurrency(data.current_value)} />
+          <KpiTile
             label="Unallocated cash"
             value={formatCurrency(data.unallocated_cash)}
             hint="Uninvested cash in the session"
           />
-          <StatTile
+          <KpiTile
             label="Realised P&L"
             value={<PnlValue value={data.realised_pnl} />}
           />
-          <StatTile
+          <KpiTile
             label="Unrealised P&L"
             value={<PnlValue value={data.unrealised_pnl} />}
           />
-          <StatTile
+          <KpiTile
             label="Transaction fees"
             value={formatCurrency(data.total_fees)}
             hint="$1 per executed trade"
           />
-          <StatTile
+          <KpiTile
+            label="Daily avg. transaction cost"
+            value={dailyAvgCost}
+            hint={
+              data.daily_avg_transaction_cost === null
+                ? 'Needs a snapshot day'
+                : 'Fees per snapshot day'
+            }
+          />
+          <KpiTile
             label="Total return"
             value={
               <span className={pnlClass(data.total_return_pct)}>
@@ -738,7 +758,7 @@ function KpiRow({ sessionId }: { sessionId: string }) {
             }
             hint={<PnlValue value={data.total_return} />}
           />
-          <StatTile
+          <KpiTile
             label="Sharpe ratio"
             value={sharpe}
             hint={
@@ -747,12 +767,12 @@ function KpiRow({ sessionId }: { sessionId: string }) {
                 : 'Annualised, from daily NAV'
             }
           />
-          <StatTile
+          <KpiTile
             label="Benchmark return"
             value={benchmarkReturn}
             hint={`${benchmarkName}, buy & hold`}
           />
-          <StatTile label="Excess return" value={excessReturn} hint={excessHint} />
+          <KpiTile label="Excess return" value={excessReturn} hint={excessHint} />
         </div>
       </section>
 
@@ -764,7 +784,7 @@ function KpiRow({ sessionId }: { sessionId: string }) {
           Risk & trade quality
         </h3>
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
-          <StatTile
+          <KpiTile
             label="Maximum drawdown"
             value={maxDrawdown}
             hint={
@@ -773,14 +793,14 @@ function KpiRow({ sessionId }: { sessionId: string }) {
                 : 'Peak-to-trough, daily NAV'
             }
           />
-          <StatTile
+          <KpiTile
             label="Win rate"
             value={winRate}
             hint={
               data.win_rate === null ? 'No closed positions yet' : 'of closed positions'
             }
           />
-          <StatTile
+          <KpiTile
             label="Average win"
             value={
               data.average_win === null ? (
@@ -795,7 +815,7 @@ function KpiRow({ sessionId }: { sessionId: string }) {
                 : 'per winning position'
             }
           />
-          <StatTile
+          <KpiTile
             label="Average loss"
             value={
               data.average_loss === null ? (
@@ -810,7 +830,7 @@ function KpiRow({ sessionId }: { sessionId: string }) {
                 : 'per losing position'
             }
           />
-          <StatTile
+          <KpiTile
             label="Best trade"
             value={
               data.best_trade === null ? (
@@ -823,7 +843,7 @@ function KpiRow({ sessionId }: { sessionId: string }) {
               data.best_trade === null ? 'No closed positions yet' : 'Largest realised gain'
             }
           />
-          <StatTile
+          <KpiTile
             label="Worst trade"
             value={
               data.worst_trade === null ? (

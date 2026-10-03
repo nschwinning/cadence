@@ -1328,7 +1328,9 @@ class SessionKpis:
     value minus the marked-to-market positions value); ``realised_pnl``
     the session's cumulative gross realised P&L; ``unrealised_pnl`` the live
     mark-to-market on open positions; ``total_fees`` the cumulative per-trade
-    transaction cost charged to date; ``total_return`` the absolute gain/loss versus
+    transaction cost charged to date; ``daily_avg_transaction_cost`` the cumulative
+    fees divided by the number of recorded daily value snapshots (``None`` until the
+    session has at least one snapshot); ``total_return`` the absolute gain/loss versus
     allocated capital (``current_value − allocated_capital``) and
     ``total_return_pct`` the same as a fraction of allocated capital;
     ``sharpe_ratio`` the annualised Sharpe of the daily NAV series, or ``None``
@@ -1355,6 +1357,7 @@ class SessionKpis:
     realised_pnl: float
     unrealised_pnl: float
     total_fees: float
+    daily_avg_transaction_cost: float | None
     total_return: float
     total_return_pct: float
     sharpe_ratio: float | None
@@ -1395,6 +1398,13 @@ def session_kpis(
     daily_returns = [snap.daily_pnl_pct for snap in snapshots]
     daily_risk_free = settings.SHARPE_RISK_FREE_RATE / SHARPE_TRADING_DAYS_PER_YEAR
 
+    # Average transaction cost per snapshot day: cumulative fees spread over the
+    # number of recorded daily value snapshots. None until the first snapshot so we
+    # never divide by zero.
+    daily_avg_transaction_cost = (
+        session_row.total_fees / len(snapshots) if snapshots else None
+    )
+
     # Benchmark comparison: buy-and-hold return from the session's start (its first
     # snapshot date) to the latest available benchmark close. Unavailable (None)
     # when the session has no snapshots yet or the series lacks a start/end close.
@@ -1429,6 +1439,7 @@ def session_kpis(
         realised_pnl=session_row.total_pnl,
         unrealised_pnl=valuation.unrealized_pnl,
         total_fees=session_row.total_fees,
+        daily_avg_transaction_cost=daily_avg_transaction_cost,
         total_return=total_return,
         total_return_pct=total_return_pct,
         sharpe_ratio=sharpe_ratio(daily_returns, risk_free=daily_risk_free),
