@@ -8,11 +8,21 @@ from cadence.ai_portfolio.agent import AIPortfolioStock, AITargetAllocation
 from cadence.ai_portfolio.executor import (
     AIPortfolioExecutor,
     GuardrailCaps,
+    _OrderIntent,
     enforce_guardrails,
 )
 from cadence.broker.base import OrderError
-from cadence.broker.models import AssetClass, OrderType, Position, TimeInForce
+from cadence.broker.models import (
+    AssetClass,
+    Order,
+    OrderSide,
+    OrderStatus,
+    OrderType,
+    Position,
+    TimeInForce,
+)
 from cadence.broker.stub import StubBroker
+from cadence.config import settings
 
 
 def _stock(ticker: str, alloc: float) -> AIPortfolioStock:
@@ -575,3 +585,282 @@ def test_execute_build_without_caps_unchanged() -> None:
     )
     by = {r.ticker: r for r in results}
     assert by["AAA"].shares == pytest.approx(int(0.9 * 10_000 / price))
+
+
+# --------------------------------------------------------------------------- #
+# Sells-before-buys ordering, fill gate, timeout, and retry
+# --------------------------------------------------------------------------- #
+
+
+class _RecordingBroker(StubBroker):
+    """StubBroker (synchronous fills) that records order-submission order."""
+
+    def __init__(self, initial_cash: float = 1_000_000.0) -> None:
+        super().__init__(initial_cash=initial_cash)
+        self.calls: list[tuple[str, str]] = []
+
+    def buy(self, symbol, quantity, order_type=OrderType.MARKET, limit_price=None,
+            time_in_force=TimeInForce.DAY, asset_class=AssetClass.EQUITY):  # type: ignore[override]
+        self.calls.append(("buy", symbol))
+        return super().buy(symbol, quantity, order_type, limit_price,
+                           time_in_force, asset_class)
+
+    def sell(self, symbol, quantity, order_type=OrderType.MARKET, limit_price=None,
+             time_in_force=TimeInForce.DAY, asset_class=AssetClass.EQUITY):  # type: ignore[override]
+        self.calls.append(("sell", symbol))
+        return super().sell(symbol, quantity, order_type, limit_price,
+                            time_in_force, asset_class)
+
+
+class _AsyncBroker(StubBroker):
+    """Async broker: sells return SUBMITTED and settle after ``polls_to_settle``
+    ``get_order`` polls (never, when ``settle`` is False). Buys fill immediately
+    and flag if any was submitted while a sell was still non-terminal."""
+
+    def __init__(self, *, polls_to_settle: int = 1, settle: bool = True) -> None:
+        super().__init__()
+        self._polls_to_settle = polls_to_settle
+        self._settle = settle
+        self._poll_counts: dict[str, int] = {}
+        self.sell_orders: dict[str, Order] = {}
+        self.buy_orders: dict[str, Order] = {}
+        self.buy_submitted_while_pending = False
+
+    def sell(self, symbol, quantity, order_type=OrderType.MARKET, limit_price=None,
+             time_in_force=TimeInForce.DAY, asset_class=AssetClass.EQUITY):  # type: ignore[override]
+        oid = self._next_order_id()
+        order = Order(symbol=symbol, side=OrderSide.SELL, quantity=quantity,
+                      asset_class=asset_class, order_id=oid,
+                      status=OrderStatus.SUBMITTED, filled_price=None)
+        self.sell_orders[oid] = order
+        self._orders[oid] = order
+        return order
+
+    def buy(self, symbol, quantity, order_type=OrderType.MARKET, limit_price=None,
+            time_in_force=TimeInForce.DAY, asset_class=AssetClass.EQUITY):  # type: ignore[override]
+        if any(not o.is_complete for o in self.sell_orders.values()):
+            self.buy_submitted_while_pending = True
+        oid = self._next_order_id()
+        order = Order(symbol=symbol, side=OrderSide.BUY, quantity=quantity,
+                      asset_class=asset_class, order_id=oid,
+                      status=OrderStatus.FILLED, filled_price=100.0)
+        self.buy_orders[oid] = order
+        self._orders[oid] = order
+        return order
+
+    def get_order(self, order_id):  # type: ignore[override]
+        order = self._orders.get(order_id)
+        if order is not None and order_id in self.sell_orders and \
+                order.status == OrderStatus.SUBMITTED:
+            self._poll_counts[order_id] = self._poll_counts.get(order_id, 0) + 1
+            if self._settle and self._poll_counts[order_id] >= self._polls_to_settle:
+                order.status = OrderStatus.FILLED
+                order.filled_price = 50.0
+        return order
+
+
+class _RejectingBuyBroker(StubBroker):
+    """StubBroker that returns REJECTED for the first ``reject_times`` buys of a
+    given symbol, then fills; counts total buy attempts for that symbol."""
+
+    def __init__(self, *, symbol: str, reject_times: int) -> None:
+        super().__init__()
+        self._symbol = symbol
+        self._reject_remaining = reject_times
+        self.attempts = 0
+
+    def buy(self, symbol, quantity, order_type=OrderType.MARKET, limit_price=None,
+            time_in_force=TimeInForce.DAY, asset_class=AssetClass.EQUITY):  # type: ignore[override]
+        if symbol == self._symbol:
+            self.attempts += 1
+            if self._reject_remaining > 0:
+                self._reject_remaining -= 1
+                oid = self._next_order_id()
+                order = Order(symbol=symbol, side=OrderSide.BUY, quantity=quantity,
+                              asset_class=asset_class, order_id=oid,
+                              status=OrderStatus.REJECTED, filled_price=None)
+                self._orders[oid] = order
+                return order
+        return super().buy(symbol, quantity, order_type, limit_price,
+                           time_in_force, asset_class)
+
+
+# --- 2.1 / 2.2: plan/submit split ------------------------------------------ #
+
+
+def test_plan_equity_sizes_delta_without_submitting() -> None:
+    broker = _RecordingBroker()
+    price = broker.get_quote("AAPL").last
+    executor = AIPortfolioExecutor(broker, allocated_capital=100_000)
+    pos = Position(symbol="AAPL", quantity=10, avg_cost=price)
+
+    # Target 30 shares' worth vs 10 held -> buy 20.
+    intent = executor._plan_equity("AAPL", pos, weight=1.0, price=price,
+                                   base_capital=30 * price)
+    assert intent is not None
+    assert intent.side == "long"
+    assert intent.quantity == 20
+    # Planning submits nothing.
+    assert broker.calls == []
+
+
+def test_plan_crypto_sizes_fractional_delta_without_submitting() -> None:
+    broker = _RecordingBroker()
+    price = broker.get_quote("BTC-USD", AssetClass.CRYPTO).last
+    executor = AIPortfolioExecutor(broker, allocated_capital=100_000)
+
+    intent = executor._plan_crypto("BTC-USD", None, weight=1.0, price=price,
+                                   base_capital=2 * price)
+    assert intent is not None
+    assert intent.side == "long"
+    assert intent.quantity == pytest.approx(2.0)
+    assert broker.calls == []
+
+
+def test_submit_intent_builds_trade_result_with_order_fields() -> None:
+    broker = StubBroker()
+    price = broker.get_quote("AAPL").last
+    executor = AIPortfolioExecutor(broker, allocated_capital=100_000)
+    intent = _OrderIntent("AAPL", AssetClass.EQUITY, "long", 3, price, "Bought 3")
+
+    result = executor._submit_intent(intent)
+
+    assert result.executed is True
+    assert result.ticker == "AAPL"
+    assert result.shares == 3
+    assert result.order_id is not None
+    assert result.order_status == OrderStatus.FILLED
+    assert result.filled_price is not None
+
+
+# --- 3.1: sells before any buy --------------------------------------------- #
+
+
+def test_rebalance_submits_all_sells_before_any_buy() -> None:
+    broker = _RecordingBroker()
+    broker.buy("AAA", 20)  # held, will be reduced/exited -> sell
+    broker.buy("BBB", 20)  # held, will be exited -> sell
+    broker.calls.clear()  # ignore setup buys
+    positions = {p.symbol: p for p in broker.get_positions()}
+    executor = AIPortfolioExecutor(broker, allocated_capital=100_000)
+
+    # Drop AAA/BBB (sells) and open YYY/ZZZ (buys).
+    results = executor.execute_rebalance(
+        targets=[_target("YYY", 0.5), _target("ZZZ", 0.5)],
+        current_positions=positions,
+    )
+
+    sides = [side for side, _ in broker.calls]
+    assert "sell" in sides and "buy" in sides
+    last_sell = max(i for i, (s, _) in enumerate(broker.calls) if s == "sell")
+    first_buy = min(i for i, (s, _) in enumerate(broker.calls) if s == "buy")
+    assert last_sell < first_buy
+    assert all(r.executed for r in results)
+
+
+# --- 3.2 / 3.3: fill gate opens; stub completes in one run ----------------- #
+
+
+def test_rebalance_withholds_buys_until_sells_settle(monkeypatch) -> None:
+    monkeypatch.setattr(settings, "REBALANCE_SELL_FILL_TIMEOUT_SECONDS", 5.0)
+    monkeypatch.setattr(settings, "REBALANCE_SELL_FILL_POLL_SECONDS", 0.0)
+    broker = _AsyncBroker(polls_to_settle=2, settle=True)
+    broker._positions["AAA"] = Position(symbol="AAA", quantity=20,
+                                        avg_cost=10.0)
+    positions = {p.symbol: p for p in broker.get_positions()}
+    executor = AIPortfolioExecutor(broker, allocated_capital=100_000)
+
+    results = executor.execute_rebalance(
+        targets=[_target("YYY", 1.0)],  # AAA dropped -> sell; YYY -> buy
+        current_positions=positions,
+    )
+
+    by = {r.ticker: r for r in results}
+    assert by["AAA"].side == "sell" and by["AAA"].executed is True
+    assert by["YYY"].side == "long" and by["YYY"].executed is True
+    # The buy was only submitted after the sell reached a terminal state.
+    assert broker.buy_submitted_while_pending is False
+
+
+def test_rebalance_stub_settles_sells_and_buys_in_one_run() -> None:
+    # Limited cash: holding AAA consumes all cash, so a buy attempted first would
+    # fail for insufficient funds. Sells-first frees the cash and the buy settles
+    # within the same synchronous run.
+    broker = _RecordingBroker()
+    price_aaa = broker.get_quote("AAA").last
+    budget = price_aaa * 15  # all cash goes into the holding to be exited
+    broker = _RecordingBroker(initial_cash=budget)
+    broker.buy("AAA", 15)  # cash -> ~0
+    broker.calls.clear()
+    positions = {p.symbol: p for p in broker.get_positions()}
+    executor = AIPortfolioExecutor(broker, allocated_capital=100_000)
+
+    results = executor.execute_rebalance(
+        targets=[_target("YYY", 1.0)],  # exit AAA, open YYY with the freed cash
+        current_positions=positions,
+        base_capital=budget,  # size the buy to fit within the freed cash
+    )
+
+    by = {r.ticker: r for r in results}
+    assert by["AAA"].side == "sell" and by["AAA"].executed is True
+    assert by["YYY"].side == "long" and by["YYY"].executed is True
+
+
+# --- 3.4: fill-wait timeout withholds buys --------------------------------- #
+
+
+def test_rebalance_timeout_withholds_buys_keeps_sells(monkeypatch) -> None:
+    monkeypatch.setattr(settings, "REBALANCE_SELL_FILL_TIMEOUT_SECONDS", 0.05)
+    monkeypatch.setattr(settings, "REBALANCE_SELL_FILL_POLL_SECONDS", 0.01)
+    broker = _AsyncBroker(settle=False)  # sells never settle
+    broker._positions["AAA"] = Position(symbol="AAA", quantity=20,
+                                        avg_cost=10.0)
+    positions = {p.symbol: p for p in broker.get_positions()}
+    executor = AIPortfolioExecutor(broker, allocated_capital=100_000)
+
+    results = executor.execute_rebalance(
+        targets=[_target("YYY", 1.0)],
+        current_positions=positions,
+    )
+
+    by = {r.ticker: r for r in results}
+    # Sell was submitted and stays executed.
+    assert by["AAA"].side == "sell" and by["AAA"].executed is True
+    # Buy is withheld (fail-safe) and never submitted.
+    assert by["YYY"].executed is False
+    assert "sells not yet filled" in by["YYY"].reason
+    assert broker.buy_orders == {}
+
+
+# --- 3.5: bounded retry of rejected orders --------------------------------- #
+
+
+def test_rebalance_retries_rejected_order_then_fills(monkeypatch) -> None:
+    monkeypatch.setattr(settings, "REBALANCE_ORDER_MAX_ATTEMPTS", 3)
+    broker = _RejectingBuyBroker(symbol="YYY", reject_times=2)  # rejects 2, fills 3rd
+    executor = AIPortfolioExecutor(broker, allocated_capital=100_000)
+
+    results = executor.execute_rebalance(
+        targets=[_target("YYY", 1.0)],
+        current_positions={},
+    )
+
+    assert broker.attempts == 3
+    assert results[0].ticker == "YYY"
+    assert results[0].executed is True
+
+
+def test_rebalance_rejected_order_gives_up_after_cap(monkeypatch) -> None:
+    monkeypatch.setattr(settings, "REBALANCE_ORDER_MAX_ATTEMPTS", 3)
+    broker = _RejectingBuyBroker(symbol="YYY", reject_times=99)  # always rejects
+    executor = AIPortfolioExecutor(broker, allocated_capital=100_000)
+
+    results = executor.execute_rebalance(
+        targets=[_target("YYY", 1.0)],
+        current_positions={},
+    )
+
+    assert broker.attempts == 3
+    assert results[0].ticker == "YYY"
+    assert results[0].executed is False
+    assert results[0].order_status == OrderStatus.REJECTED

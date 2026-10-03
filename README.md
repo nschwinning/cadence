@@ -77,3 +77,8 @@ Configured via the root `.env` (see `.env.example`):
   `35 9 * * 6,0` — Sat/Sun just after the weekday open time; crypto trades 24/7,
   so the sidecar POSTs `/ai-portfolio/rebalance-crypto-daily` to rebalance each
   session's crypto sleeve while the US equity market is closed)
+- End-of-day snapshot + P&L report: `SNAPSHOT_SCHEDULE` (default `15 16 * * *` —
+  16:15 ET **every day, including weekends**; the sidecar POSTs
+  `/ai-portfolio/snapshot-daily` to record each session's value snapshot and send
+  its P&L report. Running on weekends captures weekend crypto moves in the NAV
+  series so Saturdays/Sundays are not gaps)

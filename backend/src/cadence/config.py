@@ -150,6 +150,18 @@ class Settings(BaseSettings):
     PUSHOVER_USER: str = ""
     PUSHOVER_TOKEN: str = ""
 
+    # Rebalance order sequencing (sells-before-buys fill gate). During a
+    # rebalance the executor submits every sell first, waits for the submitted
+    # sells to reach a terminal state at the broker, then submits the buys. The
+    # wait is bounded by ``REBALANCE_SELL_FILL_TIMEOUT_SECONDS`` and polled every
+    # ``REBALANCE_SELL_FILL_POLL_SECONDS``; on timeout the dependent buys are
+    # withheld (fail-safe). ``REBALANCE_ORDER_MAX_ATTEMPTS`` bounds in-run retries
+    # of a rejected order. Under the immediate-fill stub, sells settle on the
+    # first poll so the timeout is never exercised.
+    REBALANCE_SELL_FILL_TIMEOUT_SECONDS: float = 30.0
+    REBALANCE_SELL_FILL_POLL_SECONDS: float = 1.0
+    REBALANCE_ORDER_MAX_ATTEMPTS: int = 3
+
     @field_validator("CORS_ORIGINS", mode="before")
     @classmethod
     def _split_cors_origins(cls, value: object) -> object:

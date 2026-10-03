@@ -450,6 +450,14 @@ reject a request with a missing or invalid token. Recording SHALL be idempotent 
 session per day: re-running the trigger on the same calendar day SHALL update that
 day's snapshot rather than create a duplicate.
 
+The end-of-day snapshot and its P&L report are intended to run on **every calendar
+day, including weekends**, so that a session's value and profit and loss are recorded
+and reported on days its holdings move — notably its crypto sleeve, which trades
+around the clock and is rebalanced on weekends. The trigger SHALL operate on any day
+it is validly called, with no dependence on the equity market being open; the
+scheduling cadence itself is a deployment concern (the cron schedule), not enforced by
+this endpoint.
+
 Each snapshot SHALL record the session's total value, its cash value, the market
 value of its held positions, the day's profit and loss (absolute and percent), and a
 per-position breakdown (per held ticker: quantity, price, market value, unrealized
@@ -474,6 +482,14 @@ to deliver the report SHALL NOT fail the snapshot job.
 - **WHEN** the end-of-day snapshot trigger runs with a valid cron token
 - **THEN** the system SHALL record a value snapshot for each active AI-managed
   session and SHALL NOT record snapshots for paused, stopped, or non-AI sessions
+
+#### Scenario: Snapshot and report run on weekends
+
+- **WHEN** the end-of-day snapshot trigger runs on a weekend (a day the equity
+  market is closed)
+- **THEN** the system SHALL record a value snapshot for each active AI-managed
+  session and send the daily P&L report exactly as on a weekday, marking crypto and
+  other holdings to market, without requiring the equity market to be open
 
 #### Scenario: Snapshot is idempotent per day
 
@@ -1140,6 +1156,44 @@ rebalance seam uses the current-value base.
 - **THEN** the system SHALL still trade only the delta between target and current
   positions and SHALL still enforce any configured risk guardrails on the target weights
   before sizing
+
+### Requirement: Rebalance submits sells before buys and gates buys on sell fills
+
+During a rebalance, the system SHALL submit every sell (including full exits) before it submits any buy, and SHALL submit the buys only after the submitted sells have reached a terminal order state at the brokerage. Terminal states are filled, cancelled, and rejected; a cancelled or rejected sell counts as settled so it never blocks the run, and a rebalance with no sells to place SHALL proceed directly to its buys. The buys SHALL be submitted together once the sells have settled, rather than interleaved with the sells. This ordering guarantee holds regardless of the order in which tickers would otherwise be processed.
+
+The wait for sells to settle SHALL be bounded by a configured timeout. If the timeout elapses before the submitted sells settle, the system SHALL NOT submit the dependent buys for that run; it SHALL record each withheld buy as not executed with a reason indicating the sells had not yet filled, and SHALL leave the executed sells in place so a later rebalance redeploys the freed cash. The system SHALL retry an order the brokerage rejects, up to a bounded number of attempts within the same run, before recording it as not executed.
+
+All existing rebalance behavior SHALL be preserved: crypto-only scope, skipping equity orders while the equities market is closed, the risk-guardrail weight clamp, sizing against the session's current value, fractional crypto / whole-share equity sizing, and the recorded trade shape. When the brokerage fills orders synchronously (the offline stub), the submitted sells settle immediately and the buys proceed within the same run.
+
+#### Scenario: Sells are submitted before any buy
+
+- **WHEN** a rebalance needs to both sell some holdings and buy others
+- **THEN** the system SHALL submit all of the sell orders before it submits any buy order
+
+#### Scenario: Buys wait until sells have settled
+
+- **WHEN** the sell orders have been submitted but have not yet reached a terminal state at the brokerage
+- **THEN** the system SHALL withhold the buy orders until every submitted sell reaches a terminal state (filled, cancelled, or rejected)
+
+#### Scenario: Synchronous broker completes the rebalance in one run
+
+- **WHEN** the brokerage fills orders synchronously (the offline stub)
+- **THEN** the submitted sells SHALL settle immediately and the system SHALL submit the buys in the same run, with the freed cash available to fund them
+
+#### Scenario: Rebalance with no sells proceeds to buys
+
+- **WHEN** a rebalance has only buy orders and no sells to place
+- **THEN** the system SHALL submit the buys without waiting, since there is nothing to settle
+
+#### Scenario: Fill-wait timeout withholds buys without failing the run
+
+- **WHEN** the submitted sells do not settle before the configured fill-wait timeout elapses (for example, sells placed while the equities market is closed)
+- **THEN** the system SHALL skip the dependent buys for that run, record each withheld buy as not executed with a "sells not yet filled" reason, and keep the executed sells so a later rebalance redeploys the freed cash
+
+#### Scenario: Rejected order is retried
+
+- **WHEN** the brokerage rejects a submitted order
+- **THEN** the system SHALL resubmit it up to the bounded retry limit within the same run before recording it as not executed
 
 ### Requirement: Crypto-only rebalance scope
 

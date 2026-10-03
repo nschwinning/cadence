@@ -16,6 +16,7 @@ run; the outcome of each ticker is a :class:`TradeResult`.
 from __future__ import annotations
 
 import logging
+import time
 from collections import defaultdict
 from dataclasses import dataclass
 from typing import Any
@@ -23,6 +24,14 @@ from typing import Any
 from cadence.ai_portfolio.agent import AIPortfolioStock, AITargetAllocation
 from cadence.broker.base import Broker
 from cadence.broker.models import AssetClass, OrderStatus, Position
+from cadence.config import settings
+
+#: Order statuses that count as settled for the sell→buy fill gate. A rejected or
+#: cancelled sell is terminal too, so it never strands the run (house idiom from
+#: the archived ``defer-rebalance-until-build-orders-filled`` change).
+_TERMINAL_ORDER_STATUSES = frozenset(
+    {OrderStatus.FILLED, OrderStatus.CANCELLED, OrderStatus.REJECTED}
+)
 
 logger = logging.getLogger(__name__)
 
@@ -228,6 +237,25 @@ class TradeResult:
         return {**self.to_dict(), "filled_price": self.filled_price}
 
 
+@dataclass(frozen=True)
+class _OrderIntent:
+    """A sized, side-resolved rebalance order that has not been submitted yet.
+
+    The rebalance decides and sizes every ticker into an intent first, then
+    submits all sells before any buys (gating the buys on the sells' fills). The
+    ``reason`` is the human-readable text carried verbatim onto the resulting
+    :class:`TradeResult`; ``price`` is the reference quote used as the fill-price
+    fallback when the broker reports no fill price (async brokers).
+    """
+
+    ticker: str
+    asset_class: AssetClass
+    side: str  # "long" (buy) or "sell"
+    quantity: float
+    price: float
+    reason: str
+
+
 class AIPortfolioExecutor:
     """Sizes and places AI portfolio orders through a :class:`Broker` (long-only)."""
 
@@ -427,7 +455,14 @@ class AIPortfolioExecutor:
 
         base = self.allocated_capital if base_capital is None else base_capital
         tickers = sorted(set(current_positions) | set(target_weight))
-        results: list[TradeResult] = []
+
+        # Phase 0: decide and size every ticker into an order intent (no
+        # submission yet). Non-order outcomes — equity skipped while the market is
+        # closed, a missing quote, or a sizing error — are recorded immediately so
+        # they still appear in the returned results.
+        skips: list[TradeResult] = []
+        sell_intents: list[_OrderIntent] = []
+        buy_intents: list[_OrderIntent] = []
 
         for ticker in tickers:
             cls = classes.get(ticker, AssetClass.EQUITY)
@@ -435,7 +470,7 @@ class AIPortfolioExecutor:
             weight = target_weight.get(ticker, 0.0)
 
             if not market_open and cls == AssetClass.EQUITY:
-                results.append(
+                skips.append(
                     TradeResult(
                         ticker=ticker,
                         side="long" if weight > 0 else "sell",
@@ -451,7 +486,7 @@ class AIPortfolioExecutor:
                 quote = self.broker.get_quote(ticker, cls)
                 price = quote.last or quote.ask
                 if not price or price <= 0:
-                    results.append(
+                    skips.append(
                         TradeResult(
                             ticker=ticker,
                             side="long" if weight > 0 else "sell",
@@ -464,19 +499,13 @@ class AIPortfolioExecutor:
                     continue
 
                 if cls == AssetClass.CRYPTO:
-                    result = self._rebalance_crypto(
-                        ticker, pos, weight, price, base
-                    )
+                    intent = self._plan_crypto(ticker, pos, weight, price, base)
                 else:
-                    result = self._rebalance_equity(
-                        ticker, pos, weight, price, base
-                    )
-                if result is not None:
-                    results.append(result)
+                    intent = self._plan_equity(ticker, pos, weight, price, base)
 
             except Exception as exc:  # noqa: BLE001 - one ticker must not abort the run
-                logger.error("AI rebalance failed for %s: %s", ticker, exc)
-                results.append(
+                logger.error("AI rebalance sizing failed for %s: %s", ticker, exc)
+                skips.append(
                     TradeResult(
                         ticker=ticker,
                         side="long" if weight > 0 else "sell",
@@ -486,8 +515,160 @@ class AIPortfolioExecutor:
                         reason=f"Order failed: {exc}",
                     )
                 )
+                continue
+
+            if intent is None:
+                continue
+            if intent.side == "sell":
+                sell_intents.append(intent)
+            else:
+                buy_intents.append(intent)
+
+        # Phase 1: submit every sell first (with bounded retry on rejection).
+        sell_results = [self._submit_intent(i) for i in sell_intents]
+
+        results: list[TradeResult] = [*skips, *sell_results]
+
+        # Phase 2: gate the buys on the sells reaching a terminal broker state,
+        # then submit all buys at once. On fill-wait timeout, withhold the buys
+        # (fail-safe) and record each as not executed; the executed sells stay.
+        if buy_intents:
+            if self._await_sell_fills(sell_results):
+                results.extend(self._submit_intent(i) for i in buy_intents)
+            else:
+                logger.warning(
+                    "AI rebalance: sells did not settle within %ss; withholding "
+                    "%d buy order(s)",
+                    settings.REBALANCE_SELL_FILL_TIMEOUT_SECONDS,
+                    len(buy_intents),
+                )
+                results.extend(
+                    TradeResult(
+                        ticker=i.ticker,
+                        side=i.side,
+                        shares=0,
+                        price=None,
+                        executed=False,
+                        reason="sells not yet filled",
+                    )
+                    for i in buy_intents
+                )
 
         return results
+
+    def _submit_intent(self, intent: _OrderIntent) -> TradeResult:
+        """Submit one planned order, retrying a rejection up to the configured cap.
+
+        Returns an executed :class:`TradeResult` once the broker accepts the order
+        (any non-rejected status, including the async ``SUBMITTED`` whose fill is
+        reconciled later). After exhausting the retry budget on a rejection — or on
+        a broker order error — returns a not-executed result; a single failure
+        never aborts the run.
+        """
+        attempts = max(1, settings.REBALANCE_ORDER_MAX_ATTEMPTS)
+        last_exc: Exception | None = None
+        rejected = False
+        for attempt in range(1, attempts + 1):
+            try:
+                if intent.side == "sell":
+                    order = self.broker.sell(
+                        intent.ticker, intent.quantity, asset_class=intent.asset_class
+                    )
+                else:
+                    order = self.broker.buy(
+                        intent.ticker, intent.quantity, asset_class=intent.asset_class
+                    )
+            except Exception as exc:  # noqa: BLE001 - one order must not abort the run
+                last_exc = exc
+                logger.warning(
+                    "AI rebalance %s %s attempt %d/%d failed: %s",
+                    intent.side,
+                    intent.ticker,
+                    attempt,
+                    attempts,
+                    exc,
+                )
+                continue
+
+            if order.status == OrderStatus.REJECTED:
+                rejected = True
+                logger.warning(
+                    "AI rebalance %s %s rejected on attempt %d/%d",
+                    intent.side,
+                    intent.ticker,
+                    attempt,
+                    attempts,
+                )
+                continue
+
+            fill_price = order.filled_price or intent.price
+            logger.info(
+                "AI rebalance: %s %s %s",
+                intent.side,
+                intent.quantity,
+                intent.ticker,
+            )
+            return TradeResult(
+                ticker=intent.ticker,
+                side=intent.side,
+                shares=intent.quantity,
+                price=fill_price,
+                executed=True,
+                reason=intent.reason,
+                order_id=order.order_id,
+                order_status=order.status,
+                filled_price=order.filled_price,
+            )
+
+        reason = (
+            f"Order failed: {last_exc}"
+            if last_exc is not None
+            else f"Order rejected by broker after {attempts} attempt(s)"
+        )
+        return TradeResult(
+            ticker=intent.ticker,
+            side=intent.side,
+            shares=0,
+            price=None,
+            executed=False,
+            reason=reason,
+            order_status=OrderStatus.REJECTED if rejected else OrderStatus.FILLED,
+        )
+
+    def _await_sell_fills(self, sell_results: list[TradeResult]) -> bool:
+        """Poll the broker until every submitted sell is terminal, or timeout.
+
+        Only executed sells carrying an ``order_id`` and a non-terminal status are
+        waited on; a sell with no order id or an already-terminal status (the
+        immediate-fill stub returns ``FILLED``) contributes nothing to wait on, so
+        the gate opens at once. Returns ``True`` when all sells settled within the
+        configured timeout, ``False`` on timeout.
+        """
+        pending = [
+            r.order_id
+            for r in sell_results
+            if r.executed
+            and r.order_id
+            and r.order_status not in _TERMINAL_ORDER_STATUSES
+        ]
+        if not pending:
+            return True  # nothing to wait on => ready
+
+        deadline = time.monotonic() + settings.REBALANCE_SELL_FILL_TIMEOUT_SECONDS
+        poll = max(0.0, settings.REBALANCE_SELL_FILL_POLL_SECONDS)
+        while True:
+            still: list[str] = []
+            for order_id in pending:
+                order = self.broker.get_order(order_id)
+                if order is None or order.is_complete:
+                    continue  # unknown or terminal => settled
+                still.append(order_id)
+            if not still:
+                return True
+            if time.monotonic() >= deadline:
+                return False
+            pending = still
+            time.sleep(poll)
 
     def execute_close(
         self,
@@ -562,69 +743,67 @@ class AIPortfolioExecutor:
 
         return results
 
-    def _rebalance_equity(
+    def _plan_equity(
         self,
         ticker: str,
         pos: Position | None,
         weight: float,
         price: float,
         base_capital: float,
-    ) -> TradeResult | None:
-        """Whole-share delta trade for an equity ticker (skip ``|delta| < 1``)."""
+    ) -> _OrderIntent | None:
+        """Plan a whole-share delta trade for an equity (skip ``|delta| < 1``).
+
+        Decides the side and sizes the order but does not submit it; returns
+        ``None`` for a sub-one-share no-op. Submission happens later in the
+        sells-before-buys phase via :meth:`_submit_intent`.
+        """
         current_shares = int(pos.quantity) if pos else 0
         target_shares = int(base_capital * weight / price) if weight > 0 else 0
         delta = target_shares - current_shares
 
         if delta >= 1:
-            order = self.broker.buy(ticker, delta, asset_class=AssetClass.EQUITY)
-            fill_price = order.filled_price or price
-            logger.info("AI rebalance: long %s %s", delta, ticker)
-            return TradeResult(
+            return _OrderIntent(
                 ticker=ticker,
+                asset_class=AssetClass.EQUITY,
                 side="long",
-                shares=delta,
-                price=fill_price,
-                executed=True,
+                quantity=delta,
+                price=price,
                 reason=f"Bought {delta} shares toward target",
-                order_id=order.order_id,
-                order_status=order.status,
-                filled_price=order.filled_price,
             )
         if delta <= -1:
             qty = min(-delta, current_shares)
             if qty < 1:
                 return None
-            order = self.broker.sell(ticker, qty, asset_class=AssetClass.EQUITY)
-            fill_price = order.filled_price or price
             reason = (
                 f"Sold {qty} shares (exit)"
                 if target_shares == 0
                 else f"Sold {qty} shares toward target"
             )
-            logger.info("AI rebalance: sell %s %s", qty, ticker)
-            return TradeResult(
+            return _OrderIntent(
                 ticker=ticker,
+                asset_class=AssetClass.EQUITY,
                 side="sell",
-                shares=qty,
-                price=fill_price,
-                executed=True,
+                quantity=qty,
+                price=price,
                 reason=reason,
-                order_id=order.order_id,
-                order_status=order.status,
-                filled_price=order.filled_price,
             )
-        # |delta| < 1: no-op, no TradeResult recorded.
+        # |delta| < 1: no-op, no order planned.
         return None
 
-    def _rebalance_crypto(
+    def _plan_crypto(
         self,
         ticker: str,
         pos: Position | None,
         weight: float,
         price: float,
         base_capital: float,
-    ) -> TradeResult | None:
-        """Fractional delta trade for a crypto ticker (skip sub-min-notional deltas)."""
+    ) -> _OrderIntent | None:
+        """Plan a fractional delta trade for a crypto (skip sub-min-notional deltas).
+
+        Decides the side and sizes the order but does not submit it; returns
+        ``None`` when the delta's notional is below the minimum. Submission happens
+        later in the sells-before-buys phase via :meth:`_submit_intent`.
+        """
         current = pos.quantity if pos else 0.0
         target = (
             round(base_capital * weight / price, CRYPTO_QTY_PRECISION)
@@ -638,41 +817,29 @@ class AIPortfolioExecutor:
             return None
 
         if delta > 0:
-            order = self.broker.buy(ticker, delta, asset_class=AssetClass.CRYPTO)
-            fill_price = order.filled_price or price
-            logger.info("AI rebalance: long %s %s", delta, ticker)
-            return TradeResult(
+            return _OrderIntent(
                 ticker=ticker,
+                asset_class=AssetClass.CRYPTO,
                 side="long",
-                shares=delta,
-                price=fill_price,
-                executed=True,
+                quantity=delta,
+                price=price,
                 reason=f"Bought {delta} units toward target",
-                order_id=order.order_id,
-                order_status=order.status,
-                filled_price=order.filled_price,
             )
         # delta < 0: sell the shortfall, capped at the held quantity (exit sells
         # the full current float when weight is 0).
         qty = round(min(-delta, current), CRYPTO_QTY_PRECISION)
         if qty <= 0:
             return None
-        order = self.broker.sell(ticker, qty, asset_class=AssetClass.CRYPTO)
-        fill_price = order.filled_price or price
         reason = (
             f"Sold {qty} units (exit)"
             if target == 0
             else f"Sold {qty} units toward target"
         )
-        logger.info("AI rebalance: sell %s %s", qty, ticker)
-        return TradeResult(
+        return _OrderIntent(
             ticker=ticker,
+            asset_class=AssetClass.CRYPTO,
             side="sell",
-            shares=qty,
-            price=fill_price,
-            executed=True,
+            quantity=qty,
+            price=price,
             reason=reason,
-            order_id=order.order_id,
-            order_status=order.status,
-            filled_price=order.filled_price,
         )

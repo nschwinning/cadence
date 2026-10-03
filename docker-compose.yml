@@ -95,8 +95,10 @@ services:
       # Cron expression; default 16:05 on weekdays — ingest benchmark closes just
       # before the snapshot so the daily report compares against fresh prices.
       BENCHMARK_SCHEDULE: ${BENCHMARK_SCHEDULE:-5 16 * * 1-5}
-      # Cron expression; default 16:15 on weekdays (just after the US close).
-      SNAPSHOT_SCHEDULE: ${SNAPSHOT_SCHEDULE:-15 16 * * 1-5}
+      # Cron expression; default 16:15 every day (just after the US close). Runs
+      # on weekends too so weekend crypto moves are captured in each session's NAV
+      # series and the daily P&L report is sent 7 days a week.
+      SNAPSHOT_SCHEDULE: ${SNAPSHOT_SCHEDULE:-15 16 * * *}
       # Cron expression; default 05:00 on weekdays — precompute technical
       # indicators over the whole universe before the market-open rebalance so the
       # trend gate reads fresh snapshots.
