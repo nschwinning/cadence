@@ -20,13 +20,14 @@ from sqlalchemy import (
     Index,
     Integer,
     Text,
+    UniqueConstraint,
     func,
 )
 from sqlalchemy import Enum as SQLEnum
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
-from cadence.ai_portfolio.constants import EventStatus, EventType
+from cadence.ai_portfolio.constants import EventStatus, EventType, PromptKind
 from cadence.database import Base
 
 
@@ -116,22 +117,32 @@ class AIPortfolioEvent(Base):
 class RebalancePrompt(Base):
     """A versioned prompt for the AI rebalance agent.
 
-    Append-only: each edit inserts a new row with a higher ``version``; the
-    **active** prompt is the row with the highest version (no ``is_active`` flag to
-    keep in sync). ``instructions`` is the agent's system-instructions template and
-    ``input_template`` the per-run input template; both keep ``{name}`` placeholders
-    (the reasoning/discovery caps on the instructions; the risk profile, holdings,
-    account summary, and candidate universe on the input) that the agent fills at
-    run time. Version 1 is seeded by migration with the prompt in use at that time,
-    so behavior is unchanged on first deploy.
+    Append-only: each edit inserts a new row with a higher ``version`` **within its
+    ``kind``**; the **active** prompt for a kind is the row with the highest version
+    in that kind (no ``is_active`` flag to keep in sync). ``kind`` separates the
+    weekday full-portfolio family (``rebalance``) from the weekend crypto-only
+    family (``crypto_rebalance``) so each versions independently. ``instructions``
+    is the agent's system-instructions template and ``input_template`` the per-run
+    input template; both keep ``{name}`` placeholders (the reasoning/discovery caps
+    on the instructions; the risk profile, holdings, account summary, and candidate
+    universe on the input) that the agent fills at run time. Version 1 of each kind
+    is seeded by migration, so behavior is unchanged on first deploy.
     """
 
     __tablename__ = "rebalance_prompt"
+    __table_args__ = (
+        UniqueConstraint("kind", "version", name="uq_rebalance_prompt_kind_version"),
+        Index("idx_rebalance_prompt_kind_version", "kind", "version"),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    version: Mapped[int] = mapped_column(
-        Integer, nullable=False, unique=True, index=True
+    # One of cadence.ai_portfolio.constants.PromptKind values.
+    kind: Mapped[str] = mapped_column(
+        _enum_column(PromptKind),
+        nullable=False,
+        server_default=PromptKind.REBALANCE.value,
     )
+    version: Mapped[int] = mapped_column(Integer, nullable=False)
     instructions: Mapped[str] = mapped_column(Text, nullable=False)
     input_template: Mapped[str] = mapped_column(Text, nullable=False)
     created_at: Mapped[datetime] = mapped_column(

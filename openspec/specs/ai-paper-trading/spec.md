@@ -667,12 +667,12 @@ sessions and trades were reconciled.
 
 ### Requirement: Live session performance KPIs
 
-The system SHALL expose, on demand for a given paper-trading session, a summary of the session's live performance comprising: the current portfolio value (net asset value: cash plus open positions valued at current market quotes, net of cumulative transaction fees), cumulative realised profit/loss, live unrealised profit/loss on open positions, cumulative transaction fees paid, total return relative to the allocated capital (as both an absolute money amount and a fraction), a risk-adjusted Sharpe ratio, the benchmark it is compared against, the benchmark's total return over the same period as a fraction, and the session's excess return over the benchmark as a fraction. The benchmark return SHALL be the fractional return of a buy-and-hold of the benchmark from the session's start to the latest available benchmark price, derived from the stored benchmark price series, and the excess return SHALL be the session's total-return fraction minus the benchmark's return fraction. When the benchmark has insufficient stored prices to compute a return the benchmark return and excess return SHALL be reported as unavailable (no value) rather than failing the request. Requesting the summary SHALL value the session's open positions against current quotes at request time (marking to market on load) rather than returning a stale stored valuation. A request for an unknown session SHALL fail as not found.
+The system SHALL expose, on demand for a given paper-trading session, a summary of the session's live performance comprising: the current portfolio value (net asset value: cash plus open positions valued at current market quotes, net of cumulative transaction fees), the session's **unallocated (free) cash** (the current portfolio value less the market value of open positions), cumulative realised profit/loss, live unrealised profit/loss on open positions, cumulative transaction fees paid, total return relative to the allocated capital (as both an absolute money amount and a fraction), a risk-adjusted Sharpe ratio, the benchmark it is compared against, the benchmark's total return over the same period as a fraction, and the session's excess return over the benchmark as a fraction. The benchmark return SHALL be the fractional return of a buy-and-hold of the benchmark from the session's start to the latest available benchmark price, derived from the stored benchmark price series, and the excess return SHALL be the session's total-return fraction minus the benchmark's return fraction. When the benchmark has insufficient stored prices to compute a return the benchmark return and excess return SHALL be reported as unavailable (no value) rather than failing the request. Requesting the summary SHALL value the session's open positions against current quotes at request time (marking to market on load) rather than returning a stale stored valuation. A request for an unknown session SHALL fail as not found.
 
 #### Scenario: Summary for a session with open positions
 
 - **WHEN** a client requests the KPI summary for an existing session
-- **THEN** the system SHALL mark the session's open positions to market and return the current portfolio value (net of transaction fees), realised P&L, unrealised P&L, cumulative transaction fees, total return relative to allocated capital, the Sharpe ratio (or an unavailable Sharpe when history is insufficient), the benchmark return, and the excess return over the benchmark
+- **THEN** the system SHALL mark the session's open positions to market and return the current portfolio value (net of transaction fees), the unallocated cash, realised P&L, unrealised P&L, cumulative transaction fees, total return relative to allocated capital, the Sharpe ratio (or an unavailable Sharpe when history is insufficient), the benchmark return, and the excess return over the benchmark
 
 #### Scenario: Unknown session
 
@@ -683,6 +683,11 @@ The system SHALL expose, on demand for a given paper-trading session, a summary 
 
 - **WHEN** the KPI summary is computed
 - **THEN** the total return SHALL be the current portfolio value measured against the session's allocated capital, provided both as an absolute money amount (current value minus allocated capital) and as a fraction of allocated capital
+
+#### Scenario: Unallocated cash reported
+
+- **WHEN** the KPI summary is computed for a session
+- **THEN** the summary SHALL include the session's unallocated (free) cash as the current portfolio value less the market value of the session's open positions
 
 #### Scenario: Benchmark and excess return reported
 
@@ -1083,3 +1088,232 @@ These figures SHALL NOT change how value snapshots or closed positions are recor
 
 - **WHEN** the KPIs are read for a session whose closed positions are all winners (or all losers)
 - **THEN** the read SHALL report a win rate and the populated side's average, and SHALL report the empty side's average (average loss when all winners, or average win when all losers) as absent
+
+### Requirement: Rebalance sizes against the session's current value
+
+An automated rebalance SHALL size its target weights against the session's **current
+marked-to-market value** — the allocated capital adjusted by cumulative realised
+profit/loss and transaction fees plus the live unrealised profit/loss of open positions,
+equivalently the current market value of all open positions plus the session's
+unallocated cash — rather than against the session's original frozen allocated capital.
+The normalised target weights (which sum to approximately one, after any guardrail
+enforcement) SHALL therefore be applied to the session's current equity, so that each
+target position value is a fraction of what the session is worth now. Realised and
+unrealised gains SHALL thereby be redeployed into the target allocation on the next
+rebalance, and after losses the targets SHALL be sized to the session's reduced equity
+rather than its original capital.
+
+The target-weight delta model SHALL be otherwise unchanged: the system SHALL still trade
+only the delta between each target position and the current position (a buy when the
+target exceeds the current holding, a sell or full exit when it falls short), SHALL still
+apply fractional sizing for crypto and whole-share sizing for equities, and SHALL still
+enforce any configured risk guardrails on the weight vector before sizing.
+
+The **initial build** SHALL continue to size positions against the session's allocated
+capital. Because at build time the session holds no positions and has no profit/loss, its
+current value equals its allocated capital, so build sizing is unaffected; only the
+rebalance seam uses the current-value base.
+
+#### Scenario: Gains are redeployed on rebalance
+
+- **WHEN** a session whose current value has grown above its allocated capital is
+  rebalanced
+- **THEN** the system SHALL size the target positions against the current (grown) value,
+  so the gains are deployed into the target allocation rather than left idle as cash
+
+#### Scenario: Targets sized down after losses
+
+- **WHEN** a session whose current value has fallen below its allocated capital is
+  rebalanced
+- **THEN** the system SHALL size the target positions against the current (reduced)
+  value rather than the original allocated capital
+
+#### Scenario: Build still sizes against allocated capital
+
+- **WHEN** a portfolio is first built (no positions, no profit/loss yet)
+- **THEN** the system SHALL size the initial positions against the allocated capital,
+  which equals the session's current value at that moment
+
+#### Scenario: Delta model and guardrails unchanged
+
+- **WHEN** a rebalance sizes positions against the current value
+- **THEN** the system SHALL still trade only the delta between target and current
+  positions and SHALL still enforce any configured risk guardrails on the target weights
+  before sizing
+
+### Requirement: Crypto-only rebalance scope
+
+The system SHALL support a crypto-only rebalance that adjusts only a session's crypto
+holdings and targets, leaving the session's equity positions untouched. When a
+rebalance runs in crypto-only mode, the system SHALL restrict the candidate universe
+and the holdings it acts on to crypto assets, regardless of the session's configured
+asset scope, so that a session permitted to hold both equities and crypto still
+rebalances only its crypto in this mode. The system SHALL NOT place any equity order
+during a crypto-only rebalance, and SHALL NOT sell, trim, or add to equity positions.
+Equity positions SHALL remain exactly as they were before the crypto-only run.
+
+#### Scenario: Mixed session rebalances only crypto
+
+- **WHEN** a crypto-only rebalance runs for a session that holds both equities and
+  crypto
+- **THEN** the system SHALL place orders only for crypto assets and SHALL leave every
+  equity position unchanged
+
+#### Scenario: Candidates restricted to crypto
+
+- **WHEN** the agent is invoked for a crypto-only rebalance
+- **THEN** the candidate universe presented to the agent SHALL contain only crypto
+  assets, even for a session whose asset scope permits equities
+
+#### Scenario: No crypto means no agent run
+
+- **WHEN** a crypto-only rebalance is requested for a session that neither holds nor
+  targets any crypto
+- **THEN** the system SHALL record the run as skipped and SHALL NOT invoke the agent
+
+### Requirement: Crypto-only rebalance sizes against the crypto investable budget
+
+In a crypto-only rebalance the system SHALL size crypto target weights against the
+session's **crypto investable budget**, defined as the current market value of the
+session's crypto positions plus the session's unallocated (free) cash — not against
+the session's full allocated capital. The unallocated cash SHALL be the session's
+derived free cash (allocated capital adjusted by realised profit/loss and fees, plus
+unrealised position value, less the market value of all open positions). Sizing
+against this budget SHALL allow the run both to rotate capital between existing crypto
+positions and to deploy idle cash into crypto, while never drawing on capital tied up
+in equity positions. The crypto-only run SHALL NOT size any position against the full
+allocated capital.
+
+#### Scenario: Weights applied to the crypto budget, not total capital
+
+- **WHEN** a crypto-only rebalance sizes a crypto target for a session that also holds
+  equities
+- **THEN** the system SHALL compute the target position value from the crypto
+  investable budget (crypto positions' market value plus unallocated cash), not from
+  the session's full allocated capital
+
+#### Scenario: Idle cash can be deployed into crypto
+
+- **WHEN** a crypto-only rebalance runs for a session that holds unallocated cash and
+  targets a larger crypto allocation
+- **THEN** the system SHALL be able to buy crypto up to the crypto investable budget,
+  including the unallocated cash
+
+#### Scenario: Equity capital is never used for crypto
+
+- **WHEN** a crypto-only rebalance sizes crypto positions
+- **THEN** the capital tied up in the session's equity positions SHALL NOT be included
+  in the crypto investable budget
+
+### Requirement: Rebalance agent informed of the session's unallocated cash
+
+The system SHALL provide the rebalance agent with the session's own derived
+unallocated (free) cash in the account summary it receives, rather than a global or
+broker-wide cash figure that does not reflect the individual session's capital. For a
+crypto-only rebalance the account summary SHALL additionally convey the crypto
+investable budget the agent's crypto weights will be sized against. The cash figure
+presented to the agent SHALL be the session-derived unallocated cash described in
+"Crypto-only rebalance sizes against the crypto investable budget".
+
+#### Scenario: Account summary carries session cash
+
+- **WHEN** the rebalance agent is invoked for a session
+- **THEN** the account summary SHALL report the session's own derived unallocated
+  cash rather than a shared broker-wide buying-power figure
+
+#### Scenario: Crypto budget conveyed for crypto-only runs
+
+- **WHEN** the rebalance agent is invoked for a crypto-only rebalance
+- **THEN** the account summary SHALL additionally convey the crypto investable budget
+  (crypto positions' market value plus unallocated cash)
+
+### Requirement: Crypto-only rebalance uses a crypto-scoped prompt
+
+A crypto-only rebalance SHALL use a rebalance prompt whose instructions make clear
+that the agent is rebalancing only the session's crypto sleeve within the provided
+crypto investable budget, and that equities will not be traded in this run. This
+crypto-scoped prompt SHALL be stored as a versioned rebalance-prompt record under the
+same versioning rules as the standard rebalance prompt (see "Versioned rebalancing
+prompt stored in the database"); it SHALL NOT be a prompt hardcoded in application
+code. A crypto-only run SHALL fail with a clear error, rather than invoking the agent
+with an empty prompt, if its crypto-scoped prompt cannot be found.
+
+#### Scenario: Crypto-only run uses the crypto-scoped prompt
+
+- **WHEN** a crypto-only rebalance invokes the agent
+- **THEN** the system SHALL use the crypto-scoped rebalance prompt, instructing the
+  agent that only the crypto sleeve is being rebalanced within the crypto investable
+  budget
+
+#### Scenario: Missing crypto prompt fails cleanly
+
+- **WHEN** a crypto-only rebalance runs and its crypto-scoped prompt cannot be found
+- **THEN** the system SHALL fail the rebalance with an explicit error and SHALL NOT
+  invoke the agent with an empty prompt
+
+### Requirement: Per-session sector and category performance breakdown
+
+The system SHALL expose, on demand for a given paper-trading session, a breakdown of
+the session's performance grouped both by the held assets' **sector** and by their
+**category**. For each group the system SHALL report: the cumulative realised
+profit/loss of positions closed in that group, the live unrealised profit/loss of the
+session's open positions in that group (marked to market at request time), the total
+profit/loss of the group (realised plus unrealised), the current market value of the
+group's open positions, and the group's return as a fraction (the group's total
+profit/loss divided by the group's invested cost basis). When a group's invested cost
+basis is zero the return SHALL be reported as unavailable (no value) rather than
+failing the request or dividing by zero.
+
+Grouping SHALL be resolved by joining the session's open and closed positions to the
+asset catalogue on a normalised ticker (matching the catalogue's canonical casing). An
+asset whose sector is not set (for example crypto and most funds) SHALL be grouped
+under a dedicated "no sector" bucket in the by-sector breakdown; its category is still
+used for the by-category breakdown. A position whose ticker no longer matches any
+catalogue asset SHALL be grouped under a dedicated "unknown" bucket in both
+breakdowns, so the breakdown never silently drops profit/loss. Every unit of the
+session's realised and unrealised profit/loss SHALL be attributed to exactly one group
+in each breakdown. A request for an unknown session SHALL fail as not found.
+
+#### Scenario: Breakdown grouped by sector and category
+
+- **WHEN** a client requests the sector/category performance breakdown for an existing
+  session
+- **THEN** the system SHALL return two groupings — one keyed by sector and one keyed by
+  category — each listing, per group, the realised P&L, unrealised P&L, total P&L,
+  market value, and return fraction
+
+#### Scenario: Total P&L combines realised and unrealised
+
+- **WHEN** a group contains both closed positions and open positions
+- **THEN** the group's total P&L SHALL equal its realised P&L (from closed positions)
+  plus its unrealised P&L (from open positions marked to market at request time)
+
+#### Scenario: Open positions marked to market
+
+- **WHEN** the breakdown is computed for a session with open positions
+- **THEN** each open position's unrealised P&L and market value SHALL be valued against
+  current quotes at request time rather than a stale stored valuation
+
+#### Scenario: Assets without a sector are bucketed
+
+- **WHEN** the session holds or has closed an asset that has no sector (such as crypto)
+- **THEN** that asset's performance SHALL be attributed to a dedicated "no sector"
+  bucket in the by-sector breakdown while still being attributed to its own category in
+  the by-category breakdown
+
+#### Scenario: Unknown tickers are bucketed, not dropped
+
+- **WHEN** a session position's ticker does not match any catalogue asset
+- **THEN** that position's performance SHALL be attributed to a dedicated "unknown"
+  bucket in both breakdowns rather than being omitted
+
+#### Scenario: Group return guards divide-by-zero
+
+- **WHEN** a group's invested cost basis is zero
+- **THEN** the group's return SHALL be reported as unavailable rather than failing the
+  request
+
+#### Scenario: Unknown session
+
+- **WHEN** a client requests the breakdown for a session id that does not exist
+- **THEN** the system SHALL respond with a not-found error and no breakdown

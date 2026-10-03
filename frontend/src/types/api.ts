@@ -467,9 +467,32 @@ export interface SessionValueComparisonResponse {
   sessions: SessionValueComparisonSeries[];
 }
 
+/**
+ * Performance attribution for one sector/category group within a session.
+ * Mirrors `SessionGroupPerformance`. `key` is the sector/category name or a
+ * "No sector"/"Unknown" sentinel bucket; `return_pct` is null when the group's
+ * invested cost basis is zero (unavailable).
+ */
+export interface SessionGroupPerformance {
+  key: string;
+  market_value: number;
+  realized_pnl: number;
+  unrealized_pnl: number;
+  total_pnl: number;
+  return_pct: number | null;
+}
+
+/** A session's P&L attributed by sector and by category. Mirrors `SessionSectorPerformanceRead`. */
+export interface SessionSectorPerformance {
+  by_sector: SessionGroupPerformance[];
+  by_category: SessionGroupPerformance[];
+}
+
 /** A session's live performance KPIs. Mirrors `PaperTradingSessionKpisRead`. */
 export interface PaperTradingSessionKpis {
   current_value: number;
+  /** Uninvested cash in the session (current value minus marked-to-market positions). */
+  unallocated_cash: number;
   realised_pnl: number;
   unrealised_pnl: number;
   /** Cumulative per-trade transaction cost charged to date. */

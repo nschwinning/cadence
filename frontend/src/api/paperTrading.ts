@@ -10,6 +10,7 @@ import type {
   PaperTradingSessionKpis,
   PaperTradingSessionListResponse,
   SessionRunListResponse,
+  SessionSectorPerformance,
   SessionStatus,
   SessionValueComparisonResponse,
   SessionValueHistoryResponse,
@@ -59,6 +60,8 @@ export const paperTradingKeys = {
     ['paper-trading', 'sessions', 'value-history-comparison'] as const,
   kpis: (sessionId: string) =>
     ['paper-trading', 'session', sessionId, 'kpis'] as const,
+  sectorPerformance: (sessionId: string) =>
+    ['paper-trading', 'session', sessionId, 'sector-performance'] as const,
   orderSync: (sessionId: string) =>
     ['paper-trading', 'session', sessionId, 'order-sync'] as const,
   benchmarks: () => ['paper-trading', 'benchmarks'] as const,
@@ -180,6 +183,16 @@ export async function getSessionKpis(
   return data;
 }
 
+/** Fetch a session's P&L attributed by sector and category (marked to market). */
+export async function getSessionSectorPerformance(
+  sessionId: string,
+): Promise<SessionSectorPerformance> {
+  const { data } = await apiClient.get<SessionSectorPerformance>(
+    `/api/v1/paper-trading/sessions/${encodeURIComponent(sessionId)}/sector-performance`,
+  );
+  return data;
+}
+
 /** Fetch the fixed benchmark catalog (`[{id, name}]`). */
 export async function listBenchmarks(): Promise<BenchmarkCatalogEntry[]> {
   const { data } = await apiClient.get<BenchmarkCatalogEntry[]>(
@@ -271,6 +284,15 @@ export function useSessionKpis(sessionId: string) {
   return useQuery<PaperTradingSessionKpis>({
     queryKey: paperTradingKeys.kpis(sessionId),
     queryFn: () => getSessionKpis(sessionId),
+    enabled: sessionId.length > 0,
+  });
+}
+
+/** React Query hook fetching a session's sector/category P&L attribution. */
+export function useSessionSectorPerformance(sessionId: string) {
+  return useQuery<SessionSectorPerformance>({
+    queryKey: paperTradingKeys.sectorPerformance(sessionId),
+    queryFn: () => getSessionSectorPerformance(sessionId),
     enabled: sessionId.length > 0,
   });
 }

@@ -19,6 +19,8 @@ from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from cadence.assets.models import Asset
+from cadence.assets.service import normalize_ticker
 from cadence.broker.base import Broker
 from cadence.broker.models import OrderSide, OrderStatus
 from cadence.config import settings
@@ -69,6 +71,7 @@ def create_session(
     portfolio_id: uuid.UUID,
     strategy_key: str,
     rebalance_prompt_version: int,
+    crypto_rebalance_prompt_version: int,
     benchmark: Benchmark,
     allocated_capital: float = DEFAULT_ALLOCATED_CAPITAL,
     max_allocation_pct: float = 1.0,
@@ -85,6 +88,8 @@ def create_session(
 
     ``rebalance_prompt_version`` freezes the rebalance-prompt version this session
     will always use; callers pass the version that is active at build time.
+    ``crypto_rebalance_prompt_version`` likewise freezes the ``crypto_rebalance``-kind
+    prompt version used by the weekend crypto-only rebalance.
     ``benchmark`` is the market index the session is compared against (the build
     passes the chosen/default id). ``use_technical_indicators`` freezes the
     technical-indicator trend-strategy opt-in at build time (default off); every
@@ -110,6 +115,7 @@ def create_session(
         max_allocation_pct=max_allocation_pct,
         schedule_mode=schedule_mode.value,
         rebalance_prompt_version=rebalance_prompt_version,
+        crypto_rebalance_prompt_version=crypto_rebalance_prompt_version,
         benchmark=benchmark.value,
         use_technical_indicators=use_technical_indicators,
         stop_loss_enabled=stop_loss_enabled,
@@ -899,6 +905,150 @@ def compute_session_value(
     )
 
 
+# --------------------------------------------------------------------------- #
+# Sector / category performance attribution
+# --------------------------------------------------------------------------- #
+
+# Sentinel group keys (mirror the dashboard's NO_SECTOR_KEY convention): a held
+# asset with no sector lands in "No sector" (by-sector only); a position ticker
+# that no longer matches any catalogue asset lands in "Unknown" (both groupings),
+# so no P&L is ever silently dropped.
+NO_SECTOR_GROUP_KEY = "No sector"
+UNKNOWN_GROUP_KEY = "Unknown"
+
+
+@dataclass(frozen=True)
+class GroupPerformance:
+    """Performance attribution for one sector/category group within a session."""
+
+    key: str
+    market_value: float
+    realized_pnl: float
+    unrealized_pnl: float
+    total_pnl: float
+    return_pct: float | None
+
+
+@dataclass(frozen=True)
+class SessionSectorPerformance:
+    """A session's P&L attributed to sectors and categories."""
+
+    by_sector: list[GroupPerformance]
+    by_category: list[GroupPerformance]
+
+
+@dataclass
+class _GroupAccumulator:
+    """Mutable running totals for one group while aggregating."""
+
+    realized_pnl: float = 0.0
+    unrealized_pnl: float = 0.0
+    market_value: float = 0.0
+    cost_basis: float = 0.0
+
+
+def session_sector_performance(
+    session: Session,
+    *,
+    session_id: uuid.UUID,
+    broker: Broker,
+) -> SessionSectorPerformance:
+    """Attribute a session's realised + unrealised P&L to sectors and categories.
+
+    Marks the session's open positions to market via :func:`compute_session_value`,
+    sums each closed position's realised P&L, and joins both to the asset catalogue
+    on a normalised ticker to group by ``Asset.sector`` and ``Asset.category``. Each
+    group reports realised, unrealised and total P&L, open-position market value, and
+    a return fraction (``total_pnl / cost_basis``, ``None`` when the cost basis is
+    zero). A null sector buckets under :data:`NO_SECTOR_GROUP_KEY` (by sector only);
+    a ticker with no matching asset buckets under :data:`UNKNOWN_GROUP_KEY` (both
+    groupings), so every unit of P&L is attributed. Raises
+    :class:`SessionNotFoundError` for an unknown session.
+    """
+    get_session(session, session_id)  # 404 on unknown session.
+
+    valuation = compute_session_value(session, session_id=session_id, broker=broker)
+    closed = list(
+        session.execute(
+            select(ClosedPosition).where(ClosedPosition.session_id == session_id)
+        ).scalars()
+    )
+
+    # Resolve the sector/category of every ticker involved in one catalogue query.
+    tickers = {normalize_ticker(pos["ticker"]) for pos in valuation.positions}
+    tickers |= {normalize_ticker(cp.ticker) for cp in closed}
+    catalogue: dict[str, tuple[str, str | None]] = {}
+    if tickers:
+        rows = session.execute(
+            select(Asset.ticker, Asset.category, Asset.sector).where(
+                Asset.ticker.in_(tickers)
+            )
+        ).all()
+        catalogue = {row[0]: (row[1], row[2]) for row in rows}
+
+    by_sector: dict[str, _GroupAccumulator] = {}
+    by_category: dict[str, _GroupAccumulator] = {}
+
+    def _keys(ticker: str) -> tuple[str, str]:
+        """Return the (sector_key, category_key) group keys for a ticker."""
+        entry = catalogue.get(normalize_ticker(ticker))
+        if entry is None:
+            return UNKNOWN_GROUP_KEY, UNKNOWN_GROUP_KEY
+        category, sector = entry
+        return (sector or NO_SECTOR_GROUP_KEY), category
+
+    for pos in valuation.positions:
+        sector_key, category_key = _keys(pos["ticker"])
+        market_value = pos["market_value"]
+        unrealized = pos["unrealized_pnl"]
+        cost_basis = market_value - unrealized
+        for grouping, key in ((by_sector, sector_key), (by_category, category_key)):
+            acc = grouping.setdefault(key, _GroupAccumulator())
+            acc.unrealized_pnl += unrealized
+            acc.market_value += market_value
+            acc.cost_basis += cost_basis
+
+    for cp in closed:
+        sector_key, category_key = _keys(cp.ticker)
+        cost_basis = abs(cp.entry_price * cp.quantity)
+        for grouping, key in ((by_sector, sector_key), (by_category, category_key)):
+            acc = grouping.setdefault(key, _GroupAccumulator())
+            acc.realized_pnl += cp.realized_pnl
+            acc.cost_basis += cost_basis
+
+    return SessionSectorPerformance(
+        by_sector=_finalize_groups(by_sector),
+        by_category=_finalize_groups(by_category),
+    )
+
+
+def _finalize_groups(
+    groups: dict[str, _GroupAccumulator],
+) -> list[GroupPerformance]:
+    """Convert accumulators to immutable rows, most profitable first.
+
+    The per-group return is ``total_pnl / cost_basis``; a zero cost basis yields
+    ``None`` (unavailable) rather than a divide-by-zero.
+    """
+    rows = [
+        GroupPerformance(
+            key=key,
+            market_value=acc.market_value,
+            realized_pnl=acc.realized_pnl,
+            unrealized_pnl=acc.unrealized_pnl,
+            total_pnl=acc.realized_pnl + acc.unrealized_pnl,
+            return_pct=(
+                (acc.realized_pnl + acc.unrealized_pnl) / acc.cost_basis
+                if acc.cost_basis != 0
+                else None
+            ),
+        )
+        for key, acc in groups.items()
+    ]
+    rows.sort(key=lambda row: (-row.total_pnl, row.key))
+    return rows
+
+
 def quote_price(quote: Any) -> float | None:
     """Extract a usable price from a broker :class:`Quote`, or ``None``.
 
@@ -1173,7 +1323,9 @@ def closed_position_stats(pnls: Sequence[float]) -> ClosedPositionStats:
 class SessionKpis:
     """A session's headline performance KPIs at request time.
 
-    ``current_value`` is the live net asset value (net of fees); ``realised_pnl``
+    ``current_value`` is the live net asset value (net of fees);
+    ``unallocated_cash`` the portion of that value currently held as cash (the live
+    value minus the marked-to-market positions value); ``realised_pnl``
     the session's cumulative gross realised P&L; ``unrealised_pnl`` the live
     mark-to-market on open positions; ``total_fees`` the cumulative per-trade
     transaction cost charged to date; ``total_return`` the absolute gain/loss versus
@@ -1199,6 +1351,7 @@ class SessionKpis:
     """
 
     current_value: float
+    unallocated_cash: float
     realised_pnl: float
     unrealised_pnl: float
     total_fees: float
@@ -1272,6 +1425,7 @@ def session_kpis(
 
     return SessionKpis(
         current_value=valuation.total_value,
+        unallocated_cash=valuation.cash_value,
         realised_pnl=session_row.total_pnl,
         unrealised_pnl=valuation.unrealized_pnl,
         total_fees=session_row.total_fees,

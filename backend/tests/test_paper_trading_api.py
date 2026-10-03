@@ -14,6 +14,9 @@ from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
 
 from cadence.api.app import app
+from cadence.assets.category import AssetCategory
+from cadence.assets.models import Asset
+from cadence.assets.sector import Sector
 from cadence.broker import get_broker
 from cadence.broker.models import AssetClass, Order, OrderSide, OrderStatus, Quote
 from cadence.broker.stub import StubBroker
@@ -42,7 +45,7 @@ def _seed(db_session: Session) -> uuid.UUID:
         db_session, name="P", stocks=["AAPL"]
     )
     sess = service.create_session(
-        db_session, portfolio_id=portfolio.id, strategy_key="momentum", rebalance_prompt_version=1, benchmark=Benchmark.SP500)
+        db_session, portfolio_id=portfolio.id, strategy_key="momentum", rebalance_prompt_version=1, crypto_rebalance_prompt_version=1, benchmark=Benchmark.SP500)
     service.record_trade(
         db_session,
         session_id=sess.id,
@@ -78,6 +81,8 @@ def test_list_sessions(client: TestClient, db_session: Session) -> None:
     item = next(item for item in body["items"] if item["id"] == str(session_id))
     # The frozen rebalance-prompt version is exposed on the read model.
     assert item["rebalance_prompt_version"] == 1
+    # The frozen crypto-rebalance-prompt version is exposed alongside it.
+    assert item["crypto_rebalance_prompt_version"] == 1
     # The traded portfolio's name is surfaced so the client can label the session.
     assert item["portfolio_name"] == "P"
 
@@ -93,7 +98,7 @@ def test_list_sessions_exposes_stop_loss_config(
         db_session,
         portfolio_id=portfolio.id,
         strategy_key="ai_buy_hold",
-        rebalance_prompt_version=1,
+        rebalance_prompt_version=1, crypto_rebalance_prompt_version=1,
         benchmark=Benchmark.SP500,
         stop_loss_enabled=True,
         stop_loss_pct=0.2,
@@ -127,7 +132,7 @@ def test_list_sessions_exposes_guardrail_config(
         db_session,
         portfolio_id=portfolio.id,
         strategy_key="ai_buy_hold",
-        rebalance_prompt_version=1,
+        rebalance_prompt_version=1, crypto_rebalance_prompt_version=1,
         benchmark=Benchmark.SP500,
         max_allocation_pct=0.25,
         risk_guardrails_enabled=True,
@@ -276,7 +281,7 @@ def _stopped_session_id(db_session: Session, strategy_key: str = "arch") -> uuid
         db_session, name="P", stocks=["AAPL"]
     )
     sess = service.create_session(
-        db_session, portfolio_id=portfolio.id, strategy_key=strategy_key, rebalance_prompt_version=1, benchmark=Benchmark.SP500)
+        db_session, portfolio_id=portfolio.id, strategy_key=strategy_key, rebalance_prompt_version=1, crypto_rebalance_prompt_version=1, benchmark=Benchmark.SP500)
     service.update_session_status(db_session, sess.id, SessionStatus.STOPPED)
     return sess.id
 
@@ -316,7 +321,7 @@ def test_archive_non_stopped_session_conflicts(
         db_session, name="P", stocks=["AAPL"]
     )
     sess = service.create_session(
-        db_session, portfolio_id=portfolio.id, strategy_key="active", rebalance_prompt_version=1, benchmark=Benchmark.SP500)
+        db_session, portfolio_id=portfolio.id, strategy_key="active", rebalance_prompt_version=1, crypto_rebalance_prompt_version=1, benchmark=Benchmark.SP500)
     resp = client.post(f"/api/v1/paper-trading/sessions/{sess.id}/archive")
     assert resp.status_code == 409
 
@@ -342,7 +347,7 @@ def test_reconcile_session_returns_counts_and_refreshed_trades(
         db_session, name="P", stocks=["AAPL"]
     )
     sess = service.create_session(
-        db_session, portfolio_id=portfolio.id, strategy_key="recon", rebalance_prompt_version=1, benchmark=Benchmark.SP500)
+        db_session, portfolio_id=portfolio.id, strategy_key="recon", rebalance_prompt_version=1, crypto_rebalance_prompt_version=1, benchmark=Benchmark.SP500)
     service.record_trade(
         db_session,
         session_id=sess.id,
@@ -387,7 +392,7 @@ def test_value_history_ascending(client: TestClient, db_session: Session) -> Non
         db_session, name="AI", stocks=["AAPL"]
     )
     sess = service.create_session(
-        db_session, portfolio_id=portfolio.id, strategy_key="ai_buy_hold", rebalance_prompt_version=1, benchmark=Benchmark.SP500)
+        db_session, portfolio_id=portfolio.id, strategy_key="ai_buy_hold", rebalance_prompt_version=1, crypto_rebalance_prompt_version=1, benchmark=Benchmark.SP500)
     broker = StubBroker()
     # Record out of order; the endpoint must return them oldest date first.
     for day in (date(2026, 1, 6), date(2026, 1, 4), date(2026, 1, 5)):
@@ -419,7 +424,7 @@ def test_value_history_carries_rebased_benchmark_value(
         db_session,
         portfolio_id=portfolio.id,
         strategy_key="ai_vh_bench",
-        rebalance_prompt_version=1,
+        rebalance_prompt_version=1, crypto_rebalance_prompt_version=1,
         benchmark=Benchmark.SP500,
     )
     broker = StubBroker()
@@ -455,7 +460,7 @@ def test_value_history_comparison_lists_non_archived_sessions(
         db_session,
         portfolio_id=port_a.id,
         strategy_key="ai_buy_hold",
-        rebalance_prompt_version=1,
+        rebalance_prompt_version=1, crypto_rebalance_prompt_version=1,
         benchmark=Benchmark.SP500,
     )
     for day in (date(2026, 1, 6), date(2026, 1, 4)):
@@ -471,7 +476,7 @@ def test_value_history_comparison_lists_non_archived_sessions(
         db_session,
         portfolio_id=port_b.id,
         strategy_key="ai_buy_hold",
-        rebalance_prompt_version=1,
+        rebalance_prompt_version=1, crypto_rebalance_prompt_version=1,
         benchmark=Benchmark.SP500,
     )
 
@@ -483,7 +488,7 @@ def test_value_history_comparison_lists_non_archived_sessions(
         db_session,
         portfolio_id=port_c.id,
         strategy_key="ai_buy_hold",
-        rebalance_prompt_version=1,
+        rebalance_prompt_version=1, crypto_rebalance_prompt_version=1,
         benchmark=Benchmark.SP500,
     )
     service.record_value_snapshot(
@@ -531,7 +536,7 @@ def test_session_kpis_returns_live_figures(
         db_session, name="AI", stocks=["AAPL"]
     )
     sess = service.create_session(
-        db_session, portfolio_id=portfolio.id, strategy_key="ai_kpis", rebalance_prompt_version=1, benchmark=Benchmark.SP500)
+        db_session, portfolio_id=portfolio.id, strategy_key="ai_kpis", rebalance_prompt_version=1, crypto_rebalance_prompt_version=1, benchmark=Benchmark.SP500)
     service.apply_fill_to_ledger(
         db_session,
         session_id=sess.id,
@@ -547,6 +552,7 @@ def test_session_kpis_returns_live_figures(
     body = resp.json()
     assert set(body) == {
         "current_value",
+        "unallocated_cash",
         "realised_pnl",
         "unrealised_pnl",
         "total_fees",
@@ -567,6 +573,8 @@ def test_session_kpis_returns_live_figures(
     # Ledger buy above did not go through record_trade, so no fees accrued.
     assert body["total_fees"] == 0.0
     assert body["current_value"] == 100_200.0
+    # Unallocated cash = live value minus the 10 AAPL @ $120 ($1,200) position.
+    assert body["unallocated_cash"] == 99_000.0
     assert body["realised_pnl"] == 0.0
     assert body["unrealised_pnl"] == 200.0
     assert body["total_return"] == 200.0
@@ -598,7 +606,7 @@ def test_session_kpis_benchmark_comparison_from_stored_prices(
         db_session,
         portfolio_id=portfolio.id,
         strategy_key="ai_kpis_bench",
-        rebalance_prompt_version=1,
+        rebalance_prompt_version=1, crypto_rebalance_prompt_version=1,
         benchmark=Benchmark.SP500,
     )
     service.apply_fill_to_ledger(
@@ -691,3 +699,84 @@ def test_change_benchmark_invalid_id_is_422(
     assert resp.status_code == 422
     # The session's benchmark is left unchanged.
     assert service.get_session(db_session, session_id).benchmark == "SP500"
+
+
+def test_session_sector_performance_returns_groupings(
+    client: TestClient, db_session: Session
+) -> None:
+    portfolio = portfolios_service.create_portfolio(
+        db_session, name="AI", stocks=["AAPL"]
+    )
+    sess = service.create_session(
+        db_session,
+        portfolio_id=portfolio.id,
+        strategy_key="ai_sectors",
+        rebalance_prompt_version=1,
+        crypto_rebalance_prompt_version=1,
+        benchmark=Benchmark.SP500,
+    )
+    db_session.add_all(
+        [
+            Asset(
+                ticker="AAPL",
+                category=AssetCategory.STOCK.value,
+                sector=Sector.TECHNOLOGY.value,
+                currency="USD",
+                is_eligible=True,
+                criteria_results=[],
+            ),
+            Asset(
+                ticker="BTC-USD",
+                category=AssetCategory.CRYPTO.value,
+                sector=None,
+                currency="USD",
+                is_eligible=True,
+                criteria_results=[],
+            ),
+        ]
+    )
+    db_session.commit()
+    service.apply_fill_to_ledger(
+        db_session,
+        session_id=sess.id,
+        ticker="AAPL",
+        side=OrderSide.BUY,
+        shares=10,
+        price=100.0,
+    )
+    service.apply_fill_to_ledger(
+        db_session,
+        session_id=sess.id,
+        ticker="BTC-USD",
+        side=OrderSide.BUY,
+        shares=1,
+        price=1000.0,
+    )
+    app.dependency_overrides[get_broker] = lambda: _QuoteBroker(
+        {"AAPL": 120.0, "BTC-USD": 1200.0}
+    )
+
+    resp = client.get(
+        f"/api/v1/paper-trading/sessions/{sess.id}/sector-performance"
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert set(body) == {"by_sector", "by_category"}
+    sector_keys = {g["key"] for g in body["by_sector"]}
+    # The equity lands in tech; the crypto (no sector) in the "No sector" bucket.
+    assert sector_keys == {Sector.TECHNOLOGY.value, "No sector"}
+    category_keys = {g["key"] for g in body["by_category"]}
+    assert category_keys == {AssetCategory.STOCK.value, AssetCategory.CRYPTO.value}
+    tech = next(g for g in body["by_sector"] if g["key"] == Sector.TECHNOLOGY.value)
+    assert tech["total_pnl"] == pytest.approx(200.0)
+    assert tech["return_pct"] == pytest.approx(0.2)
+
+
+def test_session_sector_performance_unknown_session_404(
+    client: TestClient,
+) -> None:
+    app.dependency_overrides[get_broker] = lambda: _QuoteBroker({})
+    resp = client.get(
+        f"/api/v1/paper-trading/sessions/{uuid.uuid4()}/sector-performance"
+    )
+    assert resp.status_code == 404

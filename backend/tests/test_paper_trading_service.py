@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
+import uuid
 from datetime import UTC, date, datetime, timedelta
 
 import pytest
 from sqlalchemy.orm import Session
 
 from cadence.api.schemas import SessionValueSnapshotRead
+from cadence.assets.category import AssetCategory
+from cadence.assets.models import Asset
+from cadence.assets.sector import Sector
 from cadence.broker.models import (
     AssetClass,
     Order,
@@ -48,7 +52,7 @@ def _portfolio(db_session: Session) -> Portfolio:
 def test_create_session_defaults(db_session: Session) -> None:
     portfolio = _portfolio(db_session)
     sess = service.create_session(
-        db_session, portfolio_id=portfolio.id, strategy_key="momentum", rebalance_prompt_version=1, benchmark=Benchmark.SP500)
+        db_session, portfolio_id=portfolio.id, strategy_key="momentum", rebalance_prompt_version=1, crypto_rebalance_prompt_version=1, benchmark=Benchmark.SP500)
     assert sess.id is not None
     assert sess.portfolio_id == portfolio.id
     assert sess.status == SessionStatus.ACTIVE.value
@@ -61,10 +65,10 @@ def test_create_session_defaults(db_session: Session) -> None:
 def test_duplicate_portfolio_strategy_raises(db_session: Session) -> None:
     portfolio = _portfolio(db_session)
     service.create_session(
-        db_session, portfolio_id=portfolio.id, strategy_key="momentum", rebalance_prompt_version=1, benchmark=Benchmark.SP500)
+        db_session, portfolio_id=portfolio.id, strategy_key="momentum", rebalance_prompt_version=1, crypto_rebalance_prompt_version=1, benchmark=Benchmark.SP500)
     with pytest.raises(DuplicateSessionError):
         service.create_session(
-            db_session, portfolio_id=portfolio.id, strategy_key="momentum", rebalance_prompt_version=1, benchmark=Benchmark.SP500)
+            db_session, portfolio_id=portfolio.id, strategy_key="momentum", rebalance_prompt_version=1, crypto_rebalance_prompt_version=1, benchmark=Benchmark.SP500)
 
 
 def test_get_and_not_found(db_session: Session) -> None:
@@ -72,7 +76,7 @@ def test_get_and_not_found(db_session: Session) -> None:
 
     portfolio = _portfolio(db_session)
     sess = service.create_session(
-        db_session, portfolio_id=portfolio.id, strategy_key="s", rebalance_prompt_version=1, benchmark=Benchmark.SP500)
+        db_session, portfolio_id=portfolio.id, strategy_key="s", rebalance_prompt_version=1, crypto_rebalance_prompt_version=1, benchmark=Benchmark.SP500)
     assert service.get_session(db_session, sess.id).id == sess.id
     with pytest.raises(SessionNotFoundError):
         service.get_session(db_session, uuid.uuid4())
@@ -81,7 +85,7 @@ def test_get_and_not_found(db_session: Session) -> None:
 def test_record_trade_derives_notional(db_session: Session) -> None:
     portfolio = _portfolio(db_session)
     sess = service.create_session(
-        db_session, portfolio_id=portfolio.id, strategy_key="s", rebalance_prompt_version=1, benchmark=Benchmark.SP500)
+        db_session, portfolio_id=portfolio.id, strategy_key="s", rebalance_prompt_version=1, crypto_rebalance_prompt_version=1, benchmark=Benchmark.SP500)
     trade = service.record_trade(
         db_session,
         session_id=sess.id,
@@ -101,7 +105,7 @@ def test_record_trade_derives_notional(db_session: Session) -> None:
 def test_record_trade_charges_transaction_fee(db_session: Session) -> None:
     portfolio = _portfolio(db_session)
     sess = service.create_session(
-        db_session, portfolio_id=portfolio.id, strategy_key="s", rebalance_prompt_version=1, benchmark=Benchmark.SP500)
+        db_session, portfolio_id=portfolio.id, strategy_key="s", rebalance_prompt_version=1, crypto_rebalance_prompt_version=1, benchmark=Benchmark.SP500)
     # A fresh session starts fee-free.
     assert sess.total_fees == pytest.approx(0.0)
     for _ in range(2):
@@ -122,7 +126,7 @@ def test_record_trade_charges_transaction_fee(db_session: Session) -> None:
 def test_record_run(db_session: Session) -> None:
     portfolio = _portfolio(db_session)
     sess = service.create_session(
-        db_session, portfolio_id=portfolio.id, strategy_key="s", rebalance_prompt_version=1, benchmark=Benchmark.SP500)
+        db_session, portfolio_id=portfolio.id, strategy_key="s", rebalance_prompt_version=1, crypto_rebalance_prompt_version=1, benchmark=Benchmark.SP500)
     run = service.record_session_run(
         db_session,
         session_id=sess.id,
@@ -145,7 +149,7 @@ def test_record_run(db_session: Session) -> None:
 def test_record_closed_position_computes_pnl(db_session: Session) -> None:
     portfolio = _portfolio(db_session)
     sess = service.create_session(
-        db_session, portfolio_id=portfolio.id, strategy_key="s", rebalance_prompt_version=1, benchmark=Benchmark.SP500)
+        db_session, portfolio_id=portfolio.id, strategy_key="s", rebalance_prompt_version=1, crypto_rebalance_prompt_version=1, benchmark=Benchmark.SP500)
     entry = datetime(2026, 1, 1, tzinfo=UTC)
     exit_ = entry + timedelta(days=10)
     pos = service.record_closed_position(
@@ -167,7 +171,7 @@ def test_record_closed_position_computes_pnl(db_session: Session) -> None:
 def test_update_last_run_and_status(db_session: Session) -> None:
     portfolio = _portfolio(db_session)
     sess = service.create_session(
-        db_session, portfolio_id=portfolio.id, strategy_key="s", rebalance_prompt_version=1, benchmark=Benchmark.SP500)
+        db_session, portfolio_id=portfolio.id, strategy_key="s", rebalance_prompt_version=1, crypto_rebalance_prompt_version=1, benchmark=Benchmark.SP500)
     updated = service.update_session_last_run(
         db_session, sess.id, trades_delta=3, pnl_delta=42.5
     )
@@ -184,9 +188,9 @@ def test_update_last_run_and_status(db_session: Session) -> None:
 def test_list_sessions_filter_by_status(db_session: Session) -> None:
     portfolio = _portfolio(db_session)
     active = service.create_session(
-        db_session, portfolio_id=portfolio.id, strategy_key="a", rebalance_prompt_version=1, benchmark=Benchmark.SP500)
+        db_session, portfolio_id=portfolio.id, strategy_key="a", rebalance_prompt_version=1, crypto_rebalance_prompt_version=1, benchmark=Benchmark.SP500)
     stopped = service.create_session(
-        db_session, portfolio_id=portfolio.id, strategy_key="b", rebalance_prompt_version=1, benchmark=Benchmark.SP500)
+        db_session, portfolio_id=portfolio.id, strategy_key="b", rebalance_prompt_version=1, crypto_rebalance_prompt_version=1, benchmark=Benchmark.SP500)
     service.update_session_status(db_session, stopped.id, SessionStatus.STOPPED)
 
     active_ids = [
@@ -204,7 +208,7 @@ def test_list_sessions_filter_by_status(db_session: Session) -> None:
 def _stopped_session(db_session: Session, strategy_key: str = "s") -> object:
     portfolio = _portfolio(db_session)
     sess = service.create_session(
-        db_session, portfolio_id=portfolio.id, strategy_key=strategy_key, rebalance_prompt_version=1, benchmark=Benchmark.SP500)
+        db_session, portfolio_id=portfolio.id, strategy_key=strategy_key, rebalance_prompt_version=1, crypto_rebalance_prompt_version=1, benchmark=Benchmark.SP500)
     return service.update_session_status(
         db_session, sess.id, SessionStatus.STOPPED
     )
@@ -221,7 +225,7 @@ def test_archive_stopped_session_sets_timestamp(db_session: Session) -> None:
 def test_archive_rejects_active_or_paused(db_session: Session) -> None:
     portfolio = _portfolio(db_session)
     active = service.create_session(
-        db_session, portfolio_id=portfolio.id, strategy_key="a", rebalance_prompt_version=1, benchmark=Benchmark.SP500)
+        db_session, portfolio_id=portfolio.id, strategy_key="a", rebalance_prompt_version=1, crypto_rebalance_prompt_version=1, benchmark=Benchmark.SP500)
     with pytest.raises(SessionNotArchivableError):
         service.archive_session(db_session, active.id)
 
@@ -269,7 +273,7 @@ def test_archive_unknown_session_raises(db_session: Session) -> None:
 def _ledger_session(db_session: Session) -> object:
     portfolio = _portfolio(db_session)
     return service.create_session(
-        db_session, portfolio_id=portfolio.id, strategy_key="ledger", rebalance_prompt_version=1, benchmark=Benchmark.SP500)
+        db_session, portfolio_id=portfolio.id, strategy_key="ledger", rebalance_prompt_version=1, crypto_rebalance_prompt_version=1, benchmark=Benchmark.SP500)
 
 
 def test_apply_fill_to_ledger_opens_and_averages_up(db_session: Session) -> None:
@@ -343,9 +347,9 @@ def test_apply_fill_to_ledger_partial_sell_then_full_exit(db_session: Session) -
 def test_list_open_positions_scoped_to_session(db_session: Session) -> None:
     portfolio = _portfolio(db_session)
     a = service.create_session(
-        db_session, portfolio_id=portfolio.id, strategy_key="a", rebalance_prompt_version=1, benchmark=Benchmark.SP500)
+        db_session, portfolio_id=portfolio.id, strategy_key="a", rebalance_prompt_version=1, crypto_rebalance_prompt_version=1, benchmark=Benchmark.SP500)
     b = service.create_session(
-        db_session, portfolio_id=portfolio.id, strategy_key="b", rebalance_prompt_version=1, benchmark=Benchmark.SP500)
+        db_session, portfolio_id=portfolio.id, strategy_key="b", rebalance_prompt_version=1, crypto_rebalance_prompt_version=1, benchmark=Benchmark.SP500)
     service.apply_fill_to_ledger(
         db_session, session_id=a.id, ticker="AAPL", side=OrderSide.BUY,
         shares=5, price=50.0,
@@ -638,7 +642,7 @@ def _ai_session(db_session: Session) -> object:
         db_session,
         portfolio_id=portfolio.id,
         strategy_key="ai_buy_hold",
-        allocated_capital=100_000.0, rebalance_prompt_version=1, benchmark=Benchmark.SP500)
+        allocated_capital=100_000.0, rebalance_prompt_version=1, crypto_rebalance_prompt_version=1, benchmark=Benchmark.SP500)
 
 
 def _buy(db_session: Session, session_id: object, ticker: str, qty: float, price: float) -> None:
@@ -920,6 +924,10 @@ def test_session_kpis_live_figures_and_total_return(db_session: Session) -> None
         db_session, session_id=sess.id, broker=_QuoteBroker({"AAPL": 120.0})
     )
     assert kpis.current_value == pytest.approx(100_200.0)
+    # Unallocated cash is the live value minus the marked-to-market positions value
+    # (10 shares @ $120 = $1,200): 100,000 allocated − 1,000 spent = 99,000 cash.
+    assert kpis.unallocated_cash == pytest.approx(99_000.0)
+    assert kpis.unallocated_cash == pytest.approx(kpis.current_value - 1_200.0)
     assert kpis.realised_pnl == pytest.approx(0.0)
     assert kpis.unrealised_pnl == pytest.approx(200.0)
     # Total return, absolute and fractional, vs the 100k allocated capital.
@@ -1129,7 +1137,7 @@ def test_portfolio_name_resolves_from_linked_portfolio(
         db_session,
         portfolio_id=portfolio.id,
         strategy_key="ai_buy_hold",
-        rebalance_prompt_version=1,
+        rebalance_prompt_version=1, crypto_rebalance_prompt_version=1,
         benchmark=Benchmark.SP500,
     )
     assert service.get_session(db_session, sess.id).portfolio_name == "P"
@@ -1253,3 +1261,154 @@ def test_session_kpis_benchmark_none_without_prices(db_session: Session) -> None
     assert kpis.benchmark_return_pct is None
     assert kpis.excess_return_pct is None
     assert kpis.excess_return is None
+
+
+# --------------------------------------------------------------------------- #
+# Sector / category performance attribution
+# --------------------------------------------------------------------------- #
+
+
+def _asset(
+    db_session: Session,
+    ticker: str,
+    category: AssetCategory,
+    sector: Sector | None = None,
+) -> Asset:
+    """Insert a catalogue asset with the given category/sector."""
+    asset = Asset(
+        ticker=ticker,
+        category=category.value,
+        sector=sector.value if sector is not None else None,
+        currency="USD",
+        is_eligible=True,
+        criteria_results=[],
+    )
+    db_session.add(asset)
+    db_session.commit()
+    return asset
+
+
+def _close(
+    db_session: Session,
+    session_id: object,
+    ticker: str,
+    qty: float,
+    entry: float,
+    exit_price: float,
+) -> None:
+    service.record_closed_position(
+        db_session,
+        session_id=session_id,
+        ticker=ticker,
+        quantity=qty,
+        entry_price=entry,
+        exit_price=exit_price,
+        entry_date=datetime(2026, 1, 1, tzinfo=UTC),
+        exit_date=datetime(2026, 1, 10, tzinfo=UTC),
+    )
+
+
+def test_sector_performance_join_matches_regardless_of_casing(
+    db_session: Session,
+) -> None:
+    sess = _ai_session(db_session)
+    _asset(db_session, "AAPL", AssetCategory.STOCK, Sector.TECHNOLOGY)
+    # Ledger ticker stored lower-cased; the catalogue stores the normalised form.
+    _buy(db_session, sess.id, "aapl", 10, 100.0)
+
+    result = service.session_sector_performance(
+        db_session, session_id=sess.id, broker=_QuoteBroker({"aapl": 120.0})
+    )
+    # The join normalises casing -> matched to the tech sector, not "Unknown".
+    (sector_group,) = result.by_sector
+    assert sector_group.key == Sector.TECHNOLOGY.value
+    assert sector_group.unrealized_pnl == pytest.approx(200.0)
+    (category_group,) = result.by_category
+    assert category_group.key == AssetCategory.STOCK.value
+
+
+def test_sector_performance_total_is_realised_plus_unrealised(
+    db_session: Session,
+) -> None:
+    sess = _ai_session(db_session)
+    _asset(db_session, "AAPL", AssetCategory.STOCK, Sector.TECHNOLOGY)
+    _asset(db_session, "MSFT", AssetCategory.STOCK, Sector.TECHNOLOGY)
+    _buy(db_session, sess.id, "AAPL", 10, 100.0)  # +200 unrealised at 120
+    _close(db_session, sess.id, "MSFT", 10, 100.0, 130.0)  # +300 realised
+
+    result = service.session_sector_performance(
+        db_session, session_id=sess.id, broker=_QuoteBroker({"AAPL": 120.0})
+    )
+    (tech,) = result.by_sector
+    assert tech.key == Sector.TECHNOLOGY.value
+    assert tech.realized_pnl == pytest.approx(300.0)
+    assert tech.unrealized_pnl == pytest.approx(200.0)
+    assert tech.total_pnl == pytest.approx(500.0)
+    assert tech.total_pnl == pytest.approx(tech.realized_pnl + tech.unrealized_pnl)
+
+
+def test_sector_performance_null_sector_bucketed_but_category_kept(
+    db_session: Session,
+) -> None:
+    sess = _ai_session(db_session)
+    _asset(db_session, "BTC-USD", AssetCategory.CRYPTO, sector=None)
+    _buy(db_session, sess.id, "BTC-USD", 1, 1000.0)
+
+    result = service.session_sector_performance(
+        db_session, session_id=sess.id, broker=_QuoteBroker({"BTC-USD": 1200.0})
+    )
+    # No sector -> the dedicated bucket in the by-sector grouping ...
+    (sector_group,) = result.by_sector
+    assert sector_group.key == service.NO_SECTOR_GROUP_KEY
+    # ... but the category is still used in the by-category grouping.
+    (category_group,) = result.by_category
+    assert category_group.key == AssetCategory.CRYPTO.value
+    assert category_group.unrealized_pnl == pytest.approx(200.0)
+
+
+def test_sector_performance_unknown_ticker_bucketed_nothing_dropped(
+    db_session: Session,
+) -> None:
+    sess = _ai_session(db_session)
+    _asset(db_session, "AAPL", AssetCategory.STOCK, Sector.TECHNOLOGY)
+    _buy(db_session, sess.id, "AAPL", 10, 100.0)  # +200 unrealised at 120
+    # FOO / BAR have no catalogue asset -> the "Unknown" bucket.
+    _buy(db_session, sess.id, "FOO", 5, 10.0)  # +10 unrealised at 12
+    _close(db_session, sess.id, "BAR", 10, 100.0, 90.0)  # -100 realised
+
+    result = service.session_sector_performance(
+        db_session,
+        session_id=sess.id,
+        broker=_QuoteBroker({"AAPL": 120.0, "FOO": 12.0}),
+    )
+    sector_keys = {g.key for g in result.by_sector}
+    assert service.UNKNOWN_GROUP_KEY in sector_keys
+    assert service.UNKNOWN_GROUP_KEY in {g.key for g in result.by_category}
+    # Overall P&L = -100 realised + (200 + 10) unrealised = 110; nothing dropped.
+    expected_total = 110.0
+    assert sum(g.total_pnl for g in result.by_sector) == pytest.approx(expected_total)
+    assert sum(g.total_pnl for g in result.by_category) == pytest.approx(expected_total)
+
+
+def test_sector_performance_zero_cost_basis_return_is_none(
+    db_session: Session,
+) -> None:
+    sess = _ai_session(db_session)
+    # Closed at a zero entry price -> the group's invested cost basis is zero.
+    _asset(db_session, "FREE", AssetCategory.STOCK, Sector.ENERGY)
+    _close(db_session, sess.id, "FREE", 10, 0.0, 5.0)  # +50 realised, 0 cost
+
+    result = service.session_sector_performance(
+        db_session, session_id=sess.id, broker=_QuoteBroker({})
+    )
+    (energy,) = result.by_sector
+    assert energy.key == Sector.ENERGY.value
+    assert energy.total_pnl == pytest.approx(50.0)
+    assert energy.return_pct is None
+
+
+def test_sector_performance_unknown_session_raises(db_session: Session) -> None:
+    with pytest.raises(SessionNotFoundError):
+        service.session_sector_performance(
+            db_session, session_id=uuid.uuid4(), broker=_QuoteBroker({})
+        )

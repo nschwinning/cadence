@@ -36,6 +36,7 @@ from cadence.ai_portfolio.constants import (
     TREND_PROMPT_VERSION,
     EventStatus,
     EventType,
+    PromptKind,
 )
 from cadence.ai_portfolio.errors import (
     AIPortfolioValidationError,
@@ -351,6 +352,30 @@ def build_orders_settled(
     return True
 
 
+def session_involves_crypto(
+    session: Session, session_row: PaperTradingSession
+) -> bool:
+    """Whether a session holds or currently targets any crypto.
+
+    Used by the weekend crypto-only cron to skip sessions with no crypto sleeve
+    *before* a job (and an AI event) is ever created — the same no-crypto condition
+    the crypto-only run would otherwise short-circuit on. Mirrors the in-run
+    ``any_crypto`` check: a session involves crypto iff any open position or any
+    current portfolio target is classified crypto by the universe.
+    """
+    asset_classes = _asset_class_map(assets_service.list_assets(session))
+    positions = {
+        entry.ticker: Position(
+            symbol=entry.ticker,
+            quantity=entry.quantity,
+            avg_cost=entry.avg_cost,
+        )
+        for entry in paper_service.list_open_positions(session, session_row.id)
+    }
+    portfolio = portfolios_service.get_portfolio(session, session_row.portfolio_id)
+    return _involves_crypto(positions, portfolio.stocks, asset_classes)
+
+
 # --------------------------------------------------------------------------- #
 # Build flow
 # --------------------------------------------------------------------------- #
@@ -390,6 +415,11 @@ def run_build_event(
         # the build opts out — the default — or the active prompt predates the trend
         # strategy, the build stays ungated and records no trend context.
         active_prompt = get_active_rebalance_prompt(session)
+        # Freeze the active crypto-rebalance prompt version too, for the weekend
+        # crypto-only run (mirrors the weekday rebalance-prompt freeze below).
+        active_crypto_prompt = get_active_rebalance_prompt(
+            session, kind=PromptKind.CRYPTO_REBALANCE
+        )
         gating_enabled = (
             params.use_technical_indicators
             and active_prompt.version >= TREND_PROMPT_VERSION
@@ -482,6 +512,7 @@ def run_build_event(
             portfolio_id=portfolio.id,
             strategy_key=AI_STRATEGY_KEY,
             rebalance_prompt_version=active_prompt.version,
+            crypto_rebalance_prompt_version=active_crypto_prompt.version,
             allocated_capital=params.allocated_capital,
             max_allocation_pct=portfolio.max_allocation_pct,
             schedule_mode=schedule_mode,
@@ -590,39 +621,55 @@ def run_build_event(
 # --------------------------------------------------------------------------- #
 
 
-def get_active_rebalance_prompt(session: Session) -> RebalancePrompt:
-    """Return the active rebalance prompt: the row with the highest ``version``.
+def get_active_rebalance_prompt(
+    session: Session, kind: PromptKind = PromptKind.REBALANCE
+) -> RebalancePrompt:
+    """Return the active rebalance prompt of ``kind``: the row with the highest
+    ``version`` within that kind.
 
-    The prompt is stored append-only and versioned (see :class:`RebalancePrompt`);
-    "active" is simply the latest version. Migration seeds version 1, so a row
-    normally always exists.
+    The prompt is stored append-only and versioned per kind (see
+    :class:`RebalancePrompt`); "active" is simply the latest version for the kind.
+    Migration seeds version 1 of each kind, so a row normally always exists. The
+    ``kind`` filter is essential: version numbers overlap across kinds (both the
+    ``rebalance`` and ``crypto_rebalance`` families start at v1).
 
     Raises:
-        RebalancePromptNotFoundError: if no prompt version has been persisted.
+        RebalancePromptNotFoundError: if no prompt version of ``kind`` exists.
     """
-    stmt = select(RebalancePrompt).order_by(RebalancePrompt.version.desc()).limit(1)
+    stmt = (
+        select(RebalancePrompt)
+        .where(RebalancePrompt.kind == kind.value)
+        .order_by(RebalancePrompt.version.desc())
+        .limit(1)
+    )
     prompt = session.execute(stmt).scalars().first()
     if prompt is None:
         raise RebalancePromptNotFoundError(
-            "no rebalance prompt is configured; seed version 1 before rebalancing"
+            f"no {kind.value} prompt is configured; seed version 1 before rebalancing"
         )
     return prompt
 
 
-def get_rebalance_prompt_by_version(session: Session, version: int) -> RebalancePrompt:
-    """Return the rebalance prompt pinned at ``version``.
+def get_rebalance_prompt_by_version(
+    session: Session, version: int, kind: PromptKind = PromptKind.REBALANCE
+) -> RebalancePrompt:
+    """Return the rebalance prompt of ``kind`` pinned at ``version``.
 
-    Used to resolve a session's frozen rebalance-prompt version so every rebalance
-    for that session uses the same prompt, regardless of later prompt edits.
+    Used to resolve a session's frozen prompt version so every rebalance for that
+    session uses the same prompt, regardless of later prompt edits. The ``kind``
+    filter is required because versions are unique only per kind.
 
     Raises:
-        RebalancePromptNotFoundError: if no prompt with that version exists.
+        RebalancePromptNotFoundError: if no prompt with that (kind, version) exists.
     """
-    stmt = select(RebalancePrompt).where(RebalancePrompt.version == version)
+    stmt = select(RebalancePrompt).where(
+        RebalancePrompt.kind == kind.value,
+        RebalancePrompt.version == version,
+    )
     prompt = session.execute(stmt).scalars().first()
     if prompt is None:
         raise RebalancePromptNotFoundError(
-            f"rebalance prompt version {version} not found"
+            f"{kind.value} prompt version {version} not found"
         )
     return prompt
 
@@ -634,6 +681,7 @@ def run_rebalance_event(
     broker: Broker,
     provider: MarketDataProvider,
     notifier: Notifier | None = None,
+    crypto_only: bool = False,
 ) -> None:
     """Drive a queued rebalance event to a terminal status.
 
@@ -641,6 +689,15 @@ def run_rebalance_event(
     (no orders) and the event is marked ``skipped``. Otherwise the agent returns
     desired end-state target weights across the full universe (with bounded
     discovery), and the executor trades the deltas toward those weights.
+
+    ``crypto_only`` runs the weekend crypto-only mode: the session's asset scope is
+    intersected with crypto, BOTH the candidate set and the considered holdings are
+    restricted to crypto (so equities are never assigned a target and never sold —
+    see design D3), the crypto sleeve is sized against a crypto budget (crypto
+    positions' market value + the session's unallocated cash) rather than the
+    allocated capital, and the session's frozen ``crypto_rebalance`` prompt is used.
+    A crypto-only run for a session with no crypto held or targeted is skipped
+    before the agent is consulted.
 
     ``notifier`` is optional: the daily cron path supplies one so an executed
     rebalance (or a failure) is pushed to the user; manual rebalances leave it
@@ -673,13 +730,36 @@ def run_rebalance_event(
         asset_scope = str(metadata.get("asset_types", AssetScope.BOTH.value))
         risk_profile = str(metadata.get("risk_profile", "balanced"))
         allowed_categories = scope_categories(asset_scope)
+        if crypto_only:
+            # Weekend crypto-only mode: regardless of the session's own scope, only
+            # the crypto sleeve is tended (D2). Intersecting here restricts the
+            # candidate universe to crypto below.
+            allowed_categories = allowed_categories & frozenset(
+                {AssetCategory.CRYPTO}
+            )
 
         # Crypto trades 24/7, so the market-open guard can no longer skip the
         # whole run unconditionally. Read this session's holdings from its ledger
         # (the source of truth) and the class map first, to decide whether anything
         # is tradable while the equities market is closed.
         market_open = broker.is_market_open()
-        ledger = paper_service.list_open_positions(session, session_id)
+        universe = assets_service.list_assets(session)
+        asset_classes = _asset_class_map(universe)
+
+        full_ledger = paper_service.list_open_positions(session, session_id)
+        # In crypto-only mode the considered holdings are restricted to crypto so
+        # equities are never assigned a target and never sold (D3). Everywhere the
+        # run reads holdings (positions passed to the executor, held-ticker set,
+        # trend snapshots, agent holdings) uses this scoped view.
+        if crypto_only:
+            ledger = [
+                entry
+                for entry in full_ledger
+                if asset_classes.get(entry.ticker, AssetClass.EQUITY)
+                == AssetClass.CRYPTO
+            ]
+        else:
+            ledger = full_ledger
         positions = {
             entry.ticker: Position(
                 symbol=entry.ticker,
@@ -689,13 +769,25 @@ def run_rebalance_event(
             for entry in ledger
         }
 
-        universe = assets_service.list_assets(session)
-        asset_classes = _asset_class_map(universe)
-        any_crypto = _involves_crypto(positions, portfolio.stocks, asset_classes)
+        # Targets considered for the "is anything tradable" check are the portfolio's
+        # current end-state holdings, restricted to crypto in crypto-only mode.
+        candidate_targets = (
+            [t for t in portfolio.stocks
+             if asset_classes.get(_normalize_tickers([t])[0], AssetClass.EQUITY)
+             == AssetClass.CRYPTO]
+            if crypto_only
+            else portfolio.stocks
+        )
+        any_crypto = _involves_crypto(positions, candidate_targets, asset_classes)
 
-        # Nothing tradable: equities market closed and no crypto held/targeted.
-        # Record a skipped run and event without ever consulting the agent.
-        if not market_open and not any_crypto:
+        # Nothing tradable: for a crypto-only run, no crypto held or targeted; for a
+        # full run, the equities market is closed and no crypto held/targeted. Record
+        # a skipped run and event without ever consulting the agent.
+        nothing_tradable = (
+            not any_crypto if crypto_only else (not market_open and not any_crypto)
+        )
+        if nothing_tradable:
+            skip_reason = "no crypto" if crypto_only else "market closed"
             paper_service.record_session_run(
                 session,
                 session_id=session_id,
@@ -703,7 +795,7 @@ def run_rebalance_event(
                 signals_actionable=0,
                 orders_executed=0,
                 orders_skipped=0,
-                details=[{"skipped": True, "reason": "market closed"}],
+                details=[{"skipped": True, "reason": skip_reason}],
                 status=RunStatus.SUCCESS,
                 run_trigger="ai_rebalance",
                 duration_ms=_elapsed_ms(t0),
@@ -717,10 +809,8 @@ def run_rebalance_event(
                 actions_taken=[],
                 duration_ms=_elapsed_ms(t0),
             )
-            logger.info("AI rebalance %s skipped: market closed", event.id)
+            logger.info("AI rebalance %s skipped: %s", event.id, skip_reason)
             return
-
-        account = broker.get_account_info()
 
         # The trend gate and its per-run context apply only when this session opted
         # into the technical-indicator trend strategy at build time AND is frozen to
@@ -789,18 +879,44 @@ def run_rebalance_event(
                     for h in holdings
                 ],
             }
+        # Value the session once (marked to market) and reason off its OWN free
+        # cash, not the shared broker's global buying power (D5). ``cash_value`` is
+        # the session's unallocated cash; the crypto budget (crypto positions'
+        # market value + that cash) sizes the crypto-only sleeve.
+        valuation = paper_service.compute_session_value(
+            session, session_id=session_id, broker=broker
+        )
+        crypto_budget = (
+            sum(
+                p["market_value"]
+                for p in valuation.positions
+                if asset_classes.get(p["ticker"], AssetClass.EQUITY)
+                == AssetClass.CRYPTO
+            )
+            + valuation.cash_value
+        )
         account_summary = {
-            "portfolio_value": account.portfolio_value,
-            "cash_available": account.buying_power,
-            "total_unrealized_pnl": account.unrealized_pnl,
+            "portfolio_value": valuation.total_value,
+            "cash_available": valuation.cash_value,
+            "total_unrealized_pnl": valuation.unrealized_pnl,
         }
+        if crypto_only:
+            account_summary["crypto_budget"] = crypto_budget
 
         # Use the prompt version frozen onto the session at build time, not
         # whatever is active now, so newer prompt versions never change an
-        # already-built session's behavior.
-        prompt = get_rebalance_prompt_by_version(
-            session, session_row.rebalance_prompt_version
-        )
+        # already-built session's behavior. A crypto-only run uses the session's
+        # frozen crypto-scoped prompt (its own kind + version).
+        if crypto_only:
+            prompt = get_rebalance_prompt_by_version(
+                session,
+                session_row.crypto_rebalance_prompt_version,
+                kind=PromptKind.CRYPTO_REBALANCE,
+            )
+        else:
+            prompt = get_rebalance_prompt_by_version(
+                session, session_row.rebalance_prompt_version
+            )
         rebalance_guardrails = _guardrail_instruction(
             enabled=bool(session_row.risk_guardrails_enabled),
             max_asset_pct=session_row.max_allocation_pct,
@@ -852,6 +968,13 @@ def run_rebalance_event(
             max_asset_class_pct=session_row.max_asset_class_pct,
             max_invested_pct=session_row.max_invested_pct,
         )
+        # Size the rebalance against the session's current marked-to-market value
+        # (current positions' market value + free cash), not the frozen allocated
+        # capital, so realised/unrealised gains are redeployed and losses size the
+        # targets down. This is the same valuation the KPIs and snapshots use. A
+        # crypto-only run sizes against the crypto budget (crypto market value +
+        # unallocated cash) so the crypto weights never claim equity capital (D4).
+        rebalance_base = crypto_budget if crypto_only else valuation.total_value
         executor = AIPortfolioExecutor(broker, session_row.allocated_capital)
         trade_results = executor.execute_rebalance(
             targets=result.target_allocations,
@@ -859,6 +982,8 @@ def run_rebalance_event(
             asset_classes=asset_classes,
             market_open=market_open,
             caps=caps,
+            base_capital=rebalance_base,
+            crypto_only=crypto_only,
         )
 
         executed, realized_pnl = _apply_rebalance_trades(
@@ -924,11 +1049,14 @@ def run_rebalance_event(
         logger.info("AI rebalance %s completed: %s trades executed", event.id, executed)
 
         # Notify only when the daily path supplied a notifier and orders actually
-        # went out; a run that executed nothing is not worth a push.
+        # went out; a run that executed nothing is not worth a push. A crypto-only
+        # run reuses this same path, labelled so the user can tell the weekend
+        # crypto cadence apart from the full weekday rebalance.
         if notifier is not None and executed > 0:
+            label = "crypto rebalanced" if crypto_only else "rebalanced"
             _notify_safely(
                 notifier,
-                title=f"Cadence: {portfolio.name} rebalanced",
+                title=f"Cadence: {portfolio.name} {label}",
                 message=_rebalance_success_message(
                     portfolio.name, trade_results, realized_pnl
                 ),

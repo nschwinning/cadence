@@ -78,13 +78,20 @@ services:
     # timezone) it POSTs two AI-portfolio endpoints, each guarded by the
     # X-Cron-Token shared secret: the daily rebalance (default 09:35 America/
     # New_York, just after the US open) and the end-of-day value snapshot +
-    # P&L report (default 16:15, just after the US close). Uses busybox crond.
+    # P&L report (default 16:15, just after the US close). On weekend schedules
+    # it POSTs the crypto-only rebalance (default 09:35 Sat/Sun) so the crypto
+    # sleeve keeps rebalancing while the US equity market is closed. Uses busybox
+    # crond.
     image: alpine:3.20
     environment:
       # Timezone the cron schedule is interpreted in (busybox reads TZ).
       TZ: ${CRON_TZ:-America/New_York}
       # Cron expression; default 09:35 on weekdays (just after the US open).
       REBALANCE_SCHEDULE: ${REBALANCE_SCHEDULE:-35 9 * * 1-5}
+      # Cron expression; default 09:35 on weekends (Sat/Sun) — crypto trades 24/7,
+      # so the weekend trigger rebalances only the crypto sleeve of each session
+      # while equities stay frozen (US market closed).
+      CRYPTO_REBALANCE_SCHEDULE: ${CRYPTO_REBALANCE_SCHEDULE:-35 9 * * 6,0}
       # Cron expression; default 16:05 on weekdays — ingest benchmark closes just
       # before the snapshot so the daily report compares against fresh prices.
       BENCHMARK_SCHEDULE: ${BENCHMARK_SCHEDULE:-5 16 * * 1-5}
@@ -119,6 +126,13 @@ services:
       'set -eu'
       'B=http://backend:8000/api/v1'
       'T=$$(cat /tmp/cron.token)'
+      'curl -fsS -X POST -H X-Cron-Token:$$T $$B/ai-portfolio/rebalance-crypto-daily >/dev/null'
+      > /usr/local/bin/crypto-rebalance.sh &&
+      printf '%s\n'
+      '#!/bin/sh'
+      'set -eu'
+      'B=http://backend:8000/api/v1'
+      'T=$$(cat /tmp/cron.token)'
       'curl -fsS -X POST -H X-Cron-Token:$$T $$B/ai-portfolio/fetch-benchmarks >/dev/null'
       > /usr/local/bin/benchmark.sh &&
       printf '%s\n'
@@ -135,8 +149,9 @@ services:
       'T=$$(cat /tmp/cron.token)'
       'curl -fsS -X POST -H X-Cron-Token:$$T $$B/technical-indicators/runs >/dev/null'
       > /usr/local/bin/indicators.sh &&
-      chmod +x /usr/local/bin/rebalance.sh /usr/local/bin/benchmark.sh /usr/local/bin/snapshot.sh /usr/local/bin/indicators.sh &&
+      chmod +x /usr/local/bin/rebalance.sh /usr/local/bin/crypto-rebalance.sh /usr/local/bin/benchmark.sh /usr/local/bin/snapshot.sh /usr/local/bin/indicators.sh &&
       echo \"$${REBALANCE_SCHEDULE} /usr/local/bin/rebalance.sh\" > /etc/crontabs/root &&
+      echo \"$${CRYPTO_REBALANCE_SCHEDULE} /usr/local/bin/crypto-rebalance.sh\" >> /etc/crontabs/root &&
       echo \"$${BENCHMARK_SCHEDULE} /usr/local/bin/benchmark.sh\" >> /etc/crontabs/root &&
       echo \"$${SNAPSHOT_SCHEDULE} /usr/local/bin/snapshot.sh\" >> /etc/crontabs/root &&
       echo \"$${INDICATORS_SCHEDULE} /usr/local/bin/indicators.sh\" >> /etc/crontabs/root &&

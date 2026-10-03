@@ -99,6 +99,7 @@ class AIPortfolioJobRunner:
         broker: Broker,
         provider: MarketDataProvider,
         notifier: Notifier | None = None,
+        crypto_only: bool = False,
     ) -> tuple[AIPortfolioEvent, bool]:
         """Create and submit a rebalance event, or return the in-flight one.
 
@@ -110,6 +111,10 @@ class AIPortfolioJobRunner:
         ``notifier`` is optional and threaded to the run: the daily cron endpoint
         supplies one so daily outcomes are pushed; the manual endpoint leaves it
         ``None`` so manual rebalances never notify.
+
+        ``crypto_only`` runs the weekend crypto-only mode (the crypto cron
+        endpoint sets it): only the crypto sleeve is rebalanced within its budget
+        and equities are never traded.
         """
         with self._lock:
             self._prune_locked()
@@ -119,7 +124,13 @@ class AIPortfolioJobRunner:
 
             event = service.create_rebalance_event(session, session_id)
             future = self._executor.submit(
-                self._job_rebalance, event.id, agent, broker, provider, notifier
+                self._job_rebalance,
+                event.id,
+                agent,
+                broker,
+                provider,
+                notifier,
+                crypto_only,
             )
             self._active[event.id] = future
         return event, True
@@ -164,10 +175,17 @@ class AIPortfolioJobRunner:
         broker: Broker,
         provider: MarketDataProvider,
         notifier: Notifier | None = None,
+        crypto_only: bool = False,
     ) -> None:
         with self._session_factory() as session:
             service.run_rebalance_event(
-                session, event_id, agent, broker, provider, notifier=notifier
+                session,
+                event_id,
+                agent,
+                broker,
+                provider,
+                notifier=notifier,
+                crypto_only=crypto_only,
             )
 
     def _prune_locked(self) -> None:

@@ -154,6 +154,14 @@ class PaperTradingSession(Base):
     # session's behavior. Non-nullable: set on every build and backfilled for
     # pre-existing sessions by the migration.
     rebalance_prompt_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    # The crypto-rebalance-prompt version frozen onto this session at build time.
+    # The weekend crypto-only rebalance uses this pinned ``crypto_rebalance``-kind
+    # prompt version, mirroring ``rebalance_prompt_version`` exactly. Non-nullable:
+    # set on every build and backfilled for pre-existing sessions by the migration
+    # to the seeded active crypto version.
+    crypto_rebalance_prompt_version: Mapped[int] = mapped_column(
+        Integer, nullable=False
+    )
     # The benchmark index this session's performance is compared against. Stores a
     # ``cadence.paper_trading.constants.Benchmark`` id (never a raw market symbol).
     # Non-nullable: set on every build (from the chosen/default id) and backfilled to

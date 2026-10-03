@@ -19,6 +19,19 @@ class EventType(StrEnum):
     CLOSE = "close"
 
 
+class PromptKind(StrEnum):
+    """Which rebalance-prompt family a :class:`RebalancePrompt` row belongs to.
+
+    Versions are monotonic **per kind** and the active prompt is the highest
+    version within a kind, so the weekday full-portfolio prompt (``REBALANCE``)
+    and the weekend crypto-only prompt (``CRYPTO_REBALANCE``) evolve
+    independently without one shadowing the other.
+    """
+
+    REBALANCE = "rebalance"
+    CRYPTO_REBALANCE = "crypto_rebalance"
+
+
 class EventStatus(StrEnum):
     """Lifecycle status of an AI portfolio event.
 

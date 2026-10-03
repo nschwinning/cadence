@@ -26,6 +26,7 @@ from cadence.api.schemas import (
     SessionBenchmarkChangeRequest,
     SessionRunListResponse,
     SessionRunRead,
+    SessionSectorPerformanceRead,
     SessionValueComparisonResponse,
     SessionValueComparisonSeries,
     SessionValueHistoryResponse,
@@ -260,6 +261,7 @@ def get_session_kpis(
         ) from exc
     return PaperTradingSessionKpisRead(
         current_value=kpis.current_value,
+        unallocated_cash=kpis.unallocated_cash,
         realised_pnl=kpis.realised_pnl,
         unrealised_pnl=kpis.unrealised_pnl,
         total_fees=kpis.total_fees,
@@ -276,6 +278,32 @@ def get_session_kpis(
         average_loss=kpis.average_loss,
         best_trade=kpis.best_trade,
         worst_trade=kpis.worst_trade,
+    )
+
+
+@router.get(
+    "/sessions/{session_id}/sector-performance",
+    response_model=SessionSectorPerformanceRead,
+)
+def get_session_sector_performance(
+    session_id: uuid.UUID, db: DbSession, broker: BrokerDep
+) -> SessionSectorPerformanceRead:
+    """Return the session's P&L attributed by sector and category (404 if unknown).
+
+    Marks open positions to market and joins open + closed positions to the asset
+    catalogue, so each sector/category group's realised, unrealised and total P&L,
+    market value, and return reflect current quotes rather than a stored snapshot.
+    """
+    try:
+        result = service.session_sector_performance(
+            db, session_id=session_id, broker=broker
+        )
+    except SessionNotFoundError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)
+        ) from exc
+    return SessionSectorPerformanceRead.model_validate(
+        {"by_sector": result.by_sector, "by_category": result.by_category}
     )
 
 

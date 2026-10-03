@@ -80,7 +80,7 @@ def _make_session(
         db_session,
         portfolio_id=portfolio.id,
         strategy_key=strategy_key,
-        rebalance_prompt_version=1,
+        rebalance_prompt_version=1, crypto_rebalance_prompt_version=1,
         allocated_capital=allocated,
         benchmark=Benchmark.SP500,
     )

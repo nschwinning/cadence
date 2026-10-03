@@ -28,6 +28,7 @@ import {
   ArchiveFeedback,
 } from './SessionArchiveCard';
 import { SessionValueChart } from './SessionValueChart';
+import { SessionSectorPerformanceCard } from './SessionSectorPerformanceCard';
 import { Pagination } from '../../components/Pagination';
 import { StatTile } from '../../components/dashboard/StatTile';
 import { formatCurrency, formatPercent, formatQuantity } from '../../lib/format';
@@ -711,6 +712,11 @@ function KpiRow({ sessionId }: { sessionId: string }) {
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
           <StatTile label="Current value" value={formatCurrency(data.current_value)} />
           <StatTile
+            label="Unallocated cash"
+            value={formatCurrency(data.unallocated_cash)}
+            hint="Uninvested cash in the session"
+          />
+          <StatTile
             label="Realised P&L"
             value={<PnlValue value={data.realised_pnl} />}
           />
@@ -908,6 +914,7 @@ export function PaperTradingSessionPage() {
       <SessionHeader session={session} sessionId={id} />
       <KpiRow sessionId={id} />
       <SessionValueChart sessionId={id} />
+      <SessionSectorPerformanceCard sessionId={id} />
       <EventsPanel sessionId={id} />
       <TradesPanel sessionId={id} />
       <PositionsPanel sessionId={id} />

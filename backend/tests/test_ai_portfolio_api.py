@@ -493,7 +493,7 @@ def test_session_rebalance_non_eligible_rejected(
         db_session, name="Manual", stocks=["AAPL"]
     )
     session_row = paper_service.create_session(
-        db_session, portfolio_id=portfolio.id, strategy_key="momentum", rebalance_prompt_version=1, benchmark=Benchmark.SP500)
+        db_session, portfolio_id=portfolio.id, strategy_key="momentum", rebalance_prompt_version=1, crypto_rebalance_prompt_version=1, benchmark=Benchmark.SP500)
     resp = client.post(
         f"/api/v1/ai-portfolio/sessions/{session_row.id}/rebalance"
     )
@@ -620,7 +620,7 @@ def test_close_non_eligible_session_rejected(
         db_session, name="Manual", stocks=["AAPL"]
     )
     session_row = paper_service.create_session(
-        db_session, portfolio_id=portfolio.id, strategy_key="momentum", rebalance_prompt_version=1, benchmark=Benchmark.SP500)
+        db_session, portfolio_id=portfolio.id, strategy_key="momentum", rebalance_prompt_version=1, crypto_rebalance_prompt_version=1, benchmark=Benchmark.SP500)
     resp = client.post(f"/api/v1/ai-portfolio/sessions/{session_row.id}/close")
     assert resp.status_code == 409
 
@@ -798,6 +798,126 @@ def test_rebalance_daily_includes_session_once_build_orders_fill(
     assert session_id not in second["skipped_awaiting_build_fill"]
 
 
+def _crypto_provider() -> FakeMarketDataProvider:
+    """A provider yielding a crypto (``CRYPTOCURRENCY``) profile with no sector."""
+    return FakeMarketDataProvider(
+        info=AssetInfo(
+            company_name="Bitcoin USD",
+            exchange="CCC",
+            currency="USD",
+            price=60000.0,
+            market_cap=1_000_000_000_000.0,
+            quote_type="CRYPTOCURRENCY",
+            sector_key=None,
+        ),
+        history=[
+            HistoryBar(date=date(2015, 1, 1), close=300.0, volume=1_000_000.0),
+            HistoryBar(date=date(2024, 1, 1), close=60000.0, volume=1_000_000.0),
+        ],
+    )
+
+
+def _build_crypto_session(
+    client: TestClient, db_session: Session, executor: ManualExecutor
+) -> str:
+    """Seed a crypto asset and build a session that holds it; return its id."""
+    assets_service.add_asset(db_session, "BTC-USD", _crypto_provider(), StubBroker())
+    agent = FakeAIPortfolioAgent(
+        build_result=AIPortfolioBuildResult(
+            portfolio_name="AI Crypto",
+            stocks=[
+                AIPortfolioStock(
+                    ticker="BTC-USD",
+                    company_name="Bitcoin",
+                    side=PositionSide.LONG,
+                    allocation_pct=1.0,
+                    investment_thesis="digital gold",
+                    confidence=0.8,
+                )
+            ],
+            overall_thesis="crypto",
+            risk_assessment="volatile",
+        ),
+        rebalance_result=_rebalance_result(),
+    )
+    _wire(db_session, executor, agent=agent)
+    return _build_session(client, executor)
+
+
+def test_rebalance_crypto_daily_rejects_without_token(
+    client: TestClient, db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(settings, "REBALANCE_CRON_TOKEN", "secret")
+    _wire(db_session, ManualExecutor())
+    resp = client.post("/api/v1/ai-portfolio/rebalance-crypto-daily")
+    assert resp.status_code == 403
+
+
+def test_rebalance_crypto_daily_rejects_wrong_token(
+    client: TestClient, db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(settings, "REBALANCE_CRON_TOKEN", "secret")
+    _wire(db_session, ManualExecutor())
+    resp = client.post(
+        "/api/v1/ai-portfolio/rebalance-crypto-daily",
+        headers={"X-Cron-Token": "wrong"},
+    )
+    assert resp.status_code == 403
+
+
+def test_rebalance_crypto_daily_empty_config_rejects_all(
+    client: TestClient, db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(settings, "REBALANCE_CRON_TOKEN", "")
+    _wire(db_session, ManualExecutor())
+    resp = client.post(
+        "/api/v1/ai-portfolio/rebalance-crypto-daily",
+        headers={"X-Cron-Token": ""},
+    )
+    assert resp.status_code == 403
+
+
+def test_rebalance_crypto_daily_skips_no_crypto_session(
+    client: TestClient, db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # An equities-only session holds and targets no crypto, so the crypto fan-out
+    # skips it before a job is started (distinct no-crypto bucket).
+    monkeypatch.setattr(settings, "REBALANCE_CRON_TOKEN", "secret")
+    executor = ManualExecutor(run_immediately=True)
+    _seed_universe(db_session, _provider())
+    _wire(db_session, executor)
+    session_id = _build_session(client, executor)
+
+    resp = client.post(
+        "/api/v1/ai-portfolio/rebalance-crypto-daily",
+        headers={"X-Cron-Token": "secret"},
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["sessions_triggered"] == 0
+    assert session_id in body["skipped_no_crypto"]
+    assert session_id not in body["session_ids"]
+
+
+def test_rebalance_crypto_daily_triggers_crypto_session(
+    client: TestClient, db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A session holding crypto is triggered in crypto-only mode.
+    monkeypatch.setattr(settings, "REBALANCE_CRON_TOKEN", "secret")
+    executor = ManualExecutor(run_immediately=True)
+    session_id = _build_crypto_session(client, db_session, executor)
+
+    resp = client.post(
+        "/api/v1/ai-portfolio/rebalance-crypto-daily",
+        headers={"X-Cron-Token": "secret"},
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["sessions_triggered"] == 1
+    assert session_id in body["session_ids"]
+    assert session_id not in body["skipped_no_crypto"]
+
+
 def test_manual_rebalance_not_deferred_by_unfilled_build_orders(
     client: TestClient, db_session: Session
 ) -> None:
@@ -829,7 +949,7 @@ def test_reconcile_daily_aggregates_across_sessions(
         db_session, name="P", stocks=["AAPL"]
     )
     sess = paper_service.create_session(
-        db_session, portfolio_id=portfolio.id, strategy_key="recon", rebalance_prompt_version=1, benchmark=Benchmark.SP500)
+        db_session, portfolio_id=portfolio.id, strategy_key="recon", rebalance_prompt_version=1, crypto_rebalance_prompt_version=1, benchmark=Benchmark.SP500)
     paper_service.record_trade(
         db_session,
         session_id=sess.id,
@@ -871,9 +991,9 @@ def test_reconcile_daily_one_failing_session_does_not_abort(
         db_session, name="P", stocks=["AAPL"]
     )
     bad = paper_service.create_session(
-        db_session, portfolio_id=portfolio.id, strategy_key="bad", rebalance_prompt_version=1, benchmark=Benchmark.SP500)
+        db_session, portfolio_id=portfolio.id, strategy_key="bad", rebalance_prompt_version=1, crypto_rebalance_prompt_version=1, benchmark=Benchmark.SP500)
     good = paper_service.create_session(
-        db_session, portfolio_id=portfolio.id, strategy_key="good", rebalance_prompt_version=1, benchmark=Benchmark.SP500)
+        db_session, portfolio_id=portfolio.id, strategy_key="good", rebalance_prompt_version=1, crypto_rebalance_prompt_version=1, benchmark=Benchmark.SP500)
 
     real_reconcile = paper_service.reconcile_session_orders
 

@@ -365,14 +365,28 @@ class AIPortfolioExecutor:
         asset_classes: dict[str, AssetClass] | None = None,
         market_open: bool = True,
         caps: GuardrailCaps | None = None,
+        base_capital: float | None = None,
+        crypto_only: bool = False,
     ) -> list[TradeResult]:
         """Trade toward the AI's target weights, delta by delta.
 
         Target weights are normalized to sum 1 over the provided targets. Target
-        quantities are sized off the executor's ``allocated_capital`` (the same
-        base as build). For each ticker in the union of held positions and
-        targets, the delta between target and current becomes a buy or a sell; a
-        held ticker absent from targets is fully sold.
+        quantities are sized off ``base_capital`` — the session's current
+        marked-to-market value at rebalance time — so realised and unrealised
+        gains are redeployed into the target allocation and losses size the
+        targets down. When ``base_capital`` is ``None`` the executor's
+        ``allocated_capital`` is used (the build-time base), preserving the
+        previous behaviour for any caller that does not pass a live base. For
+        each ticker in the union of held positions and targets, the delta between
+        target and current becomes a buy or a sell; a held ticker absent from
+        targets is fully sold.
+
+        When ``crypto_only`` is set (the weekend crypto-only run), equities are
+        excluded from BOTH the targets and the current positions before anything
+        else, so no equity order is ever placed and no held equity is sold (design
+        D3); the crypto weights are then normalized among themselves and sized off
+        ``base_capital`` (the crypto budget). This is a hard guarantee at the
+        executor boundary, independent of how the caller scoped its inputs.
 
         When ``caps`` is provided (the session opted into the risk guardrails), the
         normalized target weights are run through :func:`enforce_guardrails` before
@@ -387,6 +401,21 @@ class AIPortfolioExecutor:
         no order is placed, while crypto tickers trade normally.
         """
         classes = asset_classes or {}
+        if crypto_only:
+            # Hard guarantee at the executor boundary (design D3): drop every
+            # equity from both the targets and the held positions so no equity
+            # order is placed and no held equity is sold. Crypto weights then
+            # normalize among themselves below and size off ``base_capital``.
+            targets = [
+                t
+                for t in targets
+                if classes.get(t.ticker, AssetClass.EQUITY) == AssetClass.CRYPTO
+            ]
+            current_positions = {
+                ticker: pos
+                for ticker, pos in current_positions.items()
+                if classes.get(ticker, AssetClass.EQUITY) == AssetClass.CRYPTO
+            }
         total_weight = sum(t.allocation_pct for t in targets)
         target_weight: dict[str, float] = {}
         for t in targets:
@@ -396,7 +425,7 @@ class AIPortfolioExecutor:
         if caps is not None:
             target_weight = enforce_guardrails(target_weight, classes, caps)
 
-        base_capital = self.allocated_capital
+        base = self.allocated_capital if base_capital is None else base_capital
         tickers = sorted(set(current_positions) | set(target_weight))
         results: list[TradeResult] = []
 
@@ -436,11 +465,11 @@ class AIPortfolioExecutor:
 
                 if cls == AssetClass.CRYPTO:
                     result = self._rebalance_crypto(
-                        ticker, pos, weight, price, base_capital
+                        ticker, pos, weight, price, base
                     )
                 else:
                     result = self._rebalance_equity(
-                        ticker, pos, weight, price, base_capital
+                        ticker, pos, weight, price, base
                     )
                 if result is not None:
                     results.append(result)

@@ -244,6 +244,8 @@ class PaperTradingSessionRead(BaseModel):
     archived_at: datetime | None
     # The rebalance-prompt version frozen onto this session at build time.
     rebalance_prompt_version: int
+    # The crypto-rebalance-prompt version frozen at build time (weekend crypto-only run).
+    crypto_rebalance_prompt_version: int
     # The benchmark index this session is compared against (a catalog id).
     benchmark: str
     # Whether the session opted into the technical-indicator trend strategy
@@ -436,10 +438,40 @@ class SessionValueComparisonResponse(BaseModel):
     sessions: list[SessionValueComparisonSeries]
 
 
+class SessionGroupPerformance(BaseModel):
+    """Performance attribution for one sector/category group within a session.
+
+    ``key`` is the sector or category name (or the "No sector"/"Unknown" sentinel
+    bucket). ``realized_pnl`` is the group's cumulative closed-position P&L,
+    ``unrealized_pnl`` the live mark-to-market on its open positions, ``total_pnl``
+    their sum, and ``market_value`` the group's open-position market value.
+    ``return_pct`` is ``total_pnl`` over the group's invested cost basis, or ``None``
+    when that basis is zero (unavailable rather than divide-by-zero).
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    key: str
+    market_value: float
+    realized_pnl: float
+    unrealized_pnl: float
+    total_pnl: float
+    return_pct: float | None
+
+
+class SessionSectorPerformanceRead(BaseModel):
+    """A session's P&L attributed to sectors and to categories."""
+
+    by_sector: list[SessionGroupPerformance]
+    by_category: list[SessionGroupPerformance]
+
+
 class PaperTradingSessionKpisRead(BaseModel):
     """A session's live performance KPIs.
 
-    ``current_value`` is the live net asset value (net of fees); ``realised_pnl``
+    ``current_value`` is the live net asset value (net of fees);
+    ``unallocated_cash`` the portion of that value currently held as cash (live value
+    minus marked-to-market positions value); ``realised_pnl``
     the cumulative gross realised P&L; ``unrealised_pnl`` the live mark-to-market on
     open positions; ``total_fees`` the cumulative per-trade transaction cost;
     ``total_return`` the absolute gain/loss versus allocated capital and
@@ -460,6 +492,7 @@ class PaperTradingSessionKpisRead(BaseModel):
     """
 
     current_value: float
+    unallocated_cash: float
     realised_pnl: float
     unrealised_pnl: float
     total_fees: float
@@ -774,6 +807,18 @@ class AIDailyRebalanceResponse(BaseModel):
     #: Freshly-built sessions deferred because their build orders have not yet
     #: filled; picked up by a later trigger once they settle.
     skipped_awaiting_build_fill: list[uuid.UUID] = Field(default_factory=list)
+
+
+class AIDailyCryptoRebalanceResponse(AIDailyRebalanceResponse):
+    """Result of the weekend crypto-only fan-out.
+
+    Mirrors :class:`AIDailyRebalanceResponse` and adds the crypto-specific skip
+    bucket: sessions holding/targeting no crypto are skipped before a job is
+    started, so they never create an AI event.
+    """
+
+    #: Sessions skipped before starting a job because they hold/target no crypto.
+    skipped_no_crypto: list[uuid.UUID] = Field(default_factory=list)
 
 
 class AIPortfolioEventRead(BaseModel):

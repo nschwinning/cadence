@@ -81,10 +81,12 @@ def _seed_rebalance_prompt(session: Session) -> None:
     seed it here for every DB-backed test. Seeded inside the test's rolled-back
     transaction. Tests exercising the empty-table path clear it explicitly.
     """
+    from cadence.ai_portfolio.constants import PromptKind
     from cadence.ai_portfolio.models import RebalancePrompt
 
     session.add(
         RebalancePrompt(
+            kind=PromptKind.REBALANCE.value,
             version=1,
             instructions=(
                 "Rebalance instructions (test seed). "
@@ -92,6 +94,22 @@ def _seed_rebalance_prompt(session: Session) -> None:
             ),
             input_template=(
                 "Rebalance {risk_profile} portfolio.\n"
+                "Holdings:\n{holdings_json}\n"
+                "Account:\n{account_json}\n"
+                "Candidates:\n{candidates_json}\n"
+            ),
+        )
+    )
+    session.add(
+        RebalancePrompt(
+            kind=PromptKind.CRYPTO_REBALANCE.value,
+            version=1,
+            instructions=(
+                "Crypto-only rebalance instructions (test seed). "
+                "caps: {max_new_assets}/{max_web_searches}"
+            ),
+            input_template=(
+                "Rebalance {risk_profile} crypto sleeve.\n"
                 "Holdings:\n{holdings_json}\n"
                 "Account:\n{account_json}\n"
                 "Candidates:\n{candidates_json}\n"

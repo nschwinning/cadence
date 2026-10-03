@@ -17,7 +17,7 @@ phases.
 - **Frontend**: React 19 + TypeScript, Vite, TanStack Query, React Router,
   Tailwind CSS, Vitest + React Testing Library.
 - **Infra**: Docker Compose (Postgres, backend, frontend, and a cron sidecar for
-  the daily rebalance trigger).
+  the daily rebalance trigger plus a weekend crypto-only rebalance).
 
 ## Ports
 
@@ -54,6 +54,13 @@ Trigger the daily rebalance manually against a host backend:
 ./scripts/run-rebalance.sh
 ```
 
+Trigger the weekend crypto-only rebalance manually (rebalances just the crypto
+sleeve of each session; equities stay frozen):
+
+```sh
+./scripts/run-crypto-rebalance.sh
+```
+
 ## Environment variables
 
 Configured via the root `.env` (see `.env.example`):
@@ -66,3 +73,7 @@ Configured via the root `.env` (see `.env.example`):
   `ALPACA_SECRET_KEY`, `ALPACA_PAPER`, `ALPACA_STUB`
 - Daily rebalance trigger: `REBALANCE_CRON_TOKEN` (plus `CRON_TZ` /
   `REBALANCE_SCHEDULE` for the cron sidecar)
+- Weekend crypto-only rebalance: `CRYPTO_REBALANCE_SCHEDULE` (default
+  `35 9 * * 6,0` — Sat/Sun just after the weekday open time; crypto trades 24/7,
+  so the sidecar POSTs `/ai-portfolio/rebalance-crypto-daily` to rebalance each
+  session's crypto sleeve while the US equity market is closed)

@@ -148,6 +148,41 @@ def test_execute_rebalance_trades_toward_target_weights() -> None:
     assert by_ticker["NVDA"].shares >= 1
 
 
+def test_execute_rebalance_base_capital_scales_targets() -> None:
+    # Same target weights + no current positions: a larger rebalance base_capital
+    # buys strictly more shares. Omitting base_capital falls back to the executor's
+    # allocated_capital (the build-time base), leaving build behaviour unchanged.
+    broker = StubBroker()
+    price = broker.get_quote("AAPL").last
+    executor = AIPortfolioExecutor(broker, allocated_capital=100 * price)
+
+    small = executor.execute_rebalance(
+        targets=[_target("AAPL", 1.0)],
+        current_positions={},
+        base_capital=100 * price,
+    )
+    large = executor.execute_rebalance(
+        targets=[_target("AAPL", 1.0)],
+        current_positions={p.symbol: p for p in broker.get_positions()},
+        base_capital=250 * price,
+    )
+    # First run bought ~100 shares toward the 100-share target; the second run,
+    # sized against a larger base, buys the delta up to ~250 shares.
+    assert small[0].side == "long"
+    assert small[0].shares == pytest.approx(100, abs=1)
+    assert large[0].side == "long"
+    assert large[0].shares == pytest.approx(150, abs=1)
+
+    # Falling back to allocated_capital (no base_capital) reproduces the build base.
+    fresh = StubBroker()
+    fresh_exec = AIPortfolioExecutor(fresh, allocated_capital=100 * price)
+    fallback = fresh_exec.execute_rebalance(
+        targets=[_target("AAPL", 1.0)],
+        current_positions={},
+    )
+    assert fallback[0].shares == pytest.approx(100, abs=1)
+
+
 def test_execute_rebalance_skips_trivial_deltas() -> None:
     broker = StubBroker()
     broker.buy("AAPL", 10)
@@ -275,6 +310,43 @@ def test_execute_rebalance_market_closed_skips_equity_trades_crypto() -> None:
     # Crypto still trades.
     assert by_ticker["BTC-USD"].executed is True
     assert by_ticker["BTC-USD"].side == "long"
+
+
+_MIXED = {"AAPL": AssetClass.EQUITY, "BTC-USD": AssetClass.CRYPTO}
+
+
+def test_execute_rebalance_crypto_only_sizes_off_budget_leaves_equity() -> None:
+    # The weekend crypto-only run: crypto is sized off the passed crypto budget
+    # (NOT allocated_capital), and the held equity is never touched or sold even
+    # though the AI returned a target for it.
+    broker = StubBroker()
+    broker.buy("AAPL", 10)
+    positions = {p.symbol: p for p in broker.get_positions()}
+    aapl_qty_before = positions["AAPL"].quantity
+    price_btc = broker.get_quote("BTC-USD").last
+    crypto_budget = price_btc * 3
+    # allocated_capital is deliberately far from the budget so a budget-sized buy
+    # is distinguishable from an allocated-capital-sized one.
+    executor = AIPortfolioExecutor(broker, allocated_capital=1_000_000.0)
+
+    results = executor.execute_rebalance(
+        targets=[_target("AAPL", 0.5), _target("BTC-USD", 0.5)],
+        current_positions=positions,
+        asset_classes=_MIXED,
+        base_capital=crypto_budget,
+        crypto_only=True,
+    )
+
+    # Only crypto was traded; the equity produced no order at all (not even a sell).
+    assert [r.ticker for r in results] == ["BTC-USD"]
+    btc = results[0]
+    assert btc.side == "long"
+    # Crypto weight normalizes to 1.0 among crypto-only targets and sizes off the
+    # budget: 3 units' worth, not 1_000_000 / price.
+    assert btc.shares == pytest.approx(3.0)
+    # The held equity is untouched in the broker.
+    aapl_after = {p.symbol: p for p in broker.get_positions()}["AAPL"]
+    assert aapl_after.quantity == aapl_qty_before
 
 
 # --------------------------------------------------------------------------- #

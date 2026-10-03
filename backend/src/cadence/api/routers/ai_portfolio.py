@@ -35,6 +35,7 @@ from cadence.ai_portfolio.service import AIBuildParams
 from cadence.api.routers.assets import get_market_data_provider
 from cadence.api.schemas import (
     AIBenchmarkIngestResponse,
+    AIDailyCryptoRebalanceResponse,
     AIDailyRebalanceResponse,
     AIDailyReconcileResponse,
     AIDailySnapshotResponse,
@@ -295,6 +296,73 @@ def rebalance_daily(
         session_ids=triggered,
         skipped_already_running=skipped,
         skipped_awaiting_build_fill=deferred,
+    )
+
+
+@router.post(
+    "/rebalance-crypto-daily", response_model=AIDailyCryptoRebalanceResponse
+)
+def rebalance_crypto_daily(
+    db: DbSession,
+    agent: Agent,
+    broker: BrokerDep,
+    provider: Provider,
+    job_runner: JobRunner,
+    notifier: NotifierDep,
+    _token: Annotated[None, Depends(require_valid_cron_token)],
+) -> AIDailyCryptoRebalanceResponse:
+    """Rebalance only the crypto sleeve of every active daily-rebalancing session.
+
+    The weekend cadence: crypto trades 24/7, so this fan-out tends crypto on days
+    the equities market is closed. Guarded by the ``X-Cron-Token`` header. Mirrors
+    :func:`rebalance_daily`'s targeting (active ``DAILY_REBALANCING`` AI sessions,
+    build orders deferred until settled, already-running sessions skipped) but
+    starts each job in crypto-only mode and, before creating any job, skips sessions
+    that hold and target no crypto (distinct ``skipped_no_crypto`` bucket). The
+    ``notifier`` is threaded so executed crypto rebalances are pushed just like the
+    weekday path.
+    """
+    from cadence.ai_portfolio import service as ai_service
+
+    sessions = paper_service.list_sessions(db, status=SessionStatus.ACTIVE, limit=500)
+    targets = [
+        s
+        for s in sessions
+        if s.schedule_mode == ScheduleMode.DAILY_REBALANCING.value
+        and s.strategy_key == AI_STRATEGY_KEY
+    ]
+
+    triggered: list[uuid.UUID] = []
+    skipped: list[uuid.UUID] = []
+    deferred: list[uuid.UUID] = []
+    skipped_no_crypto: list[uuid.UUID] = []
+    for session_row in targets:
+        if not ai_service.build_orders_settled(db, broker, session_row):
+            deferred.append(session_row.id)
+            continue
+        if not ai_service.session_involves_crypto(db, session_row):
+            skipped_no_crypto.append(session_row.id)
+            continue
+        _event, started = job_runner.start_rebalance(
+            db,
+            session_row.id,
+            agent,
+            broker,
+            provider,
+            notifier=notifier,
+            crypto_only=True,
+        )
+        if started:
+            triggered.append(session_row.id)
+        else:
+            skipped.append(session_row.id)
+
+    return AIDailyCryptoRebalanceResponse(
+        sessions_triggered=len(triggered),
+        session_ids=triggered,
+        skipped_already_running=skipped,
+        skipped_awaiting_build_fill=deferred,
+        skipped_no_crypto=skipped_no_crypto,
     )
 
 

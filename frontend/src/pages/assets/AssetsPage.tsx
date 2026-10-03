@@ -449,6 +449,22 @@ export function AssetsPage() {
     <section className="flex flex-col gap-6">
       <h1 className="text-2xl font-bold tracking-tight text-slate-900">Assets</h1>
 
+      {/* Composition donuts — equal-sized tiles, sourced from the metrics read. */}
+      {metrics?.assets && (
+        <div className="grid grid-cols-1 gap-6 sm:grid-cols-2">
+          <BreakdownTile
+            title="By category"
+            entries={metrics.assets.by_category}
+            formatKey={humanize}
+          />
+          <BreakdownTile
+            title="By sector"
+            entries={metrics.assets.by_sector}
+            formatKey={humanize}
+          />
+        </div>
+      )}
+
       {/* Add / Recommend — two-column grid (stacks on mobile, equal height ≥ md) */}
       <div className="grid grid-cols-1 gap-6 md:grid-cols-[minmax(0,2fr)_minmax(0,3fr)] md:items-stretch">
         {/* Add-asset section */}
@@ -497,22 +513,6 @@ export function AssetsPage() {
         {/* Recommend-assets section */}
         <RecommendAssetsCard onViewUniverse={focusUniverse} />
       </div>
-
-      {/* Composition donuts — equal-sized tiles, sourced from the metrics read. */}
-      {metrics?.assets && (
-        <div className="grid grid-cols-1 gap-6 sm:grid-cols-2">
-          <BreakdownTile
-            title="By category"
-            entries={metrics.assets.by_category}
-            formatKey={humanize}
-          />
-          <BreakdownTile
-            title="By sector"
-            entries={metrics.assets.by_sector}
-            formatKey={humanize}
-          />
-        </div>
-      )}
 
       {/* List section */}
       <div className="rounded-lg border border-slate-200 bg-white shadow-sm">

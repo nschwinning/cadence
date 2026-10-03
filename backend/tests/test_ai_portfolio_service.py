@@ -30,6 +30,7 @@ from cadence.ai_portfolio.constants import (
     TREND_PROMPT_VERSION,
     EventStatus,
     EventType,
+    PromptKind,
 )
 from cadence.ai_portfolio.errors import (
     AIPortfolioValidationError,
@@ -765,6 +766,32 @@ def test_run_build_event_freezes_active_prompt_version(db_session: Session) -> N
     assert session_row.rebalance_prompt_version == 7
 
 
+def test_run_build_event_freezes_active_crypto_prompt_version(
+    db_session: Session,
+) -> None:
+    # A higher crypto-kind version is active at build time, so the session must
+    # freeze it onto crypto_rebalance_prompt_version (independent of the weekday
+    # rebalance-prompt freeze).
+    db_session.add(
+        RebalancePrompt(
+            kind=PromptKind.CRYPTO_REBALANCE.value,
+            version=4,
+            instructions="crypto v4 {max_new_assets}",
+            input_template="crypto input {risk_profile}",
+        )
+    )
+    db_session.flush()
+
+    provider = _seed_universe(db_session, "AAPL", "MSFT")
+    broker = StubBroker()
+    session_id, _ = _seed_session(db_session, broker, provider)
+
+    session_row = paper_service.get_session(db_session, session_id)
+    assert session_row.crypto_rebalance_prompt_version == 4
+    # The weekday freeze is unaffected by the crypto version bump.
+    assert session_row.rebalance_prompt_version == 1
+
+
 def test_run_rebalance_event_uses_frozen_version(db_session: Session) -> None:
     provider = _seed_universe(db_session, "AAPL", "MSFT")
     broker = StubBroker()
@@ -839,6 +866,270 @@ def test_get_rebalance_prompt_by_version_raises_when_unknown(
 ) -> None:
     with pytest.raises(RebalancePromptNotFoundError):
         service.get_rebalance_prompt_by_version(db_session, 12345)
+
+
+def test_get_active_crypto_rebalance_prompt_returns_highest_version(
+    db_session: Session,
+) -> None:
+    # conftest seeds crypto v1; a newer crypto version supersedes it. A higher
+    # weekday (rebalance-kind) version must NOT shadow the crypto active prompt.
+    db_session.add(
+        RebalancePrompt(
+            kind=PromptKind.REBALANCE.value,
+            version=50,
+            instructions="weekday v50",
+            input_template="weekday input {risk_profile}",
+        )
+    )
+    db_session.add(
+        RebalancePrompt(
+            kind=PromptKind.CRYPTO_REBALANCE.value,
+            version=2,
+            instructions="crypto v2",
+            input_template="crypto input {risk_profile}",
+        )
+    )
+    db_session.flush()
+
+    active = service.get_active_rebalance_prompt(
+        db_session, kind=PromptKind.CRYPTO_REBALANCE
+    )
+    assert active.kind == PromptKind.CRYPTO_REBALANCE.value
+    assert active.version == 2
+    assert active.instructions == "crypto v2"
+
+
+def test_get_crypto_rebalance_prompt_by_version_found_and_missing(
+    db_session: Session,
+) -> None:
+    # The conftest seed includes crypto v1; the same version number under the
+    # weekday kind must not be returned for a crypto lookup.
+    found = service.get_rebalance_prompt_by_version(
+        db_session, 1, kind=PromptKind.CRYPTO_REBALANCE
+    )
+    assert found.kind == PromptKind.CRYPTO_REBALANCE.value
+    assert found.version == 1
+
+    with pytest.raises(RebalancePromptNotFoundError):
+        service.get_rebalance_prompt_by_version(
+            db_session, 999, kind=PromptKind.CRYPTO_REBALANCE
+        )
+
+
+def test_get_active_crypto_rebalance_prompt_raises_when_empty(
+    db_session: Session,
+) -> None:
+    db_session.query(RebalancePrompt).filter_by(
+        kind=PromptKind.CRYPTO_REBALANCE.value
+    ).delete()
+    db_session.flush()
+    with pytest.raises(RebalancePromptNotFoundError):
+        service.get_active_rebalance_prompt(
+            db_session, kind=PromptKind.CRYPTO_REBALANCE
+        )
+
+
+# --------------------------------------------------------------------------- #
+# Crypto-only (weekend) rebalance run
+# --------------------------------------------------------------------------- #
+
+
+def _seed_mixed_session(
+    db_session: Session,
+    broker: StubBroker,
+    **build_params: object,
+) -> tuple[object, object]:
+    """Build a session holding one equity (AAPL) and one crypto (BTC-USD)."""
+    assets_service.add_asset(db_session, "AAPL", _provider(), broker)
+    assets_service.add_asset(db_session, "BTC-USD", _crypto_provider(), broker)
+    agent = FakeAIPortfolioAgent(build_result=_build_result("AAPL", "BTC-USD"))
+    params: dict[str, object] = {
+        "allocated_capital": 50_000.0,
+        "daily_rebalancing": True,
+        "asset_types": "both",
+    }
+    params.update(build_params)
+    build_event = service.create_build_event(db_session, _params(**params))
+    service.run_build_event(db_session, build_event.id, agent, broker, _provider())
+    event = service.get_event(db_session, build_event.id)
+    return event.session_id, event.portfolio_id
+
+
+def test_run_rebalance_event_crypto_only_scopes_candidates_to_crypto(
+    db_session: Session,
+) -> None:
+    # A mixed stocks+crypto session run in crypto-only mode offers the agent only
+    # crypto candidates (D2/D3): the equity in the universe is never a candidate.
+    broker = StubBroker()
+    session_id, _ = _seed_mixed_session(db_session, broker)
+
+    rebalance = FakeAIPortfolioAgent(rebalance_result=_single_target("BTC-USD", 1.0))
+    rb_event = service.create_rebalance_event(db_session, session_id)
+    service.run_rebalance_event(
+        db_session, rb_event.id, rebalance, broker, _provider(), crypto_only=True
+    )
+
+    assert rebalance.rebalance_calls
+    candidate_tickers = {
+        c["ticker"] for c in rebalance.rebalance_calls[0]["candidates"]
+    }
+    assert candidate_tickers == {"BTC-USD"}  # AAPL (equity) excluded
+    # The holdings handed to the agent are crypto-only too (equities never sold, D3).
+    holding_tickers = {h["ticker"] for h in rebalance.rebalance_calls[0]["holdings"]}
+    assert holding_tickers == {"BTC-USD"}
+
+
+def test_run_rebalance_event_crypto_only_budget_is_crypto_plus_cash(
+    db_session: Session,
+) -> None:
+    # The crypto budget on the account summary equals crypto market value +
+    # unallocated cash, NOT the allocated capital (D4).
+    broker = StubBroker()
+    session_id, _ = _seed_mixed_session(db_session, broker)
+
+    # Valuation is deterministic (same broker prices) and is read before trades, so
+    # the pre-run snapshot reproduces exactly what the service passes to the agent.
+    pre = paper_service.compute_session_value(
+        db_session, session_id=session_id, broker=broker
+    )
+    expected_budget = (
+        sum(p["market_value"] for p in pre.positions if p["ticker"] == "BTC-USD")
+        + pre.cash_value
+    )
+
+    rebalance = FakeAIPortfolioAgent(rebalance_result=_single_target("BTC-USD", 1.0))
+    rb_event = service.create_rebalance_event(db_session, session_id)
+    service.run_rebalance_event(
+        db_session, rb_event.id, rebalance, broker, _provider(), crypto_only=True
+    )
+
+    account = rebalance.rebalance_calls[0]["account_summary"]
+    assert account["crypto_budget"] == pytest.approx(expected_budget)
+    # Excludes the equity sleeve, so it is strictly below the allocated capital.
+    assert account["crypto_budget"] < 50_000.0
+
+
+def test_run_rebalance_event_crypto_only_no_crypto_is_skipped(
+    db_session: Session,
+) -> None:
+    # A crypto-only run for an equities-only session skips before the agent (D4).
+    provider = _seed_universe(db_session, "AAPL", "MSFT")
+    broker = StubBroker()
+    session_id, _ = _seed_session(db_session, broker, provider)
+
+    rebalance = FakeAIPortfolioAgent(rebalance_result=_single_target("BTC-USD", 1.0))
+    rb_event = service.create_rebalance_event(db_session, session_id)
+    service.run_rebalance_event(
+        db_session, rb_event.id, rebalance, broker, provider, crypto_only=True
+    )
+
+    refreshed = service.get_event(db_session, rb_event.id)
+    assert refreshed.status == EventStatus.SKIPPED.value
+    assert rebalance.rebalance_calls == []
+    runs = paper_service.get_session_runs(db_session, session_id, limit=100)
+    skipped = next(r for r in runs if r.details and r.details[0].get("skipped"))
+    assert skipped.details is not None
+    assert skipped.details[0]["reason"] == "no crypto"
+
+
+def test_run_rebalance_event_crypto_only_uses_frozen_crypto_prompt(
+    db_session: Session,
+) -> None:
+    # The crypto-only run selects the session's frozen crypto-scoped prompt, not the
+    # weekday rebalance prompt (D5/D6).
+    broker = StubBroker()
+    session_id, _ = _seed_mixed_session(db_session, broker)
+
+    rebalance = FakeAIPortfolioAgent(rebalance_result=_single_target("BTC-USD", 1.0))
+    rb_event = service.create_rebalance_event(db_session, session_id)
+    service.run_rebalance_event(
+        db_session, rb_event.id, rebalance, broker, _provider(), crypto_only=True
+    )
+
+    call = rebalance.rebalance_calls[0]
+    assert call["instructions"].startswith("Crypto-only rebalance instructions")
+    assert call["input_template"].startswith("Rebalance {risk_profile} crypto sleeve.")
+
+
+def test_run_rebalance_event_crypto_only_fails_when_crypto_prompt_missing(
+    db_session: Session,
+) -> None:
+    # The frozen crypto prompt is gone: the run fails cleanly without the agent.
+    broker = StubBroker()
+    session_id, _ = _seed_mixed_session(db_session, broker)
+
+    frozen = paper_service.get_session(
+        db_session, session_id
+    ).crypto_rebalance_prompt_version
+    db_session.query(RebalancePrompt).filter_by(
+        kind=PromptKind.CRYPTO_REBALANCE.value, version=frozen
+    ).delete()
+    db_session.flush()
+
+    rebalance = FakeAIPortfolioAgent(rebalance_result=_single_target("BTC-USD", 1.0))
+    rb_event = service.create_rebalance_event(db_session, session_id)
+    service.run_rebalance_event(
+        db_session, rb_event.id, rebalance, broker, _provider(), crypto_only=True
+    )
+
+    refreshed = service.get_event(db_session, rb_event.id)
+    assert refreshed.status == EventStatus.FAILED.value
+    assert "prompt" in (refreshed.error or "").lower()
+    assert rebalance.rebalance_calls == []
+
+
+def test_run_rebalance_event_crypto_only_leaves_equity_untouched(
+    db_session: Session,
+) -> None:
+    # End-to-end: a crypto-only rebalance of a mixed session leaves every equity
+    # position exactly as it was and only trades crypto (D3/D4, task 4.2).
+    broker = StubBroker()
+    session_id, _ = _seed_mixed_session(db_session, broker)
+
+    aapl_before = paper_service.get_open_position(db_session, session_id, "AAPL")
+    assert aapl_before is not None
+    qty_before = aapl_before.quantity
+
+    # Target doubles the crypto weight; the AI even returns an AAPL target, which
+    # must still never move the equity.
+    rebalance = FakeAIPortfolioAgent(
+        rebalance_result=AIRebalanceResult(
+            evaluation_summary="crypto up",
+            target_allocations=[
+                AITargetAllocation(
+                    ticker="AAPL",
+                    company_name="Apple",
+                    allocation_pct=0.5,
+                    investment_thesis="keep",
+                    confidence=0.9,
+                ),
+                AITargetAllocation(
+                    ticker="BTC-USD",
+                    company_name="Bitcoin",
+                    allocation_pct=0.5,
+                    investment_thesis="add",
+                    confidence=0.9,
+                ),
+            ],
+            portfolio_health="healthy",
+        )
+    )
+    rb_event = service.create_rebalance_event(db_session, session_id)
+    service.run_rebalance_event(
+        db_session, rb_event.id, rebalance, broker, _provider(), crypto_only=True
+    )
+
+    refreshed = service.get_event(db_session, rb_event.id)
+    assert refreshed.status == EventStatus.SUCCEEDED.value
+    # The equity position is byte-for-byte unchanged.
+    aapl_after = paper_service.get_open_position(db_session, session_id, "AAPL")
+    assert aapl_after is not None
+    assert aapl_after.quantity == qty_before
+    # Only crypto trades were recorded for this rebalance event.
+    trades = paper_service.get_session_trades(db_session, session_id, limit=100)
+    rebalance_trades = [t for t in trades if t.ai_portfolio_event_id == rb_event.id]
+    assert rebalance_trades
+    assert {t.ticker for t in rebalance_trades} == {"BTC-USD"}
 
 
 def _load_migration(filename: str) -> object:
@@ -996,6 +1287,96 @@ def test_run_rebalance_event_legacy_session_defaults_risk_and_scope(
     assert {c["ticker"] for c in call["candidates"]} == {"AAPL", "MSFT", "NVDA"}
 
 
+def _capture_rebalance_base(
+    monkeypatch: pytest.MonkeyPatch,
+) -> dict[str, float | None]:
+    """Patch the executor so tests can read the ``base_capital`` the seam passes."""
+    captured: dict[str, float | None] = {}
+    real_exec = service.AIPortfolioExecutor
+
+    class _CapturingExecutor(real_exec):  # type: ignore[valid-type, misc]
+        def execute_rebalance(self, *args: object, **kwargs: object):  # type: ignore[override, no-untyped-def]
+            captured["base_capital"] = kwargs.get("base_capital")
+            return super().execute_rebalance(*args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(service, "AIPortfolioExecutor", _CapturingExecutor)
+    return captured
+
+
+def test_run_rebalance_event_sizes_against_grown_value(
+    db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A session sitting on gains must size its rebalance against the grown current
+    # value, not the frozen allocated capital, so the gains are redeployed.
+    provider = _seed_universe(db_session, "AAPL", "MSFT")
+    broker = StubBroker()
+    session_id, _ = _seed_session(db_session, broker, provider)
+
+    # Simulate realised gains on the session's books.
+    session_row = paper_service.get_session(db_session, session_id)
+    session_row.total_pnl = 10_000.0
+    db_session.commit()
+    expected = paper_service.compute_session_value(
+        db_session, session_id=session_id, broker=broker
+    ).total_value
+
+    captured = _capture_rebalance_base(monkeypatch)
+    rb_event = service.create_rebalance_event(db_session, session_id)
+    service.run_rebalance_event(
+        db_session, rb_event.id, _noop_rebalance(), broker, provider
+    )
+
+    assert captured["base_capital"] == pytest.approx(expected)
+    # Grown above the frozen 50k allocated capital.
+    assert captured["base_capital"] > 50_000.0
+
+
+def test_run_rebalance_event_sizes_down_after_losses(
+    db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # After losses the rebalance must size against the reduced current value, not
+    # the original allocated capital.
+    provider = _seed_universe(db_session, "AAPL", "MSFT")
+    broker = StubBroker()
+    session_id, _ = _seed_session(db_session, broker, provider)
+
+    session_row = paper_service.get_session(db_session, session_id)
+    session_row.total_pnl = -20_000.0
+    db_session.commit()
+    expected = paper_service.compute_session_value(
+        db_session, session_id=session_id, broker=broker
+    ).total_value
+
+    captured = _capture_rebalance_base(monkeypatch)
+    rb_event = service.create_rebalance_event(db_session, session_id)
+    service.run_rebalance_event(
+        db_session, rb_event.id, _noop_rebalance(), broker, provider
+    )
+
+    assert captured["base_capital"] == pytest.approx(expected)
+    # Shrunk below the frozen 50k allocated capital.
+    assert captured["base_capital"] < 50_000.0
+
+
+def test_build_sizes_against_allocated_capital(db_session: Session) -> None:
+    # The build path still sizes off the allocated capital: a freshly built session
+    # (no positions traded yet, no P&L) is worth ~its allocated capital, so the
+    # current-value base used by the first rebalance equals the allocated capital.
+    provider = _seed_universe(db_session, "AAPL", "MSFT")
+    broker = StubBroker()
+    session_id, _ = _seed_session(db_session, broker, provider)
+
+    session_row = paper_service.get_session(db_session, session_id)
+    valuation = paper_service.compute_session_value(
+        db_session, session_id=session_id, broker=broker
+    )
+    # Invested value + free cash == allocated capital minus build fees, i.e. the
+    # build deployed the allocated capital (not more, not less).
+    assert valuation.total_value == pytest.approx(
+        session_row.allocated_capital - session_row.total_fees
+    )
+
+
 def test_run_rebalance_event_scope_restricts_candidates(
     db_session: Session,
 ) -> None:
@@ -1090,7 +1471,7 @@ def test_close_session_rejects_non_ai_session(db_session: Session) -> None:
         db_session, name="Manual", stocks=["AAPL"]
     )
     session_row = paper_service.create_session(
-        db_session, portfolio_id=portfolio.id, strategy_key="momentum", rebalance_prompt_version=1, benchmark=Benchmark.SP500)
+        db_session, portfolio_id=portfolio.id, strategy_key="momentum", rebalance_prompt_version=1, crypto_rebalance_prompt_version=1, benchmark=Benchmark.SP500)
     with pytest.raises(SessionNotEligibleError):
         service.close_session(db_session, session_row.id, StubBroker())
 
@@ -1461,6 +1842,90 @@ def test_run_rebalance_event_silent_on_market_closed_skip(db_session: Session) -
     assert notifier.sent == []
 
 
+def test_run_rebalance_event_crypto_only_notifies_labelled_crypto(
+    db_session: Session,
+) -> None:
+    # A crypto-only run that submits orders reuses the daily notification path,
+    # labelled so the weekend crypto cadence is distinguishable (task 5.2).
+    broker = StubBroker()
+    assets_service.add_asset(db_session, "AAPL", _provider(), broker)
+    assets_service.add_asset(db_session, "BTC-USD", _crypto_provider(), broker)
+    # The build leaves 40% uninvested so the crypto budget (crypto value + cash) can
+    # fund a buy when the crypto target later scales to 1.0.
+    agent = FakeAIPortfolioAgent(
+        build_result=AIPortfolioBuildResult(
+            portfolio_name="AI Mixed",
+            stocks=[
+                AIPortfolioStock(
+                    ticker="AAPL",
+                    company_name="Apple",
+                    allocation_pct=0.3,
+                    investment_thesis="x",
+                    confidence=0.8,
+                ),
+                AIPortfolioStock(
+                    ticker="BTC-USD",
+                    company_name="Bitcoin",
+                    allocation_pct=0.3,
+                    investment_thesis="y",
+                    confidence=0.8,
+                ),
+            ],
+            overall_thesis="t",
+            risk_assessment="r",
+        )
+    )
+    build_event = service.create_build_event(
+        db_session,
+        _params(allocated_capital=50_000.0, daily_rebalancing=True, asset_types="both"),
+    )
+    service.run_build_event(db_session, build_event.id, agent, broker, _provider())
+    session_id = service.get_event(db_session, build_event.id).session_id
+
+    notifier = RecordingNotifier()
+    rebalance = FakeAIPortfolioAgent(rebalance_result=_single_target("BTC-USD", 1.0))
+    rb_event = service.create_rebalance_event(db_session, session_id)
+    service.run_rebalance_event(
+        db_session,
+        rb_event.id,
+        rebalance,
+        broker,
+        _provider(),
+        notifier=notifier,
+        crypto_only=True,
+    )
+
+    refreshed = service.get_event(db_session, rb_event.id)
+    assert refreshed.status == EventStatus.SUCCEEDED.value
+    assert len(notifier.sent) == 1
+    _message, title = notifier.sent[0]
+    assert "crypto" in title.lower()
+
+
+def test_run_rebalance_event_crypto_only_skip_is_silent(db_session: Session) -> None:
+    # A crypto-only run skipped for no crypto pushes no notification (task 5.2).
+    provider = _seed_universe(db_session, "AAPL", "MSFT")
+    broker = StubBroker()
+    session_id, _ = _seed_session(db_session, broker, provider)
+    notifier = RecordingNotifier()
+
+    rebalance = FakeAIPortfolioAgent(rebalance_result=_single_target("BTC-USD", 1.0))
+    rb_event = service.create_rebalance_event(db_session, session_id)
+    service.run_rebalance_event(
+        db_session,
+        rb_event.id,
+        rebalance,
+        broker,
+        provider,
+        notifier=notifier,
+        crypto_only=True,
+    )
+
+    refreshed = service.get_event(db_session, rb_event.id)
+    assert refreshed.status == EventStatus.SKIPPED.value
+    assert notifier.sent == []
+
+
 def test_run_rebalance_event_notifier_failure_does_not_fail_rebalance(
     db_session: Session,
 ) -> None:
@@ -1654,7 +2119,7 @@ def _held_ai_session(
         db_session,
         portfolio_id=portfolio.id,
         strategy_key="ai_buy_hold",
-        allocated_capital=100_000.0, rebalance_prompt_version=1, benchmark=Benchmark.SP500)
+        allocated_capital=100_000.0, rebalance_prompt_version=1, crypto_rebalance_prompt_version=1, benchmark=Benchmark.SP500)
     paper_service.apply_fill_to_ledger(
         db_session,
         session_id=sess.id,
@@ -1679,7 +2144,7 @@ def test_snapshot_all_sessions_targets_only_active_ai(db_session: Session) -> No
     paper_service.create_session(
         db_session,
         portfolio_id=non_ai_portfolio.id,
-        strategy_key="momentum", rebalance_prompt_version=1, benchmark=Benchmark.SP500)
+        strategy_key="momentum", rebalance_prompt_version=1, crypto_rebalance_prompt_version=1, benchmark=Benchmark.SP500)
 
     # A stopped AI session must be ignored (not active).
     stopped = _held_ai_session(db_session, "AI Retired", "TSLA")
@@ -2468,7 +2933,7 @@ def _session_with_build_trades(
         db,
         portfolio_id=portfolio.id,
         strategy_key="ai_buy_hold",
-        rebalance_prompt_version=1,
+        rebalance_prompt_version=1, crypto_rebalance_prompt_version=1,
         benchmark=Benchmark.SP500,
         schedule_mode=ScheduleMode.DAILY_REBALANCING,
     )

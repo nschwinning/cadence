@@ -95,6 +95,7 @@ const REBALANCE_RESULT = {
 
 const KPIS: PaperTradingSessionKpis = {
   current_value: 102500,
+  unallocated_cash: 20500,
   realised_pnl: 750,
   unrealised_pnl: -200,
   total_fees: 12,
@@ -136,6 +137,9 @@ function installGet(
     }
     if (url.endsWith('/kpis')) {
       return Promise.resolve({ data: kpis });
+    }
+    if (url.endsWith('/sector-performance')) {
+      return Promise.resolve({ data: { by_sector: [], by_category: [] } });
     }
     if (url.endsWith('/paper-trading/benchmarks')) {
       return Promise.resolve({
@@ -217,6 +221,9 @@ describe('PaperTradingSessionPage', () => {
       if (url.endsWith('/kpis')) {
         return Promise.resolve({ data: KPIS });
       }
+      if (url.endsWith('/sector-performance')) {
+        return Promise.resolve({ data: { by_sector: [], by_category: [] } });
+      }
       if (url.includes('/ai-portfolio/sessions/') && url.endsWith('/events')) {
         return Promise.resolve({ data: { items: [], total: 0 } });
       }
@@ -240,6 +247,9 @@ describe('PaperTradingSessionPage', () => {
 
     // Current value tile.
     expect(await screen.findByText('$102,500.00')).toBeInTheDocument();
+    // Unallocated-cash tile shows the session's uninvested cash.
+    expect(screen.getByText('Unallocated cash')).toBeInTheDocument();
+    expect(screen.getByText('$20,500.00')).toBeInTheDocument();
     // Realised P&L is positive -> green.
     const realised = screen.getByText('$750.00');
     expect(realised).toHaveClass('text-emerald-700');
@@ -431,6 +441,9 @@ describe('PaperTradingSessionPage', () => {
       if (url.endsWith('/kpis')) {
         return Promise.resolve({ data: KPIS });
       }
+      if (url.endsWith('/sector-performance')) {
+        return Promise.resolve({ data: { by_sector: [], by_category: [] } });
+      }
       if (url.includes('/ai-portfolio/sessions/') && url.endsWith('/events')) {
         return Promise.resolve({ data: { items: [], total: 0 } });
       }
@@ -464,6 +477,9 @@ describe('PaperTradingSessionPage', () => {
       }
       if (url.endsWith('/kpis')) {
         return Promise.resolve({ data: KPIS });
+      }
+      if (url.endsWith('/sector-performance')) {
+        return Promise.resolve({ data: { by_sector: [], by_category: [] } });
       }
       if (url.includes('/ai-portfolio/sessions/') && url.endsWith('/events')) {
         return Promise.resolve({ data: { items: [], total: 0 } });
@@ -513,6 +529,9 @@ describe('PaperTradingSessionPage', () => {
       if (url.endsWith('/kpis')) {
         return Promise.resolve({ data: KPIS });
       }
+      if (url.endsWith('/sector-performance')) {
+        return Promise.resolve({ data: { by_sector: [], by_category: [] } });
+      }
       if (url.includes('/ai-portfolio/sessions/') && url.endsWith('/events')) {
         return Promise.resolve({ data: { items: [], total: 0 } });
       }
@@ -552,6 +571,9 @@ describe('PaperTradingSessionPage', () => {
       }
       if (url.endsWith('/kpis')) {
         return Promise.resolve({ data: KPIS });
+      }
+      if (url.endsWith('/sector-performance')) {
+        return Promise.resolve({ data: { by_sector: [], by_category: [] } });
       }
       if (url.includes('/ai-portfolio/sessions/') && url.endsWith('/events')) {
         return Promise.resolve({ data: { items: [], total: 0 } });
@@ -617,6 +639,9 @@ describe('PaperTradingSessionPage', () => {
       if (url.endsWith('/kpis')) {
         return Promise.resolve({ data: KPIS });
       }
+      if (url.endsWith('/sector-performance')) {
+        return Promise.resolve({ data: { by_sector: [], by_category: [] } });
+      }
       if (url.includes('/ai-portfolio/sessions/') && url.endsWith('/events')) {
         return Promise.resolve({ data: { items: [], total: 0 } });
       }
@@ -675,6 +700,9 @@ describe('PaperTradingSessionPage', () => {
       if (url.endsWith('/kpis')) {
         return Promise.resolve({ data: KPIS });
       }
+      if (url.endsWith('/sector-performance')) {
+        return Promise.resolve({ data: { by_sector: [], by_category: [] } });
+      }
       if (url.includes('/ai-portfolio/sessions/') && url.endsWith('/events')) {
         return Promise.resolve({ data: { items: [], total: 0 } });
       }
@@ -706,6 +734,9 @@ describe('PaperTradingSessionPage', () => {
       }
       if (url.endsWith('/kpis')) {
         return Promise.resolve({ data: KPIS });
+      }
+      if (url.endsWith('/sector-performance')) {
+        return Promise.resolve({ data: { by_sector: [], by_category: [] } });
       }
       if (url.includes('/ai-portfolio/sessions/') && url.endsWith('/events')) {
         // One row on this page, but twelve across all pages.
@@ -747,6 +778,9 @@ describe('PaperTradingSessionPage', () => {
       }
       if (url.endsWith('/kpis')) {
         return Promise.resolve({ data: KPIS });
+      }
+      if (url.endsWith('/sector-performance')) {
+        return Promise.resolve({ data: { by_sector: [], by_category: [] } });
       }
       if (url.includes('/ai-portfolio/sessions/') && url.endsWith('/events')) {
         return Promise.resolve({ data: { items: [], total: 0 } });
@@ -813,6 +847,9 @@ describe('PaperTradingSessionPage', () => {
       }
       if (url.endsWith('/kpis')) {
         return Promise.resolve({ data: KPIS });
+      }
+      if (url.endsWith('/sector-performance')) {
+        return Promise.resolve({ data: { by_sector: [], by_category: [] } });
       }
       if (url.includes('/trades')) {
         return Promise.resolve({ data: { items: [cryptoTrade], total: 1 } });
