@@ -1047,3 +1047,33 @@ class DashboardOverview(BaseModel):
     recent_activity: list[DashboardActivityEntry]
     universe_balance: DashboardUniverseBalance
     universe_performers: DashboardUniversePerformers
+
+
+# --- System status -----------------------------------------------------------
+
+
+class BackendStatusRead(BaseModel):
+    """Live-probe status of a single external backend.
+
+    Carries only booleans and non-secret identifiers — never a key, secret, or
+    token value. ``reachable`` is ``None`` when no probe was performed (the
+    backend is unconfigured, or the broker is in offline/stub mode); ``True`` or
+    ``False`` reflect the live probe result.
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    name: str
+    configured: bool
+    identifier: str | None = None
+    reachable: bool | None = None
+    latency_ms: float | None = None
+    detail: str | None = None
+
+
+class SystemStatusRead(BaseModel):
+    """Aggregated live status of every external backend the app depends on."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    backends: list[BackendStatusRead]

@@ -172,6 +172,12 @@ class Settings(BaseSettings):
     # 0 (together with ``TRANSACTION_COST_USD`` = 0) to disable the reserve.
     REBALANCE_CASH_BUFFER_PCT: float = 0.015
 
+    # Per-probe timeout (seconds) for the system-status endpoint. Each external
+    # backend is live-probed concurrently; a probe that exceeds this bound is
+    # reported as unreachable with a timeout detail so a slow or hung backend can
+    # never delay the overall /system/status response beyond roughly this value.
+    SYSTEM_STATUS_PROBE_TIMEOUT_SECONDS: float = 5.0
+
     @field_validator("CORS_ORIGINS", mode="before")
     @classmethod
     def _split_cors_origins(cls, value: object) -> object:

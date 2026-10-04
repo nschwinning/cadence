@@ -10,6 +10,7 @@ import { PaperTradingSessionPage } from './pages/paper-trading/PaperTradingSessi
 import { RunsPage } from './pages/runs/RunsPage';
 import { RunDetailPage } from './pages/runs/RunDetailPage';
 import { TechnicalIndicatorsPage } from './pages/technical-indicators/TechnicalIndicatorsPage';
+import { SystemStatusPage } from './pages/system/SystemStatusPage';
 
 export function App() {
   return (
@@ -28,6 +29,7 @@ export function App() {
           path="technical-indicators"
           element={<TechnicalIndicatorsPage />}
         />
+        <Route path="system" element={<SystemStatusPage />} />
       </Route>
     </Routes>
   );

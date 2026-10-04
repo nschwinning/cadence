@@ -946,3 +946,25 @@ export interface TechnicalIndicatorConfig {
   trend_gate: TrendGateConfig;
   reversal_flags: ReversalFlagsConfig;
 }
+
+// --- System status ---------------------------------------------------------
+
+/**
+ * Live-probe status of a single external backend. Carries only booleans and
+ * non-secret identifiers — never a key/secret/token. `reachable` is `null` when
+ * no probe was performed (unconfigured, or broker stub mode); `true`/`false`
+ * reflect the live probe.
+ */
+export interface SystemBackendStatus {
+  name: string;
+  configured: boolean;
+  identifier: string | null;
+  reachable: boolean | null;
+  latency_ms: number | null;
+  detail: string | null;
+}
+
+/** Response of `GET /api/v1/system/status`: one entry per external backend. */
+export interface SystemStatusResponse {
+  backends: SystemBackendStatus[];
+}

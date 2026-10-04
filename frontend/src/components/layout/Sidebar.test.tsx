@@ -19,4 +19,12 @@ describe('Sidebar', () => {
     expect(link).toBeInTheDocument();
     expect(link).toHaveAttribute('href', '/technical-indicators');
   });
+
+  it('renders the System nav entry linking to its route', () => {
+    renderSidebar();
+
+    const link = screen.getByRole('link', { name: /^system$/i });
+    expect(link).toBeInTheDocument();
+    expect(link).toHaveAttribute('href', '/system');
+  });
 });

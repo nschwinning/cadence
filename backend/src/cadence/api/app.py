@@ -18,6 +18,7 @@ from cadence.api.routers import (
     paper_trading_router,
     portfolios_router,
     recommendations_router,
+    system_router,
     technical_indicators_router,
 )
 from cadence.config import settings
@@ -83,6 +84,7 @@ def create_app() -> FastAPI:
     app.include_router(paper_trading_router, prefix="/api/v1")
     app.include_router(ai_portfolio_router, prefix="/api/v1")
     app.include_router(technical_indicators_router, prefix="/api/v1")
+    app.include_router(system_router, prefix="/api/v1")
 
     return app
 
