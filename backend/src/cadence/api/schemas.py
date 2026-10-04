@@ -816,12 +816,13 @@ class AIDailyCryptoRebalanceResponse(AIDailyRebalanceResponse):
     """Result of the weekend crypto-only fan-out.
 
     Mirrors :class:`AIDailyRebalanceResponse` and adds the crypto-specific skip
-    bucket: sessions holding/targeting no crypto are skipped before a job is
-    started, so they never create an AI event.
+    bucket: sessions whose configured asset scope does not include crypto are
+    skipped before a job is started, so they never create an AI event.
     """
 
-    #: Sessions skipped before starting a job because they hold/target no crypto.
-    skipped_no_crypto: list[uuid.UUID] = Field(default_factory=list)
+    #: Sessions skipped before starting a job because their configured asset scope
+    #: does not include crypto (stocks-only), regardless of current holdings.
+    skipped_not_crypto_scope: list[uuid.UUID] = Field(default_factory=list)
 
 
 class AIPortfolioEventRead(BaseModel):

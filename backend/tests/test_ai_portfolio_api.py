@@ -877,16 +877,28 @@ def test_rebalance_crypto_daily_empty_config_rejects_all(
     assert resp.status_code == 403
 
 
-def test_rebalance_crypto_daily_skips_no_crypto_session(
+def test_rebalance_crypto_daily_skips_stocks_only_scope(
     client: TestClient, db_session: Session, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    # An equities-only session holds and targets no crypto, so the crypto fan-out
-    # skips it before a job is started (distinct no-crypto bucket).
+    # A session configured stocks-only is excluded by CONFIGURED scope (not
+    # holdings) and bucketed under ``skipped_not_crypto_scope`` without a job.
     monkeypatch.setattr(settings, "REBALANCE_CRON_TOKEN", "secret")
     executor = ManualExecutor(run_immediately=True)
     _seed_universe(db_session, _provider())
     _wire(db_session, executor)
-    session_id = _build_session(client, executor)
+    resp = client.post(
+        "/api/v1/ai-portfolio/build",
+        json={
+            "allocated_capital": 100000,
+            "daily_rebalancing": True,
+            "asset_types": "stocks",
+        },
+    )
+    event_id = resp.json()["event_id"]
+    executor.run_pending()
+    session_id = client.get(
+        f"/api/v1/ai-portfolio/build/status/{event_id}"
+    ).json()["session_id"]
 
     resp = client.post(
         "/api/v1/ai-portfolio/rebalance-crypto-daily",
@@ -895,14 +907,58 @@ def test_rebalance_crypto_daily_skips_no_crypto_session(
     assert resp.status_code == 200
     body = resp.json()
     assert body["sessions_triggered"] == 0
-    assert session_id in body["skipped_no_crypto"]
+    assert session_id in body["skipped_not_crypto_scope"]
+    assert session_id not in body["session_ids"]
+
+
+def test_rebalance_crypto_daily_skips_stocks_scope_even_holding_crypto(
+    client: TestClient, db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Configured scope is the source of truth: a stocks-only session is excluded
+    # even when it currently holds a crypto position.
+    monkeypatch.setattr(settings, "REBALANCE_CRON_TOKEN", "secret")
+    executor = ManualExecutor(run_immediately=True)
+    _seed_universe(db_session, _provider())
+    assets_service.add_asset(db_session, "BTC-USD", _crypto_provider(), StubBroker())
+    _wire(db_session, executor)
+    resp = client.post(
+        "/api/v1/ai-portfolio/build",
+        json={
+            "allocated_capital": 100000,
+            "daily_rebalancing": True,
+            "asset_types": "stocks",
+        },
+    )
+    event_id = resp.json()["event_id"]
+    executor.run_pending()
+    session_id = client.get(
+        f"/api/v1/ai-portfolio/build/status/{event_id}"
+    ).json()["session_id"]
+    # Inject a crypto holding the scope would normally forbid.
+    paper_service.apply_fill_to_ledger(
+        db_session,
+        session_id=uuid.UUID(session_id),
+        ticker="BTC-USD",
+        side=OrderSide.BUY,
+        shares=0.1,
+        price=60000.0,
+    )
+
+    resp = client.post(
+        "/api/v1/ai-portfolio/rebalance-crypto-daily",
+        headers={"X-Cron-Token": "secret"},
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["sessions_triggered"] == 0
+    assert session_id in body["skipped_not_crypto_scope"]
     assert session_id not in body["session_ids"]
 
 
 def test_rebalance_crypto_daily_triggers_crypto_session(
     client: TestClient, db_session: Session, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    # A session holding crypto is triggered in crypto-only mode.
+    # A both-scoped session (default) is triggered in crypto-only mode.
     monkeypatch.setattr(settings, "REBALANCE_CRON_TOKEN", "secret")
     executor = ManualExecutor(run_immediately=True)
     session_id = _build_crypto_session(client, db_session, executor)
@@ -915,7 +971,7 @@ def test_rebalance_crypto_daily_triggers_crypto_session(
     body = resp.json()
     assert body["sessions_triggered"] == 1
     assert session_id in body["session_ids"]
-    assert session_id not in body["skipped_no_crypto"]
+    assert session_id not in body["skipped_not_crypto_scope"]
 
 
 def test_manual_rebalance_not_deferred_by_unfilled_build_orders(

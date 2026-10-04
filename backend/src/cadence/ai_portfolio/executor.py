@@ -262,6 +262,28 @@ class AIPortfolioExecutor:
     def __init__(self, broker: Broker, allocated_capital: float) -> None:
         self.broker = broker
         self.allocated_capital = allocated_capital
+        # Set by ``execute_rebalance`` when a run is skipped as a no-op (a buy-only
+        # plan with no deployable unallocated cash). The caller reads it to record a
+        # SKIPPED run instead of applying trades.
+        self.skipped_noop = False
+
+    def _reserve_cash_buffer(self, base: float, candidate_count: int) -> float:
+        """Shrink the sizing ``base`` by the reserved cash buffer.
+
+        The reserve is the GREATER of a configured percentage of ``base`` and the
+        estimated total trade fees for the run (``candidate_count`` orders, an
+        upper bound of one per candidate ticker, times the per-trade transaction
+        cost). Reducing the base before any target weight is applied keeps a
+        fully invested target from deploying 100% of the session's value and then
+        overdrawing on fees and fill slippage, so unallocated cash stays
+        non-negative. Returns the net base, floored at 0. When both the buffer
+        percentage and the transaction cost are 0 the reserve is 0 and the base
+        is unchanged.
+        """
+        pct_reserve = base * settings.REBALANCE_CASH_BUFFER_PCT
+        fee_reserve = max(0, candidate_count) * settings.TRANSACTION_COST_USD
+        reserve = max(pct_reserve, fee_reserve)
+        return max(base - reserve, 0.0)
 
     def execute_build(
         self,
@@ -282,6 +304,11 @@ class AIPortfolioExecutor:
         classes = asset_classes or {}
         results: list[TradeResult] = []
 
+        # Reserve a cash buffer so the build does not deploy the full allocated
+        # capital and then overdraw on per-trade fees / fill slippage. At most
+        # one order is placed per stock, so ``len(stocks)`` upper-bounds the fees.
+        net_base = self._reserve_cash_buffer(self.allocated_capital, len(stocks))
+
         if caps is None:
             total_alloc = sum(s.allocation_pct for s in stocks)
             for stock in stocks:
@@ -290,9 +317,7 @@ class AIPortfolioExecutor:
                     stock.allocation_pct / total_alloc if total_alloc > 0 else 0.0
                 )
                 results.append(
-                    self._open_long(
-                        stock.ticker, cls, self.allocated_capital * normalized
-                    )
+                    self._open_long(stock.ticker, cls, net_base * normalized)
                 )
             return results
 
@@ -308,9 +333,7 @@ class AIPortfolioExecutor:
         for ticker in order:
             cls = classes.get(ticker, AssetClass.EQUITY)
             results.append(
-                self._open_long(
-                    ticker, cls, self.allocated_capital * weights.get(ticker, 0.0)
-                )
+                self._open_long(ticker, cls, net_base * weights.get(ticker, 0.0))
             )
         return results
 
@@ -395,6 +418,7 @@ class AIPortfolioExecutor:
         caps: GuardrailCaps | None = None,
         base_capital: float | None = None,
         crypto_only: bool = False,
+        unallocated_cash: float | None = None,
     ) -> list[TradeResult]:
         """Trade toward the AI's target weights, delta by delta.
 
@@ -427,7 +451,20 @@ class AIPortfolioExecutor:
         below :data:`MIN_CRYPTO_NOTIONAL_USD`). When ``market_open`` is ``False``,
         equity tickers are recorded as not executed ("equity market closed") and
         no order is placed, while crypto tickers trade normally.
+
+        When ``unallocated_cash`` is provided (the session's free cash), the run is
+        skipped as a no-op once its intents are planned but before any order is
+        submitted, iff the plan has **no sell intents** AND no deployable cash — the
+        free cash in excess of the reserved buffer (``base - net_base``) is ``<= 0``.
+        Such a plan can only buy but has nothing to fund the buys (most visibly the
+        first rebalance right after a build, when the capital is already deployed and
+        only the buffer remains). On skip, :attr:`skipped_noop` is set and the
+        planned ``skips`` are returned without submitting anything. A plan with at
+        least one sell, or with deployable cash, proceeds. Passing ``None`` (the
+        default) disables the check and preserves the prior behaviour for callers
+        that do not supply live cash.
         """
+        self.skipped_noop = False
         classes = asset_classes or {}
         if crypto_only:
             # Hard guarantee at the executor boundary (design D3): drop every
@@ -455,6 +492,13 @@ class AIPortfolioExecutor:
 
         base = self.allocated_capital if base_capital is None else base_capital
         tickers = sorted(set(current_positions) | set(target_weight))
+
+        # Reserve a cash buffer before sizing so a fully invested target does not
+        # deploy the whole value and then overdraw on fees / fill slippage. Each
+        # candidate ticker yields at most one order, so ``len(tickers)``
+        # upper-bounds the run's fees. The crypto-only budget already flows
+        # through ``base``, so its base is reduced the same way.
+        net_base = self._reserve_cash_buffer(base, len(tickers))
 
         # Phase 0: decide and size every ticker into an order intent (no
         # submission yet). Non-order outcomes — equity skipped while the market is
@@ -499,9 +543,9 @@ class AIPortfolioExecutor:
                     continue
 
                 if cls == AssetClass.CRYPTO:
-                    intent = self._plan_crypto(ticker, pos, weight, price, base)
+                    intent = self._plan_crypto(ticker, pos, weight, price, net_base)
                 else:
-                    intent = self._plan_equity(ticker, pos, weight, price, base)
+                    intent = self._plan_equity(ticker, pos, weight, price, net_base)
 
             except Exception as exc:  # noqa: BLE001 - one ticker must not abort the run
                 logger.error("AI rebalance sizing failed for %s: %s", ticker, exc)
@@ -523,6 +567,18 @@ class AIPortfolioExecutor:
                 sell_intents.append(intent)
             else:
                 buy_intents.append(intent)
+
+        # No-op skip: the plan can only buy (no sells) and there is no cash to
+        # deploy beyond the reserved buffer, so submitting it would do nothing but
+        # churn fees. Decided from the planned intents before any submission, so no
+        # partial execution. ``reserve`` is the buffer already carved out of the
+        # sizing base; deployable cash is free cash in excess of it.
+        if unallocated_cash is not None and not sell_intents:
+            reserve = base - net_base
+            deployable_cash = unallocated_cash - reserve
+            if deployable_cash <= 0.0:
+                self.skipped_noop = True
+                return skips
 
         # Phase 1: submit every sell first (with bounded retry on rejection).
         sell_results = [self._submit_intent(i) for i in sell_intents]

@@ -162,6 +162,16 @@ class Settings(BaseSettings):
     REBALANCE_SELL_FILL_POLL_SECONDS: float = 1.0
     REBALANCE_ORDER_MAX_ATTEMPTS: int = 3
 
+    # Cash buffer reserved before sizing build and rebalance orders so a fully
+    # invested target (weights summing to ~1.0) does not deploy 100% of the
+    # session's value and then overdraw on per-trade fees and market-order fill
+    # slippage, driving unallocated cash negative. The reserved amount is the
+    # GREATER of this fraction of the sizing base and the estimated total trade
+    # fees for the run (candidate order count * ``TRANSACTION_COST_USD``); the
+    # base is reduced by that reserve before any target weight is applied. Set to
+    # 0 (together with ``TRANSACTION_COST_USD`` = 0) to disable the reserve.
+    REBALANCE_CASH_BUFFER_PCT: float = 0.015
+
     @field_validator("CORS_ORIGINS", mode="before")
     @classmethod
     def _split_cors_origins(cls, value: object) -> object:

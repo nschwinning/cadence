@@ -7,6 +7,7 @@ provider for discovery-adds. No network is touched.
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import UTC, date, datetime, timedelta
 
 import pytest
@@ -60,7 +61,11 @@ from cadence.paper_trading.constants import (
     ScheduleMode,
     SessionStatus,
 )
-from cadence.paper_trading.models import BenchmarkPrice, StopLossQuarantine
+from cadence.paper_trading.models import (
+    BenchmarkPrice,
+    PaperTradingSession,
+    StopLossQuarantine,
+)
 from cadence.portfolios import service as portfolios_service
 from cadence.technical_indicators.models import TechnicalIndicator
 
@@ -214,6 +219,29 @@ def _params(**kw: object) -> AIBuildParams:
 
 
 # --------------------------------------------------------------------------- #
+# Configured-scope helper
+# --------------------------------------------------------------------------- #
+
+
+@pytest.mark.parametrize(
+    ("metadata", "expected"),
+    [
+        ({"asset_types": "stocks"}, False),
+        ({"asset_types": "crypto"}, True),
+        ({"asset_types": "both"}, True),
+        ({}, True),  # no persisted scope -> defaults to both
+        (None, True),  # legacy row with null metadata -> defaults to both
+    ],
+)
+def test_session_allows_crypto_reads_configured_scope(
+    metadata: dict[str, str] | None, expected: bool
+) -> None:
+    # The helper decides purely from the frozen CONFIGURED scope, never holdings.
+    row = PaperTradingSession(session_metadata=metadata)
+    assert service.session_allows_crypto(row) is expected
+
+
+# --------------------------------------------------------------------------- #
 # Build
 # --------------------------------------------------------------------------- #
 
@@ -283,7 +311,12 @@ def test_ai_build_params_guardrails_round_trip() -> None:
 
 def test_run_build_event_freezes_guardrails_and_caps_trades(
     db_session: Session,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    # Isolate guardrail sizing from the cash-buffer reserve: pin both off so the
+    # trade quantities are sized off the capped weight against the full base.
+    monkeypatch.setattr(settings, "REBALANCE_CASH_BUFFER_PCT", 0.0)
+    monkeypatch.setattr(settings, "TRANSACTION_COST_USD", 0.0)
     provider = _seed_universe(db_session, "AAPL", "MSFT")
     agent = FakeAIPortfolioAgent(build_result=_build_result("AAPL", "MSFT"))
     broker = StubBroker()
@@ -464,10 +497,15 @@ def _single_target(ticker: str, pct: float) -> AIRebalanceResult:
     )
 
 
-def test_run_rebalance_event_clamps_target_over_cap(db_session: Session) -> None:
+def test_run_rebalance_event_clamps_target_over_cap(
+    db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
     # Session frozen with a 0.5 per-asset cap; a 0.5-cap build lands the 3 names
     # under the cap (~0.333 each). The AI then targets AAPL=1.0, which the frozen
     # cap clamps to 0.5 so AAPL is bought up to 0.5 — not the full 1.0.
+    # Pin the cash-buffer reserve off so the clamp assertion is exact.
+    monkeypatch.setattr(settings, "REBALANCE_CASH_BUFFER_PCT", 0.0)
+    monkeypatch.setattr(settings, "TRANSACTION_COST_USD", 0.0)
     provider = _seed_universe(db_session, "AAPL", "MSFT")
     broker = StubBroker()
     session_id, _ = _seed_session(
@@ -498,9 +536,14 @@ def test_run_rebalance_event_clamps_target_over_cap(db_session: Session) -> None
     assert paper_service.get_open_position(db_session, session_id, "MSFT") is None
 
 
-def test_run_rebalance_event_opted_out_is_unclamped(db_session: Session) -> None:
+def test_run_rebalance_event_opted_out_is_unclamped(
+    db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
     # A session built without guardrails applies no caps at rebalance: an AAPL=1.0
-    # target sizes to the full allocation.
+    # target sizes to the full allocation. Pin the cash-buffer reserve off so the
+    # full-allocation quantity is exact.
+    monkeypatch.setattr(settings, "REBALANCE_CASH_BUFFER_PCT", 0.0)
+    monkeypatch.setattr(settings, "TRANSACTION_COST_USD", 0.0)
     provider = _seed_universe(db_session, "AAPL", "MSFT")
     broker = StubBroker()
     session_id, _ = _seed_session(db_session, broker, provider)
@@ -1820,7 +1863,9 @@ def test_run_rebalance_event_notifies_on_failure(db_session: Session) -> None:
     assert "boom" in message
 
 
-def test_run_rebalance_event_silent_on_market_closed_skip(db_session: Session) -> None:
+def test_run_rebalance_event_market_closed_skip_informs(db_session: Session) -> None:
+    # An engaged full run skipped because the market is closed with nothing to trade
+    # pushes one informational skip notification (not a trade-success push).
     provider = _seed_universe(db_session, "AAPL", "MSFT")
     broker = _ClosedBroker()
     session_id, _ = _seed_session(db_session, broker, provider)
@@ -1838,8 +1883,10 @@ def test_run_rebalance_event_silent_on_market_closed_skip(db_session: Session) -
 
     refreshed = service.get_event(db_session, rb_event.id)
     assert refreshed.status == EventStatus.SKIPPED.value
-    # A skipped run (nothing executed) must not push a notification.
-    assert notifier.sent == []
+    assert len(notifier.sent) == 1
+    message, title = notifier.sent[0]
+    assert "skipped" in title.lower()
+    assert "market closed" in message.lower()
 
 
 def test_run_rebalance_event_crypto_only_notifies_labelled_crypto(
@@ -1902,8 +1949,10 @@ def test_run_rebalance_event_crypto_only_notifies_labelled_crypto(
     assert "crypto" in title.lower()
 
 
-def test_run_rebalance_event_crypto_only_skip_is_silent(db_session: Session) -> None:
-    # A crypto-only run skipped for no crypto pushes no notification (task 5.2).
+def test_run_rebalance_event_crypto_only_skip_informs(db_session: Session) -> None:
+    # A crypto-only run skipped before the agent (no crypto, no deployable cash) is
+    # an engaged skip: it pushes one informational skip notification naming the
+    # portfolio and the reason, not a trade-success push.
     provider = _seed_universe(db_session, "AAPL", "MSFT")
     broker = StubBroker()
     session_id, _ = _seed_session(db_session, broker, provider)
@@ -1923,7 +1972,213 @@ def test_run_rebalance_event_crypto_only_skip_is_silent(db_session: Session) -> 
 
     refreshed = service.get_event(db_session, rb_event.id)
     assert refreshed.status == EventStatus.SKIPPED.value
-    assert notifier.sent == []
+    assert rebalance.rebalance_calls == []  # skipped before the agent
+    assert len(notifier.sent) == 1
+    message, title = notifier.sent[0]
+    assert "crypto" in title.lower() and "skipped" in title.lower()
+    assert "no crypto" in message.lower()
+
+
+def _manual_ai_session(
+    db_session: Session,
+    *,
+    allocated: float,
+    held: dict[str, tuple[float, float]],
+    portfolio_stocks: list[str],
+    scope: str = "both",
+) -> tuple[object, object]:
+    """Create an AI session with a precise ledger and portfolio-target set.
+
+    ``held`` maps ticker -> (shares, price) for the opened ledger positions;
+    ``portfolio_stocks`` is the portfolio's end-state target list (may include a
+    target the session does not currently hold). ``scope`` freezes the configured
+    asset scope in ``session_metadata``.
+    """
+    portfolio = portfolios_service.create_portfolio(
+        db_session, name="AI Manual", stocks=list(portfolio_stocks)
+    )
+    sess = paper_service.create_session(
+        db_session,
+        portfolio_id=portfolio.id,
+        strategy_key="ai_buy_hold",
+        allocated_capital=allocated,
+        rebalance_prompt_version=1,
+        crypto_rebalance_prompt_version=1,
+        benchmark=Benchmark.SP500,
+    )
+    sess.session_metadata = {"asset_types": scope}
+    for ticker, (shares, price) in held.items():
+        paper_service.apply_fill_to_ledger(
+            db_session,
+            session_id=sess.id,
+            ticker=ticker,
+            side=OrderSide.BUY,
+            shares=shares,
+            price=price,
+        )
+    db_session.commit()
+    return sess, portfolio
+
+
+def test_run_rebalance_event_buy_only_no_cash_skips_and_informs(
+    db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A full run whose plan is buy-only (a target above the current holding, no
+    # sells) with no deployable cash beyond the buffer is the first-rebalance-
+    # after-build shape: the executor submits nothing, the run is recorded SKIPPED,
+    # and one informational skip push is sent (never a trade-success push). Pin the
+    # buffer reserve off so deployable cash is exactly the (zero) free cash, and mark
+    # the session fully invested (cash 0) with headroom in its total value so the
+    # AAPL target rounds up into a BUY rather than a trim.
+    monkeypatch.setattr(settings, "REBALANCE_CASH_BUFFER_PCT", 0.0)
+    monkeypatch.setattr(settings, "TRANSACTION_COST_USD", 0.0)
+    broker = StubBroker()
+    assets_service.add_asset(db_session, "AAPL", _provider(), broker)
+    sess, _ = _manual_ai_session(
+        db_session,
+        allocated=1_000.0,
+        held={"AAPL": (10.0, 100.0)},
+        portfolio_stocks=["AAPL"],
+    )
+
+    # Size against double the held value (a genuine buy) while pinning free cash to
+    # zero, so the plan is buy-only with no deployable cash.
+    real_value = paper_service.compute_session_value
+
+    def _fully_invested(
+        session: Session, *, session_id: object, broker: object
+    ) -> object:
+        val = real_value(session, session_id=session_id, broker=broker)
+        return replace(val, total_value=val.positions_value * 2, cash_value=0.0)
+
+    monkeypatch.setattr(paper_service, "compute_session_value", _fully_invested)
+    notifier = RecordingNotifier()
+
+    rebalance = FakeAIPortfolioAgent(rebalance_result=_single_target("AAPL", 1.0))
+    rb_event = service.create_rebalance_event(db_session, sess.id)
+    service.run_rebalance_event(
+        db_session, rb_event.id, rebalance, broker, _provider(), notifier=notifier
+    )
+
+    refreshed = service.get_event(db_session, rb_event.id)
+    assert refreshed.status == EventStatus.SKIPPED.value
+    # The agent WAS consulted (the skip is decided post-plan, not pre-agent).
+    assert rebalance.rebalance_calls
+    # Exactly one informational skip push — not a trade-success push.
+    assert len(notifier.sent) == 1
+    message, title = notifier.sent[0]
+    assert "skipped" in title.lower()
+    assert "buy-only" in message.lower()
+    # No orders submitted: the AAPL position is untouched.
+    pos = paper_service.get_open_position(db_session, sess.id, "AAPL")
+    assert pos is not None and pos.quantity == pytest.approx(10.0)
+    runs = paper_service.get_session_runs(db_session, sess.id, limit=100)
+    skipped = next(r for r in runs if r.details and r.details[0].get("skipped"))
+    assert skipped.details is not None
+    assert skipped.details[0]["reason"] == "buy-only, no deployable cash"
+
+
+def test_run_rebalance_event_buy_only_with_cash_runs(db_session: Session) -> None:
+    # The same buy-only shape but WITH deployable cash proceeds: the session holds
+    # AAPL and has idle cash, so targeting AAPL+MSFT deploys the cash into new buys
+    # (no sells) and notifies a trade-success push.
+    broker = StubBroker()
+    assets_service.add_asset(db_session, "AAPL", _provider(), broker)
+    assets_service.add_asset(db_session, "MSFT", _provider(), broker)
+    sess, _ = _manual_ai_session(
+        db_session,
+        allocated=50_000.0,
+        held={"AAPL": (10.0, 100.0)},  # ~$1k invested, ~$49k idle cash
+        portfolio_stocks=["AAPL"],
+    )
+    notifier = RecordingNotifier()
+
+    rebalance = _rebalance_to_aapl_msft()  # already a FakeAIPortfolioAgent
+    rb_event = service.create_rebalance_event(db_session, sess.id)
+    service.run_rebalance_event(
+        db_session, rb_event.id, rebalance, broker, _provider(), notifier=notifier
+    )
+
+    refreshed = service.get_event(db_session, rb_event.id)
+    assert refreshed.status == EventStatus.SUCCEEDED.value
+    # The idle cash was deployed: MSFT is now held and a trade-success push fired.
+    assert paper_service.get_open_position(db_session, sess.id, "MSFT") is not None
+    assert len(notifier.sent) == 1
+    _message, title = notifier.sent[0]
+    assert "rebalanced" in title.lower()
+
+
+def test_run_rebalance_event_crypto_scoped_shares_only_no_cash_skips(
+    db_session: Session,
+) -> None:
+    # A crypto-scoped (both) session that currently holds only equity shares and has
+    # no free cash is skipped before the agent on a crypto-only run: it can neither
+    # rotate crypto nor deploy cash, so no agent call, no orders, equities untouched.
+    broker = StubBroker()
+    assets_service.add_asset(db_session, "AAPL", _provider(), broker)
+    assets_service.add_asset(db_session, "BTC-USD", _crypto_provider(), broker)
+    sess, _ = _manual_ai_session(
+        db_session,
+        allocated=1_000.0,
+        held={"AAPL": (10.0, 100.0)},  # cash_value == 0
+        portfolio_stocks=["AAPL", "BTC-USD"],  # crypto is targeted but unheld
+        scope="both",
+    )
+    notifier = RecordingNotifier()
+
+    rebalance = FakeAIPortfolioAgent(rebalance_result=_single_target("BTC-USD", 1.0))
+    rb_event = service.create_rebalance_event(db_session, sess.id)
+    service.run_rebalance_event(
+        db_session,
+        rb_event.id,
+        rebalance,
+        broker,
+        _provider(),
+        notifier=notifier,
+        crypto_only=True,
+    )
+
+    refreshed = service.get_event(db_session, rb_event.id)
+    assert refreshed.status == EventStatus.SKIPPED.value
+    assert rebalance.rebalance_calls == []  # skipped before the agent
+    # The equity position is left exactly as it was.
+    pos = paper_service.get_open_position(db_session, sess.id, "AAPL")
+    assert pos is not None and pos.quantity == pytest.approx(10.0)
+    assert paper_service.get_open_position(db_session, sess.id, "BTC-USD") is None
+    # One informational skip push naming the crypto reason.
+    assert len(notifier.sent) == 1
+    message, title = notifier.sent[0]
+    assert "crypto" in title.lower() and "skipped" in title.lower()
+    assert "no crypto" in message.lower()
+
+
+def test_run_rebalance_event_crypto_scoped_idle_cash_deploys(
+    db_session: Session,
+) -> None:
+    # The same crypto-scoped-but-shares-only session with idle cash proceeds: the
+    # run is engaged (agent consulted) so the cash can be deployed into crypto.
+    broker = StubBroker()
+    assets_service.add_asset(db_session, "AAPL", _provider(), broker)
+    assets_service.add_asset(db_session, "BTC-USD", _crypto_provider(), broker)
+    sess, _ = _manual_ai_session(
+        db_session,
+        allocated=50_000.0,
+        held={"AAPL": (10.0, 100.0)},  # ~$49k idle cash to deploy into crypto
+        portfolio_stocks=["AAPL", "BTC-USD"],
+        scope="both",
+    )
+
+    rebalance = FakeAIPortfolioAgent(rebalance_result=_single_target("BTC-USD", 1.0))
+    rb_event = service.create_rebalance_event(db_session, sess.id)
+    service.run_rebalance_event(
+        db_session, rb_event.id, rebalance, broker, _provider(), crypto_only=True
+    )
+
+    refreshed = service.get_event(db_session, rb_event.id)
+    assert refreshed.status == EventStatus.SUCCEEDED.value
+    assert rebalance.rebalance_calls  # engaged: the agent was consulted
+    # The idle cash was deployed into the crypto target.
+    assert paper_service.get_open_position(db_session, sess.id, "BTC-USD") is not None
 
 
 def test_run_rebalance_event_notifier_failure_does_not_fail_rebalance(
@@ -2167,6 +2422,8 @@ def test_snapshot_all_sessions_targets_only_active_ai(db_session: Session) -> No
     assert title == "Cadence: AI Growth daily P&L"
     assert "Total return:" in message
     assert "Sharpe:" in message
+    # Unallocated cash is surfaced: $100k allocated − $1,000 spent on 10 AAPL @ $100.
+    assert "Cash $99,000.00" in message
     assert "Best:" in message and "Worst:" in message
     assert "AAPL" in message
 
@@ -2187,6 +2444,66 @@ def test_snapshot_all_sessions_survives_notifier_failure(
     assert len(notifier.sent) == 1  # send was attempted (and raised)
     snaps = paper_service.list_value_snapshots(db_session, session_id=ai_active.id)
     assert len(snaps) == 1
+
+
+def _scoped_held_ai_session(
+    db_session: Session, name: str, ticker: str, scope: str
+) -> object:
+    """An active AI session holding one position, with a frozen configured scope."""
+    sess = _held_ai_session(db_session, name, ticker)
+    sess.session_metadata = {"asset_types": scope}
+    db_session.commit()
+    return sess
+
+
+# A Saturday and a Monday in the snapshot timezone (calendar weekend detection).
+_WEEKEND = date(2026, 1, 3)
+_WEEKDAY = date(2026, 1, 5)
+
+
+def test_snapshot_all_sessions_weekend_skips_stocks_only(db_session: Session) -> None:
+    broker = StubBroker()
+    notifier = RecordingNotifier()
+    stocks_only = _scoped_held_ai_session(db_session, "AI Stocks", "AAPL", "stocks")
+    crypto = _scoped_held_ai_session(db_session, "AI Crypto", "MSFT", "both")
+
+    ids = service.snapshot_all_sessions(
+        db_session, broker=broker, notifier=notifier, as_of=_WEEKEND
+    )
+
+    # The stocks-only session is skipped entirely on the weekend: no snapshot...
+    assert stocks_only.id not in ids
+    assert crypto.id in ids
+    assert (
+        paper_service.list_value_snapshots(db_session, session_id=stocks_only.id) == []
+    )
+    assert len(
+        paper_service.list_value_snapshots(db_session, session_id=crypto.id)
+    ) == 1
+    # ...and no notification: the one push sent is for the crypto/both session only.
+    assert len(notifier.sent) == 1
+    _message, title = notifier.sent[0]
+    assert title == "Cadence: AI Crypto daily P&L"
+
+
+def test_snapshot_all_sessions_weekday_snapshots_all_scopes(
+    db_session: Session,
+) -> None:
+    broker = StubBroker()
+    notifier = RecordingNotifier()
+    stocks_only = _scoped_held_ai_session(db_session, "AI Stocks", "AAPL", "stocks")
+    crypto = _scoped_held_ai_session(db_session, "AI Crypto", "MSFT", "both")
+
+    ids = service.snapshot_all_sessions(
+        db_session, broker=broker, notifier=notifier, as_of=_WEEKDAY
+    )
+
+    # On a weekday every active AI session snapshots + notifies, scope regardless.
+    assert set(ids) == {stocks_only.id, crypto.id}
+    assert len(
+        paper_service.list_value_snapshots(db_session, session_id=stocks_only.id)
+    ) == 1
+    assert len(notifier.sent) == 2
 
 
 # --------------------------------------------------------------------------- #

@@ -369,6 +369,65 @@ nor the targets include any crypto.
 - **THEN** the system SHALL record a skipped run and mark the rebalance event
   skipped
 
+### Requirement: Weekend crypto rebalance selects sessions by configured crypto scope
+
+The scheduled crypto-only (weekend) rebalance SHALL select the sessions it rebalances by each session's **configured** asset scope rather than its current holdings. It SHALL rebalance only active daily-rebalancing AI-managed sessions whose configured asset scope includes crypto (scope is crypto or both). A session configured stocks-only SHALL be excluded from the crypto-only rebalance and reported as skipped for not being crypto-scoped, even if it currently holds or targets a crypto asset. A session with no persisted scope (for example one built before an explicit scope existed) SHALL be treated as the default scope (both) and is therefore included.
+
+#### Scenario: Stocks-only session excluded even when holding crypto
+
+- **WHEN** the crypto-only rebalance runs and an active daily-rebalancing session is configured stocks-only but currently holds or targets a crypto asset
+- **THEN** the system SHALL exclude that session from the crypto-only rebalance, report it as skipped for not being crypto-scoped, and SHALL NOT place any crypto order for it
+
+#### Scenario: Crypto and both scopes are rebalanced
+
+- **WHEN** the crypto-only rebalance runs and an active daily-rebalancing session's configured scope is crypto or both
+- **THEN** the system SHALL include that session in the crypto-only rebalance
+
+### Requirement: Skip a rebalance run that can only buy with no deployable cash
+
+During any rebalance (full or crypto-only), after the run has planned its sell and buy intents and **before it submits any order**, the system SHALL skip the run when the plan contains **no sell intents** AND the session has **no deployable unallocated cash** to fund the planned buys. Deployable unallocated cash SHALL be the session's free cash in excess of the reserved cash buffer — the cash available to fund new buys once the buffer is set aside — and is "none" when it is insufficient to fund any planned buy. When the run is skipped this way the system SHALL submit no orders, record the run as a skipped/no-op run, and send the informational skip notification described in "Notify when a selected session's rebalance is skipped" rather than the trade-success notification. A run whose plan includes at least one sell SHALL proceed (it reallocates), and a buy-only run that has deployable unallocated cash SHALL proceed (it deploys the cash). As a consequence, the first rebalance immediately after a build — when the allocated capital is already deployed and only the reserved cash buffer remains — SHALL be skipped.
+
+#### Scenario: Buy-only plan with no deployable cash is skipped
+
+- **WHEN** a rebalance plans only buy intents (no sells) and the session has no unallocated cash beyond the reserved cash buffer to fund them
+- **THEN** the system SHALL submit no orders, record the run as skipped, and send the informational skip notification rather than a trade-success notification
+
+#### Scenario: First rebalance right after a build is skipped
+
+- **WHEN** the first rebalance after a build runs, with the allocated capital already deployed into positions and only the reserved cash buffer remaining
+- **THEN** the planned run SHALL be buy-only with no deployable cash and the system SHALL skip it, submitting no orders and sending the informational skip notification
+
+#### Scenario: Buy-only plan with deployable cash still runs
+
+- **WHEN** a rebalance plans only buy intents (no sells) and the session holds unallocated cash beyond the reserved buffer
+- **THEN** the system SHALL proceed with the run and deploy the cash into the planned buys
+
+#### Scenario: Plan with a sell still runs
+
+- **WHEN** a rebalance plans at least one sell intent
+- **THEN** the system SHALL proceed with the run regardless of deployable cash
+
+### Requirement: Notify when a selected session's rebalance is skipped
+
+When a session's scheduled rebalance is actually engaged (the session was selected for the run) but the run is then skipped as a no-op, the system SHALL send one informational Pushover notification for that session naming the session's portfolio and the reason it was skipped, so the user is informed that the scheduled rebalance did nothing and why. This SHALL cover both the pre-agent crypto-only skip (no crypto to act on and no deployable cash to buy crypto) and the post-plan buy-only skip (no sells and no deployable cash, including the first rebalance after a build), on weekdays and weekends alike. This notification is informational and is distinct from the trade-success notification sent when a rebalance executes orders.
+
+The system SHALL NOT send any notification for a session that was never engaged by the run — specifically a session excluded from the weekend crypto rebalance for not being crypto-scoped, and a stocks-only session skipped on a weekend end-of-day snapshot. Informing happens only when there was processing to report.
+
+#### Scenario: Skipped crypto-only run informs the user
+
+- **WHEN** a crypto-only rebalance for a selected session is skipped because it holds no crypto and has no deployable cash to buy crypto
+- **THEN** the system SHALL send one informational notification naming the session's portfolio and the skip reason
+
+#### Scenario: Skipped buy-only run informs the user
+
+- **WHEN** a rebalance for a selected session is skipped because its plan is buy-only with no deployable cash (including the first rebalance after a build)
+- **THEN** the system SHALL send one informational notification naming the session's portfolio and the skip reason
+
+#### Scenario: Excluded and snapshot-skipped sessions stay silent
+
+- **WHEN** a session is excluded from the weekend crypto rebalance for not being crypto-scoped, or a stocks-only session is skipped on a weekend end-of-day snapshot
+- **THEN** the system SHALL send no notification for that session
+
 ### Requirement: Browse AI run history and details
 
 The system SHALL let a client list AI runs (build and rebalance events) across all sessions, ordered newest first, with pagination and optional filtering by run type and status, and SHALL return a total count for the applied filter. The system SHALL let a client open a single AI run by its identifier and receive that run's detail: the run's reasoning output and research transcript, the trades it opened, and the positions it closed (the trades and closed positions referencing that run). Requesting an unknown run identifier SHALL return a not-found error.
@@ -443,20 +502,30 @@ entry price and its opened date as the entry date.
 ### Requirement: Snapshot session portfolio value at end of day
 
 The system SHALL, on a scheduled end-of-day trigger, record one portfolio-value
-snapshot per active AI-managed session (a session whose strategy is AI-managed and
-whose status is active) and send a daily profit-and-loss report. The trigger SHALL
-be a cron-guarded endpoint protected by the shared cron-token secret, and SHALL
-reject a request with a missing or invalid token. Recording SHALL be idempotent per
-session per day: re-running the trigger on the same calendar day SHALL update that
-day's snapshot rather than create a duplicate.
+snapshot per active AI-managed session **selected for the day** (a session whose
+strategy is AI-managed and whose status is active) and send a daily
+profit-and-loss report. On a **weekday** (Monday–Friday) the selected sessions SHALL
+be all active AI-managed sessions. On a **weekend day** (Saturday or Sunday,
+determined by calendar in the snapshot timezone, ignoring market holidays) the
+selected sessions SHALL be only those whose **configured asset scope includes crypto**
+(scope is crypto or both); an active AI-managed session configured stocks-only SHALL
+be skipped entirely on a weekend — neither a snapshot recorded nor a notification
+sent. A session with no persisted scope SHALL be treated as the default scope (both)
+and is therefore included on weekends. The trigger SHALL be a cron-guarded endpoint
+protected by the shared cron-token secret, and SHALL reject a request with a missing
+or invalid token. Recording SHALL be idempotent per session per day: re-running the
+trigger on the same calendar day SHALL update that day's snapshot rather than create a
+duplicate.
 
 The end-of-day snapshot and its P&L report are intended to run on **every calendar
 day, including weekends**, so that a session's value and profit and loss are recorded
 and reported on days its holdings move — notably its crypto sleeve, which trades
-around the clock and is rebalanced on weekends. The trigger SHALL operate on any day
-it is validly called, with no dependence on the equity market being open; the
-scheduling cadence itself is a deployment concern (the cron schedule), not enforced by
-this endpoint.
+around the clock and is rebalanced on weekends. On weekends the trigger SHALL record
+and report only for sessions whose configured scope includes crypto, since a
+stocks-only session's holdings do not move while the equity market is closed. The
+trigger SHALL operate on any day it is validly called, with no dependence on the equity
+market being open; the scheduling cadence itself is a deployment concern (the cron
+schedule), not enforced by this endpoint.
 
 Each snapshot SHALL record the session's total value, its cash value, the market
 value of its held positions, the day's profit and loss (absolute and percent), and a
@@ -479,17 +548,24 @@ to deliver the report SHALL NOT fail the snapshot job.
 
 #### Scenario: Daily snapshot recorded for active AI sessions
 
-- **WHEN** the end-of-day snapshot trigger runs with a valid cron token
+- **WHEN** the end-of-day snapshot trigger runs on a weekday with a valid cron token
 - **THEN** the system SHALL record a value snapshot for each active AI-managed
   session and SHALL NOT record snapshots for paused, stopped, or non-AI sessions
 
 #### Scenario: Snapshot and report run on weekends
 
 - **WHEN** the end-of-day snapshot trigger runs on a weekend (a day the equity
-  market is closed)
-- **THEN** the system SHALL record a value snapshot for each active AI-managed
-  session and send the daily P&L report exactly as on a weekday, marking crypto and
-  other holdings to market, without requiring the equity market to be open
+  market is closed) and a session's configured scope includes crypto
+- **THEN** the system SHALL record a value snapshot for that session and send the
+  daily P&L report, marking crypto and other holdings to market, without requiring the
+  equity market to be open
+
+#### Scenario: Weekend skips stocks-only sessions entirely
+
+- **WHEN** the end-of-day snapshot trigger runs on a weekend and a session's
+  configured scope does not include crypto (stocks only)
+- **THEN** the system SHALL skip that session entirely — recording no snapshot and
+  sending no notification for it
 
 #### Scenario: Snapshot is idempotent per day
 
@@ -1125,13 +1201,14 @@ An automated rebalance SHALL size its target weights against the session's **cur
 marked-to-market value** — the allocated capital adjusted by cumulative realised
 profit/loss and transaction fees plus the live unrealised profit/loss of open positions,
 equivalently the current market value of all open positions plus the session's
-unallocated cash — rather than against the session's original frozen allocated capital.
+unallocated cash — rather than against the session's original frozen allocated capital,
+**reduced by the reserved cash buffer** (see "Reserve a cash buffer when sizing orders").
 The normalised target weights (which sum to approximately one, after any guardrail
-enforcement) SHALL therefore be applied to the session's current equity, so that each
-target position value is a fraction of what the session is worth now. Realised and
-unrealised gains SHALL thereby be redeployed into the target allocation on the next
-rebalance, and after losses the targets SHALL be sized to the session's reduced equity
-rather than its original capital.
+enforcement) SHALL therefore be applied to the session's current equity net of the
+reserved buffer, so that each target position value is a fraction of what the session is
+worth now less the reserve. Realised and unrealised gains SHALL thereby be redeployed into
+the target allocation on the next rebalance, and after losses the targets SHALL be sized to
+the session's reduced equity rather than its original capital.
 
 The target-weight delta model SHALL be otherwise unchanged: the system SHALL still trade
 only the delta between each target position and the current position (a buy when the
@@ -1140,9 +1217,10 @@ apply fractional sizing for crypto and whole-share sizing for equities, and SHAL
 enforce any configured risk guardrails on the weight vector before sizing.
 
 The **initial build** SHALL continue to size positions against the session's allocated
-capital. Because at build time the session holds no positions and has no profit/loss, its
-current value equals its allocated capital, so build sizing is unaffected; only the
-rebalance seam uses the current-value base.
+capital (likewise reduced by the reserved cash buffer). Because at build time the session
+holds no positions and has no profit/loss, its current value equals its allocated capital,
+so build sizing is unaffected apart from the reserve; only the rebalance seam uses the
+current-value base.
 
 #### Scenario: Gains are redeployed on rebalance
 
@@ -1164,12 +1242,74 @@ rebalance seam uses the current-value base.
 - **THEN** the system SHALL size the initial positions against the allocated capital,
   which equals the session's current value at that moment
 
+#### Scenario: Sizing base is net of the reserved buffer
+
+- **WHEN** a rebalance sizes positions against the current value
+- **THEN** the system SHALL first reduce that value by the reserved cash buffer and apply
+  the target weights to the net base, so the session retains a cash reserve for fees and
+  slippage
+
 #### Scenario: Delta model and guardrails unchanged
 
 - **WHEN** a rebalance sizes positions against the current value
 - **THEN** the system SHALL still trade only the delta between target and current
   positions and SHALL still enforce any configured risk guardrails on the target weights
   before sizing
+
+### Requirement: Reserve a cash buffer when sizing orders
+
+The AI executor SHALL reserve a **cash buffer** before sizing build or rebalance
+orders, so that executed buys cannot claim the full value available and the
+session's **unallocated cash is not driven negative** by fully deploying value
+plus per-trade transaction fees and market-order fill slippage.
+
+The reserved buffer SHALL be the **greater of**:
+
+1. a **configurable percentage** of the sizing base (the allocated capital at
+   build, the session's current marked-to-market value at rebalance), and
+2. the **estimated total transaction fees** for the run — the number of
+   candidate orders for the run multiplied by the per-trade transaction cost.
+
+The sizing base SHALL be reduced by the reserved buffer **before** any target
+weight is applied, so every per-ticker allocation is sized against the net
+(post-buffer) base. The reserve SHALL be applied consistently at both the
+initial build and every rebalance, and SHALL apply to a crypto-only rebalance's
+crypto-scoped base as well. When the per-trade transaction cost is zero and the
+buffer percentage is zero, the reserve SHALL be zero and sizing SHALL be
+unchanged.
+
+The buffer SHALL only shrink the base the executor sizes against; it SHALL NOT
+change the target-weight delta model, guardrail enforcement, crypto-only
+scoping, the `market_open` equity-skip, or the sells-before-buys phasing.
+
+#### Scenario: Fully invested target leaves cash non-negative
+
+- **WHEN** a session is rebalanced toward target weights that sum to
+  approximately one
+- **THEN** the executor SHALL size the target positions against the current
+  value reduced by the reserved cash buffer, so that after the fees for the
+  executed trades the session's unallocated cash is not negative
+
+#### Scenario: Buffer is the greater of the percentage and the fee estimate
+
+- **WHEN** the estimated total fees for a run exceed the configured percentage of
+  the sizing base
+- **THEN** the executor SHALL reserve the fee estimate rather than the smaller
+  percentage, and conversely SHALL reserve the percentage when it is the larger
+  of the two
+
+#### Scenario: Build reserves the buffer too
+
+- **WHEN** a portfolio is first built
+- **THEN** the executor SHALL size the initial positions against the allocated
+  capital reduced by the reserved cash buffer, leaving a cash reserve rather than
+  deploying the full allocated capital
+
+#### Scenario: Zero cost and zero percentage disable the reserve
+
+- **WHEN** the per-trade transaction cost and the buffer percentage are both zero
+- **THEN** the reserved buffer SHALL be zero and sizing SHALL match the behavior
+  with no buffer
 
 ### Requirement: Rebalance submits sells before buys and gates buys on sell fills
 
@@ -1220,6 +1360,14 @@ rebalances only its crypto in this mode. The system SHALL NOT place any equity o
 during a crypto-only rebalance, and SHALL NOT sell, trim, or add to equity positions.
 Equity positions SHALL remain exactly as they were before the crypto-only run.
 
+A crypto-only rebalance SHALL be recorded as skipped without invoking the agent when
+the session has no crypto positions to act on and no deployable unallocated cash to buy
+crypto (its free cash, net of the reserved cash buffer, is insufficient to fund a
+crypto buy) — since it can then neither rotate existing crypto nor deploy cash into
+crypto. This includes a crypto-scoped session (scope crypto or both) that currently
+holds only equity shares and has no free capital. When the session holds crypto, or has
+deployable cash to buy crypto, the run SHALL proceed.
+
 #### Scenario: Mixed session rebalances only crypto
 
 - **WHEN** a crypto-only rebalance runs for a session that holds both equities and
@@ -1238,6 +1386,20 @@ Equity positions SHALL remain exactly as they were before the crypto-only run.
 - **WHEN** a crypto-only rebalance is requested for a session that neither holds nor
   targets any crypto
 - **THEN** the system SHALL record the run as skipped and SHALL NOT invoke the agent
+
+#### Scenario: Crypto-scoped session holding only shares with no free cash is skipped
+
+- **WHEN** a crypto-only rebalance runs for a session whose configured scope includes
+  crypto but which currently holds only equity shares and has no deployable unallocated
+  cash to buy crypto
+- **THEN** the system SHALL record the run as skipped without invoking the agent and
+  SHALL place no orders, leaving the equity positions untouched
+
+#### Scenario: Idle cash lets a crypto-scoped session deploy into crypto
+
+- **WHEN** a crypto-only rebalance runs for a session whose configured scope includes
+  crypto, holds no crypto yet, targets crypto, and has deployable unallocated cash
+- **THEN** the system SHALL proceed with the run so the cash can be deployed into crypto
 
 ### Requirement: Crypto-only rebalance sizes against the crypto investable budget
 

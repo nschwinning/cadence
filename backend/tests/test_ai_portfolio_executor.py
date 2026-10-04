@@ -25,6 +25,20 @@ from cadence.broker.stub import StubBroker
 from cadence.config import settings
 
 
+@pytest.fixture(autouse=True)
+def _no_cash_buffer(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Pin the cash-buffer reserve off so sizing tests assert the raw base.
+
+    The executor now reserves ``max(base * REBALANCE_CASH_BUFFER_PCT,
+    candidate_count * TRANSACTION_COST_USD)`` before sizing. The bulk of this
+    suite asserts base-scaling / delta semantics, so we disable the reserve by
+    default; the dedicated cash-buffer tests re-enable it with their own
+    ``monkeypatch.setattr`` calls, which take effect after this fixture.
+    """
+    monkeypatch.setattr(settings, "REBALANCE_CASH_BUFFER_PCT", 0.0)
+    monkeypatch.setattr(settings, "TRANSACTION_COST_USD", 0.0)
+
+
 def _stock(ticker: str, alloc: float) -> AIPortfolioStock:
     return AIPortfolioStock(
         ticker=ticker,
@@ -864,3 +878,201 @@ def test_rebalance_rejected_order_gives_up_after_cap(monkeypatch) -> None:
     assert results[0].ticker == "YYY"
     assert results[0].executed is False
     assert results[0].order_status == OrderStatus.REJECTED
+
+
+# --------------------------------------------------------------------------- #
+# Buy-only / no-deployable-cash skip (no-op rebalance)
+# --------------------------------------------------------------------------- #
+
+
+def test_rebalance_buy_only_no_deployable_cash_skips() -> None:
+    # A buy-only plan (new target, no sells) with no free cash submits nothing and
+    # flags the run as a no-op. With the buffer pinned off, reserve is 0, so
+    # unallocated_cash == 0 means deployable cash is 0 -> skip.
+    broker = StubBroker()
+    price = broker.get_quote("AAPL").last
+    executor = AIPortfolioExecutor(broker, allocated_capital=100 * price)
+
+    results = executor.execute_rebalance(
+        targets=[_target("AAPL", 1.0)],
+        current_positions={},
+        base_capital=100 * price,
+        unallocated_cash=0.0,
+    )
+
+    assert executor.skipped_noop is True
+    assert results == []
+    assert broker.get_positions() == []
+
+
+def test_rebalance_buy_only_with_deployable_cash_runs() -> None:
+    # The same buy-only plan runs when there is free cash to fund the buys.
+    broker = StubBroker()
+    price = broker.get_quote("AAPL").last
+    executor = AIPortfolioExecutor(broker, allocated_capital=100 * price)
+
+    results = executor.execute_rebalance(
+        targets=[_target("AAPL", 1.0)],
+        current_positions={},
+        base_capital=100 * price,
+        unallocated_cash=100 * price,
+    )
+
+    assert executor.skipped_noop is False
+    assert results[0].side == "long"
+    assert results[0].executed is True
+    assert results[0].shares == pytest.approx(100, abs=1)
+
+
+def test_rebalance_with_sell_runs_regardless_of_cash() -> None:
+    # A plan containing at least one sell reallocates even with zero free cash.
+    broker = StubBroker()
+    broker.buy("AAPL", 5)
+    positions = {p.symbol: p for p in broker.get_positions()}
+    executor = AIPortfolioExecutor(broker, allocated_capital=100_000)
+
+    results = executor.execute_rebalance(
+        targets=[],  # full exit -> a sell
+        current_positions=positions,
+        unallocated_cash=0.0,
+    )
+
+    assert executor.skipped_noop is False
+    assert results[0].side == "sell"
+    assert results[0].executed is True
+    assert results[0].shares == 5
+
+
+def test_rebalance_unallocated_cash_none_preserves_behavior() -> None:
+    # Omitting unallocated_cash disables the skip check: a buy-only plan runs as
+    # before, preserving behaviour for callers that do not supply live cash.
+    broker = StubBroker()
+    price = broker.get_quote("AAPL").last
+    executor = AIPortfolioExecutor(broker, allocated_capital=100 * price)
+
+    results = executor.execute_rebalance(
+        targets=[_target("AAPL", 1.0)],
+        current_positions={},
+        base_capital=100 * price,
+    )
+
+    assert executor.skipped_noop is False
+    assert results[0].side == "long"
+    assert results[0].executed is True
+
+
+# --------------------------------------------------------------------------- #
+# Cash-buffer reserve (keeps unallocated cash non-negative)
+# --------------------------------------------------------------------------- #
+
+
+def _enable_buffer(
+    monkeypatch: pytest.MonkeyPatch, *, pct: float, cost: float
+) -> None:
+    """Re-enable the cash buffer (the module autouse fixture pins it off)."""
+    monkeypatch.setattr(settings, "REBALANCE_CASH_BUFFER_PCT", pct)
+    monkeypatch.setattr(settings, "TRANSACTION_COST_USD", cost)
+
+
+def _deployed(results: list) -> float:
+    """Total long notional actually bought across trade results."""
+    return sum(r.shares * r.price for r in results if r.side == "long" and r.executed)
+
+
+def test_reserve_cash_buffer_takes_greater_of_pct_and_fees(monkeypatch) -> None:
+    executor = AIPortfolioExecutor(StubBroker(), allocated_capital=0.0)
+    _enable_buffer(monkeypatch, pct=0.015, cost=1.0)
+
+    # Percentage dominates: 1.5% of 100_000 = 1_500 > 2 trades * $1.
+    assert executor._reserve_cash_buffer(100_000.0, 2) == pytest.approx(98_500.0)
+    # Fee estimate dominates: 50 trades * $1 = 50 > 1.5% of 100 = 1.5.
+    assert executor._reserve_cash_buffer(100.0, 50) == pytest.approx(50.0)
+
+
+def test_reserve_cash_buffer_disabled_when_pct_and_cost_zero(monkeypatch) -> None:
+    executor = AIPortfolioExecutor(StubBroker(), allocated_capital=0.0)
+    _enable_buffer(monkeypatch, pct=0.0, cost=0.0)
+
+    # With both inputs zero the reserve is zero: the base is unchanged.
+    assert executor._reserve_cash_buffer(100_000.0, 25) == pytest.approx(100_000.0)
+
+
+def test_reserve_cash_buffer_never_negative(monkeypatch) -> None:
+    executor = AIPortfolioExecutor(StubBroker(), allocated_capital=0.0)
+    _enable_buffer(monkeypatch, pct=0.015, cost=1.0)
+
+    # A fee estimate larger than the whole base floors the net base at 0.
+    assert executor._reserve_cash_buffer(10.0, 1_000) == pytest.approx(0.0)
+
+
+def test_execute_build_reserves_buffer(monkeypatch) -> None:
+    _enable_buffer(monkeypatch, pct=0.015, cost=1.0)
+    broker = StubBroker()
+    executor = AIPortfolioExecutor(broker, allocated_capital=100_000.0)
+    stocks = [_stock("AAPL", 0.5), _stock("MSFT", 0.5)]
+
+    results = executor.execute_build(stocks)
+
+    # pct (1_500) dominates 2 * $1 -> net base 98_500. Whole-share flooring only
+    # reduces deployment further, so the build never spends more than the net base
+    # and leaves at least the reserve as cash.
+    net_base = executor._reserve_cash_buffer(100_000.0, len(stocks))
+    assert net_base == pytest.approx(98_500.0)
+    assert _deployed(results) <= net_base + 1e-6
+    # And it sized against the net base, not the full capital: deployment is within
+    # one whole share (per ticker) of the net base.
+    max_price = max(broker.get_quote(s.ticker).last for s in stocks)
+    assert _deployed(results) > net_base - 2 * max_price
+
+
+def test_execute_rebalance_reserves_buffer_from_flat(monkeypatch) -> None:
+    _enable_buffer(monkeypatch, pct=0.015, cost=1.0)
+    broker = StubBroker()
+    executor = AIPortfolioExecutor(broker, allocated_capital=50_000.0)
+    # Size against a grown live value (gains included); from flat so every order is
+    # a buy and total deployment is directly observable.
+    grown_value = 120_000.0
+    targets = [_target("AAPL", 0.5), _target("MSFT", 0.5)]
+
+    results = executor.execute_rebalance(
+        targets=targets,
+        current_positions={},
+        base_capital=grown_value,
+    )
+
+    # 1.5% of 120_000 = 1_800 dominates 2 * $1, so sizing uses 118_200. The buys
+    # never deploy more than the net base, so the session keeps a cash reserve
+    # instead of overdrawing into negative unallocated cash.
+    net_base = executor._reserve_cash_buffer(grown_value, len(targets))
+    assert net_base == pytest.approx(118_200.0)
+    assert _deployed(results) <= net_base + 1e-6
+
+
+def test_buffer_leaves_crypto_only_and_market_closed_behavior_unchanged(
+    monkeypatch,
+) -> None:
+    _enable_buffer(monkeypatch, pct=0.015, cost=1.0)
+
+    # crypto_only still drops equities entirely, even with the buffer on.
+    broker = StubBroker()
+    executor = AIPortfolioExecutor(broker, allocated_capital=1_000_000.0)
+    results = executor.execute_rebalance(
+        targets=[_target("AAPL", 0.5), _target("BTC-USD", 0.5)],
+        current_positions={},
+        asset_classes=_MIXED,
+        base_capital=30_000.0,
+        crypto_only=True,
+    )
+    assert [r.ticker for r in results] == ["BTC-USD"]
+    assert results[0].side == "long"
+
+    # market_open=False still records equities as skipped, not sized down.
+    broker2 = StubBroker()
+    executor2 = AIPortfolioExecutor(broker2, allocated_capital=100_000.0)
+    results2 = executor2.execute_rebalance(
+        targets=[_target("AAPL", 1.0)],
+        current_positions={},
+        market_open=False,
+    )
+    assert results2[0].executed is False
+    assert results2[0].reason == "equity market closed"

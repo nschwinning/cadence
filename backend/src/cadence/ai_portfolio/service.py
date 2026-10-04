@@ -376,6 +376,22 @@ def session_involves_crypto(
     return _involves_crypto(positions, portfolio.stocks, asset_classes)
 
 
+def session_allows_crypto(session_row: PaperTradingSession) -> bool:
+    """Whether a session's **configured** asset scope admits crypto.
+
+    Reads ``asset_types`` off the session's ``session_metadata`` (the scope frozen
+    at build, defaulting to :attr:`AssetScope.BOTH` for sessions built before an
+    explicit scope existed) and returns ``True`` iff that scope includes crypto
+    (scope is ``crypto`` or ``both``). Unlike :func:`session_involves_crypto` this
+    needs no DB access and answers a different question — what the user *configured*
+    rather than what the session currently *holds* — so weekend selection and the
+    weekend P&L gate key off the user's intent, not transient holdings.
+    """
+    metadata = session_row.session_metadata or {}
+    asset_scope = str(metadata.get("asset_types", AssetScope.BOTH.value))
+    return AssetCategory.CRYPTO in scope_categories(asset_scope)
+
+
 # --------------------------------------------------------------------------- #
 # Build flow
 # --------------------------------------------------------------------------- #
@@ -780,12 +796,49 @@ def run_rebalance_event(
         )
         any_crypto = _involves_crypto(positions, candidate_targets, asset_classes)
 
-        # Nothing tradable: for a crypto-only run, no crypto held or targeted; for a
-        # full run, the equities market is closed and no crypto held/targeted. Record
-        # a skipped run and event without ever consulting the agent.
-        nothing_tradable = (
-            not any_crypto if crypto_only else (not market_open and not any_crypto)
+        # Value the session once (marked to market) and reason off its OWN free
+        # cash, not the shared broker's global buying power (D5). ``cash_value`` is
+        # the session's unallocated cash; the crypto budget (crypto positions'
+        # market value + that cash) sizes the crypto-only sleeve. Computed here —
+        # ahead of the pre-agent skip — so a crypto-only run can test whether it has
+        # any deployable cash to buy crypto before paying for an agent call.
+        valuation = paper_service.compute_session_value(
+            session, session_id=session_id, broker=broker
         )
+        crypto_budget = (
+            sum(
+                p["market_value"]
+                for p in valuation.positions
+                if asset_classes.get(p["ticker"], AssetClass.EQUITY)
+                == AssetClass.CRYPTO
+            )
+            + valuation.cash_value
+        )
+
+        # Nothing tradable — skip before ever consulting the agent:
+        #  - crypto-only: no crypto held or targeted, OR the session holds no crypto
+        #    and has no deployable cash to buy crypto (free cash, net of the reserved
+        #    buffer, is <= 0) — it can neither rotate existing crypto nor deploy cash.
+        #    This catches a crypto-scoped session holding only equity shares with no
+        #    free capital. The buffer reserve mirrors the executor's; the candidate
+        #    count is unknown here, so one transaction fee is a safe floor.
+        #  - full run: the equities market is closed and no crypto is held/targeted.
+        if crypto_only:
+            has_crypto_positions = any(
+                asset_classes.get(ticker, AssetClass.EQUITY) == AssetClass.CRYPTO
+                for ticker in positions
+            )
+            crypto_reserve = max(
+                crypto_budget * settings.REBALANCE_CASH_BUFFER_PCT,
+                settings.TRANSACTION_COST_USD,
+            )
+            crypto_deployable_cash = valuation.cash_value - crypto_reserve
+            nothing_tradable = not any_crypto or (
+                not has_crypto_positions and crypto_deployable_cash <= 0.0
+            )
+        else:
+            nothing_tradable = not market_open and not any_crypto
+
         if nothing_tradable:
             skip_reason = "no crypto" if crypto_only else "market closed"
             paper_service.record_session_run(
@@ -810,6 +863,16 @@ def run_rebalance_event(
                 duration_ms=_elapsed_ms(t0),
             )
             logger.info("AI rebalance %s skipped: %s", event.id, skip_reason)
+            # Inform the user that the engaged run did nothing and why. A no-op when
+            # no notifier is supplied (manual rebalance) — see _notify_rebalance_skipped.
+            notify_reason = (
+                "holds no crypto and no free cash to buy crypto"
+                if crypto_only
+                else "market closed with nothing to trade"
+            )
+            _notify_rebalance_skipped(
+                notifier, portfolio.name, notify_reason, crypto_only=crypto_only
+            )
             return
 
         # The trend gate and its per-run context apply only when this session opted
@@ -879,22 +942,8 @@ def run_rebalance_event(
                     for h in holdings
                 ],
             }
-        # Value the session once (marked to market) and reason off its OWN free
-        # cash, not the shared broker's global buying power (D5). ``cash_value`` is
-        # the session's unallocated cash; the crypto budget (crypto positions'
-        # market value + that cash) sizes the crypto-only sleeve.
-        valuation = paper_service.compute_session_value(
-            session, session_id=session_id, broker=broker
-        )
-        crypto_budget = (
-            sum(
-                p["market_value"]
-                for p in valuation.positions
-                if asset_classes.get(p["ticker"], AssetClass.EQUITY)
-                == AssetClass.CRYPTO
-            )
-            + valuation.cash_value
-        )
+        # ``valuation`` and ``crypto_budget`` were computed above (ahead of the
+        # pre-agent skip) off this session's own free cash (D5).
         account_summary = {
             "portfolio_value": valuation.total_value,
             "cash_available": valuation.cash_value,
@@ -984,7 +1033,46 @@ def run_rebalance_event(
             caps=caps,
             base_capital=rebalance_base,
             crypto_only=crypto_only,
+            unallocated_cash=valuation.cash_value,
         )
+
+        # The executor planned a buy-only run with no deployable cash and submitted
+        # nothing (most visibly the first rebalance right after a build). Record a
+        # SKIPPED run — no trades applied — and inform the user it was a no-op.
+        if executor.skipped_noop:
+            paper_service.record_session_run(
+                session,
+                session_id=session_id,
+                signals_scanned=len(candidates),
+                signals_actionable=0,
+                orders_executed=0,
+                orders_skipped=0,
+                details=[{"skipped": True, "reason": "buy-only, no deployable cash"}],
+                status=RunStatus.SUCCESS,
+                run_trigger="ai_rebalance",
+                duration_ms=_elapsed_ms(t0),
+                ai_portfolio_event_id=event.id,
+            )
+            _finish_event(
+                session,
+                event,
+                EventStatus.SKIPPED,
+                result_payload=agent_output,
+                actions_taken=[],
+                duration_ms=_elapsed_ms(t0),
+                research=research,
+                trend_context=trend_context,
+            )
+            logger.info(
+                "AI rebalance %s skipped: buy-only with no deployable cash", event.id
+            )
+            _notify_rebalance_skipped(
+                notifier,
+                portfolio.name,
+                "already deployed — buy-only with no free cash",
+                crypto_only=crypto_only,
+            )
+            return
 
         executed, realized_pnl = _apply_rebalance_trades(
             session, session_id, trade_results, event_id=event.id
@@ -1241,9 +1329,17 @@ def snapshot_all_sessions(
     its benchmark comparison, and its own best/worst holding. Delivery is
     best-effort — a notifier failure never fails the job (see
     :func:`_notify_safely`). Returns the ids of the sessions snapshotted.
+
+    On a **weekend** (Saturday/Sunday by calendar in :data:`_SNAPSHOT_TZ`, ignoring
+    exchange holidays) a session whose **configured** scope does not include crypto
+    (stocks-only) is skipped entirely — no snapshot recorded and no push sent —
+    since its holdings do not move while the equity market is closed. Crypto/both
+    sessions still snapshot and report on weekends, and weekdays are unchanged (all
+    active AI sessions).
     """
     if as_of is None:
         as_of = datetime.now(tz=_SNAPSHOT_TZ).date()
+    is_weekend = as_of.weekday() >= 5  # Sat=5, Sun=6
 
     sessions = paper_service.list_sessions(
         session, status=SessionStatus.ACTIVE, limit=500
@@ -1252,6 +1348,11 @@ def snapshot_all_sessions(
 
     snapshotted: list[uuid.UUID] = []
     for session_row in targets:
+        # On weekends, a stocks-only session's holdings do not move while the
+        # equity market is closed: skip it entirely (no snapshot, no push). Its
+        # scope is read from the frozen build metadata, not its current holdings.
+        if is_weekend and not session_allows_crypto(session_row):
+            continue
         snapshot = paper_service.record_value_snapshot(
             session, session_id=session_row.id, as_of=as_of, broker=broker
         )
@@ -1628,9 +1729,9 @@ def _session_snapshot_message(
     """Build one session's daily push body.
 
     The portfolio name lives in the push title, so the body leads with the day's
-    value + P&L, then headline KPIs (total return, realized/unrealized P&L, fees,
-    Sharpe), the benchmark comparison (when available), and the session's own
-    best/worst holding (when it holds anything).
+    value + P&L, then headline KPIs (total return, realized/unrealized P&L,
+    unallocated cash, fees, Sharpe), the benchmark comparison (when available), and
+    the session's own best/worst holding (when it holds anything).
     """
     lines = [
         (
@@ -1645,6 +1746,7 @@ def _session_snapshot_message(
         (
             f"Realized {_signed_money(kpis.realised_pnl)} · "
             f"Unrealized {_signed_money(kpis.unrealised_pnl)} · "
+            f"Cash ${kpis.unallocated_cash:,.2f} · "
             f"Fees ${kpis.total_fees:,.2f}"
         ),
         f"Sharpe: {_sharpe_text(kpis.sharpe_ratio)}",
@@ -1738,6 +1840,33 @@ def _notify_safely(notifier: Notifier, *, title: str, message: str) -> None:
         # Notifications are strictly best-effort: a broken notifier must never
         # turn a successful (or already-failed) rebalance into something worse.
         logger.warning("rebalance notification failed", exc_info=True)
+
+
+def _notify_rebalance_skipped(
+    notifier: Notifier | None,
+    portfolio_name: str,
+    reason: str,
+    *,
+    crypto_only: bool,
+) -> None:
+    """Inform the user that a session's engaged rebalance was skipped as a no-op.
+
+    Sent only for a session the run actually engaged (selected, planned, evaluated)
+    that then skipped — the pre-agent crypto-only skip and the post-plan buy-only
+    skip — so the user knows the scheduled rebalance did nothing and why. A no-op
+    when ``notifier`` is ``None`` (manual rebalances stay silent). Sessions filtered
+    out before processing (scope-excluded weekend sessions, weekend stocks-only
+    snapshot skips) never reach here and stay silent. Distinct from the
+    trade-success push, which fires only when orders execute.
+    """
+    if notifier is None:
+        return
+    label = "crypto rebalance skipped" if crypto_only else "rebalance skipped"
+    _notify_safely(
+        notifier,
+        title=f"Cadence: {portfolio_name} {label}",
+        message=f"{portfolio_name}: {label} — {reason}.",
+    )
 
 
 def _rebalance_success_message(

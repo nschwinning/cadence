@@ -318,9 +318,10 @@ def rebalance_crypto_daily(
     :func:`rebalance_daily`'s targeting (active ``DAILY_REBALANCING`` AI sessions,
     build orders deferred until settled, already-running sessions skipped) but
     starts each job in crypto-only mode and, before creating any job, skips sessions
-    that hold and target no crypto (distinct ``skipped_no_crypto`` bucket). The
-    ``notifier`` is threaded so executed crypto rebalances are pushed just like the
-    weekday path.
+    whose **configured** asset scope does not include crypto (distinct
+    ``skipped_not_crypto_scope`` bucket) — a stocks-only session is never rebalanced
+    on weekends even if it happens to hold or target crypto. The ``notifier`` is
+    threaded so executed crypto rebalances are pushed just like the weekday path.
     """
     from cadence.ai_portfolio import service as ai_service
 
@@ -335,13 +336,13 @@ def rebalance_crypto_daily(
     triggered: list[uuid.UUID] = []
     skipped: list[uuid.UUID] = []
     deferred: list[uuid.UUID] = []
-    skipped_no_crypto: list[uuid.UUID] = []
+    skipped_not_crypto_scope: list[uuid.UUID] = []
     for session_row in targets:
         if not ai_service.build_orders_settled(db, broker, session_row):
             deferred.append(session_row.id)
             continue
-        if not ai_service.session_involves_crypto(db, session_row):
-            skipped_no_crypto.append(session_row.id)
+        if not ai_service.session_allows_crypto(session_row):
+            skipped_not_crypto_scope.append(session_row.id)
             continue
         _event, started = job_runner.start_rebalance(
             db,
@@ -362,7 +363,7 @@ def rebalance_crypto_daily(
         session_ids=triggered,
         skipped_already_running=skipped,
         skipped_awaiting_build_fill=deferred,
-        skipped_no_crypto=skipped_no_crypto,
+        skipped_not_crypto_scope=skipped_not_crypto_scope,
     )
 
 
