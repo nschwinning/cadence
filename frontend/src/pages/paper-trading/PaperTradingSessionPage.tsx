@@ -8,8 +8,10 @@ import {
   useSessionPositions,
   useSessionOrderSync,
   useSessionKpis,
+  useSessionSectorPerformance,
   useBenchmarks,
   useChangeSessionBenchmark,
+  useChangeSessionScope,
 } from '../../api/paperTrading';
 import { useSessionEvents } from '../../api/aiPortfolio';
 import {
@@ -38,7 +40,49 @@ import type {
   PaperTrade,
   PaperTradingSession,
   SessionRun,
+  SessionSectorPerformance,
 } from '../../types/api';
+
+/** The supported asset scopes with their human-readable labels. */
+const SCOPE_OPTIONS: { value: 'stocks' | 'crypto' | 'both'; label: string }[] = [
+  { value: 'stocks', label: 'Stocks only' },
+  { value: 'crypto', label: 'Crypto only' },
+  { value: 'both', label: 'Stocks & crypto' },
+];
+
+const SCOPE_LABELS: Record<string, string> = Object.fromEntries(
+  SCOPE_OPTIONS.map((o) => [o.value, o.label]),
+);
+
+/** The two asset classes a position can belong to, mirroring the backend split. */
+type HeldAssetClass = 'equity' | 'crypto';
+
+/** The asset classes a scope permits to be held. */
+function scopeAllows(scope: string): HeldAssetClass[] {
+  if (scope === 'stocks') return ['equity'];
+  if (scope === 'crypto') return ['crypto'];
+  return ['equity', 'crypto'];
+}
+
+/**
+ * Derive which asset classes the session currently holds from its by-category
+ * performance (a category is held when its market value is positive). Mirrors the
+ * backend split: the `crypto` category is the crypto class, everything else is
+ * equity. Returns `null` when the attribution has not loaded yet, so callers can
+ * fall back to warning on any narrowing.
+ */
+function heldAssetClasses(
+  perf: SessionSectorPerformance | undefined,
+): HeldAssetClass[] | null {
+  if (!perf) return null;
+  const held = new Set<HeldAssetClass>();
+  for (const group of perf.by_category) {
+    if (group.market_value > 0) {
+      held.add(group.key === 'crypto' ? 'crypto' : 'equity');
+    }
+  }
+  return [...held];
+}
 
 /**
  * The `signal_type` / `run_trigger` value the backend records for a stop-out.
@@ -619,7 +663,18 @@ function SessionHeader({
           </dd>
         </div>
         <div>
+          <dt className="text-xs font-semibold uppercase tracking-wide text-slate-500">
+            Scope
+          </dt>
+          <dd className="text-sm text-slate-900">
+            {SCOPE_LABELS[session.asset_types] ?? session.asset_types}
+          </dd>
+        </div>
+        <div>
           <BenchmarkSwitcher sessionId={sessionId} current={session.benchmark} />
+        </div>
+        <div>
+          <ScopeSwitcher sessionId={sessionId} current={session.asset_types} />
         </div>
       </dl>
       {feedback}
@@ -909,6 +964,118 @@ function BenchmarkSwitcher({
       {mutation.isError && (
         <p role="alert" className="mt-1 text-xs text-red-700">
           Could not change the benchmark.
+        </p>
+      )}
+    </div>
+  );
+}
+
+/**
+ * A dropdown to change the session's asset scope. Preselects the current scope and
+ * shows in-flight/error state. When the selected scope would liquidate currently
+ * held positions — a narrowing that excludes a held position's asset class — it
+ * shows a confirmation warning and only requests the change after the user
+ * confirms; declining leaves the control on the current scope and requests
+ * nothing. A non-liquidating change (a widening, or a narrowing that excludes
+ * nothing held) requests immediately. Held classes are derived from the session's
+ * by-category performance; if that has not loaded, any narrowing warns.
+ */
+function ScopeSwitcher({
+  sessionId,
+  current,
+}: {
+  sessionId: string;
+  current: string;
+}) {
+  const mutation = useChangeSessionScope(sessionId);
+  const { data: sectorPerformance } = useSessionSectorPerformance(sessionId);
+  const [pending, setPending] = useState<'stocks' | 'crypto' | 'both' | null>(
+    null,
+  );
+
+  const held = heldAssetClasses(sectorPerformance);
+
+  /** Whether switching to `next` would liquidate a currently-held position. */
+  function wouldLiquidate(next: string): boolean {
+    const allowed = scopeAllows(next);
+    if (held === null) {
+      // Attribution not loaded: warn whenever the change drops an allowed class.
+      return scopeAllows(current).some((c) => !allowed.includes(c));
+    }
+    return held.some((c) => !allowed.includes(c));
+  }
+
+  function handleSelect(next: 'stocks' | 'crypto' | 'both') {
+    if (next === current) return;
+    if (wouldLiquidate(next)) {
+      setPending(next);
+      return;
+    }
+    mutation.mutate(next);
+  }
+
+  return (
+    <div>
+      <label
+        htmlFor="scope-select"
+        className="text-xs font-semibold uppercase tracking-wide text-slate-500"
+      >
+        Change scope
+      </label>
+      <select
+        id="scope-select"
+        className="mt-1 block w-full rounded border border-slate-300 bg-white px-2 py-1 text-sm text-slate-900 disabled:opacity-60"
+        value={current}
+        disabled={mutation.isPending}
+        onChange={(e) =>
+          handleSelect(e.target.value as 'stocks' | 'crypto' | 'both')
+        }
+      >
+        {SCOPE_OPTIONS.map((o) => (
+          <option key={o.value} value={o.value}>
+            {o.label}
+          </option>
+        ))}
+      </select>
+      {pending && (
+        <div
+          role="alertdialog"
+          aria-label="Confirm scope change"
+          className="mt-2 rounded border border-amber-300 bg-amber-50 p-2 text-xs text-amber-900"
+        >
+          <p>
+            Changing to “{SCOPE_LABELS[pending]}” will sell all out-of-scope
+            holdings. This cannot be undone.
+          </p>
+          <div className="mt-2 flex gap-2">
+            <button
+              type="button"
+              className="rounded bg-amber-600 px-2 py-1 font-medium text-white hover:bg-amber-700"
+              onClick={() => {
+                mutation.mutate(pending);
+                setPending(null);
+              }}
+            >
+              Sell &amp; change
+            </button>
+            <button
+              type="button"
+              className="rounded border border-slate-300 bg-white px-2 py-1 font-medium text-slate-700 hover:bg-slate-50"
+              onClick={() => setPending(null)}
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
+      {mutation.isPending && (
+        <p role="status" aria-live="polite" className="mt-1 text-xs text-slate-500">
+          Updating…
+        </p>
+      )}
+      {mutation.isError && (
+        <p role="alert" className="mt-1 text-xs text-red-700">
+          Could not change the scope.
         </p>
       )}
     </div>

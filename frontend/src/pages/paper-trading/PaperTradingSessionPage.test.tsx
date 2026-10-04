@@ -41,6 +41,7 @@ const session: PaperTradingSession = {
   archived_at: null,
   rebalance_prompt_version: 1,
   benchmark: 'SP500',
+  asset_types: 'both',
   use_technical_indicators: false,
   stop_loss_enabled: false,
   stop_loss_pct: null,
@@ -885,5 +886,137 @@ describe('PaperTradingSessionPage', () => {
     expect(await screen.findByText('0.051235')).toBeInTheDocument();
     // ...and a whole-share equity would not render padded zeros.
     expect(screen.queryByText('0.051235')?.textContent).not.toContain('000');
+  });
+
+  /** Build a by-category attribution group (defaults make it a currently-held row). */
+  function categoryGroup(key: string, marketValue = 5000) {
+    return {
+      key,
+      market_value: marketValue,
+      realized_pnl: 0,
+      unrealized_pnl: 0,
+      total_pnl: 0,
+      return_pct: null,
+    };
+  }
+
+  /** Install GETs for the scope tests, with a chosen session + by-category holdings. */
+  function installScopeGet(
+    scopeSession: PaperTradingSession,
+    byCategory: ReturnType<typeof categoryGroup>[],
+  ) {
+    mockedGet.mockImplementation((url: string) => {
+      if (url.endsWith('/paper-trading/sessions')) {
+        return Promise.resolve({ data: { items: [scopeSession], total: 1 } });
+      }
+      if (url.endsWith('/kpis')) {
+        return Promise.resolve({ data: KPIS });
+      }
+      if (url.endsWith('/sector-performance')) {
+        // A sentinel sector row (the card's default grouping) renders once the
+        // attribution loads, giving the scope tests a deterministic wait anchor.
+        return Promise.resolve({
+          data: { by_sector: [categoryGroup('Technology')], by_category: byCategory },
+        });
+      }
+      if (url.endsWith('/paper-trading/benchmarks')) {
+        return Promise.resolve({ data: [{ id: 'SP500', name: 'S&P 500' }] });
+      }
+      if (url.includes('/ai-portfolio/sessions/') && url.endsWith('/events')) {
+        return Promise.resolve({ data: { items: [], total: 0 } });
+      }
+      return Promise.resolve({ data: { items: [], total: 0 } });
+    });
+  }
+
+  it('shows the current scope and requests a non-liquidating change without a warning', async () => {
+    // Stocks-only session holding equity; widening to both liquidates nothing.
+    const scoped: PaperTradingSession = { ...session, asset_types: 'stocks' };
+    installScopeGet(scoped, [categoryGroup('stock')]);
+    mockedPut.mockResolvedValue({ data: { ...scoped, asset_types: 'both' } });
+    const user = userEvent.setup();
+
+    renderPage(<PaperTradingSessionPage />);
+
+    // The read-only fact tile and the switcher both reflect the current scope.
+    const select = await screen.findByLabelText('Change scope');
+    expect(select).toHaveValue('stocks');
+    // The "Scope" fact tile is present (its label also appears as a select option).
+    expect(screen.getByText('Scope')).toBeInTheDocument();
+    expect(screen.getAllByText('Stocks only').length).toBeGreaterThanOrEqual(1);
+
+    await user.selectOptions(select, 'both');
+
+    // A widening never warns: the change is requested immediately.
+    expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument();
+    expect(mockedPut).toHaveBeenCalledWith(
+      '/api/v1/paper-trading/sessions/s1/scope',
+      { asset_types: 'both' },
+    );
+  });
+
+  it('warns before a liquidating narrowing and only requests the change on confirm', async () => {
+    // Both-scope session holding crypto; narrowing to stocks sells the crypto.
+    installScopeGet(session, [categoryGroup('crypto')]);
+    mockedPut.mockResolvedValue({ data: { ...session, asset_types: 'stocks' } });
+    const user = userEvent.setup();
+
+    renderPage(<PaperTradingSessionPage />);
+    // Wait for the attribution to load so the held crypto class is known.
+    await screen.findByText('Technology');
+
+    const select = await screen.findByLabelText('Change scope');
+    await user.selectOptions(select, 'stocks');
+
+    // The narrowing warns and does not request the change yet.
+    expect(await screen.findByRole('alertdialog')).toBeInTheDocument();
+    expect(mockedPut).not.toHaveBeenCalled();
+
+    await user.click(screen.getByRole('button', { name: 'Sell & change' }));
+
+    expect(mockedPut).toHaveBeenCalledWith(
+      '/api/v1/paper-trading/sessions/s1/scope',
+      { asset_types: 'stocks' },
+    );
+  });
+
+  it('cancels a liquidating narrowing when the warning is declined', async () => {
+    installScopeGet(session, [categoryGroup('crypto')]);
+    const user = userEvent.setup();
+
+    renderPage(<PaperTradingSessionPage />);
+    await screen.findByText('Technology');
+
+    const select = await screen.findByLabelText('Change scope');
+    await user.selectOptions(select, 'stocks');
+
+    expect(await screen.findByRole('alertdialog')).toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: 'Cancel' }));
+
+    // Declining dismisses the warning, requests nothing, and keeps the scope.
+    expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument();
+    expect(mockedPut).not.toHaveBeenCalled();
+    expect(select).toHaveValue('both');
+  });
+
+  it('requests a non-liquidating narrowing with no warning when nothing held is excluded', async () => {
+    // Both-scope session holding only equity; narrowing to stocks excludes nothing.
+    installScopeGet(session, [categoryGroup('stock')]);
+    mockedPut.mockResolvedValue({ data: { ...session, asset_types: 'stocks' } });
+    const user = userEvent.setup();
+
+    renderPage(<PaperTradingSessionPage />);
+    // Wait for the attribution to load so held classes are known (equity only).
+    await screen.findByText('Technology');
+
+    const select = await screen.findByLabelText('Change scope');
+    await user.selectOptions(select, 'stocks');
+
+    expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument();
+    expect(mockedPut).toHaveBeenCalledWith(
+      '/api/v1/paper-trading/sessions/s1/scope',
+      { asset_types: 'stocks' },
+    );
   });
 });

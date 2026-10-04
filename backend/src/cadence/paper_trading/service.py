@@ -19,10 +19,11 @@ from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from cadence.assets.category import AssetCategory, AssetScope, scope_categories
 from cadence.assets.models import Asset
 from cadence.assets.service import normalize_ticker
 from cadence.broker.base import Broker
-from cadence.broker.models import OrderSide, OrderStatus
+from cadence.broker.models import AssetClass, OrderSide, OrderStatus, Position
 from cadence.config import settings
 from cadence.paper_trading.benchmark import (
     benchmark_return_fraction,
@@ -40,6 +41,7 @@ from cadence.paper_trading.constants import (
 )
 from cadence.paper_trading.errors import (
     DuplicateSessionError,
+    InvalidAssetScopeError,
     InvalidBenchmarkError,
     SessionNotArchivableError,
     SessionNotFoundError,
@@ -58,6 +60,10 @@ logger = logging.getLogger(__name__)
 
 # Default seed capital for a new session (mirrors trading-bot).
 DEFAULT_ALLOCATED_CAPITAL = 100000.0
+
+# Tags for trades/runs produced by a scope-narrowing liquidation (no AI event).
+SCOPE_CHANGE_SIGNAL_TYPE = "scope_change_sell"
+SCOPE_CHANGE_RUN_TRIGGER = "scope_change"
 
 # A ledger position whose remaining quantity falls at or below this is treated as
 # fully exited and its row removed. Sized to the executor's crypto quantity
@@ -257,6 +263,197 @@ def change_session_benchmark(
     session.commit()
     session.refresh(row)
     return row
+
+
+def change_session_scope(
+    session: Session,
+    *,
+    session_id: uuid.UUID,
+    scope: str,
+    broker: Broker,
+) -> PaperTradingSession:
+    """Change a session's asset scope, liquidating now-out-of-scope holdings.
+
+    ``scope`` must be a valid :class:`AssetScope` value ('stocks', 'crypto', or
+    'both'). The new scope is persisted into ``session_metadata["asset_types"]`` so
+    every scope-keyed read — AI builds and rebalances, the weekend crypto cron, and
+    weekend snapshot gating — honors it on the next run (they all re-read metadata).
+
+    When the new scope EXCLUDES the asset class of any open position (a narrowing),
+    those positions are sold through ``broker`` *before* the scope is committed —
+    each sale recorded with the standard per-trade transaction cost and the
+    session's recorded value refreshed. Widening the scope, or a change that
+    excludes nothing held, liquidates nothing. Changing to the current scope is a
+    successful no-op.
+
+    Raises:
+        InvalidAssetScopeError: if ``scope`` is not a supported scope (the session
+            is left unchanged).
+        SessionNotFoundError: if no session has ``session_id``.
+        cadence.broker.ConnectionError: if a required liquidation cannot reach the
+            broker (the scope is left unchanged); mapped to 503 by the app handler.
+    """
+    try:
+        resolved = AssetScope(scope)
+    except ValueError as exc:
+        allowed = ", ".join(s.value for s in AssetScope)
+        raise InvalidAssetScopeError(
+            f"asset_types must be one of: {allowed}"
+        ) from exc
+
+    row = get_session(session, session_id)
+    current = (row.session_metadata or {}).get("asset_types", AssetScope.BOTH.value)
+    if current == resolved.value:
+        return row  # no-op: unchanged scope never liquidates or mutates the session
+
+    # Sell any held position the new scope excludes before persisting the change, so
+    # a broker outage fails the request rather than recording an un-liquidated
+    # narrowing.
+    _liquidate_out_of_scope_positions(session, row, resolved, broker=broker)
+
+    # Persist the new scope by reassigning the JSON dict so SQLAlchemy flushes it.
+    metadata = dict(row.session_metadata or {})
+    metadata["asset_types"] = resolved.value
+    row.session_metadata = metadata
+    session.commit()
+    session.refresh(row)
+    return row
+
+
+def _liquidate_out_of_scope_positions(
+    session: Session,
+    session_row: PaperTradingSession,
+    new_scope: AssetScope,
+    *,
+    broker: Broker,
+) -> None:
+    """Sell each open position whose asset class ``new_scope`` excludes.
+
+    Mirrors the AI close / stop-loss recording path: each out-of-scope position is
+    fully sold through the executor, the fill recorded with the flat transaction cost
+    (into ``total_fees`` via :func:`record_trade`), the position closed in the ledger,
+    and — when anything sold — the session's value snapshot refreshed. A position's
+    class follows its asset record (crypto iff its category is crypto), matching the
+    rebalance universe filter; tickers absent from the universe default to equity.
+    Does nothing when nothing held is out of scope (a widening or no-op change).
+    """
+    from cadence.ai_portfolio.executor import AIPortfolioExecutor
+
+    open_positions = [
+        p for p in list_open_positions(session, session_row.id) if p.quantity
+    ]
+    if not open_positions:
+        return
+
+    allowed = scope_categories(new_scope)
+    crypto_allowed = AssetCategory.CRYPTO in allowed
+    equity_allowed = AssetCategory.STOCK in allowed
+
+    tickers = [p.ticker for p in open_positions]
+    category_by_ticker = {
+        asset.ticker: asset.category
+        for asset in session.execute(
+            select(Asset).where(Asset.ticker.in_(tickers))
+        ).scalars()
+    }
+
+    out_of_scope: list[tuple[SessionPosition, AssetClass]] = []
+    for pos in open_positions:
+        is_crypto = category_by_ticker.get(pos.ticker) == AssetCategory.CRYPTO.value
+        if is_crypto and not crypto_allowed:
+            out_of_scope.append((pos, AssetClass.CRYPTO))
+        elif not is_crypto and not equity_allowed:
+            out_of_scope.append((pos, AssetClass.EQUITY))
+
+    if not out_of_scope:
+        return
+
+    # Probe broker reachability up front: execute_close swallows per-ticker errors,
+    # so without this an unconfigured/unreachable broker would silently sell nothing
+    # yet still let the caller persist the narrowing. A ConnectionError here (→ 503)
+    # leaves the scope unchanged.
+    broker.get_account_info()
+
+    executor = AIPortfolioExecutor(broker, session_row.allocated_capital)
+    now = datetime.now(tz=UTC)
+    sold = 0
+    realized_pnl_total = 0.0
+    details: list[dict[str, Any]] = []
+
+    for pos, cls in out_of_scope:
+        position = Position(
+            symbol=pos.ticker, quantity=pos.quantity, avg_cost=pos.avg_cost
+        )
+        results = executor.execute_close(
+            {pos.ticker: position}, asset_classes={pos.ticker: cls}
+        )
+        details.extend(tr.to_dict() for tr in results)
+        result = next((tr for tr in results if tr.executed), None)
+        if result is None:
+            continue
+
+        fill_price = result.filled_price or result.price or 0.0
+        record_trade(
+            session,
+            session_id=session_row.id,
+            ticker=result.ticker,
+            side=OrderSide.SELL,
+            quantity=result.shares,
+            price=result.price or 0.0,
+            signal_type=SCOPE_CHANGE_SIGNAL_TYPE,
+            order_id=result.order_id,
+            order_status=result.order_status,
+            filled_price=result.filled_price,
+            ai_portfolio_event_id=None,
+        )
+        sold += 1
+
+        basis = get_position_entry_basis(session, session_row.id, result.ticker)
+        if basis is not None:
+            entry_price, entry_date = basis
+            closed = record_closed_position(
+                session,
+                session_id=session_row.id,
+                ticker=result.ticker,
+                quantity=result.shares,
+                entry_price=entry_price,
+                exit_price=fill_price or entry_price,
+                entry_date=entry_date,
+                exit_date=now,
+                ai_portfolio_event_id=None,
+            )
+            realized_pnl_total += closed.realized_pnl
+
+        apply_fill_to_ledger(
+            session,
+            session_id=session_row.id,
+            ticker=result.ticker,
+            side=OrderSide.SELL,
+            shares=result.shares,
+            price=fill_price,
+        )
+
+    if sold == 0:
+        return
+
+    record_session_run(
+        session,
+        session_id=session_row.id,
+        signals_scanned=len(out_of_scope),
+        signals_actionable=sold,
+        orders_executed=sold,
+        orders_skipped=len(out_of_scope) - sold,
+        details=details,
+        status=RunStatus.SUCCESS,
+        run_trigger=SCOPE_CHANGE_RUN_TRIGGER,
+    )
+    update_session_last_run(
+        session, session_row.id, trades_delta=sold, pnl_delta=realized_pnl_total
+    )
+    # Refresh the session's recorded value so the valuation reflects the sales.
+    record_value_snapshot(
+        session, session_id=session_row.id, as_of=now.date(), broker=broker
+    )
 
 
 def update_session_last_run(

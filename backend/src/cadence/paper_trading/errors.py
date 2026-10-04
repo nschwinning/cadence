@@ -25,3 +25,10 @@ class SessionNotArchivableError(PaperTradingError):
 
 class InvalidBenchmarkError(PaperTradingError):
     """The requested benchmark id is not in the fixed benchmark catalog."""
+
+
+class InvalidAssetScopeError(PaperTradingError):
+    """The requested asset scope is not one of the supported ``AssetScope`` values.
+
+    Carries the allowed scopes in its message so the router can surface them (422).
+    """

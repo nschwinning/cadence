@@ -26,12 +26,14 @@ from cadence.api.schemas import (
     SessionBenchmarkChangeRequest,
     SessionRunListResponse,
     SessionRunRead,
+    SessionScopeChangeRequest,
     SessionSectorPerformanceRead,
     SessionValueComparisonResponse,
     SessionValueComparisonSeries,
     SessionValueHistoryResponse,
     SessionValueSnapshotRead,
 )
+from cadence.broker import ConnectionError as BrokerConnectionError
 from cadence.broker import get_broker
 from cadence.broker.base import Broker
 from cadence.database import get_db
@@ -42,6 +44,7 @@ from cadence.paper_trading.constants import (
     SessionStatus,
 )
 from cadence.paper_trading.errors import (
+    InvalidAssetScopeError,
     InvalidBenchmarkError,
     SessionNotArchivableError,
     SessionNotFoundError,
@@ -357,5 +360,44 @@ def change_session_benchmark(
     except InvalidBenchmarkError as exc:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
+        ) from exc
+    return PaperTradingSessionRead.model_validate(row)
+
+
+@router.put(
+    "/sessions/{session_id}/scope",
+    response_model=PaperTradingSessionRead,
+)
+def change_session_scope(
+    session_id: uuid.UUID,
+    payload: SessionScopeChangeRequest,
+    db: DbSession,
+    broker: BrokerDep,
+) -> PaperTradingSessionRead:
+    """Change a session's asset scope, liquidating now-out-of-scope holdings.
+
+    404 unknown session, 422 unsupported scope. A narrowing sells the held
+    positions the new scope excludes through the broker; an unconfigured/unreachable
+    broker surfaces as 503 via the app-level ``ConnectionError`` handler, leaving the
+    scope unchanged.
+    """
+    try:
+        row = service.change_session_scope(
+            db, session_id=session_id, scope=payload.asset_types, broker=broker
+        )
+    except SessionNotFoundError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)
+        ) from exc
+    except InvalidAssetScopeError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
+        ) from exc
+    except BrokerConnectionError as exc:
+        # A narrowing needs the broker to liquidate; an unconfigured/unreachable
+        # broker fails the request rather than persisting an un-liquidated scope.
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=str(exc) or "Brokerage is unavailable",
         ) from exc
     return PaperTradingSessionRead.model_validate(row)

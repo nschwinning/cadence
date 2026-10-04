@@ -248,6 +248,10 @@ class PaperTradingSessionRead(BaseModel):
     crypto_rebalance_prompt_version: int
     # The benchmark index this session is compared against (a catalog id).
     benchmark: str
+    # Which asset categories this session may hold: 'stocks', 'crypto', or 'both'.
+    # Lives in ``session_metadata["asset_types"]`` (not an ORM column), so it is
+    # populated by ``_populate_asset_types`` below; legacy sessions default to 'both'.
+    asset_types: str = AssetScope.BOTH.value
     # Whether the session opted into the technical-indicator trend strategy
     # (frozen at build time). False for sessions built before this option existed.
     use_technical_indicators: bool
@@ -266,6 +270,23 @@ class PaperTradingSessionRead(BaseModel):
     max_asset_class_pct: float | None
     min_positions: int | None
     max_invested_pct: float | None
+
+    @model_validator(mode="after")
+    def _populate_asset_types(self) -> PaperTradingSessionRead:
+        """Source ``asset_types`` from ``session_metadata`` (not an ORM column).
+
+        ``from_attributes`` cannot auto-fill it because the value lives in the JSON
+        metadata dict. Legacy sessions with no recorded scope read as ``both``; an
+        unrecognized stored value also falls back to ``both`` rather than erroring.
+        """
+        scope = (self.session_metadata or {}).get(
+            "asset_types", AssetScope.BOTH.value
+        )
+        try:
+            self.asset_types = AssetScope(scope).value
+        except ValueError:
+            self.asset_types = AssetScope.BOTH.value
+        return self
 
 
 class PaperTradingSessionListResponse(BaseModel):
@@ -638,6 +659,26 @@ class SessionBenchmarkChangeRequest(BaseModel):
     """Request body for changing a session's benchmark."""
 
     benchmark: str = Field(..., description="A benchmark id from the catalog")
+
+
+class SessionScopeChangeRequest(BaseModel):
+    """Request body for changing a session's asset scope."""
+
+    asset_types: str = Field(
+        ...,
+        description="Which asset categories the session may hold: "
+        "'stocks', 'crypto', or 'both'.",
+    )
+
+    @field_validator("asset_types")
+    @classmethod
+    def _validate_asset_types(cls, value: str) -> str:
+        """Reject anything that is not a known :class:`AssetScope` (→ 422)."""
+        try:
+            return AssetScope(value).value
+        except ValueError as exc:
+            allowed = ", ".join(scope.value for scope in AssetScope)
+            raise ValueError(f"asset_types must be one of: {allowed}") from exc
 
 
 # --------------------------------------------------------------------------- #

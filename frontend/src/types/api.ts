@@ -283,6 +283,11 @@ export interface PaperTradingSession {
   /** The benchmark id this session is compared against (a catalog id, e.g. `SP500`). */
   benchmark: string;
   /**
+   * The session's current asset scope (mutable). Legacy sessions without a stored
+   * scope read as `'both'`. Narrowing this liquidates now-out-of-scope holdings.
+   */
+  asset_types: 'stocks' | 'crypto' | 'both';
+  /**
    * Whether this session opted into the technical-indicator trend strategy
    * (frozen at build time). False for sessions built before this option existed.
    */

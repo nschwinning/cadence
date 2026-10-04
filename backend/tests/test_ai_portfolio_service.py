@@ -2145,11 +2145,53 @@ def test_run_rebalance_event_crypto_scoped_shares_only_no_cash_skips(
     pos = paper_service.get_open_position(db_session, sess.id, "AAPL")
     assert pos is not None and pos.quantity == pytest.approx(10.0)
     assert paper_service.get_open_position(db_session, sess.id, "BTC-USD") is None
-    # One informational skip push naming the crypto reason.
+    # One informational skip push naming the ACTUAL reason: this session holds
+    # equity shares and targets crypto it cannot afford, so the reason is the
+    # no-cash one — it must NOT claim "holds no crypto" (it does target crypto).
     assert len(notifier.sent) == 1
     message, title = notifier.sent[0]
     assert "crypto" in title.lower() and "skipped" in title.lower()
-    assert "no crypto" in message.lower()
+    assert "no free cash" in message.lower()
+    assert "holds no crypto" not in message.lower()
+
+
+def test_run_rebalance_event_no_crypto_skip_message_omits_cash_claim(
+    db_session: Session,
+) -> None:
+    # A session that holds and targets NO crypto but has ample free cash is skipped
+    # on a crypto-only run purely because there is no crypto. The informational push
+    # must state that true reason and must NOT also assert "no free cash" (it has
+    # plenty) — that false conflation is the confusing-notification bug this guards.
+    broker = StubBroker()
+    assets_service.add_asset(db_session, "AAPL", _provider(), broker)
+    sess, _ = _manual_ai_session(
+        db_session,
+        allocated=1_000.0,
+        held={"AAPL": (5.0, 100.0)},  # $500 in AAPL, $500 free cash
+        portfolio_stocks=["AAPL"],  # no crypto held or targeted
+        scope="both",
+    )
+    notifier = RecordingNotifier()
+
+    rebalance = FakeAIPortfolioAgent(rebalance_result=_single_target("AAPL", 1.0))
+    rb_event = service.create_rebalance_event(db_session, sess.id)
+    service.run_rebalance_event(
+        db_session,
+        rb_event.id,
+        rebalance,
+        broker,
+        _provider(),
+        notifier=notifier,
+        crypto_only=True,
+    )
+
+    refreshed = service.get_event(db_session, rb_event.id)
+    assert refreshed.status == EventStatus.SKIPPED.value
+    assert rebalance.rebalance_calls == []  # skipped before the agent
+    assert len(notifier.sent) == 1
+    message, _title = notifier.sent[0]
+    assert "holds no crypto" in message.lower()
+    assert "no free cash" not in message.lower()
 
 
 def test_run_rebalance_event_crypto_scoped_idle_cash_deploys(

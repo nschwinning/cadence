@@ -19,6 +19,7 @@ from cadence.broker.models import (
     OrderStatus,
     Quote,
 )
+from cadence.broker.stub import StubBroker
 from cadence.config import settings
 from cadence.paper_trading import service
 from cadence.paper_trading.constants import (
@@ -30,6 +31,7 @@ from cadence.paper_trading.constants import (
 )
 from cadence.paper_trading.errors import (
     DuplicateSessionError,
+    InvalidAssetScopeError,
     InvalidBenchmarkError,
     SessionNotArchivableError,
     SessionNotFoundError,
@@ -1236,6 +1238,141 @@ def test_change_session_benchmark_invalid_id_raises_and_keeps_current(
         )
     # The invalid attempt leaves the original benchmark untouched.
     assert service.get_session(db_session, sess.id).benchmark == Benchmark.SP500.value
+
+
+class _BoomBroker:
+    """Broker double that fails on any interaction.
+
+    Used to prove a scope change that liquidates nothing (a widening or a no-op)
+    never touches the broker.
+    """
+
+    def get_account_info(self) -> object:
+        raise AssertionError("broker must not be called")
+
+    def get_quote(
+        self, symbol: str, asset_class: AssetClass = AssetClass.EQUITY
+    ) -> Quote:
+        raise AssertionError("broker must not be called")
+
+    def get_quotes(self, symbols: list[str]) -> dict[str, Quote]:
+        raise AssertionError("broker must not be called")
+
+    def sell(self, *args: object, **kwargs: object) -> object:
+        raise AssertionError("broker must not be called")
+
+
+def _set_scope(db_session: Session, session_id: object, scope: str) -> None:
+    """Directly seed a session's stored asset scope (bypassing liquidation)."""
+    row = service.get_session(db_session, session_id)
+    metadata = dict(row.session_metadata or {})
+    metadata["asset_types"] = scope
+    row.session_metadata = metadata
+    db_session.commit()
+
+
+def test_change_session_scope_persists(db_session: Session) -> None:
+    sess = _ai_session(db_session)  # no stored scope -> defaults to "both"
+    updated = service.change_session_scope(
+        db_session, session_id=sess.id, scope="stocks", broker=StubBroker()
+    )
+    assert (updated.session_metadata or {})["asset_types"] == "stocks"
+    row = service.get_session(db_session, sess.id)
+    assert (row.session_metadata or {})["asset_types"] == "stocks"
+
+
+def test_change_session_scope_unknown_session_raises(db_session: Session) -> None:
+    with pytest.raises(SessionNotFoundError):
+        service.change_session_scope(
+            db_session, session_id=uuid.uuid4(), scope="stocks", broker=_BoomBroker()
+        )
+
+
+def test_change_session_scope_invalid_value_raises_and_keeps_current(
+    db_session: Session,
+) -> None:
+    sess = _ai_session(db_session)
+    _set_scope(db_session, sess.id, "crypto")
+    with pytest.raises(InvalidAssetScopeError) as excinfo:
+        service.change_session_scope(
+            db_session, session_id=sess.id, scope="nonsense", broker=_BoomBroker()
+        )
+    # The message lists the allowed scopes, and the stored scope is untouched.
+    assert "stocks" in str(excinfo.value) and "both" in str(excinfo.value)
+    row = service.get_session(db_session, sess.id)
+    assert (row.session_metadata or {})["asset_types"] == "crypto"
+
+
+def test_change_session_scope_unchanged_is_noop_and_touches_no_broker(
+    db_session: Session,
+) -> None:
+    sess = _ai_session(db_session)
+    _set_scope(db_session, sess.id, "both")
+    # Same scope: a no-op that never reaches the liquidation path (so _BoomBroker
+    # is never called).
+    updated = service.change_session_scope(
+        db_session, session_id=sess.id, scope="both", broker=_BoomBroker()
+    )
+    assert (updated.session_metadata or {})["asset_types"] == "both"
+
+
+def test_change_session_scope_widening_sells_nothing(db_session: Session) -> None:
+    sess = _ai_session(db_session)
+    _set_scope(db_session, sess.id, "stocks")
+    _asset(db_session, "AAPL", AssetCategory.STOCK)
+    _buy(db_session, sess.id, "AAPL", qty=10, price=100.0)
+
+    # Widening stocks -> both excludes no held class, so nothing is sold and the
+    # broker is never touched.
+    updated = service.change_session_scope(
+        db_session, session_id=sess.id, scope="both", broker=_BoomBroker()
+    )
+    assert (updated.session_metadata or {})["asset_types"] == "both"
+    assert {p.ticker for p in service.list_open_positions(db_session, sess.id)} == {
+        "AAPL"
+    }
+    assert service.get_session(db_session, sess.id).total_fees == pytest.approx(0.0)
+
+
+def test_change_session_scope_narrowing_liquidates_out_of_scope_holdings(
+    db_session: Session,
+) -> None:
+    sess = _ai_session(db_session)
+    _set_scope(db_session, sess.id, "both")
+    _asset(db_session, "AAPL", AssetCategory.STOCK)
+    _asset(db_session, "BTC-USD", AssetCategory.CRYPTO)
+
+    # Seed the broker's own positions so execute_close can sell them, mirrored into
+    # the session ledger.
+    broker = StubBroker(initial_cash=10_000_000.0)
+    broker.buy("AAPL", 10, asset_class=AssetClass.EQUITY)
+    broker.buy("BTC-USD", 1.0, asset_class=AssetClass.CRYPTO)
+    _buy(db_session, sess.id, "AAPL", qty=10, price=100.0)
+    _buy(db_session, sess.id, "BTC-USD", qty=1.0, price=50_000.0)
+
+    updated = service.change_session_scope(
+        db_session, session_id=sess.id, scope="stocks", broker=broker
+    )
+
+    # Scope persisted; the crypto position was sold and the equity position kept.
+    assert (updated.session_metadata or {})["asset_types"] == "stocks"
+    assert {p.ticker for p in service.list_open_positions(db_session, sess.id)} == {
+        "AAPL"
+    }
+    closed = service.get_closed_positions(db_session, sess.id, limit=100)
+    assert {c.ticker for c in closed} == {"BTC-USD"}
+
+    # The forced sell was recorded as a trade tagged for the scope change and charged
+    # exactly one transaction cost into total_fees.
+    row = service.get_session(db_session, sess.id)
+    assert row.total_fees == pytest.approx(settings.TRANSACTION_COST_USD)
+    assert row.total_trades == 1
+    trades = service.get_session_trades(db_session, sess.id)
+    assert [t.signal_type for t in trades] == [service.SCOPE_CHANGE_SIGNAL_TYPE]
+    assert trades[0].ticker == "BTC-USD"
+
+    # The value snapshot was refreshed (the sales are reflected in a snapshot row).
+    assert service.list_value_snapshots(db_session, session_id=sess.id)
 
 
 def test_value_history_attaches_rebased_benchmark_values(

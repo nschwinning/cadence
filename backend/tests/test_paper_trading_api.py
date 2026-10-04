@@ -17,6 +17,7 @@ from cadence.api.app import app
 from cadence.assets.category import AssetCategory
 from cadence.assets.models import Asset
 from cadence.assets.sector import Sector
+from cadence.broker import ConnectionError as BrokerConnectionError
 from cadence.broker import get_broker
 from cadence.broker.models import AssetClass, Order, OrderSide, OrderStatus, Quote
 from cadence.broker.stub import StubBroker
@@ -702,6 +703,102 @@ def test_change_benchmark_invalid_id_is_422(
     assert resp.status_code == 422
     # The session's benchmark is left unchanged.
     assert service.get_session(db_session, session_id).benchmark == "SP500"
+
+
+class _ScopeBoomBroker(StubBroker):
+    """StubBroker whose reachability probe fails (the hard-require 503 path)."""
+
+    def get_account_info(self) -> object:  # type: ignore[override]
+        raise BrokerConnectionError("alpaca unreachable")
+
+
+def test_session_read_exposes_asset_scope(
+    client: TestClient, db_session: Session
+) -> None:
+    session_id = _seed(db_session)  # legacy session: no stored asset_types
+    resp = client.get("/api/v1/paper-trading/sessions")
+    assert resp.status_code == 200
+    by_id = {item["id"]: item for item in resp.json()["items"]}
+    assert by_id[str(session_id)]["asset_types"] == "both"
+
+    # A session with a stored scope reports exactly that value.
+    row = service.get_session(db_session, session_id)
+    row.session_metadata = {**(row.session_metadata or {}), "asset_types": "crypto"}
+    db_session.commit()
+    resp = client.get("/api/v1/paper-trading/sessions")
+    by_id = {item["id"]: item for item in resp.json()["items"]}
+    assert by_id[str(session_id)]["asset_types"] == "crypto"
+
+
+def test_change_scope_persists_new_selection(
+    client: TestClient, db_session: Session
+) -> None:
+    session_id = _seed(db_session)
+    resp = client.put(
+        f"/api/v1/paper-trading/sessions/{session_id}/scope",
+        json={"asset_types": "stocks"},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["asset_types"] == "stocks"
+    row = service.get_session(db_session, session_id)
+    assert (row.session_metadata or {})["asset_types"] == "stocks"
+
+
+def test_change_scope_unknown_session_is_404(client: TestClient) -> None:
+    resp = client.put(
+        f"/api/v1/paper-trading/sessions/{uuid.uuid4()}/scope",
+        json={"asset_types": "stocks"},
+    )
+    assert resp.status_code == 404
+
+
+def test_change_scope_invalid_value_is_422(
+    client: TestClient, db_session: Session
+) -> None:
+    session_id = _seed(db_session)
+    resp = client.put(
+        f"/api/v1/paper-trading/sessions/{session_id}/scope",
+        json={"asset_types": "commodities"},
+    )
+    assert resp.status_code == 422
+    # The session's scope is left unchanged (legacy default).
+    row = service.get_session(db_session, session_id)
+    assert (row.session_metadata or {}).get("asset_types") in (None, "both")
+
+
+def test_change_scope_broker_unavailable_is_503(
+    client: TestClient, db_session: Session
+) -> None:
+    session_id = _seed(db_session)  # defaults to scope "both"
+    # Hold a crypto position so narrowing to stocks requires a liquidation.
+    db_session.add(
+        Asset(
+            ticker="BTC-USD",
+            category=AssetCategory.CRYPTO.value,
+            currency="USD",
+            is_eligible=True,
+            criteria_results=[],
+        )
+    )
+    db_session.commit()
+    service.apply_fill_to_ledger(
+        db_session,
+        session_id=session_id,
+        ticker="BTC-USD",
+        side=OrderSide.BUY,
+        shares=1.0,
+        price=50_000.0,
+    )
+    app.dependency_overrides[get_broker] = lambda: _ScopeBoomBroker()
+
+    resp = client.put(
+        f"/api/v1/paper-trading/sessions/{session_id}/scope",
+        json={"asset_types": "stocks"},
+    )
+    assert resp.status_code == 503
+    # The scope change was not persisted because the required liquidation failed.
+    row = service.get_session(db_session, session_id)
+    assert (row.session_metadata or {}).get("asset_types") in (None, "both")
 
 
 def test_session_sector_performance_returns_groupings(

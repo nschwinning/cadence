@@ -823,6 +823,11 @@ def run_rebalance_event(
         #    free capital. The buffer reserve mirrors the executor's; the candidate
         #    count is unknown here, so one transaction fee is a safe floor.
         #  - full run: the equities market is closed and no crypto is held/targeted.
+        # ``crypto_skip_reason`` captures *which* crypto condition fired so the
+        # user-facing notification states the true reason rather than asserting
+        # both — a stocks-only session skips purely for "holds no crypto" and may
+        # well have ample free cash, so claiming "no free cash" would be wrong.
+        crypto_skip_reason: str | None = None
         if crypto_only:
             has_crypto_positions = any(
                 asset_classes.get(ticker, AssetClass.EQUITY) == AssetClass.CRYPTO
@@ -833,9 +838,11 @@ def run_rebalance_event(
                 settings.TRANSACTION_COST_USD,
             )
             crypto_deployable_cash = valuation.cash_value - crypto_reserve
-            nothing_tradable = not any_crypto or (
-                not has_crypto_positions and crypto_deployable_cash <= 0.0
-            )
+            if not any_crypto:
+                crypto_skip_reason = "holds no crypto to rebalance"
+            elif not has_crypto_positions and crypto_deployable_cash <= 0.0:
+                crypto_skip_reason = "no free cash to buy crypto"
+            nothing_tradable = crypto_skip_reason is not None
         else:
             nothing_tradable = not market_open and not any_crypto
 
@@ -866,7 +873,7 @@ def run_rebalance_event(
             # Inform the user that the engaged run did nothing and why. A no-op when
             # no notifier is supplied (manual rebalance) — see _notify_rebalance_skipped.
             notify_reason = (
-                "holds no crypto and no free cash to buy crypto"
+                crypto_skip_reason or "holds no crypto to rebalance"
                 if crypto_only
                 else "market closed with nothing to trade"
             )

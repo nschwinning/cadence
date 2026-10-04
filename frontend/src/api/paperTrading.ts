@@ -213,6 +213,18 @@ export async function changeSessionBenchmark(
   return data;
 }
 
+/** Change a session's asset scope; returns the updated session. */
+export async function changeSessionScope(
+  sessionId: string,
+  assetTypes: 'stocks' | 'crypto' | 'both',
+): Promise<PaperTradingSession> {
+  const { data } = await apiClient.put<PaperTradingSession>(
+    `/api/v1/paper-trading/sessions/${encodeURIComponent(sessionId)}/scope`,
+    { asset_types: assetTypes },
+  );
+  return data;
+}
+
 /** React Query hook listing paper-trading sessions. */
 export function useSessions(
   params: SessionsListParams = DEFAULT_SESSIONS_PARAMS,
@@ -315,6 +327,28 @@ export function useChangeSessionBenchmark(sessionId: string) {
   return useMutation<PaperTradingSession, unknown, string>({
     mutationFn: (benchmark: string) =>
       changeSessionBenchmark(sessionId, benchmark),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: paperTradingKeys.all });
+      queryClient.invalidateQueries({
+        queryKey: paperTradingKeys.kpis(sessionId),
+      });
+      queryClient.invalidateQueries({
+        queryKey: paperTradingKeys.valueHistory(sessionId),
+      });
+    },
+  });
+}
+
+/**
+ * Mutation changing a session's asset scope. On success it invalidates the
+ * session's own query, its KPIs, and its value-history so a narrowing that
+ * liquidated out-of-scope holdings is reflected in the figures and chart.
+ */
+export function useChangeSessionScope(sessionId: string) {
+  const queryClient = useQueryClient();
+  return useMutation<PaperTradingSession, unknown, 'stocks' | 'crypto' | 'both'>({
+    mutationFn: (assetTypes: 'stocks' | 'crypto' | 'both') =>
+      changeSessionScope(sessionId, assetTypes),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: paperTradingKeys.all });
       queryClient.invalidateQueries({

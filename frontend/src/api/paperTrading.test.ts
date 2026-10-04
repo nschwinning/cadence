@@ -7,6 +7,7 @@ import {
   isTerminalOrderStatus,
   paperTradingKeys,
   useChangeSessionBenchmark,
+  useChangeSessionScope,
   useSessionOrderSync,
   useSessionsValueComparison,
 } from './paperTrading';
@@ -158,6 +159,7 @@ describe('useChangeSessionBenchmark', () => {
       archived_at: null,
       rebalance_prompt_version: 1,
       benchmark,
+      asset_types: 'both',
       use_technical_indicators: false,
       stop_loss_enabled: false,
       stop_loss_pct: null,
@@ -187,6 +189,35 @@ describe('useChangeSessionBenchmark', () => {
     expect(mockedPut).toHaveBeenCalledWith(
       '/api/v1/paper-trading/sessions/sess-1/benchmark',
       { benchmark: 'DJIA' },
+    );
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: paperTradingKeys.all });
+    expect(invalidate).toHaveBeenCalledWith({
+      queryKey: paperTradingKeys.kpis('sess-1'),
+    });
+    expect(invalidate).toHaveBeenCalledWith({
+      queryKey: paperTradingKeys.valueHistory('sess-1'),
+    });
+  });
+
+  it('PUTs to the scope endpoint and invalidates the same keys as the benchmark hook', async () => {
+    mockedPut.mockResolvedValue({ data: { ...makeSession('SP500'), asset_types: 'stocks' } });
+
+    const queryClient = new QueryClient({
+      defaultOptions: { mutations: { retry: false } },
+    });
+    const invalidate = vi.spyOn(queryClient, 'invalidateQueries');
+
+    const { result } = renderHook(() => useChangeSessionScope('sess-1'), {
+      wrapper: wrapper(queryClient),
+    });
+
+    result.current.mutate('stocks');
+
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+
+    expect(mockedPut).toHaveBeenCalledWith(
+      '/api/v1/paper-trading/sessions/sess-1/scope',
+      { asset_types: 'stocks' },
     );
     expect(invalidate).toHaveBeenCalledWith({ queryKey: paperTradingKeys.all });
     expect(invalidate).toHaveBeenCalledWith({
