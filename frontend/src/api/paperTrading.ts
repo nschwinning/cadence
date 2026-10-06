@@ -225,6 +225,18 @@ export async function changeSessionScope(
   return data;
 }
 
+/** Increase a session's capital by `amount`; returns the updated session. */
+export async function changeSessionCapital(
+  sessionId: string,
+  amount: number,
+): Promise<PaperTradingSession> {
+  const { data } = await apiClient.post<PaperTradingSession>(
+    `/api/v1/paper-trading/sessions/${encodeURIComponent(sessionId)}/capital`,
+    { amount },
+  );
+  return data;
+}
+
 /** React Query hook listing paper-trading sessions. */
 export function useSessions(
   params: SessionsListParams = DEFAULT_SESSIONS_PARAMS,
@@ -349,6 +361,27 @@ export function useChangeSessionScope(sessionId: string) {
   return useMutation<PaperTradingSession, unknown, 'stocks' | 'crypto' | 'both'>({
     mutationFn: (assetTypes: 'stocks' | 'crypto' | 'both') =>
       changeSessionScope(sessionId, assetTypes),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: paperTradingKeys.all });
+      queryClient.invalidateQueries({
+        queryKey: paperTradingKeys.kpis(sessionId),
+      });
+      queryClient.invalidateQueries({
+        queryKey: paperTradingKeys.valueHistory(sessionId),
+      });
+    },
+  });
+}
+
+/**
+ * Mutation increasing a session's capital. On success it invalidates the
+ * session's own query, its KPIs, and its value-history so the raised capital
+ * (and the added investable cash) is reflected in the figures and chart.
+ */
+export function useIncreaseSessionCapital(sessionId: string) {
+  const queryClient = useQueryClient();
+  return useMutation<PaperTradingSession, unknown, number>({
+    mutationFn: (amount: number) => changeSessionCapital(sessionId, amount),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: paperTradingKeys.all });
       queryClient.invalidateQueries({

@@ -25,6 +25,7 @@ const session: PaperTradingSession = {
   strategy_key: 'ai-momentum',
   status: 'active',
   allocated_capital: 100000,
+  contributed_capital: 100000,
   max_allocation_pct: 0.25,
   created_at: '2026-09-10T00:00:00Z',
   updated_at: '2026-09-12T00:00:00Z',
@@ -109,6 +110,7 @@ describe('PaperTradingPage', () => {
                 session_id: 's1',
                 label: 'Aggressive Jolly Wozniak',
                 allocated_capital: 100000,
+                contributed_capital: 100000,
                 points: [
                   { snapshot_date: '2026-01-04', total_value: 100000 },
                   { snapshot_date: '2026-01-05', total_value: 101000 },

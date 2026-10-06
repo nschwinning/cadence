@@ -8,6 +8,7 @@ import {
   paperTradingKeys,
   useChangeSessionBenchmark,
   useChangeSessionScope,
+  useIncreaseSessionCapital,
   useSessionOrderSync,
   useSessionsValueComparison,
 } from './paperTrading';
@@ -148,6 +149,7 @@ describe('useChangeSessionBenchmark', () => {
       strategy_key: 'ai-momentum',
       status: 'active',
       allocated_capital: 10000,
+      contributed_capital: 10000,
       max_allocation_pct: 1,
       created_at: '2026-01-01T00:00:00Z',
       updated_at: '2026-01-01T00:00:00Z',
@@ -218,6 +220,37 @@ describe('useChangeSessionBenchmark', () => {
     expect(mockedPut).toHaveBeenCalledWith(
       '/api/v1/paper-trading/sessions/sess-1/scope',
       { asset_types: 'stocks' },
+    );
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: paperTradingKeys.all });
+    expect(invalidate).toHaveBeenCalledWith({
+      queryKey: paperTradingKeys.kpis('sess-1'),
+    });
+    expect(invalidate).toHaveBeenCalledWith({
+      queryKey: paperTradingKeys.valueHistory('sess-1'),
+    });
+  });
+
+  it('POSTs to the capital endpoint and invalidates session/kpis/value-history keys', async () => {
+    mockedPost.mockResolvedValue({
+      data: { ...makeSession('SP500'), allocated_capital: 12500, contributed_capital: 12500 },
+    });
+
+    const queryClient = new QueryClient({
+      defaultOptions: { mutations: { retry: false } },
+    });
+    const invalidate = vi.spyOn(queryClient, 'invalidateQueries');
+
+    const { result } = renderHook(() => useIncreaseSessionCapital('sess-1'), {
+      wrapper: wrapper(queryClient),
+    });
+
+    result.current.mutate(2500);
+
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+
+    expect(mockedPost).toHaveBeenCalledWith(
+      '/api/v1/paper-trading/sessions/sess-1/capital',
+      { amount: 2500 },
     );
     expect(invalidate).toHaveBeenCalledWith({ queryKey: paperTradingKeys.all });
     expect(invalidate).toHaveBeenCalledWith({

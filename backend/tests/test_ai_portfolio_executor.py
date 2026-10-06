@@ -19,6 +19,7 @@ from cadence.broker.models import (
     OrderStatus,
     OrderType,
     Position,
+    Quote,
     TimeInForce,
 )
 from cadence.broker.stub import StubBroker
@@ -1076,3 +1077,244 @@ def test_buffer_leaves_crypto_only_and_market_closed_behavior_unchanged(
     )
     assert results2[0].executed is False
     assert results2[0].reason == "equity market closed"
+
+
+# --------------------------------------------------------------------------- #
+# Rebalance: redeploy unexecutable target weight across executable targets
+# --------------------------------------------------------------------------- #
+
+
+class _QuoteControlBroker(StubBroker):
+    """StubBroker with per-ticker price overrides and an unpriceable set.
+
+    ``prices`` pins a ticker's quote (bid/ask/last) to an exact value so share
+    math is deterministic; any ticker in ``unpriceable`` returns a quote with no
+    usable price (``last``/``ask`` ``None``), simulating a listing the broker
+    cannot price (e.g. a dot-suffixed foreign ticker).
+    """
+
+    def __init__(
+        self,
+        prices: dict[str, float] | None = None,
+        unpriceable: set[str] | None = None,
+    ) -> None:
+        super().__init__()
+        self._prices = prices or {}
+        self._unpriceable = set(unpriceable or ())
+
+    def get_quote(
+        self, symbol: str, asset_class: AssetClass = AssetClass.EQUITY
+    ) -> Quote:  # type: ignore[override]
+        if symbol in self._unpriceable:
+            return Quote(symbol=symbol, bid=None, ask=None, last=None, volume=0)
+        if symbol in self._prices:
+            price = self._prices[symbol]
+            return Quote(
+                symbol=symbol,
+                bid=price,
+                ask=price,
+                last=price,
+                volume=1_000_000,
+            )
+        return super().get_quote(symbol, asset_class)
+
+
+def test_rebalance_redeploys_unpriceable_target_weight() -> None:
+    # ASML.AS cannot be priced; its 20% weight must be redeployed across AAPL and
+    # MSFT rather than stranded as cash. Without redeployment each would buy 40
+    # shares (weight 0.40 of $10k at $100); with it, each absorbs the freed weight
+    # and buys 50 (effective weight 0.50), deploying the whole base.
+    broker = _QuoteControlBroker(
+        prices={"AAPL": 100.0, "MSFT": 100.0}, unpriceable={"ASML.AS"}
+    )
+    executor = AIPortfolioExecutor(broker, allocated_capital=10_000.0)
+
+    results = executor.execute_rebalance(
+        targets=[
+            _target("AAPL", 0.40),
+            _target("MSFT", 0.40),
+            _target("ASML.AS", 0.20),
+        ],
+        current_positions={},
+    )
+
+    by_ticker = {r.ticker: r for r in results}
+    assert by_ticker["AAPL"].executed is True
+    assert by_ticker["AAPL"].shares == 50
+    assert by_ticker["MSFT"].executed is True
+    assert by_ticker["MSFT"].shares == 50
+    # The unpriceable target is recorded, not silently dropped.
+    assert by_ticker["ASML.AS"].executed is False
+    assert by_ticker["ASML.AS"].reason == "No price available"
+    # Invested = 50*100 + 50*100 = 10_000, the full base (buffer off in this suite).
+    invested = by_ticker["AAPL"].shares * 100 + by_ticker["MSFT"].shares * 100
+    assert invested == 10_000
+
+
+def test_rebalance_redeployment_respects_reserved_cash_buffer(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Re-enable the buffer (the suite-wide fixture pins it off). Redeployment sizes
+    # against net_base = base - buffer, so deployable cash is never driven below
+    # the reserve.
+    monkeypatch.setattr(settings, "REBALANCE_CASH_BUFFER_PCT", 0.02)
+    monkeypatch.setattr(settings, "TRANSACTION_COST_USD", 0.0)
+    broker = _QuoteControlBroker(
+        prices={"AAPL": 100.0, "MSFT": 100.0}, unpriceable={"ASML.AS"}
+    )
+    base = 10_000.0
+    executor = AIPortfolioExecutor(broker, allocated_capital=base)
+
+    results = executor.execute_rebalance(
+        targets=[
+            _target("AAPL", 0.40),
+            _target("MSFT", 0.40),
+            _target("ASML.AS", 0.20),
+        ],
+        current_positions={},
+    )
+
+    by_ticker = {r.ticker: r for r in results}
+    # net_base = 10_000 - 2% = 9_800; redeployed weight 0.5 each -> int(9800*0.5/100).
+    assert by_ticker["AAPL"].shares == 49
+    assert by_ticker["MSFT"].shares == 49
+    invested = (by_ticker["AAPL"].shares + by_ticker["MSFT"].shares) * 100
+    residual_cash = base - invested
+    assert residual_cash >= base * 0.02  # reserve preserved
+
+
+def test_rebalance_redeployment_respects_guardrail_caps() -> None:
+    # ASML.AS (0.5, unpriceable) redeploys onto AAPL (0.4) and MSFT (0.1), which
+    # would push AAPL to weight 0.8. A per-asset cap of 0.5 must still bind the
+    # redeployed vector: AAPL is clamped to 0.5 and the excess flows to MSFT.
+    broker = _QuoteControlBroker(
+        prices={"AAPL": 100.0, "MSFT": 100.0}, unpriceable={"ASML.AS"}
+    )
+    executor = AIPortfolioExecutor(broker, allocated_capital=10_000.0)
+    caps = GuardrailCaps(max_per_asset=0.5, max_per_class=1.0, max_invested=1.0)
+
+    results = executor.execute_rebalance(
+        targets=[
+            _target("AAPL", 0.40),
+            _target("MSFT", 0.10),
+            _target("ASML.AS", 0.50),
+        ],
+        current_positions={},
+        asset_classes={
+            "AAPL": AssetClass.EQUITY,
+            "MSFT": AssetClass.EQUITY,
+            "ASML.AS": AssetClass.EQUITY,
+        },
+        caps=caps,
+    )
+
+    by_ticker = {r.ticker: r for r in results}
+    # Capped at 0.5 each -> 50 shares, not AAPL's uncapped 0.8 -> 80 shares.
+    assert by_ticker["AAPL"].shares == 50
+    assert by_ticker["MSFT"].shares == 50
+
+
+def test_rebalance_redeploys_too_small_target_and_records_it() -> None:
+    # EXPENSIVE's 50% share of $10k ($5k) cannot fund one $100k share, so it is
+    # unexecutable: its weight redeploys onto AAPL (which then buys the full base)
+    # and EXPENSIVE is recorded as not executed rather than dropped silently.
+    broker = _QuoteControlBroker(prices={"AAPL": 100.0, "EXPENSIVE": 100_000.0})
+    executor = AIPortfolioExecutor(broker, allocated_capital=10_000.0)
+
+    results = executor.execute_rebalance(
+        targets=[_target("AAPL", 0.50), _target("EXPENSIVE", 0.50)],
+        current_positions={},
+    )
+
+    by_ticker = {r.ticker: r for r in results}
+    assert by_ticker["AAPL"].executed is True
+    assert by_ticker["AAPL"].shares == 100  # weight redeployed from 0.5 to 1.0
+    assert by_ticker["EXPENSIVE"].executed is False
+    assert "too small" in by_ticker["EXPENSIVE"].reason.lower()
+
+
+def test_rebalance_at_target_holding_is_silent_noop() -> None:
+    # A held position already at its target produces a |delta| < 1 no-op. That is a
+    # legitimate adjustment, NOT a "could not fund" failure, so it is not surfaced.
+    broker = _QuoteControlBroker(prices={"AAPL": 100.0})
+    broker.buy("AAPL", 50)
+    positions = {p.symbol: p for p in broker.get_positions()}
+    executor = AIPortfolioExecutor(broker, allocated_capital=5_000.0)
+
+    results = executor.execute_rebalance(
+        targets=[_target("AAPL", 1.0)],  # 5_000/100 = 50 shares == held
+        current_positions=positions,
+    )
+
+    assert results == []
+
+
+def test_rebalance_all_unexecutable_leaves_cash_without_failing() -> None:
+    # No target can be priced: the run completes, places no order, and records every
+    # target as not executed instead of raising.
+    broker = _QuoteControlBroker(unpriceable={"AAPL", "MSFT"})
+    executor = AIPortfolioExecutor(broker, allocated_capital=10_000.0)
+
+    results = executor.execute_rebalance(
+        targets=[_target("AAPL", 0.5), _target("MSFT", 0.5)],
+        current_positions={},
+    )
+
+    assert len(results) == 2
+    assert all(not r.executed for r in results)
+    assert all(r.reason == "No price available" for r in results)
+
+
+def test_rebalance_crypto_only_redeploys_within_crypto_scope() -> None:
+    # Crypto-only weekend run: an unpriceable crypto target's weight redeploys onto
+    # the other crypto targets, sized off the crypto budget, with no equity pulled
+    # back in.
+    broker = _QuoteControlBroker(
+        prices={"BTC-USD": 100.0, "ETH-USD": 100.0}, unpriceable={"XRP-USD"}
+    )
+    classes = {
+        "BTC-USD": AssetClass.CRYPTO,
+        "ETH-USD": AssetClass.CRYPTO,
+        "XRP-USD": AssetClass.CRYPTO,
+    }
+    executor = AIPortfolioExecutor(broker, allocated_capital=1_000_000.0)
+
+    results = executor.execute_rebalance(
+        targets=[
+            _target("BTC-USD", 0.40),
+            _target("ETH-USD", 0.40),
+            _target("XRP-USD", 0.20),
+        ],
+        current_positions={},
+        asset_classes=classes,
+        base_capital=1_000.0,
+        crypto_only=True,
+    )
+
+    by_ticker = {r.ticker: r for r in results}
+    # Freed XRP weight -> BTC/ETH at 0.5 each: 1_000 * 0.5 / 100 = 5.0 units.
+    assert by_ticker["BTC-USD"].shares == pytest.approx(5.0)
+    assert by_ticker["ETH-USD"].shares == pytest.approx(5.0)
+    assert by_ticker["XRP-USD"].executed is False
+
+
+def test_rebalance_exits_held_ticker_absent_from_targets() -> None:
+    # A ticker excluded from the agent's candidates is never re-targeted, so it has
+    # target weight 0. The rebalance trade set is the union of held positions and
+    # targets, so the held position is still exited (sold in full) via its quote —
+    # the candidate exclusion does not prevent the exit.
+    broker = _QuoteControlBroker(prices={"AAPL": 100.0, "ASML.AS": 100.0})
+    broker.buy("ASML.AS", 10)
+    positions = {p.symbol: p for p in broker.get_positions()}
+    executor = AIPortfolioExecutor(broker, allocated_capital=10_000.0)
+
+    results = executor.execute_rebalance(
+        targets=[_target("AAPL", 1.0)],  # ASML.AS deliberately not a target
+        current_positions=positions,
+    )
+
+    by_ticker = {r.ticker: r for r in results}
+    assert by_ticker["ASML.AS"].side == "sell"
+    assert by_ticker["ASML.AS"].executed is True
+    assert by_ticker["ASML.AS"].shares == 10  # full exit
+    assert "exit" in by_ticker["ASML.AS"].reason.lower()

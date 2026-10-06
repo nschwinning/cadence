@@ -38,6 +38,7 @@ from cadence.api.schemas import (
     AIDailyCryptoRebalanceResponse,
     AIDailyRebalanceResponse,
     AIDailyReconcileResponse,
+    AIDailyRunSnapshotResponse,
     AIDailySnapshotResponse,
     AIPortfolioBuildRequest,
     AIPortfolioBuildResponse,
@@ -424,6 +425,30 @@ def snapshot_daily(
     )
     return AIDailySnapshotResponse(
         sessions_snapshotted=len(session_ids), session_ids=session_ids
+    )
+
+
+@router.post("/daily-run-snapshot", response_model=AIDailyRunSnapshotResponse)
+def daily_run_snapshot(
+    db: DbSession,
+    _token: Annotated[None, Depends(require_valid_cron_token)],
+) -> AIDailyRunSnapshotResponse:
+    """Assemble the backend-only consolidated daily-run learning snapshots.
+
+    Guarded by the ``X-Cron-Token`` header. A dedicated job, separate from the
+    rebalance run and the value-snapshot (P&L) job, intended to run **after** the
+    ``/snapshot-daily`` cron so the day's value snapshot exists and the day's orders
+    are reconciled. For each selected session with a value snapshot for the day it
+    upserts one consolidated learning row (reasoning + indicators + reconciled filled
+    orders + run stats + P&L). Best-effort per session. The rows are backend-only and
+    never returned — only the count and affected sessions are. Returns how many were
+    recorded.
+    """
+    from cadence.ai_portfolio import service as ai_service
+
+    session_ids = ai_service.assemble_daily_run_snapshots(db)
+    return AIDailyRunSnapshotResponse(
+        snapshots_recorded=len(session_ids), session_ids=session_ids
     )
 
 

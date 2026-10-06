@@ -1099,6 +1099,55 @@ def test_snapshot_daily_fans_out_to_active_ai_sessions(
     assert session_id in body["session_ids"]
 
 
+def test_daily_run_snapshot_rejects_without_token(
+    client: TestClient, db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(settings, "REBALANCE_CRON_TOKEN", "secret")
+    _wire(db_session, ManualExecutor())
+    resp = client.post("/api/v1/ai-portfolio/daily-run-snapshot")
+    assert resp.status_code == 403
+
+
+def test_daily_run_snapshot_records_after_value_snapshot(
+    client: TestClient, db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import uuid as _uuid
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    from cadence.paper_trading import service as paper_service
+
+    monkeypatch.setattr(settings, "REBALANCE_CRON_TOKEN", "secret")
+    executor = ManualExecutor(run_immediately=True)
+    _seed_universe(db_session, _provider())
+    _wire(db_session, executor)
+    session_id = _build_session(client, executor)
+
+    # The learning-snapshot job runs after the value-snapshot (P&L) job.
+    snap = client.post(
+        "/api/v1/ai-portfolio/snapshot-daily",
+        headers={"X-Cron-Token": "secret"},
+    )
+    assert snap.status_code == 200
+
+    resp = client.post(
+        "/api/v1/ai-portfolio/daily-run-snapshot",
+        headers={"X-Cron-Token": "secret"},
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["snapshots_recorded"] == 1
+    assert session_id in body["session_ids"]
+
+    # A consolidated learning row was persisted for the session's day.
+    run_date = datetime.now(tz=ZoneInfo("America/New_York")).date()
+    row = paper_service.get_daily_run_snapshot(
+        db_session, session_id=_uuid.UUID(session_id), run_date=run_date
+    )
+    assert row is not None
+    assert str(row.session_id) == session_id
+
+
 def test_scan_stop_losses_rejects_without_token(
     client: TestClient, db_session: Session, monkeypatch: pytest.MonkeyPatch
 ) -> None:

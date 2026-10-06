@@ -41,6 +41,7 @@ from cadence.ai_portfolio.errors import (
 from cadence.ai_portfolio.models import AIPortfolioEvent, RebalancePrompt
 from cadence.ai_portfolio.service import AIBuildParams
 from cadence.assets import service as assets_service
+from cadence.assets.category import AssetCategory
 from cadence.assets.market_data import AssetInfo, HistoryBar
 from cadence.assets.models import Asset
 from cadence.broker.models import (
@@ -64,6 +65,7 @@ from cadence.paper_trading.constants import (
 from cadence.paper_trading.models import (
     BenchmarkPrice,
     PaperTradingSession,
+    SessionDailyRunSnapshot,
     StopLossQuarantine,
 )
 from cadence.portfolios import service as portfolios_service
@@ -2620,6 +2622,203 @@ def test_snapshot_report_omits_benchmark_when_unavailable(
 
 
 # --------------------------------------------------------------------------- #
+# Daily-run learning snapshot (backend-only consolidation after the P&L job).
+# --------------------------------------------------------------------------- #
+
+
+def _record_day_rebalance_event(
+    db_session: Session,
+    session_row: object,
+    *,
+    as_of: date,
+    ticker: str,
+) -> AIPortfolioEvent:
+    """A rebalance event dated to ``as_of`` plus one reconciled filled trade."""
+    created = datetime(as_of.year, as_of.month, as_of.day, 16, 30, tzinfo=UTC)
+    event = AIPortfolioEvent(
+        session_id=session_row.id,
+        portfolio_id=session_row.portfolio_id,
+        event_type=EventType.REBALANCE.value,
+        status=EventStatus.SUCCEEDED.value,
+        result_payload={"thesis": "buy the dip", "confidence": 0.8},
+        trend_context={"candidates": [{"ticker": ticker, "rsi_14": 55.0}]},
+        run_stats={"orders": {"executed": 1, "total": 1}, "realized_pnl": 12.5},
+        created_at=created,
+    )
+    db_session.add(event)
+    db_session.commit()
+    db_session.refresh(event)
+    paper_service.record_trade(
+        db_session,
+        session_id=session_row.id,
+        ticker=ticker,
+        side=OrderSide.BUY,
+        quantity=5,
+        price=100.0,
+        signal_type="entry",
+        order_id="o-1",
+        order_status=OrderStatus.FILLED,
+        filled_price=101.25,
+        filled_at=created,
+        ai_portfolio_event_id=event.id,
+    )
+    return event
+
+
+def test_assemble_daily_run_snapshots_consolidates_a_run(
+    db_session: Session,
+) -> None:
+    broker = StubBroker()
+    as_of = date(2026, 1, 5)
+    sess = _held_ai_session(db_session, "AI Growth", "AAPL")
+    event = _record_day_rebalance_event(db_session, sess, as_of=as_of, ticker="AAPL")
+    paper_service.record_value_snapshot(
+        db_session, session_id=sess.id, as_of=as_of, broker=broker
+    )
+
+    recorded = service.assemble_daily_run_snapshots(db_session, as_of=as_of)
+
+    assert recorded == [sess.id]
+    row = paper_service.get_daily_run_snapshot(
+        db_session, session_id=sess.id, run_date=as_of
+    )
+    assert row is not None
+    assert row.portfolio_id == sess.portfolio_id
+    assert row.ai_portfolio_event_id == event.id
+    doc = row.document
+    # Run portion carries reasoning, indicator values, and run stats.
+    assert doc["run"]["result_payload"] == {"thesis": "buy the dip", "confidence": 0.8}
+    assert doc["run"]["trend_context"]["candidates"][0]["rsi_14"] == 55.0
+    assert doc["run"]["run_stats"]["realized_pnl"] == 12.5
+    # Orders carry the reconciled filled price, not just the decided price.
+    assert len(doc["orders"]) == 1
+    order = doc["orders"][0]
+    assert order["ticker"] == "AAPL"
+    assert order["filled_price"] == 101.25
+    assert order["order_status"] == OrderStatus.FILLED.value
+    # Valuation carries the day's P&L from the value snapshot.
+    assert "total_value" in doc["valuation"]
+    assert "daily_pnl" in doc["valuation"]
+
+
+def test_assemble_daily_run_snapshots_is_idempotent(db_session: Session) -> None:
+    broker = StubBroker()
+    as_of = date(2026, 1, 5)
+    sess = _held_ai_session(db_session, "AI Growth", "AAPL")
+    _record_day_rebalance_event(db_session, sess, as_of=as_of, ticker="AAPL")
+    paper_service.record_value_snapshot(
+        db_session, session_id=sess.id, as_of=as_of, broker=broker
+    )
+
+    service.assemble_daily_run_snapshots(db_session, as_of=as_of)
+    service.assemble_daily_run_snapshots(db_session, as_of=as_of)
+
+    rows = list(
+        db_session.execute(
+            select(SessionDailyRunSnapshot).where(
+                SessionDailyRunSnapshot.session_id == sess.id
+            )
+        ).scalars()
+    )
+    assert len(rows) == 1
+
+
+def test_assemble_daily_run_snapshots_day_without_a_run(db_session: Session) -> None:
+    broker = StubBroker()
+    as_of = date(2026, 1, 5)
+    sess = _held_ai_session(db_session, "AI Growth", "AAPL")
+    # Value snapshot exists but no rebalance event was recorded for the day.
+    paper_service.record_value_snapshot(
+        db_session, session_id=sess.id, as_of=as_of, broker=broker
+    )
+
+    recorded = service.assemble_daily_run_snapshots(db_session, as_of=as_of)
+
+    assert recorded == [sess.id]
+    row = paper_service.get_daily_run_snapshot(
+        db_session, session_id=sess.id, run_date=as_of
+    )
+    assert row is not None
+    assert row.ai_portfolio_event_id is None
+    assert row.document["run"] is None
+    assert row.document["orders"] == []
+    assert "daily_pnl" in row.document["valuation"]
+
+
+def test_assemble_daily_run_snapshots_skips_sessions_without_a_snapshot(
+    db_session: Session,
+) -> None:
+    as_of = date(2026, 1, 5)
+    sess = _held_ai_session(db_session, "AI Growth", "AAPL")
+    # No value snapshot recorded for the day -> the session is skipped entirely.
+    recorded = service.assemble_daily_run_snapshots(db_session, as_of=as_of)
+
+    assert recorded == []
+    assert (
+        paper_service.get_daily_run_snapshot(
+            db_session, session_id=sess.id, run_date=as_of
+        )
+        is None
+    )
+
+
+def test_assemble_daily_run_snapshots_best_effort_per_session(
+    db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    broker = StubBroker()
+    as_of = date(2026, 1, 5)
+    failing = _held_ai_session(db_session, "AI Boom", "AAPL")
+    healthy = _held_ai_session(db_session, "AI Growth", "MSFT")
+    for sess in (failing, healthy):
+        paper_service.record_value_snapshot(
+            db_session, session_id=sess.id, as_of=as_of, broker=broker
+        )
+
+    # Make assembly raise for exactly one session; the batch must still record the rest.
+    real_assemble = service._assemble_session_daily_run
+
+    def flaky(session: Session, session_row: object, run_date: date) -> bool:
+        if session_row.id == failing.id:
+            raise RuntimeError("boom")
+        return real_assemble(session, session_row, run_date)
+
+    monkeypatch.setattr(service, "_assemble_session_daily_run", flaky)
+
+    recorded = service.assemble_daily_run_snapshots(db_session, as_of=as_of)
+
+    assert recorded == [healthy.id]
+    assert (
+        paper_service.get_daily_run_snapshot(
+            db_session, session_id=healthy.id, run_date=as_of
+        )
+        is not None
+    )
+    assert (
+        paper_service.get_daily_run_snapshot(
+            db_session, session_id=failing.id, run_date=as_of
+        )
+        is None
+    )
+
+
+def test_assemble_daily_run_snapshots_weekend_skips_stocks_only(
+    db_session: Session,
+) -> None:
+    broker = StubBroker()
+    stocks_only = _scoped_held_ai_session(db_session, "AI Stocks", "AAPL", "stocks")
+    crypto = _scoped_held_ai_session(db_session, "AI Crypto", "MSFT", "both")
+    # Only the crypto/both session is snapshotted on a weekend (mirrors the P&L job).
+    paper_service.record_value_snapshot(
+        db_session, session_id=crypto.id, as_of=_WEEKEND, broker=broker
+    )
+
+    recorded = service.assemble_daily_run_snapshots(db_session, as_of=_WEEKEND)
+
+    assert recorded == [crypto.id]
+    assert stocks_only.id not in recorded
+
+
+# --------------------------------------------------------------------------- #
 # Technical-indicator trend gate (v3): candidate hard-filter, holdings context,
 # and per-run trend-decision context.
 # --------------------------------------------------------------------------- #
@@ -3372,3 +3571,78 @@ def test_build_orders_settled_fails_safe_when_reconcile_raises(
     monkeypatch.setattr(paper_service, "reconcile_session_orders", boom)
     # Cannot confirm fills -> defer rather than rebalance on unverified state.
     assert not service.build_orders_settled(db_session, _OrderBroker(), session_row)
+
+
+# --------------------------------------------------------------------------- #
+# Rebalance: exclude known-unexecutable tickers from the candidate universe
+# --------------------------------------------------------------------------- #
+
+
+def test_exclude_unexecutable_candidates_filters_untradable_only() -> None:
+    # A verified asset (stored alpaca_symbol) is kept without re-probing; an
+    # unverified legacy row is probed and kept only if the broker trades it.
+    verified = Asset(
+        ticker="AAPL",
+        alpaca_symbol="AAPL",
+        category=AssetCategory.STOCK.value,
+        currency="USD",
+        is_eligible=True,
+        criteria_results=[],
+    )
+    legacy_tradable = Asset(
+        ticker="MSFT",
+        alpaca_symbol=None,
+        category=AssetCategory.STOCK.value,
+        currency="USD",
+        is_eligible=True,
+        criteria_results=[],
+    )
+    legacy_untradable = Asset(
+        ticker="ASML.AS",  # dot-suffixed -> StubBroker.get_asset returns None
+        alpaca_symbol=None,
+        category=AssetCategory.STOCK.value,
+        currency="USD",
+        is_eligible=True,
+        criteria_results=[],
+    )
+    classes = {t: AssetClass.EQUITY for t in ("AAPL", "MSFT", "ASML.AS")}
+
+    kept, excluded = service._exclude_unexecutable_candidates(
+        [verified, legacy_tradable, legacy_untradable], classes, StubBroker()
+    )
+
+    assert {a.ticker for a in kept} == {"AAPL", "MSFT"}
+    assert [e["ticker"] for e in excluded] == ["ASML.AS"]
+
+
+def test_rebalance_excludes_unexecutable_ticker_from_candidates(
+    db_session: Session,
+) -> None:
+    provider = _seed_universe(db_session, "AAPL", "MSFT")
+    broker = StubBroker()
+    session_id, _ = _seed_session(db_session, broker, provider)
+    # A legacy universe row with no verified alpaca_symbol that the broker cannot
+    # trade (a dot-suffixed foreign listing). It must never reach the agent.
+    db_session.add(
+        Asset(
+            ticker="ASML.AS",
+            name="ASML",
+            alpaca_symbol=None,
+            category=AssetCategory.STOCK.value,
+            currency="USD",
+            is_eligible=True,
+            criteria_results=[],
+        )
+    )
+    db_session.flush()
+
+    rebalance = FakeAIPortfolioAgent(rebalance_result=_flat_rebalance_result())
+    rb_event = service.create_rebalance_event(db_session, session_id)
+    service.run_rebalance_event(db_session, rb_event.id, rebalance, broker, provider)
+
+    assert rebalance.rebalance_calls
+    candidate_tickers = {
+        c["ticker"] for c in rebalance.rebalance_calls[0]["candidates"]
+    }
+    assert "ASML.AS" not in candidate_tickers
+    assert {"AAPL", "MSFT"} <= candidate_tickers

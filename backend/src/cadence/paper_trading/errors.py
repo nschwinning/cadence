@@ -32,3 +32,11 @@ class InvalidAssetScopeError(PaperTradingError):
 
     Carries the allowed scopes in its message so the router can surface them (422).
     """
+
+
+class InvalidCapitalChangeError(PaperTradingError):
+    """The requested capital change is not allowed (e.g. a non-positive amount).
+
+    Capital increases are increase-only; an amount at or below zero is rejected
+    and surfaced as 422 by the router.
+    """

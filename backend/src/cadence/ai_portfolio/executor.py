@@ -46,6 +46,11 @@ CRYPTO_QTY_PRECISION = 8
 _GUARDRAIL_MAX_ITERATIONS = 100
 _GUARDRAIL_EPSILON = 1e-9
 
+#: Iteration ceiling for the unexecutable-weight redeployment loop. Each pass
+#: removes at most one target, so the number of targets upper-bounds it; the cap
+#: is a safety net against a pathological input.
+_REDEPLOY_MAX_ITERATIONS = 100
+
 
 @dataclass(frozen=True)
 class GuardrailCaps:
@@ -285,6 +290,63 @@ class AIPortfolioExecutor:
         reserve = max(pct_reserve, fee_reserve)
         return max(base - reserve, 0.0)
 
+    def _redeploy_target_weights(
+        self,
+        priced_weights: dict[str, float],
+        min_notionals: dict[str, float],
+        net_base: float,
+        ceiling: float,
+    ) -> tuple[dict[str, float], set[str]]:
+        """Redistribute unexecutable target weight across the executable targets.
+
+        ``priced_weights`` maps each priceable target (positive weight only) to its
+        normalized weight; ``min_notionals`` maps a ticker to the minimum tradable
+        notional at the current quote (one share's price for an equity, the minimum
+        crypto notional for a crypto); ``net_base`` is the buffer-reduced sizing
+        base; ``ceiling`` is the total weight to deploy across the survivors — the
+        sum of every non-market-closed target's weight, so weight freed by
+        unpriceable and too-small targets is redeployed but market-closed equity
+        weight (absent from ``priced_weights`` and excluded from ``ceiling``) stays
+        cash.
+
+        Each pass rescales the surviving weights to sum to ``ceiling`` and checks
+        whether every survivor can fund its minimum tradable amount against
+        ``net_base``. If any cannot, the single smallest-weight unfundable target is
+        removed (its weight flows to the rest on the next rescale) and the pass
+        repeats; removing the smallest first lets the remaining weight concentrate
+        enough to clear the threshold, so a set that would strand as cash if all
+        unfundable targets were dropped at once can still deploy. The loop ends when
+        every survivor is fundable, the set empties, or the iteration cap is hit.
+
+        Returns ``(final_weights, too_small)`` where ``final_weights`` sums to at
+        most ``ceiling`` (so deployment never exceeds the buffer-reduced base, and
+        the reserved buffer is preserved) and ``too_small`` is the set of priceable
+        targets removed for affordability.
+        """
+        working = dict(priced_weights)
+        too_small: set[str] = set()
+
+        for _ in range(_REDEPLOY_MAX_ITERATIONS):
+            subtotal = sum(working.values())
+            if subtotal <= 0.0:
+                return {}, too_small
+            scale = ceiling / subtotal
+            scaled = {t: w * scale for t, w in working.items()}
+            unfundable = [
+                t for t, w in scaled.items() if net_base * w < min_notionals[t]
+            ]
+            if not unfundable:
+                return scaled, too_small
+            worst = min(unfundable, key=lambda t: scaled[t])
+            too_small.add(worst)
+            del working[worst]
+
+        subtotal = sum(working.values())
+        if subtotal <= 0.0:
+            return {}, too_small
+        scale = ceiling / subtotal
+        return {t: w * scale for t, w in working.items()}, too_small
+
     def execute_build(
         self,
         stocks: list[AIPortfolioStock],
@@ -487,8 +549,7 @@ class AIPortfolioExecutor:
             norm = t.allocation_pct / total_weight if total_weight > 0 else 0.0
             target_weight[t.ticker] = target_weight.get(t.ticker, 0.0) + norm
 
-        if caps is not None:
-            target_weight = enforce_guardrails(target_weight, classes, caps)
+        total_target_weight = sum(target_weight.values())
 
         base = self.allocated_capital if base_capital is None else base_capital
         tickers = sorted(set(current_positions) | set(target_weight))
@@ -508,12 +569,20 @@ class AIPortfolioExecutor:
         sell_intents: list[_OrderIntent] = []
         buy_intents: list[_OrderIntent] = []
 
+        # Phase 0a: price every ticker once. An equity skipped while the market is
+        # closed keeps its weight uninvested for this run (a transient condition
+        # that heals on the next open-market run), so it is NOT redeployed
+        # cross-asset. A ticker the broker cannot price is unexecutable; its weight
+        # is redeployed across the executable targets in phase 0b.
+        priced: dict[str, tuple[float, AssetClass, Position | None]] = {}
+        closed_equity_weight = 0.0
         for ticker in tickers:
             cls = classes.get(ticker, AssetClass.EQUITY)
             pos = current_positions.get(ticker)
             weight = target_weight.get(ticker, 0.0)
 
             if not market_open and cls == AssetClass.EQUITY:
+                closed_equity_weight += weight
                 skips.append(
                     TradeResult(
                         ticker=ticker,
@@ -529,24 +598,6 @@ class AIPortfolioExecutor:
             try:
                 quote = self.broker.get_quote(ticker, cls)
                 price = quote.last or quote.ask
-                if not price or price <= 0:
-                    skips.append(
-                        TradeResult(
-                            ticker=ticker,
-                            side="long" if weight > 0 else "sell",
-                            shares=0,
-                            price=None,
-                            executed=False,
-                            reason="No price available",
-                        )
-                    )
-                    continue
-
-                if cls == AssetClass.CRYPTO:
-                    intent = self._plan_crypto(ticker, pos, weight, price, net_base)
-                else:
-                    intent = self._plan_equity(ticker, pos, weight, price, net_base)
-
             except Exception as exc:  # noqa: BLE001 - one ticker must not abort the run
                 logger.error("AI rebalance sizing failed for %s: %s", ticker, exc)
                 skips.append(
@@ -561,7 +612,73 @@ class AIPortfolioExecutor:
                 )
                 continue
 
+            if not price or price <= 0:
+                skips.append(
+                    TradeResult(
+                        ticker=ticker,
+                        side="long" if weight > 0 else "sell",
+                        shares=0,
+                        price=None,
+                        executed=False,
+                        reason="No price available",
+                    )
+                )
+                continue
+
+            priced[ticker] = (price, cls, pos)
+
+        # Phase 0b: redeploy the weight of unexecutable targets — unpriceable above,
+        # or too small to fund the minimum tradable amount (one whole share for an
+        # equity, the min crypto notional for a crypto) against ``net_base`` — across
+        # the targets that CAN be executed, bounded by the reserved cash buffer
+        # (sizing is against ``net_base``). Market-closed equity weight is held out
+        # as cash for this run rather than redeployed cross-asset.
+        deployable_ceiling = max(total_target_weight - closed_equity_weight, 0.0)
+        priced_target_weights = {
+            t: target_weight[t] for t in priced if target_weight.get(t, 0.0) > 0.0
+        }
+        min_notionals = {
+            t: (
+                MIN_CRYPTO_NOTIONAL_USD
+                if priced[t][1] == AssetClass.CRYPTO
+                else priced[t][0]
+            )
+            for t in priced
+        }
+        final_weight, too_small = self._redeploy_target_weights(
+            priced_target_weights, min_notionals, net_base, deployable_ceiling
+        )
+
+        # Guardrails clamp the *redeployed* vector so redeployment never breaches a
+        # cap; weight that cannot be placed without breaching one stays cash.
+        if caps is not None:
+            final_weight = enforce_guardrails(final_weight, classes, caps)
+
+        # Phase 0c: size every priced ticker against its redeployed weight. A target
+        # the run wanted but could not fund (too small and not already held) is
+        # recorded as not executed rather than dropped silently; a held position at a
+        # removed target is exited by the delta model (a real sell), and a genuine
+        # ``|delta| < 1`` adjustment of an at-target holding stays a non-surfaced
+        # no-op.
+        for ticker, (price, cls, pos) in priced.items():
+            weight = final_weight.get(ticker, 0.0)
+            if cls == AssetClass.CRYPTO:
+                intent = self._plan_crypto(ticker, pos, weight, price, net_base)
+            else:
+                intent = self._plan_equity(ticker, pos, weight, price, net_base)
+
             if intent is None:
+                if ticker in too_small and pos is None:
+                    skips.append(
+                        TradeResult(
+                            ticker=ticker,
+                            side="long",
+                            shares=0,
+                            price=price,
+                            executed=False,
+                            reason="Allocation too small to fund the minimum tradable amount",
+                        )
+                    )
                 continue
             if intent.side == "sell":
                 sell_intents.append(intent)

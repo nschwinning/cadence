@@ -233,6 +233,10 @@ class PaperTradingSessionRead(BaseModel):
     strategy_key: str
     status: str
     allocated_capital: float
+    # Total capital contributed to the session (original build capital plus every
+    # later increase). Equal to ``allocated_capital`` — surfaced under an explicit
+    # name so the UI can label the Capital tile as total contributed capital.
+    contributed_capital: float = 0.0
     max_allocation_pct: float
     created_at: datetime
     updated_at: datetime
@@ -286,6 +290,9 @@ class PaperTradingSessionRead(BaseModel):
             self.asset_types = AssetScope(scope).value
         except ValueError:
             self.asset_types = AssetScope.BOTH.value
+        # ``allocated_capital`` is the running total of contributed capital; surface
+        # it under the explicit ``contributed_capital`` name for the UI.
+        self.contributed_capital = self.allocated_capital
         return self
 
 
@@ -542,6 +549,17 @@ class AIDailySnapshotResponse(BaseModel):
     session_ids: list[uuid.UUID] = Field(default_factory=list)
 
 
+class AIDailyRunSnapshotResponse(BaseModel):
+    """Result of the daily-run learning-snapshot assembly: how many were recorded.
+
+    The consolidated learning rows themselves are backend-only and never returned —
+    only the count and the affected session ids are surfaced to the cron caller.
+    """
+
+    snapshots_recorded: int
+    session_ids: list[uuid.UUID] = Field(default_factory=list)
+
+
 class AIStopLossScanResponse(BaseModel):
     """Result of a stop-loss scan: how many positions were stopped out."""
 
@@ -659,6 +677,16 @@ class SessionBenchmarkChangeRequest(BaseModel):
     """Request body for changing a session's benchmark."""
 
     benchmark: str = Field(..., description="A benchmark id from the catalog")
+
+
+class SessionCapitalIncreaseRequest(BaseModel):
+    """Request body for increasing a session's capital (increase-only)."""
+
+    amount: float = Field(
+        ...,
+        gt=0,
+        description="Positive amount of capital to add to the session.",
+    )
 
 
 class SessionScopeChangeRequest(BaseModel):

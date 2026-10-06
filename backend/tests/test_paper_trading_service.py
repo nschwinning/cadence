@@ -22,6 +22,7 @@ from cadence.broker.models import (
 from cadence.broker.stub import StubBroker
 from cadence.config import settings
 from cadence.paper_trading import service
+from cadence.paper_trading.benchmark import Contribution
 from cadence.paper_trading.constants import (
     SHARPE_MIN_RETURNS,
     Benchmark,
@@ -33,12 +34,14 @@ from cadence.paper_trading.errors import (
     DuplicateSessionError,
     InvalidAssetScopeError,
     InvalidBenchmarkError,
+    InvalidCapitalChangeError,
     SessionNotArchivableError,
     SessionNotFoundError,
 )
 from cadence.paper_trading.models import (
     BenchmarkPrice,
     PaperTradingSession,
+    SessionCapitalEvent,
     SessionValueSnapshot,
 )
 from cadence.portfolios import service as portfolios_service
@@ -1023,9 +1026,14 @@ def test_session_kpis_sharpe_none_until_enough_history(db_session: Session) -> N
 def test_session_kpis_sharpe_from_snapshot_series(db_session: Session) -> None:
     sess = _ai_session(db_session)
     base = date(2026, 1, 1)
+    # KPIs recompute the daily return series from snapshot NAVs (not the stored
+    # daily_pnl_pct), so build a NAV series that yields returns [0.01]*10 + [0.02]*10
+    # against the 100k baseline contributed capital.
     returns = [0.01] * 10 + [0.02] * 10
+    value = 100_000.0
     for i, ret in enumerate(returns):
-        _add_snapshot(db_session, sess.id, base + timedelta(days=i), ret)
+        value *= 1.0 + ret
+        _add_value_snapshot(db_session, sess.id, base + timedelta(days=i), value)
     kpis = service.session_kpis(
         db_session, session_id=sess.id, broker=_QuoteBroker({})
     )
@@ -1592,3 +1600,193 @@ def test_sector_performance_unknown_session_raises(db_session: Session) -> None:
         service.session_sector_performance(
             db_session, session_id=uuid.uuid4(), broker=_QuoteBroker({})
         )
+
+
+# --------------------------------------------------------------------------- #
+# Capital increase: ledger + contribution set + time-weighted analytics
+# --------------------------------------------------------------------------- #
+
+
+def _event(effective_date: date, amount: float, order: int = 0) -> SessionCapitalEvent:
+    """A transient capital event for pure-helper tests (distinct created_at)."""
+    return SessionCapitalEvent(
+        amount=amount,
+        effective_date=effective_date,
+        created_at=datetime(2026, 1, 1, tzinfo=UTC) + timedelta(seconds=order),
+    )
+
+
+def test_session_contributions_no_events_single_baseline(
+    db_session: Session,
+) -> None:
+    sess = _ai_session(db_session)  # allocated 100k, no events
+    start = date(2026, 1, 1)
+    contributions = service.session_contributions(sess, [], start_date=start)
+    # The whole allocated capital is a single baseline contribution on the start date.
+    assert contributions == [Contribution(effective_date=start, amount=100_000.0)]
+
+
+def test_session_contributions_two_events_baseline_plus_rows(
+    db_session: Session,
+) -> None:
+    sess = _ai_session(db_session)  # allocated 100k
+    sess.allocated_capital = 130_000.0  # original 100k + two increases (20k, 10k)
+    start = date(2026, 1, 1)
+    events = [
+        _event(date(2026, 1, 10), 20_000.0, order=0),
+        _event(date(2026, 1, 20), 10_000.0, order=1),
+    ]
+    contributions = service.session_contributions(sess, events, start_date=start)
+    # Baseline = allocated − Σ events; then one row per event in effective-date order.
+    assert contributions == [
+        Contribution(effective_date=start, amount=100_000.0),
+        Contribution(effective_date=date(2026, 1, 10), amount=20_000.0),
+        Contribution(effective_date=date(2026, 1, 20), amount=10_000.0),
+    ]
+
+
+def test_increase_session_capital_raises_capital_records_event_and_cash(
+    db_session: Session,
+) -> None:
+    sess = _ai_session(db_session)  # all cash, 100k
+    updated = service.increase_session_capital(
+        db_session, session_id=sess.id, amount=25_000.0
+    )
+    # Contributed capital rose by the amount and exactly one event row was written.
+    assert updated.allocated_capital == pytest.approx(125_000.0)
+    events = service.list_capital_events(db_session, session_id=sess.id)
+    assert len(events) == 1
+    assert events[0].amount == pytest.approx(25_000.0)
+    assert events[0].effective_date == datetime.now(tz=UTC).date()
+    # The derived cash (and thus investable value) rose by the same amount.
+    valuation = service.compute_session_value(
+        db_session, session_id=sess.id, broker=_QuoteBroker({})
+    )
+    assert valuation.cash_value == pytest.approx(125_000.0)
+
+
+def test_increase_session_capital_rejects_non_positive(db_session: Session) -> None:
+    sess = _ai_session(db_session)
+    for bad in (0.0, -100.0):
+        with pytest.raises(InvalidCapitalChangeError):
+            service.increase_session_capital(
+                db_session, session_id=sess.id, amount=bad
+            )
+    # The session was left unchanged and no event was recorded.
+    assert service.get_session(db_session, sess.id).allocated_capital == pytest.approx(
+        100_000.0
+    )
+    assert service.list_capital_events(db_session, session_id=sess.id) == []
+
+
+def test_increase_session_capital_unknown_session_raises(
+    db_session: Session,
+) -> None:
+    with pytest.raises(SessionNotFoundError):
+        service.increase_session_capital(
+            db_session, session_id=uuid.uuid4(), amount=1_000.0
+        )
+
+
+def test_contribution_adjusted_returns_excludes_contribution_day(
+    db_session: Session,
+) -> None:
+    sess = _ai_session(db_session)
+    sess.allocated_capital = 150_000.0  # 100k baseline + 50k contributed on day 2
+    start = date(2026, 1, 1)
+    contributions = service.session_contributions(
+        sess, [_event(date(2026, 1, 2), 50_000.0)], start_date=start
+    )
+    snaps = [
+        SessionValueSnapshot(snapshot_date=date(2026, 1, 1), total_value=110_000.0),
+        SessionValueSnapshot(snapshot_date=date(2026, 1, 2), total_value=170_000.0),
+        SessionValueSnapshot(snapshot_date=date(2026, 1, 3), total_value=180_000.0),
+    ]
+    returns = service.contribution_adjusted_returns(snaps, contributions)
+    # Day 1: (110k − 100k)/100k. Day 2 nets out the 50k deposit: (170k − 50k − 110k)/110k
+    # — NOT the naive (170k − 110k)/110k = 0.545 which would count the deposit as a gain.
+    assert returns == pytest.approx([0.10, 10_000.0 / 110_000.0, 10_000.0 / 170_000.0])
+
+
+def test_session_kpis_contribution_not_counted_as_gain(db_session: Session) -> None:
+    sess = _ai_session(db_session)
+    base = date(2026, 1, 1)
+    # Flat NAV at the 100k baseline for two days, then capital is doubled and NAV
+    # jumps to 200k purely from the deposit (no market move).
+    _add_value_snapshot(db_session, sess.id, base, 100_000.0)
+    service.increase_session_capital(db_session, session_id=sess.id, amount=100_000.0)
+    # Overwrite today's auto-snapshot with the post-deposit NAV for a clean series.
+    today = datetime.now(tz=UTC).date()
+    service.record_value_snapshot(
+        db_session, session_id=sess.id, as_of=today, broker=_QuoteBroker({})
+    )
+    kpis = service.session_kpis(
+        db_session, session_id=sess.id, broker=_QuoteBroker({})
+    )
+    # The pure cash injection is not a gain: time-weighted return stays ~0 even though
+    # the absolute value doubled. (Absolute total_return is value − contributed = 0.)
+    assert kpis.total_return_pct == pytest.approx(0.0, abs=1e-9)
+    assert kpis.total_return == pytest.approx(0.0)
+    assert kpis.current_value == pytest.approx(200_000.0)
+
+
+def test_session_kpis_without_contribution_matches_simple_return(
+    db_session: Session,
+) -> None:
+    sess = _ai_session(db_session)
+    _buy(db_session, sess.id, "AAPL", 10, 100.0)  # +20/share live
+    base = date(2026, 1, 1)
+    for value in (100_000.0, 101_000.0):
+        _add_value_snapshot(db_session, sess.id, base, value)
+        base += timedelta(days=1)
+    kpis = service.session_kpis(
+        db_session, session_id=sess.id, broker=_QuoteBroker({"AAPL": 120.0})
+    )
+    # With no contributions the time-weighted return equals the simple return against
+    # allocated capital: (current_value − allocated)/allocated.
+    assert kpis.total_return_pct == pytest.approx(kpis.total_return / 100_000.0)
+
+
+def test_record_value_snapshot_excludes_same_day_contribution(
+    db_session: Session,
+) -> None:
+    sess = _ai_session(db_session)
+    today = datetime.now(tz=UTC).date()
+    # Add capital today, then snapshot the same day.
+    service.increase_session_capital(db_session, session_id=sess.id, amount=40_000.0)
+    snap = service.record_value_snapshot(
+        db_session, session_id=sess.id, as_of=today, broker=_QuoteBroker({})
+    )
+    # Value is 140k but the 40k added today is not reported as a gain.
+    assert snap.total_value == pytest.approx(140_000.0)
+    assert snap.daily_pnl == pytest.approx(0.0)
+    assert snap.daily_pnl_pct == pytest.approx(0.0)
+
+
+def test_value_history_steps_up_on_later_contribution(db_session: Session) -> None:
+    sess = _ai_session(db_session)
+    broker = _QuoteBroker({})
+    start = date(2026, 1, 5)
+    later = date(2026, 1, 6)
+    service.record_value_snapshot(
+        db_session, session_id=sess.id, as_of=start, broker=broker
+    )
+    # Record a second-day snapshot and a capital event effective that day.
+    service.record_value_snapshot(
+        db_session, session_id=sess.id, as_of=later, broker=broker
+    )
+    db_session.add(
+        SessionCapitalEvent(
+            session_id=sess.id, amount=50_000.0, effective_date=later
+        )
+    )
+    sess.allocated_capital = 150_000.0
+    db_session.commit()
+    _add_benchmark_price(db_session, "SP500", start, 200.0)
+    _add_benchmark_price(db_session, "SP500", later, 220.0)
+
+    points = service.list_value_history(db_session, session_id=sess.id)
+    # Day 1: only the 100k baseline is in effect -> rebased to 100k.
+    assert points[0].benchmark_value == pytest.approx(100_000.0)
+    # Day 2: baseline grew +10% (110k) and the fresh 50k is added at that day's close.
+    assert points[1].benchmark_value == pytest.approx(110_000.0 + 50_000.0)

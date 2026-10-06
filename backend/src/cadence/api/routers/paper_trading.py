@@ -24,6 +24,7 @@ from cadence.api.schemas import (
     PaperTradingSessionListResponse,
     PaperTradingSessionRead,
     SessionBenchmarkChangeRequest,
+    SessionCapitalIncreaseRequest,
     SessionRunListResponse,
     SessionRunRead,
     SessionScopeChangeRequest,
@@ -46,6 +47,7 @@ from cadence.paper_trading.constants import (
 from cadence.paper_trading.errors import (
     InvalidAssetScopeError,
     InvalidBenchmarkError,
+    InvalidCapitalChangeError,
     SessionNotArchivableError,
     SessionNotFoundError,
 )
@@ -399,5 +401,35 @@ def change_session_scope(
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail=str(exc) or "Brokerage is unavailable",
+        ) from exc
+    return PaperTradingSessionRead.model_validate(row)
+
+
+@router.post(
+    "/sessions/{session_id}/capital",
+    response_model=PaperTradingSessionRead,
+)
+def increase_session_capital(
+    session_id: uuid.UUID,
+    payload: SessionCapitalIncreaseRequest,
+    db: DbSession,
+) -> PaperTradingSessionRead:
+    """Increase a session's capital by a positive amount (increase-only).
+
+    Records the contribution in the capital-events ledger and raises the session's
+    contributed capital; the added cash becomes investable and is deployed by the
+    next scheduled rebalance. 404 unknown session, 422 for a non-positive amount.
+    """
+    try:
+        row = service.increase_session_capital(
+            db, session_id=session_id, amount=payload.amount
+        )
+    except SessionNotFoundError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)
+        ) from exc
+    except InvalidCapitalChangeError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
         ) from exc
     return PaperTradingSessionRead.model_validate(row)

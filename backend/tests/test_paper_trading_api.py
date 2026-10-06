@@ -582,7 +582,9 @@ def test_session_kpis_returns_live_figures(
     assert body["realised_pnl"] == 0.0
     assert body["unrealised_pnl"] == 200.0
     assert body["total_return"] == 200.0
-    assert body["total_return_pct"] == 200.0 / 100_000.0
+    # TWR computes Π(1+r)−1, which telescopes to the simple return here (no
+    # snapshots/contributions) up to floating-point epsilon.
+    assert body["total_return_pct"] == pytest.approx(200.0 / 100_000.0)
     # No daily snapshots yet -> Sharpe withheld.
     assert body["sharpe_ratio"] is None
     # The session's benchmark id is echoed; with no stored benchmark prices the
@@ -799,6 +801,63 @@ def test_change_scope_broker_unavailable_is_503(
     # The scope change was not persisted because the required liquidation failed.
     row = service.get_session(db_session, session_id)
     assert (row.session_metadata or {}).get("asset_types") in (None, "both")
+
+
+def test_session_read_exposes_contributed_capital(
+    client: TestClient, db_session: Session
+) -> None:
+    session_id = _seed(db_session)
+    resp = client.get("/api/v1/paper-trading/sessions")
+    assert resp.status_code == 200
+    by_id = {item["id"]: item for item in resp.json()["items"]}
+    item = by_id[str(session_id)]
+    # contributed_capital mirrors allocated capital (total contributed).
+    assert item["contributed_capital"] == pytest.approx(item["allocated_capital"])
+
+
+def test_increase_capital_raises_and_returns_session(
+    client: TestClient, db_session: Session
+) -> None:
+    session_id = _seed(db_session)
+    before = service.get_session(db_session, session_id).allocated_capital
+    resp = client.post(
+        f"/api/v1/paper-trading/sessions/{session_id}/capital",
+        json={"amount": 2_500.0},
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["allocated_capital"] == pytest.approx(before + 2_500.0)
+    assert body["contributed_capital"] == pytest.approx(before + 2_500.0)
+    # The contribution was recorded in the ledger.
+    events = service.list_capital_events(db_session, session_id=session_id)
+    assert len(events) == 1
+    assert events[0].amount == pytest.approx(2_500.0)
+
+
+def test_increase_capital_unknown_session_is_404(client: TestClient) -> None:
+    resp = client.post(
+        f"/api/v1/paper-trading/sessions/{uuid.uuid4()}/capital",
+        json={"amount": 1_000.0},
+    )
+    assert resp.status_code == 404
+
+
+def test_increase_capital_non_positive_is_422(
+    client: TestClient, db_session: Session
+) -> None:
+    session_id = _seed(db_session)
+    before = service.get_session(db_session, session_id).allocated_capital
+    for bad in (0, -500):
+        resp = client.post(
+            f"/api/v1/paper-trading/sessions/{session_id}/capital",
+            json={"amount": bad},
+        )
+        assert resp.status_code == 422
+    # Capital unchanged and nothing recorded.
+    assert service.get_session(db_session, session_id).allocated_capital == pytest.approx(
+        before
+    )
+    assert service.list_capital_events(db_session, session_id=session_id) == []
 
 
 def test_session_sector_performance_returns_groupings(

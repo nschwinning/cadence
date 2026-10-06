@@ -30,6 +30,7 @@ const session: PaperTradingSession = {
   strategy_key: 'ai-momentum',
   status: 'active',
   allocated_capital: 100000,
+  contributed_capital: 100000,
   max_allocation_pct: 0.25,
   created_at: '2026-09-10T00:00:00Z',
   updated_at: '2026-09-12T00:00:00Z',
@@ -393,6 +394,72 @@ describe('PaperTradingSessionPage', () => {
       '/api/v1/paper-trading/sessions/s1/benchmark',
       { benchmark: 'DJIA' },
     );
+  });
+
+  it('adds capital: a positive amount POSTs to the capital endpoint', async () => {
+    installGet(() => 'running');
+    mockedPost.mockResolvedValue({
+      data: {
+        ...session,
+        allocated_capital: 105000,
+        contributed_capital: 105000,
+      },
+    });
+    const user = userEvent.setup();
+
+    renderPage(<PaperTradingSessionPage />);
+
+    const input = await screen.findByLabelText('Add capital');
+    await user.type(input, '5000');
+    await user.click(screen.getByRole('button', { name: 'Add' }));
+
+    expect(mockedPost).toHaveBeenCalledWith(
+      '/api/v1/paper-trading/sessions/s1/capital',
+      { amount: 5000 },
+    );
+  });
+
+  it('does not POST for an empty, zero, or negative capital amount', async () => {
+    installGet(() => 'running');
+    const user = userEvent.setup();
+
+    renderPage(<PaperTradingSessionPage />);
+
+    const input = await screen.findByLabelText('Add capital');
+    const button = screen.getByRole('button', { name: 'Add' });
+
+    // Empty: the button is disabled and clicking does nothing.
+    expect(button).toBeDisabled();
+
+    // Zero and negative amounts are rejected client-side (no request).
+    await user.type(input, '0');
+    expect(button).toBeDisabled();
+    await user.clear(input);
+    await user.type(input, '-100');
+    expect(button).toBeDisabled();
+
+    // The order-sync hook may POST to /reconcile on mount, but nothing ever hits
+    // the capital endpoint.
+    expect(mockedPost).not.toHaveBeenCalledWith(
+      '/api/v1/paper-trading/sessions/s1/capital',
+      expect.anything(),
+    );
+  });
+
+  it('surfaces an error when the capital increase request fails', async () => {
+    installGet(() => 'running');
+    mockedPost.mockRejectedValue(new Error('boom'));
+    const user = userEvent.setup();
+
+    renderPage(<PaperTradingSessionPage />);
+
+    const input = await screen.findByLabelText('Add capital');
+    await user.type(input, '5000');
+    await user.click(screen.getByRole('button', { name: 'Add' }));
+
+    expect(
+      await screen.findByText('Could not add capital.'),
+    ).toBeInTheDocument();
   });
 
   it('triggers a rebalance and reflects terminal feedback without manual refresh', async () => {

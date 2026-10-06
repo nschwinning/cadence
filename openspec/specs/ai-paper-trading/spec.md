@@ -178,7 +178,7 @@ The system SHALL persist, per paper-trading session, the executed trades (ticker
 
 ### Requirement: Read paper-trading session data
 
-The system SHALL let a client list paper-trading sessions and read a session's trades, runs, positions, its AI-portfolio events, and its daily portfolio-value snapshots. A session returned to a client SHALL include the name of the portfolio it trades so the client can identify the session by portfolio; when the portfolio cannot be resolved the name SHALL be absent (null) rather than causing an error. A session returned to a client SHALL include the benchmark it is compared against. A session returned to a client SHALL include its asset scope — whether it trades stocks only, crypto only, or both. A session returned to a client SHALL include its stop-loss configuration: whether the automatic stop-loss is enabled and, when enabled, its threshold percentage. A session returned to a client SHALL include its risk-guardrail configuration: whether the risk guardrails are enabled and, when enabled, the maximum percentage per asset, the maximum percentage per asset class, the minimum number of positions, and the maximum invested percentage. An AI-portfolio event returned to a client SHALL include the AI's reasoning output and its persisted research transcript. A trade, closed position, or run returned to a client SHALL include the reference to the AI-portfolio event that produced it, when present. A session's value history SHALL be returned ordered oldest snapshot first, and each snapshot in the returned history SHALL carry the value of a buy-and-hold of the session's allocated capital in the session's benchmark as of that snapshot's date, derived from the stored benchmark price series and rebased so the benchmark equals the allocated capital on the session's first snapshot date. When the benchmark has no stored price on or before a snapshot's date, that snapshot's benchmark value SHALL be absent (null) rather than causing an error.
+The system SHALL let a client list paper-trading sessions and read a session's trades, runs, positions, its AI-portfolio events, and its daily portfolio-value snapshots. A session returned to a client SHALL include the name of the portfolio it trades so the client can identify the session by portfolio; when the portfolio cannot be resolved the name SHALL be absent (null) rather than causing an error. A session returned to a client SHALL include the benchmark it is compared against. A session returned to a client SHALL include its asset scope — whether it trades stocks only, crypto only, or both. A session returned to a client SHALL include its stop-loss configuration: whether the automatic stop-loss is enabled and, when enabled, its threshold percentage. A session returned to a client SHALL include its risk-guardrail configuration: whether the risk guardrails are enabled and, when enabled, the maximum percentage per asset, the maximum percentage per asset class, the minimum number of positions, and the maximum invested percentage. A session returned to a client SHALL include its contributed capital (the sum of its recorded capital contributions, equal to its allocated capital). An AI-portfolio event returned to a client SHALL include the AI's reasoning output and its persisted research transcript. A trade, closed position, or run returned to a client SHALL include the reference to the AI-portfolio event that produced it, when present. A session's value history SHALL be returned ordered oldest snapshot first, and each snapshot in the returned history SHALL carry the value of a buy-and-hold of the benchmark that receives the session's capital contributions on their effective dates — each contribution buying benchmark units at that date's benchmark price — so the benchmark line starts at the session's first contribution on the first snapshot date and steps up by each later contribution; for a session with a single contribution this is equivalent to a buy-and-hold of the allocated capital rebased to the first snapshot date. When the benchmark has no stored price on or before a snapshot's date, that snapshot's benchmark value SHALL be absent (null) rather than causing an error.
 
 Each of a session's tabular list reads — its trades, runs, closed positions, and AI-portfolio events — SHALL support paging via a caller-supplied page size (limit) and a zero-based offset, returning at most the page size of rows starting at the offset within the read's existing ordering, together with the total number of rows recorded for that session and list. The AI-portfolio event read SHALL return its rows wrapped together with that total, in the same shape as the trades, runs, and closed-position reads (rather than a bare list without a total). Reads that source data for computed metrics rather than for a table — such as the closed-position profit-and-loss series behind the session KPIs — SHALL remain unpaged.
 
@@ -212,6 +212,11 @@ Each of a session's tabular list reads — its trades, runs, closed positions, a
 - **WHEN** a client lists sessions or reads a single session
 - **THEN** each returned session SHALL include whether its risk guardrails are enabled and, when enabled, the maximum percentage per asset, the maximum percentage per asset class, the minimum number of positions, and the maximum invested percentage
 
+#### Scenario: Session reports its contributed capital
+
+- **WHEN** a client lists sessions or reads a single session
+- **THEN** each returned session SHALL include its contributed capital, equal to the sum of its recorded capital contributions (its allocated capital)
+
 #### Scenario: Event includes reasoning and research
 
 - **WHEN** a client reads an AI-portfolio event
@@ -240,7 +245,12 @@ Each of a session's tabular list reads — its trades, runs, closed positions, a
 #### Scenario: Read session value history
 
 - **WHEN** a client requests a session's value history
-- **THEN** the system SHALL return the session's daily value snapshots ordered oldest first, each with its date, total value, cash value, positions value, day's profit and loss, and the rebased benchmark value as of that date
+- **THEN** the system SHALL return the session's daily value snapshots ordered oldest first, each with its date, total value, cash value, positions value, day's profit and loss, and the contribution-aware rebased benchmark value as of that date
+
+#### Scenario: Benchmark line reflects a later capital contribution
+
+- **WHEN** a client requests the value history of a session that received a capital contribution after it started
+- **THEN** each snapshot's benchmark value on or after the contribution's effective date SHALL include benchmark units bought with the contributed amount at that date's benchmark price, so the benchmark line steps up by the contribution rather than ignoring it
 
 #### Scenario: Benchmark price missing for a date
 
@@ -578,10 +588,12 @@ value of its held positions, the day's profit and loss (absolute and percent), a
 per-position breakdown (per held ticker: quantity, price, market value, unrealized
 profit and loss, and return). A session's total value SHALL be computed by marking its
 open positions — taken from the session's position ledger — to market and combining
-them with the session's allocated capital and realized profit and loss. The day's
+them with the session's contributed capital and realized profit and loss. The day's
 profit and loss SHALL be measured against the
-session's most recent prior snapshot, or against its allocated capital when no prior
-snapshot exists. A session holding no positions SHALL record an all-cash snapshot.
+session's most recent prior snapshot, or against its contributed capital at the start
+when no prior snapshot exists, and SHALL exclude any capital contribution recorded for
+that same day — a day on which capital is added SHALL NOT report that added cash as a
+day's gain. A session holding no positions SHALL record an all-cash snapshot.
 
 The report SHALL contain, for each session snapshotted, a line with the session's
 total value and the day's profit and loss (absolute and percent), the session's
@@ -624,7 +636,12 @@ to deliver the report SHALL NOT fail the snapshot job.
 - **WHEN** a snapshot is recorded for a session that has a prior snapshot
 - **THEN** the day's profit and loss SHALL be the change in total value since the
   prior snapshot; **AND WHEN** the session has no prior snapshot, the day's profit
-  and loss SHALL be measured against the session's allocated capital
+  and loss SHALL be measured against the session's contributed capital
+
+#### Scenario: Capital contributed on a snapshot day is not counted as a gain
+
+- **WHEN** a snapshot is recorded for a session on a day that session received a capital contribution
+- **THEN** the day's profit and loss SHALL exclude the contributed amount, so adding capital does not appear as a day's gain
 
 #### Scenario: Daily report summarizes P&L and extremes
 
@@ -805,7 +822,7 @@ sessions and trades were reconciled.
 
 ### Requirement: Live session performance KPIs
 
-The system SHALL expose, on demand for a given paper-trading session, a summary of the session's live performance comprising: the current portfolio value (net asset value: cash plus open positions valued at current market quotes, net of cumulative transaction fees), the session's **unallocated (free) cash** (the current portfolio value less the market value of open positions), cumulative realised profit/loss, live unrealised profit/loss on open positions, cumulative transaction fees paid, the **daily average transaction cost** (defined below), total return relative to the allocated capital (as both an absolute money amount and a fraction), a risk-adjusted Sharpe ratio, the benchmark it is compared against, the benchmark's total return over the same period as a fraction, and the session's excess return over the benchmark as a fraction. The benchmark return SHALL be the fractional return of a buy-and-hold of the benchmark from the session's start to the latest available benchmark price, derived from the stored benchmark price series, and the excess return SHALL be the session's total-return fraction minus the benchmark's return fraction. When the benchmark has insufficient stored prices to compute a return the benchmark return and excess return SHALL be reported as unavailable (no value) rather than failing the request.
+The system SHALL expose, on demand for a given paper-trading session, a summary of the session's live performance comprising: the current portfolio value (net asset value: cash plus open positions valued at current market quotes, net of cumulative transaction fees), the session's **unallocated (free) cash** (the current portfolio value less the market value of open positions), cumulative realised profit/loss, live unrealised profit/loss on open positions, cumulative transaction fees paid, the **daily average transaction cost** (defined below), total return (as both an absolute money amount and a fraction), a risk-adjusted Sharpe ratio, the benchmark it is compared against, the benchmark's total return over the same period as a fraction, and the session's excess return over the benchmark as a fraction. The **absolute total return** SHALL be the current portfolio value minus the session's contributed capital (so a capital contribution raises both equally and is not counted as a gain). The **total return fraction** SHALL be **time-weighted**: it SHALL be computed from the session's contribution-adjusted daily return series (each day's return excluding any capital contributed that day) chained across the session's life, so that capital contributed mid-session does not inflate or dilute the reported return; for a session that has had no capital increase this time-weighted fraction SHALL equal the session's simple return of current value over its single contribution. The benchmark return SHALL be the fractional return of a buy-and-hold of the benchmark from the session's start to the latest available benchmark price, derived from the stored benchmark price series, and the excess return SHALL be the session's time-weighted return fraction minus the benchmark's return fraction. When the benchmark has insufficient stored prices to compute a return the benchmark return and excess return SHALL be reported as unavailable (no value) rather than failing the request.
 
 The **daily average transaction cost** SHALL be the session's cumulative transaction fees divided by the number of recorded daily value snapshots for the session. When the session has no recorded daily value snapshots the daily average transaction cost SHALL be reported as unavailable (no value) rather than dividing by zero.
 
@@ -814,7 +831,7 @@ Requesting the summary SHALL value the session's open positions against current 
 #### Scenario: Summary for a session with open positions
 
 - **WHEN** a client requests the KPI summary for an existing session
-- **THEN** the system SHALL mark the session's open positions to market and return the current portfolio value (net of transaction fees), the unallocated cash, realised P&L, unrealised P&L, cumulative transaction fees, the daily average transaction cost (or an unavailable value when the session has no snapshots), total return relative to allocated capital, the Sharpe ratio (or an unavailable Sharpe when history is insufficient), the benchmark return, and the excess return over the benchmark
+- **THEN** the system SHALL mark the session's open positions to market and return the current portfolio value (net of transaction fees), the unallocated cash, realised P&L, unrealised P&L, cumulative transaction fees, the daily average transaction cost (or an unavailable value when the session has no snapshots), total return (absolute and time-weighted fraction), the Sharpe ratio (or an unavailable Sharpe when history is insufficient), the benchmark return, and the excess return over the benchmark
 
 #### Scenario: Unknown session
 
@@ -824,7 +841,17 @@ Requesting the summary SHALL value the session's open positions against current 
 #### Scenario: Total return relative to allocated capital
 
 - **WHEN** the KPI summary is computed
-- **THEN** the total return SHALL be the current portfolio value measured against the session's allocated capital, provided both as an absolute money amount (current value minus allocated capital) and as a fraction of allocated capital
+- **THEN** the absolute total return SHALL be the current portfolio value minus the session's contributed capital (its allocated capital), and the total return fraction SHALL be the session's time-weighted return across its life
+
+#### Scenario: Capital contribution does not inflate the time-weighted return
+
+- **WHEN** the KPI summary is computed for a session that received a capital contribution after it started
+- **THEN** the time-weighted return fraction SHALL exclude the contributed cash (the contribution SHALL NOT appear as a gain), rather than rising simply because more capital was added
+
+#### Scenario: Time-weighted return matches simple return without contributions
+
+- **WHEN** the KPI summary is computed for a session that has never had its capital increased
+- **THEN** the time-weighted return fraction SHALL equal the session's simple return of current value over its original allocated capital
 
 #### Scenario: Unallocated cash reported
 
@@ -834,7 +861,7 @@ Requesting the summary SHALL value the session's open positions against current 
 #### Scenario: Benchmark and excess return reported
 
 - **WHEN** the KPI summary is computed and the benchmark has sufficient stored prices
-- **THEN** the summary SHALL include the benchmark's fractional return over the session's period and the session's excess return (the session's total-return fraction minus the benchmark's return fraction)
+- **THEN** the summary SHALL include the benchmark's fractional return over the session's period and the session's excess return (the session's time-weighted return fraction minus the benchmark's return fraction)
 
 #### Scenario: Benchmark unavailable
 
@@ -858,12 +885,17 @@ Requesting the summary SHALL value the session's open positions against current 
 
 ### Requirement: Sharpe ratio from the session's daily NAV series
 
-The system SHALL compute a session's Sharpe ratio from the session's own ordered series of daily net-asset-value returns (the recorded daily value snapshots), as the mean daily return in excess of a configurable risk-free rate (defaulting to zero) divided by the standard deviation of daily returns, annualised by the square root of a configurable number of trading days per year. The Sharpe ratio SHALL be reported as unavailable (no value) when the session has fewer than a configured minimum number of daily returns, or when the daily returns have zero standard deviation. The computation SHALL rely solely on the session's recorded daily NAV series and SHALL NOT fetch external price history.
+The system SHALL compute a session's Sharpe ratio from the session's own ordered series of daily net-asset-value returns (the recorded daily value snapshots), **adjusted so that a day on which capital was contributed excludes the contributed amount from that day's return** (the contribution is not treated as a gain), as the mean daily return in excess of a configurable risk-free rate (defaulting to zero) divided by the standard deviation of daily returns, annualised by the square root of a configurable number of trading days per year. The Sharpe ratio SHALL be reported as unavailable (no value) when the session has fewer than a configured minimum number of daily returns, or when the daily returns have zero standard deviation. The computation SHALL rely solely on the session's recorded daily NAV series and its recorded capital contributions and SHALL NOT fetch external price history.
 
 #### Scenario: Sufficient history
 
 - **WHEN** a session has at least the configured minimum number of daily returns with non-zero variation
 - **THEN** the system SHALL report a Sharpe ratio equal to the annualised mean-over-standard-deviation of those daily returns
+
+#### Scenario: Contribution day excluded from the return series
+
+- **WHEN** the Sharpe ratio is computed for a session that received a capital contribution on a day in its snapshot series
+- **THEN** that day's return SHALL exclude the contributed amount, so adding capital does not register as a daily gain in the Sharpe computation
 
 #### Scenario: Insufficient history
 
@@ -1593,3 +1625,249 @@ in each breakdown. A request for an unknown session SHALL fail as not found.
 
 - **WHEN** a client requests the breakdown for a session id that does not exist
 - **THEN** the system SHALL respond with a not-found error and no breakdown
+
+### Requirement: Increase a session's capital and record it as a contribution
+
+The system SHALL let a client increase a running paper-trading session's capital by a positive amount, and SHALL record every capital contribution to a session (its amount and effective date) so the session's return analytics can distinguish invested growth from added cash. A session's **contributed capital** SHALL be the sum of all its recorded contributions; the session's original build-time allocated capital SHALL be treated as its first contribution (an existing session with no explicitly recorded contributions SHALL be treated as a single contribution equal to its allocated capital on its start date). Increasing a session's capital SHALL record a new contribution for the increase amount, raise the session's contributed capital by that amount, and make the added amount available as investable cash — so that the next rebalance can deploy it — without itself buying or selling any position. A client SHALL be able to read a session's contributed capital. Increasing capital SHALL be increase-only: a request with a non-positive amount SHALL be rejected, and no operation SHALL decrease a session's capital or withdraw funds. A request to increase the capital of an unknown session SHALL fail as not found.
+
+#### Scenario: Increase a session's capital
+
+- **WHEN** a client requests to increase an existing session's capital by a positive amount
+- **THEN** the system SHALL record a capital contribution for that amount, raise the session's contributed capital by the amount, and increase the session's investable cash by the amount without buying or selling any position
+
+#### Scenario: Added capital becomes investable
+
+- **WHEN** a session's capital has been increased and the session's next rebalance runs
+- **THEN** the rebalance SHALL size against the session's current value, which now includes the added cash, so the contribution can be deployed into holdings
+
+#### Scenario: Non-positive increase rejected
+
+- **WHEN** a client requests a capital increase of zero or a negative amount
+- **THEN** the system SHALL reject the request and SHALL NOT change the session's capital or record a contribution
+
+#### Scenario: Increase for an unknown session
+
+- **WHEN** a client requests a capital increase for a session id that does not exist
+- **THEN** the system SHALL respond with a not-found error and record no contribution
+
+#### Scenario: Original capital is the first contribution
+
+- **WHEN** a session's contributed capital is read and the session has no explicitly recorded contributions
+- **THEN** the system SHALL treat the session's allocated capital as a single contribution on the session's start date, so its contributed capital equals its allocated capital
+
+### Requirement: Consolidated daily-run learning snapshot
+
+The system SHALL maintain a backend-only learning record that consolidates, for
+each AI-managed paper-trading session (portfolio), a single row per calendar day
+that ties together everything needed to learn offline from that day's AI trading
+decision: the day's rebalancing result, the AI's reasoning, the technical-indicator
+values the agent saw, the orders that were actually filled including their filled
+price, and that day's profit and loss.
+
+Each learning snapshot SHALL be keyed by session and calendar day (`run_date`, the
+same calendar day in the same timezone used by the end-of-day snapshot job) and
+SHALL also carry the session's portfolio identifier so records can be grouped per
+portfolio. Recording SHALL be idempotent per session per day: re-running the
+assembly on the same calendar day SHALL update that day's learning snapshot rather
+than create a duplicate.
+
+Each learning snapshot SHALL consolidate, from data already persisted elsewhere
+(without re-computing technical indicators or re-running the agent):
+
+- a reference to the day's rebalancing run and its AI reasoning / result (target
+  allocations, thesis, confidence, portfolio health) as produced by that run;
+- the technical-indicator values handed to the agent for that run (per candidate,
+  holding, and dropped candidate, including reversal flags) as recorded on the run;
+- the run's outcome statistics (order counts, realized profit and loss, account
+  snapshot, gate counts, and guardrail observations) as recorded on the run;
+- the day's filled orders including each order's reconciled filled price, filled
+  timestamp, and order status, taken from the session's reconciled trade ledger for
+  that day; and
+- the day's profit and loss and valuation (total value, cash value, positions
+  value, absolute and percent day's P&L, and the per-position breakdown) taken from
+  that day's value snapshot.
+
+The learning snapshot SHALL be **backend-only**: it SHALL NOT be exposed through any
+read schema, read API, or frontend surface, mirroring the deliberate exclusion of
+the machine-readable run statistics from the run-details read model. It exists for
+export and offline learning only.
+
+On a day a session has **no rebalancing run** (for example a skipped run, a weekend,
+or a stocks-only session on a non-trading day) but **does** have a value snapshot,
+the system SHALL still record a learning snapshot carrying that day's P&L and
+valuation with the rebalancing, reasoning, indicator, and order portions absent. On
+a day a session has **no value snapshot** (it was not selected for the day), the
+system SHALL skip the session, recording no learning snapshot for it.
+
+#### Scenario: Learning snapshot consolidates a day's run
+
+- **WHEN** the assembly runs for a session that had a rebalancing run and a value
+  snapshot on the day
+- **THEN** the system SHALL record one learning snapshot for that session and day
+  containing the run's reasoning/result, the indicator values the run used, the run's
+  outcome statistics, the day's filled orders with their reconciled filled prices, and
+  the day's P&L and valuation
+
+#### Scenario: Learning snapshot is idempotent per day
+
+- **WHEN** the assembly runs twice on the same calendar day for a session
+- **THEN** the system SHALL retain a single learning snapshot for that session and
+  day, reflecting the latest run, rather than creating a duplicate
+
+#### Scenario: Day with a value snapshot but no rebalancing run
+
+- **WHEN** the assembly runs for a session that has a value snapshot for the day but
+  had no rebalancing run that day
+- **THEN** the system SHALL record a learning snapshot carrying the day's P&L and
+  valuation with the rebalancing, reasoning, indicator, and order portions absent
+
+#### Scenario: Day with no value snapshot is skipped
+
+- **WHEN** the assembly runs for a session that has no value snapshot for the day
+- **THEN** the system SHALL record no learning snapshot for that session
+
+#### Scenario: Learning snapshot is not exposed to clients
+
+- **WHEN** a client reads a session, its run history, or any paper-trading read API
+- **THEN** the learning snapshot SHALL NOT appear in any response
+
+### Requirement: Scheduled assembly of daily-run learning snapshots
+
+The system SHALL provide a dedicated trigger that assembles the consolidated
+daily-run learning snapshots for the day's sessions. The trigger SHALL be a
+cron-guarded endpoint protected by the shared cron-token secret and SHALL reject a
+request with a missing or invalid token, recording nothing.
+
+The assembly trigger SHALL be a **separate** job from both the rebalancing run and
+the end-of-day value-snapshot (P&L) job, and SHALL be sequenced to run **after** the
+end-of-day value-snapshot job so that the day's value snapshot exists and the
+session's orders have been reconciled (their filled prices are known) before the
+learning snapshot is assembled. The scheduling cadence and ordering relative to the
+P&L job are a deployment concern (the cron schedule), not enforced by this endpoint.
+
+The assembly SHALL select the day's sessions using the same selection semantics as
+the end-of-day value-snapshot job (the sessions that were eligible to be snapshotted
+that day). Assembly SHALL be best-effort per session: a failure assembling one
+session's learning snapshot SHALL NOT abort the batch or prevent the remaining
+sessions from being recorded.
+
+#### Scenario: Assembly runs after the P&L job with a valid token
+
+- **WHEN** the assembly trigger is called with a valid cron token after the day's
+  value-snapshot job has run
+- **THEN** the system SHALL assemble and record a learning snapshot for each selected
+  session that has a value snapshot for the day, reading the day's reconciled orders,
+  run data, and value snapshot
+
+#### Scenario: Invalid cron token is rejected
+
+- **WHEN** the assembly trigger is called without a valid cron token
+- **THEN** the system SHALL reject the request and record no learning snapshots
+
+#### Scenario: One session's failure does not abort the batch
+
+- **WHEN** assembling one session's learning snapshot fails
+- **THEN** the system SHALL continue assembling the remaining sessions and record
+  their learning snapshots
+
+### Requirement: Redeploy unexecutable target weight across executable targets
+
+During an automated rebalance, when one or more of the AI's target positions cannot be
+executed, the system SHALL redistribute the unexecuted targets' weight across the targets
+that **can** be executed, rather than leaving that weight uninvested as cash. A target is
+**unexecutable** for the run when the broker returns no usable price for it, or when its
+share of the sizing base cannot fund the minimum tradable amount for its asset class (at
+least one whole share for an equity, or the minimum crypto notional for a crypto asset).
+
+The redeployment SHALL remain bounded by the reserved cash buffer (see "Reserve a cash
+buffer when sizing orders"): the system SHALL NOT deploy capital below the reserved buffer,
+so the session still retains its cash reserve for fees and slippage. When a session has
+risk guardrails enabled, the redeployed weight vector SHALL still satisfy the configured
+guardrail caps (per-asset, per-asset-class, and maximum invested fraction); weight that
+cannot be placed without breaching a guardrail SHALL remain as cash, consistent with the
+guardrail requirements. The redeployment SHALL preserve the existing delta model: the
+system still trades only the delta between each resulting target position and the current
+position, still uses whole-share sizing for equities and fractional sizing for crypto, and
+still submits sells before buys.
+
+When every target is unexecutable, or no executable target can absorb additional weight
+without breaching the cash buffer or a guardrail, the system SHALL leave the residual as
+cash rather than failing the run.
+
+#### Scenario: An unpriceable target's weight is redeployed
+
+- **WHEN** a rebalance has several target positions and one target cannot be priced by the
+  broker
+- **THEN** the system SHALL redistribute that target's weight across the targets that can
+  be priced and executed, so the session's invested fraction reflects the executable
+  targets rather than stranding the unpriceable target's weight as cash
+
+#### Scenario: A target too small for one share is redeployed
+
+- **WHEN** a target position's share of the sizing base cannot fund even one whole share of
+  that equity (or the minimum crypto notional for a crypto target)
+- **THEN** the system SHALL redistribute that target's weight across the targets that can be
+  funded, rather than silently leaving that slice of capital uninvested
+
+#### Scenario: Redeployment respects the reserved cash buffer
+
+- **WHEN** unexecutable target weight is redeployed across the executable targets
+- **THEN** the system SHALL NOT deploy capital below the reserved cash buffer, so the
+  session still retains its cash reserve for fees and slippage
+
+#### Scenario: Redeployment respects risk guardrails when enabled
+
+- **WHEN** a session with risk guardrails enabled has unexecutable target weight to redeploy
+- **THEN** the resulting target weights SHALL still satisfy the per-asset, per-asset-class,
+  and maximum-invested guardrail caps, and any weight that cannot be placed without
+  breaching a cap SHALL remain as cash
+
+#### Scenario: All targets unexecutable leaves cash without failing
+
+- **WHEN** no target in a rebalance can be executed (for example, none can be priced)
+- **THEN** the system SHALL leave the capital as cash and complete the run without error,
+  recording each target as not executed
+
+### Requirement: Record a rebalance target that cannot be executed
+
+When a rebalance cannot execute a target position, the system SHALL record that target as a
+non-executed outcome with a clear reason (for example, that no price was available, or that
+the target was too small to fund the minimum tradable amount), so that a `partial`-status
+run is explainable from the recorded run statistics. The system SHALL NOT drop an
+unexecutable target silently.
+
+#### Scenario: A target too small for one share is recorded
+
+- **WHEN** a target position cannot fund even one whole share (or the minimum crypto
+  notional) and is therefore not traded
+- **THEN** the system SHALL record that target as not executed with a reason indicating it
+  was too small to fund the minimum tradable amount, rather than omitting it from the run's
+  recorded outcomes
+
+#### Scenario: An unpriceable target is recorded
+
+- **WHEN** a target position cannot be priced by the broker
+- **THEN** the system SHALL record that target as not executed with a reason indicating no
+  price was available
+
+### Requirement: Exclude known-unexecutable tickers from rebalance candidates
+
+When assembling the candidate universe offered to the agent for a rebalance, the system
+SHALL exclude tickers that are known to be unexecutable on the configured brokerage — for
+example a listing the broker cannot price or trade — so that such a ticker is not
+repeatedly re-selected as a target on every run. This exclusion applies to rebalance
+candidate assembly and SHALL NOT change which already-held positions a rebalance may sell
+or exit.
+
+#### Scenario: A known-unexecutable ticker is not offered as a candidate
+
+- **WHEN** a rebalance assembles the candidate universe for the agent and a ticker is known
+  to be unexecutable on the configured brokerage
+- **THEN** the system SHALL omit that ticker from the candidates offered to the agent, so it
+  is not re-targeted every run
+
+#### Scenario: Held positions are still actionable
+
+- **WHEN** a ticker excluded from the rebalance candidates is already held by the session
+- **THEN** the exclusion SHALL NOT prevent the rebalance from selling or exiting that held
+  position

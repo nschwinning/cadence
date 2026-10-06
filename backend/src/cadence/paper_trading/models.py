@@ -251,6 +251,11 @@ class PaperTradingSession(Base):
         cascade="all, delete-orphan",
         passive_deletes=True,
     )
+    capital_events: Mapped[list[SessionCapitalEvent]] = relationship(
+        back_populates="session",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+    )
     # View-only link to the traded portfolio so the session can surface its name
     # (the human-facing label). Eager-loaded to keep listing free of N+1 queries.
     portfolio: Mapped[Portfolio] = relationship(
@@ -521,6 +526,82 @@ class SessionValueSnapshot(Base):
     )
 
 
+class SessionDailyRunSnapshot(Base):
+    """A backend-only, per-session, per-day consolidated learning record.
+
+    One row per ``(session_id, run_date)``, assembled by a dedicated cron job that
+    runs *after* the end-of-day value-snapshot (P&L) job — by which point the day's
+    orders have been reconciled (filled prices known) and the ``SessionValueSnapshot``
+    exists. It ties together, from data already persisted elsewhere (no recomputation
+    of indicators, no re-running of the agent): the day's rebalance run and its AI
+    reasoning / result, the technical-indicator values the agent saw, the run's
+    outcome statistics, the day's filled orders (incl. reconciled filled price), and
+    that day's P&L — the shape offline learning needs.
+
+    ``document`` is the consolidated JSONB payload (``run`` | None, ``orders``,
+    ``valuation``); the scalar columns (``session_id``, ``portfolio_id``,
+    ``run_date``) are the only indexed/queryable fields. This record is **never**
+    exposed through a read schema, read API, or frontend — mirroring the deliberate
+    exclusion of ``AIPortfolioEvent.run_stats`` from the run-details read model.
+
+    FKs are ``SET NULL`` so a learning row outlives the session/portfolio/event it
+    references. Unique on ``(session_id, run_date)`` so re-running the assembly on the
+    same day updates that day's row rather than duplicating it.
+    """
+
+    __tablename__ = "session_daily_run_snapshots"
+    __table_args__ = (
+        UniqueConstraint(
+            "session_id",
+            "run_date",
+            name="uq_session_daily_run_snapshots_session_date",
+        ),
+        Index(
+            "idx_session_daily_run_snapshots_session_date",
+            "session_id",
+            "run_date",
+        ),
+        Index(
+            "idx_session_daily_run_snapshots_portfolio",
+            "portfolio_id",
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        server_default=func.gen_random_uuid(),
+    )
+    session_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("paper_trading_sessions.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    portfolio_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("portfolios.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    run_date: Mapped[date] = mapped_column(Date, nullable=False)
+    # The day's rebalance/build/close run, when there was one (null on days with a
+    # value snapshot but no run — weekends, skipped runs, stocks-only idle days).
+    ai_portfolio_event_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("ai_portfolio_events.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    document: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
+
+
 class BenchmarkPrice(Base):
     """One stored daily closing price for a benchmark index.
 
@@ -604,4 +685,49 @@ class StopLossQuarantine(Base):
 
     session: Mapped[PaperTradingSession] = relationship(
         back_populates="stop_loss_quarantines"
+    )
+
+
+class SessionCapitalEvent(Base):
+    """A capital contribution added to a session after it was created.
+
+    Each row records that an operator increased a session's capital by ``amount``
+    with effect from ``effective_date``. The session's original build-time
+    ``allocated_capital`` is NOT stored here — it is treated as an implicit baseline
+    contribution (``allocated_capital`` minus the sum of these rows) so no data
+    backfill is needed and a session with no rows behaves exactly as before. The
+    analytics layer derives a session's contribution set from the baseline plus these
+    rows to compute time-weighted, contribution-aware returns. Increase-only: amounts
+    are always positive. Indexed on ``session_id`` for the per-session read.
+    """
+
+    __tablename__ = "session_capital_events"
+    __table_args__ = (
+        Index(
+            "idx_session_capital_events_session",
+            "session_id",
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        server_default=func.gen_random_uuid(),
+    )
+    session_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("paper_trading_sessions.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    # The contributed amount; always positive (increase-only).
+    amount: Mapped[float] = mapped_column(Float, nullable=False)
+    # The calendar date the contribution takes effect, used to split the return
+    # series and to step up the contribution-aware benchmark overlay.
+    effective_date: Mapped[date] = mapped_column(Date, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    session: Mapped[PaperTradingSession] = relationship(
+        back_populates="capital_events"
     )

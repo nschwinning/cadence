@@ -26,6 +26,7 @@ from cadence.broker.base import Broker
 from cadence.broker.models import AssetClass, OrderSide, OrderStatus, Position
 from cadence.config import settings
 from cadence.paper_trading.benchmark import (
+    Contribution,
     benchmark_return_fraction,
     load_benchmark_series,
     rebased_benchmark_value,
@@ -43,6 +44,7 @@ from cadence.paper_trading.errors import (
     DuplicateSessionError,
     InvalidAssetScopeError,
     InvalidBenchmarkError,
+    InvalidCapitalChangeError,
     SessionNotArchivableError,
     SessionNotFoundError,
 )
@@ -50,6 +52,8 @@ from cadence.paper_trading.models import (
     ClosedPosition,
     PaperTrade,
     PaperTradingSession,
+    SessionCapitalEvent,
+    SessionDailyRunSnapshot,
     SessionPosition,
     SessionRun,
     SessionValueSnapshot,
@@ -315,6 +319,44 @@ def change_session_scope(
     metadata = dict(row.session_metadata or {})
     metadata["asset_types"] = resolved.value
     row.session_metadata = metadata
+    session.commit()
+    session.refresh(row)
+    return row
+
+
+def increase_session_capital(
+    session: Session,
+    *,
+    session_id: uuid.UUID,
+    amount: float,
+) -> PaperTradingSession:
+    """Increase a session's capital, recording the contribution in the ledger.
+
+    Appends one :class:`SessionCapitalEvent` (effective today, UTC) and raises the
+    session's ``allocated_capital`` by ``amount`` in the same transaction, so the
+    derived cash (:func:`compute_session_value`) rises by ``amount`` and the next
+    scheduled rebalance — which sizes against live value — deploys it. No broker
+    call: nothing is bought or sold on contribution.
+
+    Increase-only: an ``amount`` at or below zero raises
+    :class:`InvalidCapitalChangeError` and the session is left unchanged.
+
+    Raises:
+        SessionNotFoundError: if no session has ``session_id``.
+        InvalidCapitalChangeError: if ``amount <= 0``.
+    """
+    if amount <= 0:
+        raise InvalidCapitalChangeError(
+            "capital increase amount must be positive"
+        )
+    row = get_session(session, session_id)
+    event = SessionCapitalEvent(
+        session_id=row.id,
+        amount=amount,
+        effective_date=datetime.now(tz=UTC).date(),
+    )
+    session.add(event)
+    row.allocated_capital += amount
     session.commit()
     session.refresh(row)
     return row
@@ -1274,15 +1316,32 @@ def record_value_snapshot(
     Idempotent per ``(session_id, snapshot_date)``: an existing row for that day is
     updated in place, otherwise a new one is inserted. ``daily_pnl`` is measured
     against the most recent *prior* snapshot's ``total_value`` (or the session's
-    ``allocated_capital`` when none exists); ``daily_pnl_pct`` divides by that
-    baseline, guarding against a non-positive baseline.
+    ``allocated_capital`` when none exists), *minus* any capital contributed on
+    ``as_of`` so an added deposit is not reported as a gain; ``daily_pnl_pct``
+    divides by that baseline, guarding against a non-positive baseline.
     """
     session_row = get_session(session, session_id)
     valuation = compute_session_value(session, session_id=session_id, broker=broker)
 
+    # Capital contributed during this snapshot's period lifts total_value but is not a
+    # gain, so net it out of the day's P&L. The baseline is the prior snapshot's value
+    # (which already reflects earlier contributions) or, for the first snapshot, the
+    # original inception capital (allocated_capital minus every recorded contribution).
+    events = list_capital_events(session, session_id=session_id)
     prior = _prior_snapshot(session, session_id, as_of)
-    baseline = prior.total_value if prior is not None else session_row.allocated_capital
-    daily_pnl = valuation.total_value - baseline
+    if prior is not None:
+        baseline = prior.total_value
+        contributed = sum(
+            event.amount
+            for event in events
+            if prior.snapshot_date < event.effective_date <= as_of
+        )
+    else:
+        baseline = session_row.allocated_capital - sum(e.amount for e in events)
+        contributed = sum(
+            event.amount for event in events if event.effective_date <= as_of
+        )
+    daily_pnl = valuation.total_value - contributed - baseline
     daily_pnl_pct = daily_pnl / baseline if baseline > 0 else 0.0
 
     row = _get_snapshot(session, session_id, as_of)
@@ -1339,14 +1398,197 @@ def list_value_snapshots(
     return list(session.execute(stmt).scalars())
 
 
+def get_value_snapshot(
+    session: Session, *, session_id: uuid.UUID, snapshot_date: date
+) -> SessionValueSnapshot | None:
+    """Return the session's value snapshot for ``snapshot_date`` or ``None``."""
+    return _get_snapshot(session, session_id, snapshot_date)
+
+
+def get_daily_run_snapshot(
+    session: Session, *, session_id: uuid.UUID, run_date: date
+) -> SessionDailyRunSnapshot | None:
+    """Return the session's consolidated learning snapshot for ``run_date`` or ``None``."""
+    stmt = select(SessionDailyRunSnapshot).where(
+        SessionDailyRunSnapshot.session_id == session_id,
+        SessionDailyRunSnapshot.run_date == run_date,
+    )
+    return session.execute(stmt).scalars().first()
+
+
+def record_daily_run_snapshot(
+    session: Session,
+    *,
+    session_id: uuid.UUID,
+    portfolio_id: uuid.UUID | None,
+    run_date: date,
+    ai_portfolio_event_id: uuid.UUID | None,
+    document: dict[str, Any],
+) -> SessionDailyRunSnapshot:
+    """Upsert the session's consolidated daily-run learning snapshot for ``run_date``.
+
+    Idempotent per ``(session_id, run_date)``: an existing row for that day is updated
+    in place (so re-running the assembly reflects the latest reconciled data rather
+    than duplicating), otherwise a new one is inserted. Backend-only — never exposed
+    through a read schema or API.
+    """
+    row = get_daily_run_snapshot(session, session_id=session_id, run_date=run_date)
+    if row is None:
+        row = SessionDailyRunSnapshot(session_id=session_id, run_date=run_date)
+        session.add(row)
+    row.portfolio_id = portfolio_id
+    row.ai_portfolio_event_id = ai_portfolio_event_id
+    row.document = document
+    session.commit()
+    session.refresh(row)
+    return row
+
+
+def list_capital_events(
+    session: Session, *, session_id: uuid.UUID
+) -> list[SessionCapitalEvent]:
+    """Return the session's capital-contribution events, oldest effective-date first."""
+    stmt = (
+        select(SessionCapitalEvent)
+        .where(SessionCapitalEvent.session_id == session_id)
+        .order_by(
+            SessionCapitalEvent.effective_date.asc(),
+            SessionCapitalEvent.created_at.asc(),
+        )
+    )
+    return list(session.execute(stmt).scalars())
+
+
+def session_contributions(
+    session_row: PaperTradingSession,
+    events: Sequence[SessionCapitalEvent],
+    *,
+    start_date: date,
+) -> list[Contribution]:
+    """Derive a session's ordered contribution set from its baseline and events.
+
+    Returns ``{(start_date, allocated_capital − Σ event.amount)}`` followed by one
+    ``(effective_date, amount)`` per event (ascending by effective date). The
+    synthetic first element is the original build capital treated as a contribution
+    on ``start_date``; a session with no events yields a single baseline equal to
+    ``allocated_capital`` — so every contribution-aware formula collapses to the
+    pre-increase behavior. No data backfill is needed.
+    """
+    ordered = sorted(events, key=lambda e: (e.effective_date, e.created_at))
+    baseline_amount = session_row.allocated_capital - sum(e.amount for e in ordered)
+    contributions = [Contribution(effective_date=start_date, amount=baseline_amount)]
+    contributions.extend(
+        Contribution(effective_date=e.effective_date, amount=e.amount)
+        for e in ordered
+    )
+    return contributions
+
+
+def contribution_adjusted_returns(
+    snapshots: Sequence[SessionValueSnapshot],
+    contributions: Sequence[Contribution],
+) -> list[float]:
+    """Per-snapshot, contribution-adjusted daily returns ``r_d``.
+
+    For each snapshot day ``d`` with NAV ``V_d`` and same-period contributions
+    ``C_d``, ``r_d = (V_d − C_d − V_{d−1}) / V_{d−1}``, where ``V_{d−1}`` is the prior
+    snapshot's NAV and, for the first snapshot, the baseline contributed capital
+    (``contributions[0].amount``). Each event is attributed to the first snapshot
+    period whose date is on or after its effective date, so a contribution is never
+    counted as a gain. A non-positive prior value contributes a ``0.0`` return rather
+    than dividing by zero. Without contributions this reduces exactly to the stored
+    daily return series.
+    """
+    if not snapshots:
+        return []
+    baseline = contributions[0].amount
+    events = contributions[1:]
+    series: list[float] = []
+    prev_value = baseline
+    prev_date: date | None = None
+    for snap in snapshots:
+        if prev_date is None:
+            contributed = sum(
+                c.amount for c in events if c.effective_date <= snap.snapshot_date
+            )
+        else:
+            contributed = sum(
+                c.amount
+                for c in events
+                if prev_date < c.effective_date <= snap.snapshot_date
+            )
+        if prev_value > 0:
+            series.append((snap.total_value - contributed - prev_value) / prev_value)
+        else:
+            series.append(0.0)
+        prev_value = snap.total_value
+        prev_date = snap.snapshot_date
+    return series
+
+
+def time_weighted_return(
+    snapshots: Sequence[SessionValueSnapshot],
+    contributions: Sequence[Contribution],
+    *,
+    live_value: float,
+    as_of: date,
+) -> float:
+    """Chained time-weighted return of the contribution-adjusted daily series.
+
+    Chains the per-snapshot returns from :func:`contribution_adjusted_returns` and a
+    final live sub-period (from the last snapshot — or the baseline when there are no
+    snapshots — to ``live_value`` at ``as_of``), excluding any contribution effective
+    in that final period. Returns ``Π(1 + r) − 1``. Without contributions this
+    telescopes to the simple return ``(live_value − allocated_capital) /
+    allocated_capital``.
+    """
+    series = list(contribution_adjusted_returns(snapshots, contributions))
+    events = contributions[1:]
+    if snapshots:
+        last = snapshots[-1]
+        contributed = sum(
+            c.amount
+            for c in events
+            if last.snapshot_date < c.effective_date <= as_of
+        )
+        if last.total_value > 0:
+            series.append(
+                (live_value - contributed - last.total_value) / last.total_value
+            )
+    else:
+        baseline = contributions[0].amount
+        contributed = sum(c.amount for c in events if c.effective_date <= as_of)
+        if baseline > 0:
+            series.append((live_value - contributed - baseline) / baseline)
+    growth = 1.0
+    for r in series:
+        growth *= 1.0 + r
+    return growth - 1.0
+
+
+def _growth_index(returns: Sequence[float]) -> list[float]:
+    """Cumulative growth index ``g_d = Π_{i≤d}(1 + r_i)`` of a return series.
+
+    Used for a contribution-aware max-drawdown: a deposit does not look like a jump
+    or a recovery because the index tracks compounded return, not raw NAV.
+    """
+    index: list[float] = []
+    growth = 1.0
+    for r in returns:
+        growth *= 1.0 + r
+        index.append(growth)
+    return index
+
+
 @dataclass(frozen=True)
 class ValueHistoryPoint:
     """A value snapshot paired with the session's benchmark value for its date.
 
-    ``benchmark_value`` is a buy-and-hold of the session's allocated capital in the
-    session's benchmark, rebased so it equals the allocated capital on the session's
-    first snapshot date; ``None`` when the benchmark has no stored price on or before
-    the snapshot's date.
+    ``benchmark_value`` is a buy-and-hold of the session's contributed capital in the
+    session's benchmark: each contribution buys units at its effective date's close,
+    so the line receives the same cash the session did and steps up on a contribution
+    date. ``None`` when the benchmark has no stored price on or before the snapshot's
+    date.
     """
 
     snapshot: SessionValueSnapshot
@@ -1372,14 +1614,16 @@ def list_value_history(
 
     series = load_benchmark_series(session, session_row.benchmark)
     start_date = snapshots[0].snapshot_date
-    allocated = session_row.allocated_capital
+    events = list_capital_events(session, session_id=session_id)
+    contributions = session_contributions(
+        session_row, events, start_date=start_date
+    )
     return [
         ValueHistoryPoint(
             snapshot=snap,
             benchmark_value=rebased_benchmark_value(
                 series,
-                allocated_capital=allocated,
-                start_date=start_date,
+                contributions=contributions,
                 as_of=snap.snapshot_date,
             ),
         )
@@ -1528,10 +1772,13 @@ class SessionKpis:
     transaction cost charged to date; ``daily_avg_transaction_cost`` the cumulative
     fees divided by the number of recorded daily value snapshots (``None`` until the
     session has at least one snapshot); ``total_return`` the absolute gain/loss versus
-    allocated capital (``current_value − allocated_capital``) and
-    ``total_return_pct`` the same as a fraction of allocated capital;
-    ``sharpe_ratio`` the annualised Sharpe of the daily NAV series, or ``None``
-    until enough history exists. ``benchmark`` is the session's benchmark id;
+    total contributed capital (``current_value − allocated_capital``) and
+    ``total_return_pct`` the *time-weighted* fractional return (the chained
+    contribution-adjusted daily series, so a mid-session capital increase is not
+    counted as a gain; equal to the simple return when there are no contributions);
+    ``sharpe_ratio`` the annualised Sharpe of the contribution-adjusted daily return
+    series, or ``None`` until enough history exists. ``benchmark`` is the session's
+    benchmark id;
     ``benchmark_return_pct`` the benchmark's buy-and-hold fractional return over the
     session's period and ``excess_return_pct`` the session's total-return fraction
     minus it; ``excess_return`` is that excess as an absolute amount
@@ -1540,8 +1787,9 @@ class SessionKpis:
     same capital. All three are ``None`` when the benchmark has insufficient stored
     prices.
 
-    ``max_drawdown`` is the largest peak-to-trough decline of the daily NAV series
-    as a non-negative fraction (``None`` without snapshots). ``win_rate`` is the
+    ``max_drawdown`` is the largest peak-to-trough decline of the session's
+    cumulative growth index (the compounded contribution-adjusted daily returns) as a
+    non-negative fraction (``None`` without snapshots). ``win_rate`` is the
     fraction of closed positions with realised P&L > 0; ``average_win`` and
     ``average_loss`` the mean realised P&L of the winning/losing closed positions;
     ``best_trade`` and ``worst_trade`` the max/min realised P&L. The trade figures
@@ -1579,20 +1827,39 @@ def session_kpis(
     """Compute a session's live performance KPIs (404 via ``SessionNotFoundError``).
 
     Marks the session's open positions to market via ``broker`` for the live
-    figures, reads the cumulative realised P&L from the session row, derives the
-    absolute and fractional total return against allocated capital, and computes
-    the Sharpe ratio from the session's ordered daily-return snapshots. The
-    risk-free rate is the configured annual rate converted to a per-day rate.
+    figures, reads the cumulative realised P&L from the session row, and derives the
+    absolute total return against total contributed capital
+    (``allocated_capital``). The fractional total return is *time-weighted*: the
+    contribution-adjusted daily return series is chained so a mid-session capital
+    increase is not counted as a gain and historical return stays comparable across
+    deposits. The Sharpe ratio and max drawdown use that same series (the latter via
+    its cumulative growth index). The risk-free rate is the configured annual rate
+    converted to a per-day rate. A session with no contributions reduces exactly to
+    the simple-return behavior.
     """
     session_row = get_session(session, session_id)
     valuation = compute_session_value(session, session_id=session_id, broker=broker)
 
     allocated = session_row.allocated_capital
+    # Absolute return stays contribution-neutral: allocated_capital is the running
+    # total of contributed capital, so current value minus it is the real dollar gain.
     total_return = valuation.total_value - allocated
-    total_return_pct = total_return / allocated if allocated > 0 else 0.0
 
     snapshots = list_value_snapshots(session, session_id=session_id)
-    daily_returns = [snap.daily_pnl_pct for snap in snapshots]
+    as_of = datetime.now(tz=UTC).date()
+    start_date = snapshots[0].snapshot_date if snapshots else as_of
+    events = list_capital_events(session, session_id=session_id)
+    contributions = session_contributions(session_row, events, start_date=start_date)
+
+    # Fractional total return is time-weighted over the contribution-adjusted daily
+    # series plus a final live leg, so an injected deposit never inflates it.
+    total_return_pct = time_weighted_return(
+        snapshots, contributions, live_value=valuation.total_value, as_of=as_of
+    )
+    # Sharpe and drawdown read the same contribution-adjusted daily series (not the
+    # raw stored daily_pnl_pct, which was measured against whatever allocated capital
+    # existed when each snapshot was written).
+    daily_returns = contribution_adjusted_returns(snapshots, contributions)
     daily_risk_free = settings.SHARPE_RISK_FREE_RATE / SHARPE_TRADING_DAYS_PER_YEAR
 
     # Average transaction cost per snapshot day: cumulative fees spread over the
@@ -1605,27 +1872,36 @@ def session_kpis(
     # Benchmark comparison: buy-and-hold return from the session's start (its first
     # snapshot date) to the latest available benchmark close. Unavailable (None)
     # when the session has no snapshots yet or the series lacks a start/end close.
+    #
+    # The benchmark fraction is intentionally NOT contribution-aware: a benchmark is
+    # a single buy-and-hold instrument, so its per-dollar (time-weighted) return
+    # over the period is close(latest)/close(start) − 1 regardless of cash flows.
+    # Both sides of the excess are therefore time-weighted and comparable. (The
+    # value-history dollar overlay, by contrast, IS contribution-aware so the chart
+    # line receives the same cash — see rebased_benchmark_value. Do not "unify" them.)
     benchmark_return_pct: float | None = None
     if snapshots:
         series = load_benchmark_series(session, session_row.benchmark)
         benchmark_return_pct = benchmark_return_fraction(
             series,
             start_date=snapshots[0].snapshot_date,
-            as_of=datetime.now(tz=UTC).date(),
+            as_of=as_of,
         )
     excess_return_pct = (
         total_return_pct - benchmark_return_pct
         if benchmark_return_pct is not None
         else None
     )
-    # Absolute excess on the session's allocated capital. total_return already nets
+    # Absolute excess on the session's contributed capital. total_return already nets
     # out per-trade fees while the benchmark leg is a costless buy-and-hold, so this
     # is the session's real net-of-fees dollar gain minus the index's dollar gain.
     excess_return = (
         excess_return_pct * allocated if excess_return_pct is not None else None
     )
 
-    drawdown = max_drawdown([snap.total_value for snap in snapshots])
+    # Drawdown from the cumulative growth index so a contribution is not read as a
+    # jump or a recovery (identical to NAV drawdown when there are no contributions).
+    drawdown = max_drawdown(_growth_index(daily_returns))
     trade_stats = closed_position_stats(
         list_closed_position_pnls(session, session_id)
     )

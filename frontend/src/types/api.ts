@@ -269,6 +269,8 @@ export interface PaperTradingSession {
   strategy_key: string;
   status: string;
   allocated_capital: number;
+  /** Total capital contributed to date (initial allocation + every increase). */
+  contributed_capital: number;
   max_allocation_pct: number;
   created_at: string;
   updated_at: string;

@@ -73,7 +73,12 @@ from cadence.paper_trading.constants import (
     SessionStatus,
     benchmark_display_name,
 )
-from cadence.paper_trading.models import PaperTradingSession, SessionPosition
+from cadence.paper_trading.models import (
+    PaperTrade,
+    PaperTradingSession,
+    SessionPosition,
+    SessionValueSnapshot,
+)
 from cadence.portfolios import service as portfolios_service
 from cadence.portfolios.constants import PortfolioSource, RiskProfile
 from cadence.technical_indicators import service as ti_service
@@ -913,6 +918,14 @@ def run_rebalance_event(
             for asset in universe
             if asset.category in allowed_categories and not _is_quarantined(asset.ticker)
         ]
+        # Drop tickers the brokerage cannot trade (e.g. a legacy dot-suffixed
+        # foreign listing like ``ASML.AS``) so the agent stops re-targeting a name
+        # that can never fill. This filters only the candidates offered to the
+        # agent; held positions remain in the rebalance's trade set and can still be
+        # exited.
+        scoped_universe, excluded_candidates = _exclude_unexecutable_candidates(
+            scoped_universe, asset_classes, broker
+        )
         candidate_snapshots = (
             ti_service.get_latest_snapshots(
                 session, [asset.id for asset in scoped_universe]
@@ -923,6 +936,7 @@ def run_rebalance_event(
         candidates, dropped_candidates = _candidates_from_universe(
             scoped_universe, candidate_snapshots, apply_gate=gating_enabled
         )
+        dropped_candidates.extend(excluded_candidates)
         holding_snapshots = (
             _snapshots_by_ticker(
                 session, [entry.ticker for entry in ledger if entry.quantity]
@@ -1396,6 +1410,184 @@ def snapshot_all_sessions(
 
 
 # --------------------------------------------------------------------------- #
+# Daily-run learning snapshot (backend-only, consolidation for offline learning)
+# --------------------------------------------------------------------------- #
+
+
+def _find_day_rebalance_event(
+    session: Session, session_id: uuid.UUID, run_date: date
+) -> AIPortfolioEvent | None:
+    """Return the session's most recent run whose calendar day is ``run_date``.
+
+    "Calendar day" is measured in :data:`_SNAPSHOT_TZ` — the same timezone the daily
+    snapshot job uses to derive the day — so the learning row and the value snapshot
+    agree on the day boundary. Returns ``None`` when the session had no run that day
+    (a weekend, a skipped run, or a stocks-only idle day).
+    """
+    start = datetime(
+        run_date.year, run_date.month, run_date.day, tzinfo=_SNAPSHOT_TZ
+    )
+    end = start + timedelta(days=1)
+    stmt = (
+        select(AIPortfolioEvent)
+        .where(
+            AIPortfolioEvent.session_id == session_id,
+            AIPortfolioEvent.created_at >= start,
+            AIPortfolioEvent.created_at < end,
+        )
+        .order_by(AIPortfolioEvent.created_at.desc(), AIPortfolioEvent.id.desc())
+        .limit(1)
+    )
+    return session.execute(stmt).scalars().first()
+
+
+def _order_document(trade: PaperTrade) -> dict[str, Any]:
+    """The reconciled view of a single filled order for the learning document.
+
+    Reads the authoritative ``filled_price``/``filled_at``/``order_status`` written
+    by reconciliation onto the ``PaperTrade`` row (the reason assembly runs after the
+    P&L/reconciliation job) rather than the as-decided price in ``run_stats``.
+    """
+    return {
+        "ticker": trade.ticker,
+        "side": trade.side,
+        "quantity": trade.quantity,
+        "price": trade.price,
+        "notional": trade.notional,
+        "signal_type": trade.signal_type,
+        "order_id": trade.order_id,
+        "order_status": trade.order_status,
+        "filled_price": trade.filled_price,
+        "filled_at": trade.filled_at.isoformat() if trade.filled_at else None,
+        "executed_at": trade.executed_at.isoformat() if trade.executed_at else None,
+    }
+
+
+def _build_run_document(
+    event: AIPortfolioEvent | None,
+    trades: list[PaperTrade],
+    snapshot: SessionValueSnapshot,
+) -> dict[str, Any]:
+    """Assemble the consolidated learning ``document`` from already-persisted data.
+
+    ``run`` carries the day's rebalance reasoning/result (``result_payload``), the
+    indicator values the agent saw (``trend_context``), and the run outcome stats
+    (``run_stats``) — or ``None`` on a day with no run. ``orders`` is the day's
+    reconciled filled orders. ``valuation`` is the day's P&L from the value snapshot.
+    No indicator is recomputed and the agent is not re-run.
+    """
+    run: dict[str, Any] | None = None
+    if event is not None:
+        run = {
+            "event_id": str(event.id),
+            "event_type": event.event_type,
+            "status": event.status,
+            "result_payload": event.result_payload,
+            "trend_context": event.trend_context,
+            "run_stats": event.run_stats,
+            "duration_ms": event.duration_ms,
+            "error": event.error,
+        }
+    return {
+        "run": run,
+        "orders": [_order_document(t) for t in trades],
+        "valuation": {
+            "total_value": snapshot.total_value,
+            "cash_value": snapshot.cash_value,
+            "positions_value": snapshot.positions_value,
+            "daily_pnl": snapshot.daily_pnl,
+            "daily_pnl_pct": snapshot.daily_pnl_pct,
+            "positions": snapshot.positions,
+        },
+    }
+
+
+def _assemble_session_daily_run(
+    session: Session, session_row: PaperTradingSession, run_date: date
+) -> bool:
+    """Upsert one consolidated learning snapshot for ``session_row`` on ``run_date``.
+
+    Returns ``True`` when a row was recorded. A session with no value snapshot for the
+    day is skipped (returns ``False``) — keeping the learning table aligned 1:1 with
+    the P&L table. On a day with a value snapshot but no run, the row is recorded with
+    the run/orders portions absent.
+    """
+    value_snapshot = paper_service.get_value_snapshot(
+        session, session_id=session_row.id, snapshot_date=run_date
+    )
+    if value_snapshot is None:
+        return False
+
+    event = _find_day_rebalance_event(session, session_row.id, run_date)
+    trades = (
+        paper_service.get_trades_by_event(session, event.id)
+        if event is not None
+        else []
+    )
+    document = _build_run_document(event, trades, value_snapshot)
+    paper_service.record_daily_run_snapshot(
+        session,
+        session_id=session_row.id,
+        portfolio_id=session_row.portfolio_id,
+        run_date=run_date,
+        ai_portfolio_event_id=event.id if event is not None else None,
+        document=document,
+    )
+    return True
+
+
+def assemble_daily_run_snapshots(
+    session: Session,
+    *,
+    as_of: date | None = None,
+) -> list[uuid.UUID]:
+    """Assemble the backend-only consolidated daily-run learning snapshots for the day.
+
+    A **dedicated** job, separate from both the rebalance run and the end-of-day
+    value-snapshot (P&L) job, and intended (a deployment/cron concern) to run **after**
+    the P&L job so the day's value snapshot exists and the day's orders are reconciled.
+    Selects the day's sessions with the **same selection semantics** as
+    :func:`snapshot_all_sessions` (active AI-managed sessions; on a weekend only those
+    whose configured scope includes crypto), assembles each that has a value snapshot
+    for the day, and upserts one row per ``(session_id, run_date)``.
+
+    Best-effort per session: a failure assembling one session's learning snapshot is
+    logged and skipped so it never aborts the batch. Returns the ids of the sessions
+    for which a learning snapshot was recorded.
+    """
+    if as_of is None:
+        as_of = datetime.now(tz=_SNAPSHOT_TZ).date()
+    is_weekend = as_of.weekday() >= 5  # Sat=5, Sun=6
+
+    sessions = paper_service.list_sessions(
+        session, status=SessionStatus.ACTIVE, limit=500
+    )
+    targets = [s for s in sessions if s.strategy_key == AI_STRATEGY_KEY]
+
+    recorded: list[uuid.UUID] = []
+    for session_row in targets:
+        # Mirror the P&L job's weekend gating: a stocks-only session is not
+        # snapshotted on a weekend, so it has no value snapshot and nothing to learn.
+        if is_weekend and not session_allows_crypto(session_row):
+            continue
+        try:
+            if _assemble_session_daily_run(session, session_row, as_of):
+                recorded.append(session_row.id)
+        except Exception:  # one session's failure must not abort the batch
+            session.rollback()
+            logger.exception(
+                "Failed to assemble daily-run learning snapshot for session %s",
+                session_row.id,
+            )
+
+    if recorded:
+        logger.info(
+            "Daily-run learning snapshot recorded for %s AI session(s)", len(recorded)
+        )
+    return recorded
+
+
+# --------------------------------------------------------------------------- #
 # Stop-loss scan
 # --------------------------------------------------------------------------- #
 
@@ -1777,9 +1969,10 @@ def _benchmark_suffix(
 
     Computes the session's benchmark buy-and-hold return over the period (from its
     first snapshot date to ``as_of``, using stored prices) and the excess return
-    (session total return − benchmark return). Returns ``None`` when the session has
-    no snapshots or the benchmark lacks usable stored prices, so the caller omits
-    the suffix.
+    (session time-weighted total return − benchmark return). The session leg is
+    time-weighted and contribution-aware so a mid-session capital increase is not
+    counted as a gain. Returns ``None`` when the session has no snapshots or the
+    benchmark lacks usable stored prices, so the caller omits the suffix.
     """
     snapshots = paper_service.list_value_snapshots(
         session, session_id=session_row.id
@@ -1792,9 +1985,12 @@ def _benchmark_suffix(
     )
     if benchmark_return is None:
         return None
-    allocated = session_row.allocated_capital
-    total_return_pct = (
-        (snapshot.total_value - allocated) / allocated if allocated > 0 else 0.0
+    events = paper_service.list_capital_events(session, session_id=session_row.id)
+    contributions = paper_service.session_contributions(
+        session_row, events, start_date=snapshots[0].snapshot_date
+    )
+    total_return_pct = paper_service.time_weighted_return(
+        snapshots, contributions, live_value=snapshot.total_value, as_of=as_of
     )
     excess = total_return_pct - benchmark_return
     name = benchmark_display_name(Benchmark(session_row.benchmark))
@@ -2070,6 +2266,52 @@ def _candidates_from_universe(
             continue
         candidates.append({**base, "indicators": _indicator_annotation(snap)})
     return candidates, dropped
+
+
+def _exclude_unexecutable_candidates(
+    scoped_universe: list[Asset],
+    asset_classes: dict[str, AssetClass],
+    broker: Broker,
+) -> tuple[list[Asset], list[dict[str, Any]]]:
+    """Drop universe assets the broker cannot trade from the rebalance candidates.
+
+    An asset with a stored ``alpaca_symbol`` was already verified tradable on the
+    brokerage at add-time, so it is kept without re-probing. An asset without one —
+    a legacy row added before that verification, e.g. a dot-suffixed foreign
+    listing like ``ASML.AS`` — is probed via :meth:`Broker.get_asset`; it is
+    excluded only when the broker positively reports it missing or non-tradable. A
+    broker error leaves the asset in place (fail open) so a transient outage never
+    empties the candidate set. This filters only the candidates offered to the
+    agent, not the held-position set a rebalance sells from, so a held but
+    now-unexecutable position can still be exited.
+
+    Returns ``(kept, excluded)`` where ``excluded`` carries ``{ticker, reason}``
+    records for reporting alongside the gate's dropped candidates.
+    """
+    kept: list[Asset] = []
+    excluded: list[dict[str, Any]] = []
+    for asset in scoped_universe:
+        if asset.alpaca_symbol:
+            kept.append(asset)
+            continue
+        cls = asset_classes.get(asset.ticker, AssetClass.EQUITY)
+        try:
+            info = broker.get_asset(asset.ticker, cls)
+        except Exception as exc:  # noqa: BLE001 - a broker outage must not prune
+            logger.warning(
+                "AI rebalance: tradability probe failed for %s: %s",
+                asset.ticker,
+                exc,
+            )
+            kept.append(asset)
+            continue
+        if info is None or not info.tradable:
+            excluded.append(
+                {"ticker": asset.ticker, "reason": "not tradable on brokerage"}
+            )
+            continue
+        kept.append(asset)
+    return kept, excluded
 
 
 def _snapshots_by_ticker(

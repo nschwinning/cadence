@@ -1,4 +1,4 @@
-import { useState, type ComponentProps } from 'react';
+import { useState, type ComponentProps, type FormEvent } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import {
   DEFAULT_SESSIONS_PARAMS,
@@ -12,6 +12,7 @@ import {
   useBenchmarks,
   useChangeSessionBenchmark,
   useChangeSessionScope,
+  useIncreaseSessionCapital,
 } from '../../api/paperTrading';
 import { useSessionEvents } from '../../api/aiPortfolio';
 import {
@@ -676,6 +677,9 @@ function SessionHeader({
         <div>
           <ScopeSwitcher sessionId={sessionId} current={session.asset_types} />
         </div>
+        <div>
+          <CapitalIncreaser sessionId={sessionId} />
+        </div>
       </dl>
       {feedback}
     </header>
@@ -1079,6 +1083,68 @@ function ScopeSwitcher({
         </p>
       )}
     </div>
+  );
+}
+
+/**
+ * An "Add capital" control: a numeric amount input plus a submit button that
+ * increases the session's capital (increase-only). Empty, non-numeric, zero, and
+ * negative amounts are rejected client-side without a request; a successful
+ * submit clears the field and the hook invalidates the session, its KPIs, and its
+ * value-history so the added investable cash is reflected.
+ */
+function CapitalIncreaser({ sessionId }: { sessionId: string }) {
+  const [amount, setAmount] = useState('');
+  const mutation = useIncreaseSessionCapital(sessionId);
+  const parsed = Number(amount);
+  const valid = amount.trim() !== '' && Number.isFinite(parsed) && parsed > 0;
+
+  function handleSubmit(e: FormEvent) {
+    e.preventDefault();
+    if (!valid || mutation.isPending) return;
+    mutation.mutate(parsed, { onSuccess: () => setAmount('') });
+  }
+
+  return (
+    <form onSubmit={handleSubmit}>
+      <label
+        htmlFor="capital-amount"
+        className="text-xs font-semibold uppercase tracking-wide text-slate-500"
+      >
+        Add capital
+      </label>
+      <div className="mt-1 flex gap-2">
+        <input
+          id="capital-amount"
+          type="number"
+          min="0"
+          step="any"
+          inputMode="decimal"
+          placeholder="Amount"
+          className="block w-full rounded border border-slate-300 bg-white px-2 py-1 text-sm text-slate-900 disabled:opacity-60"
+          value={amount}
+          disabled={mutation.isPending}
+          onChange={(e) => setAmount(e.target.value)}
+        />
+        <button
+          type="submit"
+          className="rounded bg-slate-900 px-2 py-1 text-sm font-medium text-white hover:bg-slate-700 disabled:opacity-60"
+          disabled={!valid || mutation.isPending}
+        >
+          Add
+        </button>
+      </div>
+      {mutation.isPending && (
+        <p role="status" aria-live="polite" className="mt-1 text-xs text-slate-500">
+          Adding…
+        </p>
+      )}
+      {mutation.isError && (
+        <p role="alert" className="mt-1 text-xs text-red-700">
+          Could not add capital.
+        </p>
+      )}
+    </form>
   );
 }
 

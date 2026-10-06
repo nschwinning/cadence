@@ -12,6 +12,7 @@ from tests.fakes import FakeMarketDataProvider
 from cadence.assets.market_data import HistoryBar
 from cadence.paper_trading.benchmark import (
     BenchmarkSeries,
+    Contribution,
     benchmark_return_fraction,
     ingest_benchmark_prices,
     load_benchmark_series,
@@ -77,13 +78,14 @@ def test_close_on_or_before_pre_series_is_none() -> None:
 def test_rebased_value_first_snapshot_equals_allocated() -> None:
     series = _series()
     start = date(2026, 1, 3)
+    baseline = [Contribution(effective_date=start, amount=100_000.0)]
     # Valued at the start date the buy-and-hold equals the allocated capital.
     assert rebased_benchmark_value(
-        series, allocated_capital=100_000.0, start_date=start, as_of=start
+        series, contributions=baseline, as_of=start
     ) == 100_000.0
     # +6% by Jan 6.
     assert rebased_benchmark_value(
-        series, allocated_capital=100_000.0, start_date=start, as_of=date(2026, 1, 6)
+        series, contributions=baseline, as_of=date(2026, 1, 6)
     ) == 106_000.0
 
 
@@ -92,12 +94,31 @@ def test_rebased_value_null_when_no_prices() -> None:
     assert (
         rebased_benchmark_value(
             empty,
-            allocated_capital=100_000.0,
-            start_date=date(2026, 1, 3),
+            contributions=[Contribution(effective_date=date(2026, 1, 3), amount=100_000.0)],
             as_of=date(2026, 1, 6),
         )
         is None
     )
+
+
+def test_rebased_value_later_contribution_steps_line_up() -> None:
+    # A second contribution buys units at its effective date's close, so the dollar
+    # line steps up on and after that date but not before it.
+    series = _series()  # Jan 3 -> 100.0, Jan 6 -> 106.0
+    start = date(2026, 1, 3)
+    contributions = [
+        Contribution(effective_date=start, amount=100_000.0),
+        Contribution(effective_date=date(2026, 1, 6), amount=50_000.0),
+    ]
+    # On the start date only the baseline is in effect (the later contribution is
+    # ignored), so the value equals the baseline alone.
+    assert rebased_benchmark_value(
+        series, contributions=contributions, as_of=start
+    ) == 100_000.0
+    # By Jan 6 the baseline has grown +6% and the fresh 50k is added at Jan 6's close.
+    assert rebased_benchmark_value(
+        series, contributions=contributions, as_of=date(2026, 1, 6)
+    ) == pytest.approx(106_000.0 + 50_000.0)
 
 
 def test_benchmark_return_fraction_matches_price_move() -> None:

@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import bisect
 import logging
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import date
 
@@ -134,28 +135,51 @@ def load_benchmark_series(session: Session, benchmark: str) -> BenchmarkSeries:
     return BenchmarkSeries(dates=dates, closes=closes)
 
 
+@dataclass(frozen=True)
+class Contribution:
+    """One capital contribution to a session: its amount and effective date.
+
+    Defined here (not in the service) so :func:`rebased_benchmark_value` can take the
+    contribution set without the service→benchmark import becoming a cycle.
+    """
+
+    effective_date: date
+    amount: float
+
+
 def rebased_benchmark_value(
     series: BenchmarkSeries,
     *,
-    allocated_capital: float,
-    start_date: date,
+    contributions: Sequence[Contribution],
     as_of: date,
 ) -> float | None:
-    """Value a buy-and-hold of ``allocated_capital`` in the benchmark at ``as_of``.
+    """Value a contribution-aware buy-and-hold of the benchmark at ``as_of``.
 
-    ``allocated_capital * close(as_of) / close(start_date)`` using the last stored
-    close on or before each date (so the curve starts equal to allocated capital on
-    the session's first snapshot date). Returns ``None`` when the series has no close
-    on or before the start date or the as-of date, or the start close is non-positive
-    — the read degrades gracefully rather than erroring.
+    ``Σ_c c.amount * close(as_of) / close(c.effective_date)`` over every contribution
+    effective on or before ``as_of``, using the last stored close on or before each
+    date. Each contribution "buys units" at its effective date's close, so the line
+    receives the same cash the session did and steps up on a contribution date. For a
+    single contribution (the baseline) this equals the old
+    ``amount * close(as_of) / close(start_date)``. Returns ``None`` when the series
+    has no close on or before ``as_of`` or no contribution has a usable start close —
+    the read degrades gracefully rather than erroring.
     """
-    start_close = series.close_on_or_before(start_date)
-    if start_close is None or start_close <= 0:
-        return None
     as_of_close = series.close_on_or_before(as_of)
     if as_of_close is None:
         return None
-    return allocated_capital * as_of_close / start_close
+    total = 0.0
+    any_valid = False
+    for contribution in contributions:
+        if contribution.effective_date > as_of:
+            continue
+        start_close = series.close_on_or_before(contribution.effective_date)
+        if start_close is None or start_close <= 0:
+            continue
+        total += contribution.amount * as_of_close / start_close
+        any_valid = True
+    if not any_valid:
+        return None
+    return total
 
 
 def benchmark_return_fraction(
