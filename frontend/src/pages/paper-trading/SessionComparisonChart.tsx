@@ -1,9 +1,16 @@
 import { useState } from 'react';
 import { useSessionsValueComparison } from '../../api/paperTrading';
 import type { SessionValueComparisonSeries } from '../../types/api';
-import { formatAxisDate, formatCurrency, formatPercent } from '../../lib/format';
+import {
+  formatAxisDate,
+  formatCurrency,
+  formatPercent,
+  formatTooltipDate,
+} from '../../lib/format';
 import { categoricalColor } from '../../lib/palette';
 import { ChartAxes } from './ChartAxes';
+import { ChartTooltip } from './ChartTooltip';
+import { useChartHover } from './useChartHover';
 import { Panel } from './PaperTradingSessionPage';
 
 /** Which metric the comparison chart plots. */
@@ -21,6 +28,8 @@ function colorFor(index: number): string {
 /** A single plotted point in the current metric's units, on a calendar x-axis. */
 interface PlotPoint {
   t: number;
+  /** The point's source ISO date, carried for timezone-safe tooltip formatting. */
+  date: string;
   value: number;
 }
 
@@ -47,6 +56,7 @@ function toPlotSeries(
     metric === 'value' || canReturn
       ? series.points.map((p) => ({
           t: Date.parse(p.snapshot_date),
+          date: p.snapshot_date,
           value:
             metric === 'value'
               ? p.total_value
@@ -87,7 +97,28 @@ function ComparisonCurves({
       </div>
     );
   }
+  // The plot (and its hover hook) is its own component so the hook only mounts
+  // when there is at least one plottable line; the placeholder returns first.
+  // Keying on the metric remounts the plot when the toggle switches, which
+  // clears any active hover so a stale, wrong-metric tooltip never lingers.
+  return <ComparisonPlot key={metric} plottable={plottable} metric={metric} />;
+}
 
+/** The hovered point resolved across every plotted series. */
+interface ComparisonHover {
+  label: string;
+  color: string;
+  point: PlotPoint;
+}
+
+/** The plotted multi-line comparison chart with axes and a hover tooltip. */
+function ComparisonPlot({
+  plottable,
+  metric,
+}: {
+  plottable: PlotSeries[];
+  metric: Metric;
+}) {
   const width = 800;
   const height = 160;
   const pad = 8;
@@ -119,48 +150,124 @@ function ComparisonCurves({
     formatAxisDate(new Date(maxT).toISOString().slice(0, 10)),
   ];
 
+  // Hover: map the pointer ratio to a target calendar time, then pick the single
+  // nearest plotted point across all series (by time distance). The value is
+  // formatted for the active metric so the tooltip tracks the toggle.
+  const hover = useChartHover<ComparisonHover>((ratio) => {
+    const dataPos = Math.min(
+      1,
+      Math.max(0, (ratio * width - pad) / (width - 2 * pad)),
+    );
+    const target = minT + dataPos * tSpan;
+    let best: ComparisonHover | null = null;
+    let bestDist = Infinity;
+    for (const s of plottable) {
+      for (const point of s.points) {
+        const dist = Math.abs(point.t - target);
+        if (dist < bestDist) {
+          bestDist = dist;
+          best = { label: s.label, color: s.color, point };
+        }
+      }
+    }
+    if (!best) return null;
+    return {
+      payload: best,
+      xFraction: x(best.point.t) / width,
+      yFraction: y(best.point.value) / height,
+    };
+  });
+
+  const active = hover.active;
+
   return (
     <ChartAxes yLabels={yLabels} xLabels={xLabels}>
-      <svg
-        viewBox={`0 0 ${width} ${height}`}
-        preserveAspectRatio="none"
-        className="h-40 w-full"
-        role="img"
-        aria-label={`Session comparison by ${
-          metric === 'return' ? 'return percent' : 'portfolio value'
-        }`}
+      <div
+        className="relative"
+        onPointerMove={hover.onPointerMove}
+        onPointerLeave={hover.onPointerLeave}
       >
-        {showBaseline && (
-          <line
-            x1={pad}
-            x2={width - pad}
-            y1={y(0)}
-            y2={y(0)}
-            stroke="#94a3b8"
-            strokeWidth={1}
-            strokeDasharray="4 3"
-            vectorEffect="non-scaling-stroke"
-            aria-label="0% baseline"
-            data-testid="comparison-baseline"
-          />
+        <svg
+          viewBox={`0 0 ${width} ${height}`}
+          preserveAspectRatio="none"
+          className="h-40 w-full"
+          role="img"
+          aria-label={`Session comparison by ${
+            metric === 'return' ? 'return percent' : 'portfolio value'
+          }`}
+        >
+          {showBaseline && (
+            <line
+              x1={pad}
+              x2={width - pad}
+              y1={y(0)}
+              y2={y(0)}
+              stroke="#94a3b8"
+              strokeWidth={1}
+              strokeDasharray="4 3"
+              vectorEffect="non-scaling-stroke"
+              aria-label="0% baseline"
+              data-testid="comparison-baseline"
+            />
+          )}
+          {plottable.map((s) => (
+            <polyline
+              key={s.id}
+              points={s.points
+                .map((p) => `${x(p.t).toFixed(2)},${y(p.value).toFixed(2)}`)
+                .join(' ')}
+              fill="none"
+              stroke={s.color}
+              strokeWidth={2}
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              vectorEffect="non-scaling-stroke"
+              aria-label={s.label}
+              data-testid="comparison-line"
+            />
+          ))}
+          {active && (
+            <line
+              x1={active.xFraction * width}
+              x2={active.xFraction * width}
+              y1={pad}
+              y2={height - pad}
+              stroke="#94a3b8"
+              strokeWidth={1}
+              strokeDasharray="3 3"
+              vectorEffect="non-scaling-stroke"
+            />
+          )}
+        </svg>
+        {active && (
+          <>
+            <span
+              aria-hidden="true"
+              className="pointer-events-none absolute h-2 w-2 -translate-x-1/2 -translate-y-1/2 rounded-full ring-2 ring-white"
+              style={{
+                left: `${active.xFraction * 100}%`,
+                top: `${active.yFraction * 100}%`,
+                backgroundColor: active.payload.color,
+              }}
+            />
+            <ChartTooltip
+              xFraction={active.xFraction}
+              yFraction={active.yFraction}
+              date={formatTooltipDate(active.payload.point.date)}
+              rows={[
+                {
+                  label: active.payload.label,
+                  value:
+                    metric === 'return'
+                      ? formatPercent(active.payload.point.value)
+                      : formatCurrency(active.payload.point.value),
+                  color: active.payload.color,
+                },
+              ]}
+            />
+          </>
         )}
-        {plottable.map((s) => (
-          <polyline
-            key={s.id}
-            points={s.points
-              .map((p) => `${x(p.t).toFixed(2)},${y(p.value).toFixed(2)}`)
-              .join(' ')}
-            fill="none"
-            stroke={s.color}
-            strokeWidth={2}
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            vectorEffect="non-scaling-stroke"
-            aria-label={s.label}
-            data-testid="comparison-line"
-          />
-        ))}
-      </svg>
+      </div>
     </ChartAxes>
   );
 }

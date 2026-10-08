@@ -4,6 +4,7 @@ import {
   formatCurrency,
   formatPercent,
   formatQuantity,
+  formatTooltipDate,
 } from './format';
 
 describe('formatQuantity', () => {
@@ -47,5 +48,22 @@ describe('formatAxisDate', () => {
 
   it('falls back to the raw string when the shape is unexpected', () => {
     expect(formatAxisDate('not-a-date')).toBe('not-a-date');
+  });
+});
+
+describe('formatTooltipDate', () => {
+  it('formats an ISO date as a fuller Mon D, YYYY label', () => {
+    expect(formatTooltipDate('2026-01-04')).toBe('Jan 4, 2026');
+    expect(formatTooltipDate('2026-12-31')).toBe('Dec 31, 2026');
+  });
+
+  it('does not shift the day from timezone interpretation', () => {
+    // Part-based parsing keeps a UTC-midnight date on its own calendar day
+    // regardless of the runner's local zone.
+    expect(formatTooltipDate('2026-01-01')).toBe('Jan 1, 2026');
+  });
+
+  it('falls back to the raw string when the shape is unexpected', () => {
+    expect(formatTooltipDate('not-a-date')).toBe('not-a-date');
   });
 });

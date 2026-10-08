@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, fireEvent } from '@testing-library/react';
+import { render, screen, fireEvent, within } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import type { ReactNode } from 'react';
 import { SessionComparisonChart } from './SessionComparisonChart';
@@ -147,6 +147,89 @@ describe('SessionComparisonChart', () => {
     const yLabels = screen.getAllByTestId('chart-y-label');
     expect(yLabels[0]).toHaveTextContent('10.00%');
     expect(yLabels[yLabels.length - 1]).toHaveTextContent('0.00%');
+  });
+
+  // jsdom has no layout; stub the hover wrapper box to a known 800px width so a
+  // pointer clientX maps deterministically to a point on the time axis.
+  function stubWrapper(svg: Element) {
+    const wrapper = svg.parentElement as HTMLElement;
+    wrapper.getBoundingClientRect = () =>
+      ({
+        width: 800,
+        height: 160,
+        left: 0,
+        top: 0,
+        right: 800,
+        bottom: 160,
+        x: 0,
+        y: 0,
+        toJSON: () => {},
+      }) as DOMRect;
+    return wrapper;
+  }
+
+  it('shows a hover tooltip with the nearest series label, value, and date', async () => {
+    renderChart([
+      series('a', 'Alpha', 100000, [
+        ['2026-01-04', 100000],
+        ['2026-01-05', 110000],
+      ]),
+      series('b', 'Beta', 50000, [
+        ['2026-01-04', 50000],
+        ['2026-01-05', 52000],
+      ]),
+    ]);
+
+    const svg = await screen.findByRole('img', { name: /return percent/i });
+    const wrapper = stubWrapper(svg);
+    // Far right maps to the latest date; Alpha's point wins the tie (first series).
+    fireEvent.pointerMove(wrapper, { clientX: 800 });
+
+    const tooltip = screen.getByTestId('chart-tooltip');
+    expect(within(tooltip).getByText('Alpha')).toBeInTheDocument();
+    expect(within(tooltip).getByText('Jan 5, 2026')).toBeInTheDocument();
+    expect(within(tooltip).getByText('10.00%')).toBeInTheDocument();
+  });
+
+  it('formats the hover tooltip value for the active metric', async () => {
+    renderChart([
+      series('a', 'Alpha', 100000, [
+        ['2026-01-04', 100000],
+        ['2026-01-05', 110000],
+      ]),
+    ]);
+
+    let svg = await screen.findByRole('img', { name: /return percent/i });
+    fireEvent.pointerMove(stubWrapper(svg), { clientX: 800 });
+    expect(
+      within(screen.getByTestId('chart-tooltip')).getByText('10.00%'),
+    ).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Value $' }));
+
+    // Re-hover in the value view: the tooltip now shows the USD value.
+    svg = screen.getByRole('img', { name: /portfolio value/i });
+    fireEvent.pointerMove(stubWrapper(svg), { clientX: 800 });
+    const tooltip = screen.getByTestId('chart-tooltip');
+    expect(within(tooltip).getByText('$110,000.00')).toBeInTheDocument();
+    expect(within(tooltip).queryByText('10.00%')).not.toBeInTheDocument();
+  });
+
+  it('dismisses the hover tooltip when the pointer leaves the plot', async () => {
+    renderChart([
+      series('a', 'Alpha', 100000, [
+        ['2026-01-04', 100000],
+        ['2026-01-05', 110000],
+      ]),
+    ]);
+
+    const svg = await screen.findByRole('img', { name: /return percent/i });
+    const wrapper = stubWrapper(svg);
+    fireEvent.pointerMove(wrapper, { clientX: 800 });
+    expect(screen.getByTestId('chart-tooltip')).toBeInTheDocument();
+
+    fireEvent.pointerLeave(wrapper);
+    expect(screen.queryByTestId('chart-tooltip')).not.toBeInTheDocument();
   });
 
   it('shows no axis labels in the placeholder state', async () => {

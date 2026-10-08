@@ -1,7 +1,9 @@
 import { useSessionValueHistory } from '../../api/paperTrading';
 import type { SessionValueSnapshot } from '../../types/api';
-import { formatAxisDate, formatCurrency } from '../../lib/format';
+import { formatAxisDate, formatCurrency, formatTooltipDate } from '../../lib/format';
 import { ChartAxes } from './ChartAxes';
+import { ChartTooltip, type ChartTooltipRow } from './ChartTooltip';
+import { useChartHover } from './useChartHover';
 import { FreshnessBadge, Panel } from './PaperTradingSessionPage';
 
 /** Stroke colour by the equity curve's overall direction (first → last value). */
@@ -37,7 +39,14 @@ function ValueCurve({ snapshots }: { snapshots: SessionValueSnapshot[] }) {
       </div>
     );
   }
+  // The plot (and its hover hook) lives in its own component so the hook is only
+  // ever mounted with enough points to chart — the placeholder above returns
+  // before any hook runs.
+  return <ValuePlot snapshots={snapshots} />;
+}
 
+/** The plotted value chart with axes, legend, and hover tooltip. */
+function ValuePlot({ snapshots }: { snapshots: SessionValueSnapshot[] }) {
   const width = 800;
   const height = 160;
   const pad = 8;
@@ -81,40 +90,114 @@ function ValueCurve({ snapshots }: { snapshots: SessionValueSnapshot[] }) {
     formatAxisDate(snapshots[snapshots.length - 1].snapshot_date),
   ];
 
+  // Hover: the chart is index-mapped, so the pointer ratio maps straight to the
+  // nearest snapshot index. The resolved point carries its plot-fraction position
+  // for the tooltip overlay and SVG crosshair.
+  const hover = useChartHover<SessionValueSnapshot>((ratio) => {
+    const dataPos = Math.min(
+      1,
+      Math.max(0, (ratio * width - pad) / (width - 2 * pad)),
+    );
+    const i = Math.round(dataPos * (snapshots.length - 1));
+    const snapshot = snapshots[i];
+    return {
+      payload: snapshot,
+      xFraction: x(i) / width,
+      yFraction: y(snapshot.total_value) / height,
+    };
+  });
+
+  const active = hover.active;
+  const tooltipRows: ChartTooltipRow[] = active
+    ? [
+        {
+          label: 'Portfolio value',
+          value: formatCurrency(active.payload.total_value),
+          color: trendStroke,
+        },
+        ...(active.payload.benchmark_value !== null
+          ? [
+              {
+                label: 'Benchmark',
+                value: formatCurrency(active.payload.benchmark_value),
+                color: BENCHMARK_STROKE,
+              },
+            ]
+          : []),
+      ]
+    : [];
+
   return (
     <div>
       <ChartAxes yLabels={yLabels} xLabels={xLabels}>
-        <svg
-          viewBox={`0 0 ${width} ${height}`}
-          preserveAspectRatio="none"
-          className="h-40 w-full"
-          role="img"
-          aria-label={`Portfolio value over the last ${snapshots.length} daily snapshots`}
+        <div
+          className="relative"
+          onPointerMove={hover.onPointerMove}
+          onPointerLeave={hover.onPointerLeave}
         >
-          {benchmarkDrawn && (
+          <svg
+            viewBox={`0 0 ${width} ${height}`}
+            preserveAspectRatio="none"
+            className="h-40 w-full"
+            role="img"
+            aria-label={`Portfolio value over the last ${snapshots.length} daily snapshots`}
+          >
+            {benchmarkDrawn && (
+              <polyline
+                points={benchmarkPoints.join(' ')}
+                fill="none"
+                stroke={BENCHMARK_STROKE}
+                strokeWidth={1.5}
+                strokeDasharray="4 3"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                vectorEffect="non-scaling-stroke"
+                aria-label="Benchmark value"
+                data-testid="benchmark-line"
+              />
+            )}
             <polyline
-              points={benchmarkPoints.join(' ')}
+              points={points.join(' ')}
               fill="none"
-              stroke={BENCHMARK_STROKE}
-              strokeWidth={1.5}
-              strokeDasharray="4 3"
+              stroke={trendStroke}
+              strokeWidth={2}
               strokeLinecap="round"
               strokeLinejoin="round"
               vectorEffect="non-scaling-stroke"
-              aria-label="Benchmark value"
-              data-testid="benchmark-line"
             />
+            {active && (
+              <line
+                x1={active.xFraction * width}
+                x2={active.xFraction * width}
+                y1={pad}
+                y2={height - pad}
+                stroke="#94a3b8"
+                strokeWidth={1}
+                strokeDasharray="3 3"
+                vectorEffect="non-scaling-stroke"
+              />
+            )}
+          </svg>
+          {active && (
+            <>
+              <span
+                aria-hidden="true"
+                className="pointer-events-none absolute h-2 w-2 -translate-x-1/2 -translate-y-1/2 rounded-full ring-2 ring-white"
+                style={{
+                  left: `${active.xFraction * 100}%`,
+                  top: `${active.yFraction * 100}%`,
+                  backgroundColor: trendStroke,
+                }}
+              />
+              <ChartTooltip
+                xFraction={active.xFraction}
+                yFraction={active.yFraction}
+                date={formatTooltipDate(active.payload.snapshot_date)}
+                rows={tooltipRows}
+              />
+            </>
           )}
-          <polyline
-            points={points.join(' ')}
-            fill="none"
-            stroke={trendStroke}
-            strokeWidth={2}
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            vectorEffect="non-scaling-stroke"
-          />
-        </svg>
+        </div>
       </ChartAxes>
       <ValueLegend trendStroke={trendStroke} benchmarkDrawn={benchmarkDrawn} />
     </div>

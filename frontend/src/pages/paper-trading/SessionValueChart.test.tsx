@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, within } from '@testing-library/react';
+import { render, screen, within, fireEvent } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import type { ReactNode } from 'react';
 import { SessionValueChart } from './SessionValueChart';
@@ -165,6 +165,99 @@ describe('SessionValueChart', () => {
     const legend = await screen.findByTestId('value-legend');
     expect(within(legend).getByText('Portfolio value')).toBeInTheDocument();
     expect(within(legend).queryByText('Benchmark')).not.toBeInTheDocument();
+  });
+
+  // jsdom has no layout, so getBoundingClientRect returns zeros; stub the hover
+  // wrapper's box to a known 800px width so a pointer clientX maps deterministically
+  // to a snapshot index.
+  function stubWrapper(svg: Element) {
+    const wrapper = svg.parentElement as HTMLElement;
+    wrapper.getBoundingClientRect = () =>
+      ({
+        width: 800,
+        height: 160,
+        left: 0,
+        top: 0,
+        right: 800,
+        bottom: 160,
+        x: 0,
+        y: 0,
+        toJSON: () => {},
+      }) as DOMRect;
+    return wrapper;
+  }
+
+  it('shows a hover tooltip with the nearest snapshot value and date', async () => {
+    mockedGet.mockResolvedValue({
+      data: {
+        items: [
+          snapshot('2026-01-04', 100000),
+          snapshot('2026-01-05', 100500),
+          snapshot('2026-01-06', 101200),
+        ],
+        total: 3,
+      },
+    });
+
+    renderChart(<SessionValueChart sessionId="s1" />);
+
+    const svg = await screen.findByRole('img', {
+      name: /portfolio value over the last 3 daily snapshots/i,
+    });
+    const wrapper = stubWrapper(svg);
+    // clientX at the far right selects the last snapshot.
+    fireEvent.pointerMove(wrapper, { clientX: 800 });
+
+    const tooltip = screen.getByTestId('chart-tooltip');
+    expect(within(tooltip).getByText('Jan 6, 2026')).toBeInTheDocument();
+    expect(within(tooltip).getByText('Portfolio value')).toBeInTheDocument();
+    expect(within(tooltip).getByText('$101,200.00')).toBeInTheDocument();
+  });
+
+  it('includes the benchmark value in the tooltip when present', async () => {
+    mockedGet.mockResolvedValue({
+      data: {
+        items: [
+          snapshot('2026-01-04', 100000, 100000),
+          snapshot('2026-01-05', 100500, 100200),
+          snapshot('2026-01-06', 101200, 100900),
+        ],
+        total: 3,
+      },
+    });
+
+    renderChart(<SessionValueChart sessionId="s1" />);
+
+    const svg = await screen.findByRole('img', {
+      name: /portfolio value over the last 3 daily snapshots/i,
+    });
+    const wrapper = stubWrapper(svg);
+    fireEvent.pointerMove(wrapper, { clientX: 800 });
+
+    const tooltip = screen.getByTestId('chart-tooltip');
+    expect(within(tooltip).getByText('Benchmark')).toBeInTheDocument();
+    expect(within(tooltip).getByText('$100,900.00')).toBeInTheDocument();
+  });
+
+  it('dismisses the hover tooltip when the pointer leaves the plot', async () => {
+    mockedGet.mockResolvedValue({
+      data: {
+        items: [snapshot('2026-01-04', 100000), snapshot('2026-01-05', 100500)],
+        total: 2,
+      },
+    });
+
+    renderChart(<SessionValueChart sessionId="s1" />);
+
+    const svg = await screen.findByRole('img', {
+      name: /portfolio value over the last 2 daily snapshots/i,
+    });
+    const wrapper = stubWrapper(svg);
+    fireEvent.pointerMove(wrapper, { clientX: 800 });
+    expect(screen.getByTestId('chart-tooltip')).toBeInTheDocument();
+
+    fireEvent.pointerLeave(wrapper);
+    expect(screen.queryByTestId('chart-tooltip')).not.toBeInTheDocument();
   });
 
   it('shows the placeholder without axes or a legend below two snapshots', async () => {

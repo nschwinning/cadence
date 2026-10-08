@@ -159,6 +159,17 @@ value snapshots and that its latest point is the most recent snapshot (the prior
 together with a brief explanatory hint that it can lag the live performance tiles
 intraday. The indicator SHALL NOT change any plotted value.
 
+When the chart is rendered with plottable history, it SHALL support **hover
+inspection**: moving the pointer over the plot area SHALL identify the plotted snapshot
+nearest the pointer's horizontal position and SHALL show a tooltip reporting that
+snapshot's **date** and its **portfolio value** in USD, and — when a benchmark value
+exists at that snapshot — the **benchmark value** in USD. The tooltip SHALL be rendered
+legibly (not distorted by the chart's scaling) and SHALL be positioned near the hovered
+point without being clipped out of the chart area. The chart MAY also mark the hovered
+point visually (for example, a crosshair or dot). When the pointer leaves the plot area,
+the tooltip SHALL be dismissed. Hover inspection SHALL NOT change any plotted value and
+SHALL NOT appear when the placeholder, loading, or error state is shown.
+
 #### Scenario: Chart renders with history
 
 - **WHEN** a user opens a session that has at least two value snapshots
@@ -188,6 +199,16 @@ intraday. The indicator SHALL NOT change any plotted value.
 
 - **WHEN** the value chart is rendered
 - **THEN** the view SHALL show a legend naming the portfolio-value line and, when it is drawn, the benchmark line, each keyed to its line's colour or style
+
+#### Scenario: Hover reveals a snapshot's value and date
+
+- **WHEN** a user moves the pointer over the rendered value chart
+- **THEN** the view SHALL show a tooltip reporting the nearest snapshot's date and its portfolio value in USD, and the benchmark value in USD when a benchmark value exists at that snapshot
+
+#### Scenario: Tooltip dismisses on leave
+
+- **WHEN** the pointer leaves the value chart's plot area
+- **THEN** the view SHALL dismiss the hover tooltip
 
 #### Scenario: Not enough history
 
@@ -450,6 +471,8 @@ The paper-trading session list view SHALL display a **performance-comparison cha
 
 When the chart plots at least one line, it SHALL display a **labelled x-axis** marking calendar dates across the shared time axis and a **labelled y-axis** whose tick labels match the active metric — percentages in the Return % view and USD amounts in the Value $ view — and the y-axis labels SHALL update when the metric toggle switches. Axis tick labels SHALL be rendered legibly (not distorted by the chart's scaling).
 
+When the chart plots at least one line, it SHALL support **hover inspection**: moving the pointer over the plot area SHALL identify the plotted point nearest the pointer across all plotted session lines and SHALL show a tooltip reporting that point's **session label**, its **date**, and its **value** formatted for the active metric — a percentage in the Return % view and a USD amount in the Value $ view. The tooltip SHALL be rendered legibly (not distorted by the chart's scaling) and SHALL be positioned near the hovered point without being clipped out of the chart area. The chart MAY also mark the hovered point visually. When the pointer leaves the plot area, the tooltip SHALL be dismissed. Hover inspection SHALL NOT change any plotted value and SHALL NOT appear when the insufficient-data placeholder, loading, or error state is shown.
+
 When no non-archived session has enough value points to plot, the chart SHALL show an insufficient-data placeholder rather than an empty plot area. The chart SHALL show its own loading and error states while the comparison data is being fetched or if the fetch fails. The existing single-session value chart on the session detail view SHALL remain unchanged.
 
 #### Scenario: Comparison chart overlays non-archived sessions
@@ -471,6 +494,21 @@ When no non-archived session has enough value points to plot, the chart SHALL sh
 
 - **WHEN** the comparison chart plots at least one line
 - **THEN** the view SHALL show dated x-axis labels and y-axis labels formatted as percentages in the Return % view and as USD amounts in the Value $ view, and the y-axis labels SHALL change when the metric toggle is switched
+
+#### Scenario: Hover reveals the nearest series point
+
+- **WHEN** a user moves the pointer over the rendered comparison chart
+- **THEN** the view SHALL show a tooltip reporting the nearest plotted point's session label, its date, and its value formatted as a percentage in the Return % view or a USD amount in the Value $ view
+
+#### Scenario: Tooltip value tracks the metric toggle
+
+- **WHEN** a user hovers the comparison chart and then switches the metric toggle
+- **THEN** the hover tooltip's value SHALL be formatted for the active metric — a percentage in the Return % view and a USD amount in the Value $ view
+
+#### Scenario: Tooltip dismisses on leave
+
+- **WHEN** the pointer leaves the comparison chart's plot area
+- **THEN** the view SHALL dismiss the hover tooltip
 
 #### Scenario: Session with too little history is legended but not plotted
 
@@ -563,6 +601,8 @@ The Dashboard SHALL present hero performance tiles aggregated over the active se
 
 The Dashboard SHALL present a combined equity curve as a single line equal to the summed value of the selected active sessions over the selected range, on a common date axis. A session SHALL contribute zero before its first recorded value (carry-forward thereafter). The Dashboard SHALL offer a selectable list of the active sessions, all selected by default, letting the user include or exclude each session; the selection SHALL also drive the hero tiles and the leaderboard. Toggling a session SHALL re-aggregate from already-fetched per-session data without issuing a new request per toggle. When no session is selected, the chart SHALL show an empty state instead of a line.
 
+When the equity curve plots a line, it SHALL support **hover inspection**: moving the pointer over the plot area SHALL identify the plotted point nearest the pointer's horizontal position and SHALL show a tooltip reporting that point's **date** and the **summed equity value** in USD at that point. The tooltip SHALL be rendered legibly (not distorted by the chart's scaling) and SHALL be positioned near the hovered point without being clipped out of the chart area. The chart MAY also mark the hovered point visually. When the pointer leaves the plot area, the tooltip SHALL be dismissed. Hover inspection SHALL NOT change any plotted value and SHALL NOT appear when the empty state is shown.
+
 #### Scenario: Summed line over selected sessions
 
 - **WHEN** the Dashboard renders the equity curve with one or more sessions selected
@@ -572,6 +612,16 @@ The Dashboard SHALL present a combined equity curve as a single line equal to th
 
 - **WHEN** a user includes or excludes a session in the equity curve
 - **THEN** the line, hero tiles, and leaderboard SHALL recompute from already-fetched data without a new request per toggle
+
+#### Scenario: Hover reveals the summed value and date
+
+- **WHEN** a user moves the pointer over the rendered combined equity curve
+- **THEN** the view SHALL show a tooltip reporting the nearest point's date and the summed equity value in USD at that point
+
+#### Scenario: Tooltip dismisses on leave
+
+- **WHEN** the pointer leaves the equity curve's plot area
+- **THEN** the view SHALL dismiss the hover tooltip
 
 #### Scenario: No sessions selected
 

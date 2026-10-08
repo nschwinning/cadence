@@ -1,7 +1,9 @@
 import type { DashboardSessionPerformance } from '../../types/api';
-import { formatAxisDate, formatCurrency } from '../../lib/format';
+import { formatAxisDate, formatCurrency, formatTooltipDate } from '../../lib/format';
 import { categoricalColor } from '../../lib/palette';
 import { ChartAxes } from '../paper-trading/ChartAxes';
+import { ChartTooltip } from '../paper-trading/ChartTooltip';
+import { useChartHover } from '../paper-trading/useChartHover';
 import { combinedSeries } from './aggregate';
 
 const CARD_CLASS = 'rounded-lg border border-slate-200 bg-white shadow-sm';
@@ -74,7 +76,13 @@ function SummedCurve({
       </div>
     );
   }
+  // The plot (and its hover hook) is its own component so the hook only mounts
+  // when there is a line to draw; the empty/placeholder states return first.
+  return <EquityPlot points={points} />;
+}
 
+/** The plotted summed-value line with axes and a hover tooltip. */
+function EquityPlot({ points }: { points: { date: string; value: number }[] }) {
   const width = 800;
   const height = 160;
   const pad = 8;
@@ -98,31 +106,100 @@ function SummedCurve({
     formatAxisDate(points[points.length - 1].date),
   ];
 
+  // Hover: map the pointer ratio to a target calendar time, then pick the point
+  // nearest it by time distance.
+  const hover = useChartHover<{ date: string; value: number }>((ratio) => {
+    const dataPos = Math.min(
+      1,
+      Math.max(0, (ratio * width - pad) / (width - 2 * pad)),
+    );
+    const target = minT + dataPos * tSpan;
+    let best = points[0];
+    let bestDist = Infinity;
+    for (const p of points) {
+      const dist = Math.abs(Date.parse(p.date) - target);
+      if (dist < bestDist) {
+        bestDist = dist;
+        best = p;
+      }
+    }
+    return {
+      payload: best,
+      xFraction: x(Date.parse(best.date)) / width,
+      yFraction: y(best.value) / height,
+    };
+  });
+
+  const active = hover.active;
+
   return (
     <ChartAxes yLabels={yLabels} xLabels={xLabels}>
-      <svg
-        viewBox={`0 0 ${width} ${height}`}
-        preserveAspectRatio="none"
-        className="h-40 w-full"
-        role="img"
-        aria-label="Combined portfolio value"
+      <div
+        className="relative"
+        onPointerMove={hover.onPointerMove}
+        onPointerLeave={hover.onPointerLeave}
       >
-        <polyline
-          points={points
-            .map(
-              (p) =>
-                `${x(Date.parse(p.date)).toFixed(2)},${y(p.value).toFixed(2)}`,
-            )
-            .join(' ')}
-          fill="none"
-          stroke={LINE_COLOR}
-          strokeWidth={2}
-          strokeLinecap="round"
-          strokeLinejoin="round"
-          vectorEffect="non-scaling-stroke"
-          data-testid="equity-line"
-        />
-      </svg>
+        <svg
+          viewBox={`0 0 ${width} ${height}`}
+          preserveAspectRatio="none"
+          className="h-40 w-full"
+          role="img"
+          aria-label="Combined portfolio value"
+        >
+          <polyline
+            points={points
+              .map(
+                (p) =>
+                  `${x(Date.parse(p.date)).toFixed(2)},${y(p.value).toFixed(2)}`,
+              )
+              .join(' ')}
+            fill="none"
+            stroke={LINE_COLOR}
+            strokeWidth={2}
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            vectorEffect="non-scaling-stroke"
+            data-testid="equity-line"
+          />
+          {active && (
+            <line
+              x1={active.xFraction * width}
+              x2={active.xFraction * width}
+              y1={pad}
+              y2={height - pad}
+              stroke="#94a3b8"
+              strokeWidth={1}
+              strokeDasharray="3 3"
+              vectorEffect="non-scaling-stroke"
+            />
+          )}
+        </svg>
+        {active && (
+          <>
+            <span
+              aria-hidden="true"
+              className="pointer-events-none absolute h-2 w-2 -translate-x-1/2 -translate-y-1/2 rounded-full ring-2 ring-white"
+              style={{
+                left: `${active.xFraction * 100}%`,
+                top: `${active.yFraction * 100}%`,
+                backgroundColor: LINE_COLOR,
+              }}
+            />
+            <ChartTooltip
+              xFraction={active.xFraction}
+              yFraction={active.yFraction}
+              date={formatTooltipDate(active.payload.date)}
+              rows={[
+                {
+                  label: 'Combined value',
+                  value: formatCurrency(active.payload.value),
+                  color: LINE_COLOR,
+                },
+              ]}
+            />
+          </>
+        )}
+      </div>
     </ChartAxes>
   );
 }
