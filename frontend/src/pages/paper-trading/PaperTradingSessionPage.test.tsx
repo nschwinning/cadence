@@ -362,6 +362,19 @@ describe('PaperTradingSessionPage', () => {
     expect(screen.getByText('-$450.00')).toHaveClass('text-red-700');
   });
 
+  it('marks the performance KPI tiles as live with an explanatory hint', async () => {
+    installGet(() => 'running');
+
+    renderPage(<PaperTradingSessionPage />);
+
+    const badge = await screen.findByTestId('freshness-live');
+    expect(badge).toHaveTextContent(/live/i);
+    expect(badge).toHaveAttribute(
+      'title',
+      expect.stringMatching(/marked to market/i),
+    );
+  });
+
   it('shows placeholders for the risk metrics when their inputs are absent', async () => {
     installGet(() => 'running', KPIS_NO_RISK_DATA);
 

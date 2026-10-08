@@ -182,6 +182,34 @@ describe('SessionValueChart', () => {
     expect(screen.queryByTestId('value-legend')).not.toBeInTheDocument();
   });
 
+  it('marks the chart as end-of-day with an explanatory hint', async () => {
+    mockedGet.mockResolvedValue({
+      data: {
+        items: [snapshot('2026-01-04', 100000), snapshot('2026-01-05', 100500)],
+        total: 2,
+      },
+    });
+
+    renderChart(<SessionValueChart sessionId="s1" />);
+
+    const badge = await screen.findByTestId('freshness-eod');
+    expect(badge).toHaveTextContent(/end of day/i);
+    expect(badge).toHaveAttribute('title', expect.stringMatching(/lag the live/i));
+  });
+
+  it('shows the end-of-day badge even in the not-enough-history placeholder state', async () => {
+    mockedGet.mockResolvedValue({
+      data: { items: [snapshot('2026-01-04', 100000)], total: 1 },
+    });
+
+    renderChart(<SessionValueChart sessionId="s1" />);
+
+    expect(
+      await screen.findByText(/not enough history to chart yet/i),
+    ).toBeInTheDocument();
+    expect(screen.getByTestId('freshness-eod')).toHaveTextContent(/end of day/i);
+  });
+
   it('shows a loading state while the history is pending', () => {
     mockedGet.mockReturnValue(new Promise(() => {}));
     renderChart(<SessionValueChart sessionId="s1" />);

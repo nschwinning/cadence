@@ -181,6 +181,38 @@ function BackLink() {
 }
 
 /** Generic panel wrapper with a header and consistent loading/empty/error states. */
+/**
+ * Small badge marking whether nearby figures are **live** (marked to market against
+ * current quotes right now) or **end of day** (read from the latest stored snapshot,
+ * i.e. the prior close). Purely informational: it explains why the live KPI tiles and
+ * the end-of-day value chart can legitimately differ intraday. The explanatory text is
+ * exposed as a `title` tooltip so hovering the badge reveals the reason.
+ */
+export function FreshnessBadge({ kind }: { kind: 'live' | 'eod' }) {
+  const live = kind === 'live';
+  const label = live ? 'Live' : 'End of day';
+  const hint = live
+    ? 'These figures are marked to market against current quotes, so they can differ from the end-of-day value chart intraday.'
+    : 'This chart shows end-of-day snapshots; its latest point is the prior close, so it can lag the live performance tiles intraday.';
+  return (
+    <span
+      title={hint}
+      data-testid={live ? 'freshness-live' : 'freshness-eod'}
+      className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium ${
+        live ? 'bg-emerald-50 text-emerald-700' : 'bg-slate-100 text-slate-600'
+      }`}
+    >
+      <span
+        aria-hidden="true"
+        className={`inline-block h-1.5 w-1.5 rounded-full ${
+          live ? 'bg-emerald-500' : 'bg-slate-400'
+        }`}
+      />
+      {label}
+    </span>
+  );
+}
+
 export function Panel({
   title,
   count,
@@ -190,6 +222,7 @@ export function Panel({
   emptyText,
   children,
   footer,
+  badge,
 }: {
   title: string;
   count?: number;
@@ -200,11 +233,14 @@ export function Panel({
   children: React.ReactNode;
   /** Optional card footer (e.g. pagination) shown below loaded content only. */
   footer?: React.ReactNode;
+  /** Optional badge shown beside the title (e.g. a data-freshness indicator). */
+  badge?: React.ReactNode;
 }) {
   return (
     <div className="rounded-lg border border-slate-200 bg-white shadow-sm">
       <div className="flex items-baseline gap-3 border-b border-slate-200 p-4">
         <h2 className="text-lg font-semibold text-slate-900">{title}</h2>
+        {badge}
         {!isPending && !isError && typeof count === 'number' && count > 0 && (
           <span className="text-sm text-slate-500">{count} total</span>
         )}
@@ -773,12 +809,15 @@ function KpiRow({ sessionId }: { sessionId: string }) {
   return (
     <div className="flex flex-col gap-6">
       <section role="group" aria-labelledby="kpi-performance">
-        <h3
-          id="kpi-performance"
-          className="mb-3 text-sm font-semibold uppercase tracking-wide text-slate-500"
-        >
-          Performance
-        </h3>
+        <div className="mb-3 flex items-center gap-2">
+          <h3
+            id="kpi-performance"
+            className="text-sm font-semibold uppercase tracking-wide text-slate-500"
+          >
+            Performance
+          </h3>
+          <FreshnessBadge kind="live" />
+        </div>
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-5">
           <KpiTile label="Current value" value={formatCurrency(data.current_value)} />
           <KpiTile

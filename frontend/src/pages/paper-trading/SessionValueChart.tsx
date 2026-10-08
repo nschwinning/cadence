@@ -2,7 +2,7 @@ import { useSessionValueHistory } from '../../api/paperTrading';
 import type { SessionValueSnapshot } from '../../types/api';
 import { formatAxisDate, formatCurrency } from '../../lib/format';
 import { ChartAxes } from './ChartAxes';
-import { Panel } from './PaperTradingSessionPage';
+import { FreshnessBadge, Panel } from './PaperTradingSessionPage';
 
 /** Stroke colour by the equity curve's overall direction (first → last value). */
 const TREND_STROKE = {
@@ -174,6 +174,7 @@ export function SessionValueChart({ sessionId }: { sessionId: string }) {
       isError={isError}
       isEmpty={false}
       emptyText="No value history yet."
+      badge={<FreshnessBadge kind="eod" />}
     >
       <div className="p-4">
         <ValueCurve snapshots={snapshots} />
