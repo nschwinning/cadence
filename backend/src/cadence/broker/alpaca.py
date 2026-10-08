@@ -234,7 +234,13 @@ class AlpacaBroker:
 
     # Orders --------------------------------------------------------------
     def submit_order(self, order: Order) -> Order:
-        """Submit an order and update it from the broker response."""
+        """Submit an order and update it from the broker response.
+
+        Equity orders are submitted as MARKET / DAY (the ``buy``/``sell`` defaults;
+        ``_effective_tif`` only diverts crypto), which is exactly what Alpaca
+        requires for a fractional equity order — a market or day-limit order with
+        ``time_in_force=day`` — so fractional equity quantities need no special path.
+        """
         time_in_force = order.time_in_force
         if order.asset_class == AssetClass.CRYPTO and time_in_force == TimeInForce.DAY:
             # Crypto rejects "day"; Alpaca crypto orders take gtc/ioc only.

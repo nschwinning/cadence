@@ -313,6 +313,101 @@ def test_execute_rebalance_crypto_exit_sells_full_float_qty() -> None:
     assert "exit" in results[0].reason.lower()
 
 
+# --------------------------------------------------------------------------- #
+# Fractionable equities: fractional, flag-gated sizing
+# --------------------------------------------------------------------------- #
+
+_FRAC = {"AAPL": True}
+
+
+def test_execute_build_fractionable_equity_sizes_to_target_weight() -> None:
+    broker = StubBroker()
+    price = broker.get_quote("AAPL").last
+    # 1.5 shares' worth of capital does not divide evenly into whole shares.
+    executor = AIPortfolioExecutor(broker, allocated_capital=price * 1.5)
+
+    results = executor.execute_build([_stock("AAPL", 1.0)], fractionable=_FRAC)
+
+    assert len(results) == 1
+    assert results[0].executed is True
+    assert results[0].shares == pytest.approx(1.5)
+
+
+def test_execute_build_non_fractionable_equity_truncates_to_whole_shares() -> None:
+    broker = StubBroker()
+    price = broker.get_quote("AAPL").last
+    executor = AIPortfolioExecutor(broker, allocated_capital=price * 1.5)
+
+    # Flag absent (unknown) -> whole-share truncation, as before this capability.
+    results = executor.execute_build([_stock("AAPL", 1.0)])
+
+    assert results[0].executed is True
+    assert results[0].shares == pytest.approx(1.0)
+
+
+def test_execute_build_fractionable_equity_skips_below_min_notional() -> None:
+    broker = StubBroker()
+    # $0.50 allocation is below the ~$1 equity minimum notional -> skipped,
+    # rather than being skipped for being under one share.
+    executor = AIPortfolioExecutor(broker, allocated_capital=0.5)
+
+    results = executor.execute_build([_stock("AAPL", 1.0)], fractionable=_FRAC)
+
+    assert results[0].executed is False
+    assert results[0].shares == 0
+    assert "notional" in results[0].reason.lower()
+
+
+def test_execute_rebalance_fractionable_equity_buys_fractional_delta() -> None:
+    broker = StubBroker()
+    broker.buy("AAPL", 1.0)
+    positions = {p.symbol: p for p in broker.get_positions()}
+    price = broker.get_quote("AAPL").last
+    # Target 2.5 shares vs 1 held -> buy a 1.5-share fractional delta.
+    executor = AIPortfolioExecutor(broker, allocated_capital=price * 2.5)
+
+    results = executor.execute_rebalance(
+        targets=[_target("AAPL", 1.0)],
+        current_positions=positions,
+        fractionable=_FRAC,
+    )
+
+    assert len(results) == 1
+    assert results[0].side == "long"
+    assert results[0].shares == pytest.approx(1.5)
+
+
+def test_execute_rebalance_fractionable_equity_exit_sells_full_float_qty() -> None:
+    broker = StubBroker()
+    broker.buy("AAPL", 1.5)  # fractional holding
+    positions = {p.symbol: p for p in broker.get_positions()}
+    executor = AIPortfolioExecutor(broker, allocated_capital=100_000)
+
+    results = executor.execute_rebalance(
+        targets=[],  # AAPL omitted -> full exit
+        current_positions=positions,
+        fractionable=_FRAC,
+    )
+
+    assert len(results) == 1
+    assert results[0].side == "sell"
+    assert results[0].shares == pytest.approx(1.5)
+    assert "exit" in results[0].reason.lower()
+
+
+def test_execute_close_sells_full_fractional_equity_quantity() -> None:
+    broker = StubBroker()
+    broker.buy("AAPL", 2.25)  # fractional holding
+    positions = {p.symbol: p for p in broker.get_positions()}
+    executor = AIPortfolioExecutor(broker, allocated_capital=100_000)
+
+    results = executor.execute_close(positions)
+
+    assert len(results) == 1
+    assert results[0].side == "sell"
+    assert results[0].shares == pytest.approx(2.25)
+
+
 def test_execute_rebalance_market_closed_skips_equity_trades_crypto() -> None:
     broker = StubBroker()
     broker.buy("AAPL", 10)

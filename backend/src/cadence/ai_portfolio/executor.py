@@ -2,9 +2,11 @@
 
 Operates purely against the :class:`~cadence.broker.base.Broker` protocol. The
 build sizes each long position from live quotes and the allocated capital.
-Sizing is class-aware: equities are sized in whole shares (skipping sub-one-share
-allocations), while crypto is sized in fractional units (skipping only allocations
-below the brokerage minimum notional, :data:`MIN_CRYPTO_NOTIONAL_USD`). The
+Sizing is class- and fractionability-aware: crypto and equities the brokerage lists
+as *fractionable* are sized in fractional units (skipping only allocations below the
+brokerage minimum notional, :data:`MIN_CRYPTO_NOTIONAL_USD` /
+:data:`MIN_EQUITY_NOTIONAL_USD`), while non-fractionable (or unknown) equities are
+sized in whole shares (skipping sub-one-share allocations). The
 rebalance implements a **target-weight** model: it computes desired quantities
 from the AI's target weights and trades the delta against the current positions
 (buying increases, selling reductions and full exits). When the equities market
@@ -41,6 +43,16 @@ MIN_CRYPTO_NOTIONAL_USD = 1.0
 
 #: Decimal places to round fractional crypto quantities to.
 CRYPTO_QTY_PRECISION = 8
+
+#: Brokerage minimum tradable notional for fractionable equities (USD). An equity
+#: allocation (or rebalance delta) worth less than this is skipped rather than sent
+#: as a dust order — the fractional analogue of the old "less than one whole share"
+#: skip, which now applies only to non-fractionable equities.
+MIN_EQUITY_NOTIONAL_USD = 1.0
+
+#: Decimal places to round fractional equity quantities to. Alpaca accepts up to 9;
+#: 6 is ample for sizing and keeps float noise from generating dust orders.
+EQUITY_QTY_PRECISION = 6
 
 #: Iteration ceiling / convergence tolerance for the guardrail water-filling loop.
 _GUARDRAIL_MAX_ITERATIONS = 100
@@ -352,11 +364,15 @@ class AIPortfolioExecutor:
         stocks: list[AIPortfolioStock],
         asset_classes: dict[str, AssetClass] | None = None,
         caps: GuardrailCaps | None = None,
+        fractionable: dict[str, bool] | None = None,
     ) -> list[TradeResult]:
         """Open each stock long, sizing from its normalized allocation and quote.
 
         ``asset_classes`` maps a ticker to its :class:`AssetClass`; tickers absent
-        from the map default to :attr:`AssetClass.EQUITY`. When ``caps`` is provided
+        from the map default to :attr:`AssetClass.EQUITY`. ``fractionable`` maps a
+        ticker to whether the brokerage lists it as fractionable; a ticker mapping to
+        ``True`` is sized in fractional shares, while ``False``/absent (unknown) keeps
+        the whole-share behaviour. When ``caps`` is provided
         (the session opted into the risk guardrails), the AI's allocations are first
         run through :func:`enforce_guardrails` so no position exceeds the per-asset
         cap, no class exceeds the per-class cap, and the invested fraction is bounded
@@ -364,6 +380,7 @@ class AIPortfolioExecutor:
         allocations are used unchanged.
         """
         classes = asset_classes or {}
+        frac = fractionable or {}
         results: list[TradeResult] = []
 
         # Reserve a cash buffer so the build does not deploy the full allocated
@@ -379,7 +396,12 @@ class AIPortfolioExecutor:
                     stock.allocation_pct / total_alloc if total_alloc > 0 else 0.0
                 )
                 results.append(
-                    self._open_long(stock.ticker, cls, net_base * normalized)
+                    self._open_long(
+                        stock.ticker,
+                        cls,
+                        net_base * normalized,
+                        fractionable=frac.get(stock.ticker, False),
+                    )
                 )
             return results
 
@@ -395,14 +417,29 @@ class AIPortfolioExecutor:
         for ticker in order:
             cls = classes.get(ticker, AssetClass.EQUITY)
             results.append(
-                self._open_long(ticker, cls, net_base * weights.get(ticker, 0.0))
+                self._open_long(
+                    ticker,
+                    cls,
+                    net_base * weights.get(ticker, 0.0),
+                    fractionable=frac.get(ticker, False),
+                )
             )
         return results
 
     def _open_long(
-        self, ticker: str, cls: AssetClass, capital_for_stock: float
+        self,
+        ticker: str,
+        cls: AssetClass,
+        capital_for_stock: float,
+        fractionable: bool = False,
     ) -> TradeResult:
-        """Size ``capital_for_stock`` into a whole/fractional long and place the buy."""
+        """Size ``capital_for_stock`` into a whole/fractional long and place the buy.
+
+        ``fractionable`` reports whether the brokerage lists ``ticker`` as a
+        fractionable equity; when ``True`` the equity is sized in fractional shares
+        (skipping only sub-:data:`MIN_EQUITY_NOTIONAL_USD` allocations), otherwise it
+        keeps the whole-share truncation. Crypto is always fractional.
+        """
         try:
             quote = self.broker.get_quote(ticker, cls)
             price = quote.last or quote.ask
@@ -428,6 +465,20 @@ class AIPortfolioExecutor:
                         reason=(
                             f"Allocation ${capital_for_stock:.2f} below "
                             f"min notional ${MIN_CRYPTO_NOTIONAL_USD:.2f}"
+                        ),
+                    )
+            elif fractionable:
+                qty = round(capital_for_stock / price, EQUITY_QTY_PRECISION)
+                if qty <= 0 or qty * price < MIN_EQUITY_NOTIONAL_USD:
+                    return TradeResult(
+                        ticker=ticker,
+                        side="long",
+                        shares=0,
+                        price=price,
+                        executed=False,
+                        reason=(
+                            f"Allocation ${capital_for_stock:.2f} below "
+                            f"min notional ${MIN_EQUITY_NOTIONAL_USD:.2f}"
                         ),
                     )
             else:
@@ -481,6 +532,7 @@ class AIPortfolioExecutor:
         base_capital: float | None = None,
         crypto_only: bool = False,
         unallocated_cash: float | None = None,
+        fractionable: dict[str, bool] | None = None,
     ) -> list[TradeResult]:
         """Trade toward the AI's target weights, delta by delta.
 
@@ -508,9 +560,14 @@ class AIPortfolioExecutor:
         cap, and the invested fraction is bounded (remainder held as cash); when
         ``caps`` is ``None`` the raw normalized weights are used unchanged.
 
-        Sizing is class-aware: equities use whole-share deltas (skip ``|delta| <
-        1``), crypto uses fractional deltas (skip when the delta's notional is
-        below :data:`MIN_CRYPTO_NOTIONAL_USD`). When ``market_open`` is ``False``,
+        Sizing is class- and fractionability-aware: crypto and equities whose
+        ``fractionable`` flag is ``True`` use fractional deltas (skip when the
+        delta's notional is below the asset's minimum tradable notional —
+        :data:`MIN_CRYPTO_NOTIONAL_USD` / :data:`MIN_EQUITY_NOTIONAL_USD`), while
+        non-fractionable (or unknown) equities use whole-share deltas (skip
+        ``|delta| < 1``). ``fractionable`` maps a ticker to its brokerage
+        fractionability; an absent ticker is treated as non-fractionable. When
+        ``market_open`` is ``False``,
         equity tickers are recorded as not executed ("equity market closed") and
         no order is placed, while crypto tickers trade normally.
 
@@ -528,6 +585,7 @@ class AIPortfolioExecutor:
         """
         self.skipped_noop = False
         classes = asset_classes or {}
+        frac = fractionable or {}
         if crypto_only:
             # Hard guarantee at the executor boundary (design D3): drop every
             # equity from both the targets and the held positions so no equity
@@ -637,10 +695,15 @@ class AIPortfolioExecutor:
         priced_target_weights = {
             t: target_weight[t] for t in priced if target_weight.get(t, 0.0) > 0.0
         }
+        # The minimum tradable amount is a dollar notional for anything sized
+        # fractionally (crypto, or an equity the brokerage lists as fractionable)
+        # and one whole share (its price) for a non-fractionable equity.
         min_notionals = {
             t: (
                 MIN_CRYPTO_NOTIONAL_USD
                 if priced[t][1] == AssetClass.CRYPTO
+                else MIN_EQUITY_NOTIONAL_USD
+                if frac.get(t, False)
                 else priced[t][0]
             )
             for t in priced
@@ -665,7 +728,14 @@ class AIPortfolioExecutor:
             if cls == AssetClass.CRYPTO:
                 intent = self._plan_crypto(ticker, pos, weight, price, net_base)
             else:
-                intent = self._plan_equity(ticker, pos, weight, price, net_base)
+                intent = self._plan_equity(
+                    ticker,
+                    pos,
+                    weight,
+                    price,
+                    net_base,
+                    fractionable=frac.get(ticker, False),
+                )
 
             if intent is None:
                 if ticker in too_small and pos is None:
@@ -871,7 +941,11 @@ class AIPortfolioExecutor:
                 if cls == AssetClass.CRYPTO:
                     qty = round(abs(pos.quantity), CRYPTO_QTY_PRECISION)
                 else:
-                    qty = float(int(abs(pos.quantity)))
+                    # Liquidate the full held quantity. Rounding to the equity
+                    # precision sells a fractional holding whole and is identical
+                    # to int-truncation for a whole-share position, so this is
+                    # correct regardless of the asset's fractionability.
+                    qty = round(abs(pos.quantity), EQUITY_QTY_PRECISION)
                 if qty <= 0:
                     results.append(
                         TradeResult(
@@ -923,13 +997,32 @@ class AIPortfolioExecutor:
         weight: float,
         price: float,
         base_capital: float,
+        fractionable: bool = False,
     ) -> _OrderIntent | None:
-        """Plan a whole-share delta trade for an equity (skip ``|delta| < 1``).
+        """Plan a delta trade for an equity.
+
+        When ``fractionable`` is ``True`` the equity is sized in fractional shares
+        exactly like crypto — the delta is rounded to :data:`EQUITY_QTY_PRECISION`
+        and skipped only when its notional is below :data:`MIN_EQUITY_NOTIONAL_USD`.
+        Otherwise it uses whole-share deltas (skip ``|delta| < 1``).
 
         Decides the side and sizes the order but does not submit it; returns
-        ``None`` for a sub-one-share no-op. Submission happens later in the
-        sells-before-buys phase via :meth:`_submit_intent`.
+        ``None`` for a no-op. Submission happens later in the sells-before-buys
+        phase via :meth:`_submit_intent`.
         """
+        if fractionable:
+            return self._plan_fractional(
+                ticker,
+                pos,
+                weight,
+                price,
+                base_capital,
+                asset_class=AssetClass.EQUITY,
+                precision=EQUITY_QTY_PRECISION,
+                min_notional=MIN_EQUITY_NOTIONAL_USD,
+                unit="shares",
+            )
+
         current_shares = int(pos.quantity) if pos else 0
         target_shares = int(base_capital * weight / price) if weight > 0 else 0
         delta = target_shares - current_shares
@@ -977,40 +1070,69 @@ class AIPortfolioExecutor:
         ``None`` when the delta's notional is below the minimum. Submission happens
         later in the sells-before-buys phase via :meth:`_submit_intent`.
         """
-        current = pos.quantity if pos else 0.0
-        target = (
-            round(base_capital * weight / price, CRYPTO_QTY_PRECISION)
-            if weight > 0
-            else 0.0
+        return self._plan_fractional(
+            ticker,
+            pos,
+            weight,
+            price,
+            base_capital,
+            asset_class=AssetClass.CRYPTO,
+            precision=CRYPTO_QTY_PRECISION,
+            min_notional=MIN_CRYPTO_NOTIONAL_USD,
+            unit="units",
         )
-        delta = round(target - current, CRYPTO_QTY_PRECISION)
 
-        if abs(delta) * price < MIN_CRYPTO_NOTIONAL_USD:
+    def _plan_fractional(
+        self,
+        ticker: str,
+        pos: Position | None,
+        weight: float,
+        price: float,
+        base_capital: float,
+        *,
+        asset_class: AssetClass,
+        precision: int,
+        min_notional: float,
+        unit: str,
+    ) -> _OrderIntent | None:
+        """Plan a fractional-quantity delta trade for a fractionable asset.
+
+        Shared by crypto and fractionable-equity sizing. The target quantity is
+        ``base_capital * weight / price`` rounded to ``precision`` decimal places,
+        the delta is the signed difference from the held quantity, and a delta whose
+        notional is below ``min_notional`` is a no-op (returns ``None``). ``unit``
+        is the human word used in the trade reason ("units" / "shares").
+        """
+        current = pos.quantity if pos else 0.0
+        target = round(base_capital * weight / price, precision) if weight > 0 else 0.0
+        delta = round(target - current, precision)
+
+        if abs(delta) * price < min_notional:
             # Below min notional (covers the near-zero delta no-op case too).
             return None
 
         if delta > 0:
             return _OrderIntent(
                 ticker=ticker,
-                asset_class=AssetClass.CRYPTO,
+                asset_class=asset_class,
                 side="long",
                 quantity=delta,
                 price=price,
-                reason=f"Bought {delta} units toward target",
+                reason=f"Bought {delta} {unit} toward target",
             )
         # delta < 0: sell the shortfall, capped at the held quantity (exit sells
         # the full current float when weight is 0).
-        qty = round(min(-delta, current), CRYPTO_QTY_PRECISION)
+        qty = round(min(-delta, current), precision)
         if qty <= 0:
             return None
         reason = (
-            f"Sold {qty} units (exit)"
+            f"Sold {qty} {unit} (exit)"
             if target == 0
-            else f"Sold {qty} units toward target"
+            else f"Sold {qty} {unit} toward target"
         )
         return _OrderIntent(
             ticker=ticker,
-            asset_class=AssetClass.CRYPTO,
+            asset_class=asset_class,
             side="sell",
             quantity=qty,
             price=price,

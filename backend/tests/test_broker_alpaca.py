@@ -213,6 +213,30 @@ def test_equity_buy_still_posts_day() -> None:
     assert payload["time_in_force"] == "day"
 
 
+def test_fractional_equity_buy_posts_market_day_and_fractional_qty() -> None:
+    # Alpaca accepts a fractional equity order only as a market/day-limit order
+    # with TIF=day. The equity defaults (market + day) already satisfy that, so a
+    # fractional quantity needs no special path — assert the submitted payload.
+    order_response = {
+        "id": "eq-frac-1",
+        "symbol": "AAPL",
+        "side": "buy",
+        "qty": "2.5",
+        "type": "market",
+        "time_in_force": "day",
+        "status": "filled",
+    }
+    broker, session = _make_broker({("POST", "/v2/orders"): order_response})
+
+    broker.buy("AAPL", 2.5)
+
+    payload = session.calls[0]["json"]
+    assert payload["symbol"] == "AAPL"
+    assert payload["type"] == "market"
+    assert payload["time_in_force"] == "day"
+    assert payload["qty"] == "2.5"
+
+
 def test_get_quote_crypto_uses_crypto_endpoint() -> None:
     quote_response = {
         "quotes": {

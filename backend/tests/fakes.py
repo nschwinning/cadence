@@ -307,6 +307,10 @@ class FakeBroker(StubBroker):
     - ``not_found``: symbols the broker does not list at all (→ ``None``).
     - ``connection_error``: when set, every ``get_asset`` raises it, simulating an
       unconfigured/unreachable Alpaca (the hard-require 503 path).
+    - ``fractionable``: symbols the broker reports as fractionable (overriding the
+      stub default, which marks only crypto fractionable).
+    - ``raise_for``: symbols whose individual ``get_asset`` raises, simulating a
+      transient per-asset error (used by the fractionability backfill fail-open test).
 
     ``get_asset_calls`` records each ``(symbol, asset_class)`` for assertions.
     Symbols are compared case-insensitively. Without any knob set, behavior matches
@@ -319,12 +323,16 @@ class FakeBroker(StubBroker):
         not_tradable: set[str] | None = None,
         not_found: set[str] | None = None,
         connection_error: ConnectionError | None = None,
+        fractionable: set[str] | None = None,
+        raise_for: set[str] | None = None,
         initial_cash: float = 100_000.0,
     ) -> None:
         super().__init__(initial_cash=initial_cash)
         self._not_tradable = {s.upper() for s in (not_tradable or set())}
         self._not_found = {s.upper() for s in (not_found or set())}
         self._connection_error = connection_error
+        self._fractionable = {s.upper() for s in (fractionable or set())}
+        self._raise_for = {s.upper() for s in (raise_for or set())}
         self.get_asset_calls: list[tuple[str, AssetClass]] = []
 
     def get_asset(
@@ -334,19 +342,23 @@ class FakeBroker(StubBroker):
         if self._connection_error is not None:
             raise self._connection_error
         key = symbol.upper()
+        if key in self._raise_for:
+            raise ConnectionError(f"transient lookup failure for {symbol}")
         if key in self._not_found:
             return None
         base = super().get_asset(symbol, asset_class)
         if base is None:
             return None
-        if key in self._not_tradable:
-            return BrokerAsset(
-                symbol=base.symbol,
-                asset_class=base.asset_class,
-                tradable=False,
-                fractionable=base.fractionable,
-            )
-        return base
+        fractionable = True if key in self._fractionable else base.fractionable
+        tradable = key not in self._not_tradable
+        if tradable == base.tradable and fractionable == base.fractionable:
+            return base
+        return BrokerAsset(
+            symbol=base.symbol,
+            asset_class=base.asset_class,
+            tradable=tradable,
+            fractionable=fractionable,
+        )
 
 
 class RecordingNotifier:

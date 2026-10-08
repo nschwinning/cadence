@@ -55,6 +55,12 @@ class Asset(Base):
     alpaca_symbol: Mapped[str | None] = mapped_column(
         String, nullable=True, index=True
     )
+    # Whether the brokerage lets this asset trade in fractional share quantities,
+    # captured from Alpaca at add time. Nullable (unknown) so pre-existing rows
+    # remain valid and can be backfilled; the executor treats unknown/NULL as
+    # non-fractionable (whole-share sizing), so the fractional path is strictly
+    # opt-in per asset.
+    fractionable: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
     category: Mapped[str] = mapped_column(
         SQLEnum(AssetCategory, native_enum=False, values_callable=lambda enum: [
             member.value for member in enum

@@ -300,6 +300,54 @@ def test_add_asset_stores_alpaca_symbol_for_crypto(db_session: Session) -> None:
     assert asset.alpaca_symbol == "BTC/USD"
 
 
+def test_add_asset_stores_fractionable_true(db_session: Session) -> None:
+    # The broker reports AAPL as fractionable -> persisted on the row so the
+    # executor can size it fractionally.
+    asset = service.add_asset(
+        db_session, "AAPL", _eligible_provider(), _broker(fractionable={"AAPL"})
+    )
+
+    assert asset.fractionable is True
+
+
+def test_add_asset_stores_fractionable_false(db_session: Session) -> None:
+    # A broker that does not list the asset as fractionable stores False, not NULL
+    # (unknown), so the row is a definitive whole-share asset.
+    asset = service.add_asset(db_session, "AAPL", _eligible_provider(), _broker())
+
+    assert asset.fractionable is False
+
+
+def test_backfill_fractionable_populates_null_rows_fail_open(
+    db_session: Session,
+) -> None:
+    # Simulate rows predating the feature: add three assets, then null their
+    # fractionable column as the migration would leave it.
+    for ticker in ("FRAC", "PLAIN", "ERR"):
+        service.add_asset(db_session, ticker, _eligible_provider(), _broker())
+    db_session.query(Asset).update({Asset.fractionable: None})
+    db_session.commit()
+
+    broker = _broker(fractionable={"FRAC"}, raise_for={"ERR"})
+    updated = service.backfill_fractionable(db_session, broker)
+
+    assert updated == 2
+    by_ticker = {a.ticker: a for a in service.list_assets(db_session)}
+    assert by_ticker["FRAC"].fractionable is True
+    assert by_ticker["PLAIN"].fractionable is False
+    # The raising ticker is left NULL (unknown) so the pass can be re-run.
+    assert by_ticker["ERR"].fractionable is None
+
+
+def test_backfill_fractionable_is_idempotent(db_session: Session) -> None:
+    # A second pass over already-populated rows touches nothing.
+    service.add_asset(db_session, "AAPL", _eligible_provider(), _broker())
+
+    updated = service.backfill_fractionable(db_session, _broker())
+
+    assert updated == 0
+
+
 def test_add_asset_rejects_when_broker_does_not_list_asset(
     db_session: Session,
 ) -> None:

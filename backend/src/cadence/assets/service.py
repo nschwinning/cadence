@@ -6,6 +6,7 @@ in this module.
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Collection
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
@@ -31,6 +32,8 @@ from cadence.assets.models import Asset, AssetDailySnapshot
 from cadence.broker.base import Broker
 from cadence.broker.models import AssetClass
 from cadence.price_history import service as price_history_service
+
+logger = logging.getLogger(__name__)
 
 
 def normalize_ticker(ticker: str) -> str:
@@ -138,6 +141,7 @@ def add_asset(
         ticker=normalized,
         name=derived.name,
         alpaca_symbol=broker_asset.symbol,
+        fractionable=broker_asset.fractionable,
         category=derived.category.value,
         sector=derived.sector.value if derived.sector else None,
         exchange=derived.exchange,
@@ -162,6 +166,44 @@ def add_asset(
     price_history_service.backfill(session, provider, asset)
 
     return asset
+
+
+def backfill_fractionable(session: Session, broker: Broker) -> int:
+    """Populate ``fractionable`` on assets that predate the fractional-sizing feature.
+
+    Iterates every asset whose ``fractionable`` is still ``NULL`` (unknown), looks
+    it up once on the brokerage, and stores the flag. Idempotent and fail-open: a
+    per-asset lookup error (or an asset the broker no longer lists) leaves that row
+    ``NULL`` so the pass can simply be re-run later; one failure never aborts the
+    rest. Returns the number of rows updated.
+
+    Kept out of the Alembic migration on purpose — the migration owns the schema,
+    services own external I/O — so an unreachable brokerage can never fail a deploy.
+    """
+    rows = session.scalars(
+        select(Asset).where(Asset.fractionable.is_(None))
+    ).all()
+    updated = 0
+    for asset in rows:
+        asset_class = (
+            AssetClass.CRYPTO
+            if asset.category == AssetCategory.CRYPTO.value
+            else AssetClass.EQUITY
+        )
+        try:
+            broker_asset = broker.get_asset(asset.ticker, asset_class)
+        except Exception as exc:  # noqa: BLE001 - one asset must not abort the backfill
+            logger.warning(
+                "fractionable backfill failed for %s: %s", asset.ticker, exc
+            )
+            continue
+        if broker_asset is None:
+            continue
+        asset.fractionable = broker_asset.fractionable
+        updated += 1
+    if updated:
+        session.commit()
+    return updated
 
 
 # Sortable columns exposed to the API, mapped to their model attribute.

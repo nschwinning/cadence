@@ -558,8 +558,10 @@ def run_build_event(
         session.commit()
 
         # Re-read the universe so discovered crypto is classified, then build the
-        # per-ticker class map threaded into the executor.
-        asset_classes = _asset_class_map(assets_service.list_assets(session))
+        # per-ticker class and fractionability maps threaded into the executor.
+        universe = assets_service.list_assets(session)
+        asset_classes = _asset_class_map(universe)
+        fractionable = _fractionable_map(universe)
 
         caps = _guardrail_caps(
             enabled=params.risk_guardrails_enabled,
@@ -569,7 +571,10 @@ def run_build_event(
         )
         executor = AIPortfolioExecutor(broker, params.allocated_capital)
         trade_results = executor.execute_build(
-            result.stocks, asset_classes=asset_classes, caps=caps
+            result.stocks,
+            asset_classes=asset_classes,
+            caps=caps,
+            fractionable=fractionable,
         )
 
         executed = _record_trades(
@@ -1027,8 +1032,11 @@ def run_rebalance_event(
             session, discovered, provider, broker, scope=asset_scope
         )
 
-        # Rebuild the class map so any discovered crypto target is classified.
-        asset_classes = _asset_class_map(assets_service.list_assets(session))
+        # Rebuild the class and fractionability maps so any discovered crypto
+        # target is classified and each equity's fractionability is known.
+        universe = assets_service.list_assets(session)
+        asset_classes = _asset_class_map(universe)
+        fractionable = _fractionable_map(universe)
 
         # Read the guardrail config back off the frozen session row; a disabled or
         # pre-migration session yields no caps and the executor stays normalize-only.
@@ -1055,6 +1063,7 @@ def run_rebalance_event(
             base_capital=rebalance_base,
             crypto_only=crypto_only,
             unallocated_cash=valuation.cash_value,
+            fractionable=fractionable,
         )
 
         # The executor planned a buy-only run with no deployable cash and submitted
@@ -2105,6 +2114,17 @@ def _asset_class_map(assets: list[Asset]) -> dict[str, AssetClass]:
         )
         for asset in assets
     }
+
+
+def _fractionable_map(assets: list[Asset]) -> dict[str, bool]:
+    """Map each asset's ticker to whether the brokerage lists it as fractionable.
+
+    The asset record is the single source of truth: only a ``fractionable is True``
+    row is sized fractionally. ``False`` and unknown/``NULL`` (and tickers absent
+    from the universe) map to ``False`` so the executor keeps whole-share sizing —
+    the fractional path is strictly opt-in per asset.
+    """
+    return {asset.ticker: asset.fractionable is True for asset in assets}
 
 
 def _guardrail_caps(
