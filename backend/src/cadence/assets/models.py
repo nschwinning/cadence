@@ -152,3 +152,30 @@ class AssetDailySnapshot(Base):
     )
 
     asset: Mapped[Asset] = relationship(back_populates="snapshots")
+
+
+class AssetUniverseEvaluation(Base):
+    """The single current AI-authored evaluation of the whole asset universe.
+
+    At most one row exists: generating a new evaluation replaces the previous
+    record (no history). ``narrative`` holds the markdown prose; ``strengths``,
+    ``concerns``, and ``suggestions`` each hold a JSONB array of bullet strings.
+    ``fingerprint`` is a content hash of the universe captured at generation
+    time; a read recomputes it and reports the evaluation outdated when it
+    differs. ``model`` records which AI model produced the content (nullable).
+    """
+
+    __tablename__ = "asset_universe_evaluation"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    narrative: Mapped[str] = mapped_column(Text, nullable=False)
+    strengths: Mapped[list[str]] = mapped_column(JSONB, nullable=False)
+    concerns: Mapped[list[str]] = mapped_column(JSONB, nullable=False)
+    suggestions: Mapped[list[str]] = mapped_column(JSONB, nullable=False)
+    # SHA-256 over the universe's mutable columns at generation time; recomputed
+    # on read to detect that the universe has changed since (see service).
+    fingerprint: Mapped[str] = mapped_column(String, nullable=False)
+    model: Mapped[str | None] = mapped_column(String, nullable=True)
+    generated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )

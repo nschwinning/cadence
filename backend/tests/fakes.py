@@ -10,6 +10,11 @@ from typing import Any
 from cadence.agents.tools import note_web_search
 from cadence.ai_portfolio.agent import AIPortfolioBuildResult, AIRebalanceResult
 from cadence.assets.market_data import AssetDetailData, AssetInfo, HistoryBar
+from cadence.assets.universe_agent import (
+    UniverseEvaluationOutput,
+    UniverseSummary,
+    build_universe_evaluation_prompt,
+)
 from cadence.broker.models import AssetClass, BrokerAsset
 from cadence.broker.stub import StubBroker
 from cadence.recommendations.agent import (
@@ -207,6 +212,41 @@ class FakeRecommenderAgent:
             output=RecommendationOutput(candidates=list(self._candidates)),
             tool_call_count=self._tool_call_count,
         )
+
+
+class FakeUniverseEvaluationAgent:
+    """In-memory :class:`UniverseEvaluationAgent` returning a canned evaluation.
+
+    Set ``error`` to raise from :meth:`evaluate` (to drive the failure path that
+    surfaces as HTTP 502 and leaves any existing evaluation intact).
+    ``evaluate_calls`` records each :class:`UniverseSummary` passed so tests can
+    assert the summary the service built. The prompt is built with the real
+    builder so the recorded prompt is realistic.
+    """
+
+    def __init__(
+        self,
+        *,
+        output: UniverseEvaluationOutput | None = None,
+        error: Exception | None = None,
+    ) -> None:
+        self._output = output or UniverseEvaluationOutput(
+            narrative="A reasonably diversified universe.",
+            strengths=["Broad sector coverage"],
+            concerns=["Some concentration in technology"],
+            suggestions=["Add exposure to utilities"],
+        )
+        self._error = error
+        self.evaluate_calls: list[UniverseSummary] = []
+
+    def build_prompt(self, summary: UniverseSummary) -> str:
+        return build_universe_evaluation_prompt(summary)
+
+    def evaluate(self, summary: UniverseSummary) -> UniverseEvaluationOutput:
+        self.evaluate_calls.append(summary)
+        if self._error is not None:
+            raise self._error
+        return self._output
 
 
 class FakeAIPortfolioAgent:

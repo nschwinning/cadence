@@ -13,10 +13,13 @@ from cadence.api.schemas import (
     AssetDetailRead,
     AssetListResponse,
     AssetRead,
+    AssetUniverseEvaluationRead,
+    AssetUniverseEvaluationResponse,
 )
 from cadence.assets import service
 from cadence.assets.category import AssetCategory
 from cadence.assets.errors import (
+    AssetEvaluationUnavailableError,
     AssetNotFoundError,
     DuplicateAssetError,
     MarketDataUnavailableError,
@@ -28,7 +31,12 @@ from cadence.assets.market_data import (
     MarketDataProvider,
     YFinanceMarketDataProvider,
 )
+from cadence.assets.models import AssetUniverseEvaluation
 from cadence.assets.sector import Sector
+from cadence.assets.universe_agent import (
+    OpenAIUniverseEvaluationAgent,
+    UniverseEvaluationAgent,
+)
 from cadence.broker import Broker, get_broker
 from cadence.database import get_db
 
@@ -40,9 +48,17 @@ def get_market_data_provider() -> MarketDataProvider:
     return YFinanceMarketDataProvider()
 
 
+def get_universe_evaluation_agent() -> UniverseEvaluationAgent:
+    """Provide the universe-evaluation agent. Overridden with a fake in tests."""
+    return OpenAIUniverseEvaluationAgent()
+
+
 DbSession = Annotated[Session, Depends(get_db)]
 Provider = Annotated[MarketDataProvider, Depends(get_market_data_provider)]
 BrokerDep = Annotated[Broker, Depends(get_broker)]
+EvaluationAgentDep = Annotated[
+    UniverseEvaluationAgent, Depends(get_universe_evaluation_agent)
+]
 
 
 @router.post("", response_model=AssetRead, status_code=status.HTTP_201_CREATED)
@@ -163,6 +179,87 @@ def list_assets(
         db, search=search, categories=category, sectors=sector
     )
     return AssetListResponse(items=items, total=total)
+
+
+def _evaluation_response(
+    evaluation: AssetUniverseEvaluation | None,
+    outdated: bool,
+) -> AssetUniverseEvaluationResponse:
+    """Build the read envelope with the computed ``outdated`` flag.
+
+    ``outdated`` is not a stored column (it is derived on read against the
+    current universe), so the read model is built explicitly from the row plus
+    the flag.
+    """
+    if evaluation is None:
+        return AssetUniverseEvaluationResponse(evaluation=None)
+    return AssetUniverseEvaluationResponse(
+        evaluation=AssetUniverseEvaluationRead(
+            narrative=evaluation.narrative,
+            strengths=evaluation.strengths,
+            concerns=evaluation.concerns,
+            suggestions=evaluation.suggestions,
+            generated_at=evaluation.generated_at,
+            outdated=outdated,
+        )
+    )
+
+
+@router.get("/universe-evaluation", response_model=AssetUniverseEvaluationResponse)
+def get_universe_evaluation(
+    db: DbSession,
+    agent: EvaluationAgentDep,
+) -> AssetUniverseEvaluationResponse:
+    """Return the current universe evaluation with a freshly computed outdated flag.
+
+    Lazy-fills on first read: when no evaluation exists and the universe is
+    non-empty, one is generated and persisted. An empty universe returns a null
+    evaluation and never calls the AI provider.
+    """
+    assets = service.get_universe_assets(db)
+    if not assets:
+        return _evaluation_response(None, outdated=False)
+
+    evaluation = service.get_evaluation(db)
+    if evaluation is None:
+        try:
+            evaluation = service.generate_evaluation(db, agent, assets)
+        except AssetEvaluationUnavailableError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)
+            ) from exc
+        # Freshly generated against the current universe, so never outdated.
+        return _evaluation_response(evaluation, outdated=False)
+
+    return _evaluation_response(
+        evaluation, outdated=service.evaluation_outdated(evaluation, assets)
+    )
+
+
+@router.post(
+    "/universe-evaluation/refresh",
+    response_model=AssetUniverseEvaluationResponse,
+)
+def refresh_universe_evaluation(
+    db: DbSession,
+    agent: EvaluationAgentDep,
+) -> AssetUniverseEvaluationResponse:
+    """Regenerate and replace the universe evaluation on demand.
+
+    Always regenerates against the current universe and returns the new
+    evaluation as not outdated. An empty universe returns a null evaluation and
+    never calls the AI provider.
+    """
+    assets = service.get_universe_assets(db)
+    if not assets:
+        return _evaluation_response(None, outdated=False)
+    try:
+        evaluation = service.generate_evaluation(db, agent, assets)
+    except AssetEvaluationUnavailableError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)
+        ) from exc
+    return _evaluation_response(evaluation, outdated=False)
 
 
 @router.get("/{ticker}/details", response_model=AssetDetailRead)

@@ -6,6 +6,8 @@ in this module.
 
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
 from collections.abc import Collection
 from dataclasses import dataclass
@@ -28,7 +30,16 @@ from cadence.assets.errors import (
 from cadence.assets.evaluation import EvaluationResult, evaluate
 from cadence.assets.market_data import HistoryBar, MarketDataProvider
 from cadence.assets.metrics import derive_metrics
-from cadence.assets.models import Asset, AssetDailySnapshot
+from cadence.assets.models import (
+    Asset,
+    AssetDailySnapshot,
+    AssetUniverseEvaluation,
+)
+from cadence.assets.universe_agent import (
+    UniverseEvaluationAgent,
+    UniverseSummary,
+    get_universe_evaluation_model,
+)
 from cadence.broker.base import Broker
 from cadence.broker.models import AssetClass
 from cadence.price_history import service as price_history_service
@@ -436,3 +447,148 @@ def _serialize_criteria(result: EvaluationResult) -> list[dict[str, Any]]:
         }
         for criterion in result.criteria
     ]
+
+
+# --- AI universe evaluation --------------------------------------------------
+
+# How many of the largest sector groups to surface as "top concentrations".
+_TOP_CONCENTRATIONS = 3
+
+
+def _universe_summary(assets: list[Asset]) -> UniverseSummary:
+    """Build the compact, prompt-ready summary of the universe for the agent.
+
+    Counts by category and by sector ("none" for a null sector), the eligibility
+    split, the largest sector concentrations, and the tickers with no brokerage
+    symbol (foreign/unpriceable listings). Per-row prices are deliberately
+    excluded — the agent assesses structure, not individual quotes.
+    """
+    total = len(assets)
+    eligible = sum(1 for asset in assets if asset.is_eligible)
+    category_counts: dict[str, int] = {}
+    sector_counts: dict[str, int] = {}
+    unpriceable: list[str] = []
+    for asset in assets:
+        category_counts[asset.category] = category_counts.get(asset.category, 0) + 1
+        sector_key = asset.sector if asset.sector else "none"
+        sector_counts[sector_key] = sector_counts.get(sector_key, 0) + 1
+        if asset.alpaca_symbol is None:
+            unpriceable.append(asset.ticker)
+    top_concentrations = sorted(
+        sector_counts.items(), key=lambda item: (-item[1], item[0])
+    )[:_TOP_CONCENTRATIONS]
+    return UniverseSummary(
+        total=total,
+        eligible_count=eligible,
+        ineligible_count=total - eligible,
+        category_counts=category_counts,
+        sector_counts=sector_counts,
+        top_concentrations=top_concentrations,
+        unpriceable_listings=sorted(unpriceable),
+    )
+
+
+# The mutable asset attributes hashed into the universe fingerprint. Order is
+# irrelevant (keys are sorted in the payload); price-history-derived values are
+# deliberately excluded so daily price moves do not flip the fingerprint.
+_FINGERPRINT_FIELDS = (
+    "ticker",
+    "name",
+    "category",
+    "sector",
+    "exchange",
+    "currency",
+    "country",
+    "is_eligible",
+    "market_cap_usd",
+    "avg_daily_turnover_usd",
+    "history_years",
+    "alpaca_symbol",
+    "fractionable",
+    "criteria_results",
+)
+
+
+def _universe_fingerprint(assets: list[Asset]) -> str:
+    """Return a deterministic SHA-256 over the universe's mutable attributes.
+
+    Serializes each asset's :data:`_FINGERPRINT_FIELDS` into a canonical,
+    ticker-sorted JSON payload (sorted keys, compact separators) and hashes it.
+    Equal universes hash equal regardless of row order; any add/remove or edit to
+    a hashed attribute changes the hash. This realizes the "any asset change"
+    staleness semantics without an ``updated_at`` column.
+    """
+    rows = [
+        {field: getattr(asset, field) for field in _FINGERPRINT_FIELDS}
+        for asset in assets
+    ]
+    rows.sort(key=lambda row: row["ticker"])
+    payload = json.dumps(rows, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def get_universe_assets(session: Session) -> list[Asset]:
+    """Return the full universe (ticker asc) for evaluation/fingerprinting."""
+    return list(session.scalars(select(Asset).order_by(Asset.ticker)))
+
+
+def get_evaluation(session: Session) -> AssetUniverseEvaluation | None:
+    """Return the single current universe evaluation, or ``None`` if none exists."""
+    return session.scalars(
+        select(AssetUniverseEvaluation).order_by(AssetUniverseEvaluation.id.desc())
+    ).first()
+
+
+def evaluation_outdated(
+    evaluation: AssetUniverseEvaluation, assets: list[Asset]
+) -> bool:
+    """Return whether ``evaluation`` is stale against the current ``assets``."""
+    return evaluation.fingerprint != _universe_fingerprint(assets)
+
+
+def generate_evaluation(
+    session: Session,
+    agent: UniverseEvaluationAgent,
+    assets: list[Asset],
+) -> AssetUniverseEvaluation | None:
+    """Generate and persist the universe evaluation, replacing any prior record.
+
+    Summarizes ``assets``, asks the agent for a narrative + findings, and upserts
+    the single evaluation row with the content, the universe fingerprint, the
+    model id, and a fresh ``generated_at``. The agent call happens before any DB
+    mutation, so an :class:`AssetEvaluationUnavailableError` leaves any existing
+    row untouched. An empty universe returns ``None`` without calling the agent.
+    """
+    if not assets:
+        return None
+
+    summary = _universe_summary(assets)
+    output = agent.evaluate(summary)
+    fingerprint = _universe_fingerprint(assets)
+    model = get_universe_evaluation_model()
+    generated_at = datetime.now(tz=UTC)
+
+    evaluation = get_evaluation(session)
+    if evaluation is None:
+        evaluation = AssetUniverseEvaluation(
+            narrative=output.narrative,
+            strengths=list(output.strengths),
+            concerns=list(output.concerns),
+            suggestions=list(output.suggestions),
+            fingerprint=fingerprint,
+            model=model,
+            generated_at=generated_at,
+        )
+        session.add(evaluation)
+    else:
+        evaluation.narrative = output.narrative
+        evaluation.strengths = list(output.strengths)
+        evaluation.concerns = list(output.concerns)
+        evaluation.suggestions = list(output.suggestions)
+        evaluation.fingerprint = fingerprint
+        evaluation.model = model
+        evaluation.generated_at = generated_at
+
+    session.commit()
+    session.refresh(evaluation)
+    return evaluation

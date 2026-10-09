@@ -37,3 +37,11 @@ class UntradeableTickerError(AssetError):
 
 class AssetNotFoundError(AssetError):
     """No asset with the requested ticker exists in the stored universe."""
+
+
+class AssetEvaluationUnavailableError(AssetError):
+    """The AI universe evaluation could not be generated.
+
+    Raised when the evaluation agent is unreachable, times out, or returns no
+    usable result. Any existing stored evaluation is left untouched.
+    """

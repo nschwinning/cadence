@@ -17,6 +17,7 @@ import { SectorBadge, SECTOR_STYLES } from '../../components/SectorBadge';
 import { BreakdownTile } from '../../components/dashboard/BreakdownTile';
 import { useDashboardMetrics } from '../../api/dashboard';
 import { RecommendAssetsCard } from './RecommendAssetsCard';
+import { UniverseEvaluationPanel } from './UniverseEvaluationPanel';
 import type {
   Asset,
   AssetCategory,
@@ -464,6 +465,9 @@ export function AssetsPage() {
           />
         </div>
       )}
+
+      {/* AI assessment of the whole universe, directly below the donuts. */}
+      <UniverseEvaluationPanel />
 
       {/* Add / Recommend — two-column grid (stacks on mobile, equal height ≥ md) */}
       <div className="grid grid-cols-1 gap-6 md:grid-cols-[minmax(0,2fr)_minmax(0,3fr)] md:items-stretch">

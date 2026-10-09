@@ -85,6 +85,33 @@ class AssetListResponse(BaseModel):
     total: int
 
 
+class AssetUniverseEvaluationRead(BaseModel):
+    """The AI evaluation of the whole asset universe, with an outdated flag.
+
+    ``outdated`` is computed on read against the current universe fingerprint, so
+    it is not an attribute of the stored row and is set explicitly by the router.
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    narrative: str
+    strengths: list[str]
+    concerns: list[str]
+    suggestions: list[str]
+    generated_at: datetime
+    outdated: bool
+
+
+class AssetUniverseEvaluationResponse(BaseModel):
+    """Envelope for the universe evaluation; ``evaluation`` is null when none.
+
+    ``evaluation`` is ``None`` when the universe is empty (nothing to assess yet);
+    otherwise it carries the current evaluation and its outdated flag.
+    """
+
+    evaluation: AssetUniverseEvaluationRead | None = None
+
+
 class AssetDetailHistoryPoint(BaseModel):
     """A single point on the asset details price-history chart."""
 

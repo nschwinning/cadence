@@ -108,6 +108,30 @@ export interface AssetCreate {
 }
 
 /**
+ * The AI evaluation of the whole asset universe. Mirrors the backend
+ * `AssetUniverseEvaluationRead`: a markdown `narrative` plus bulleted findings,
+ * the `generated_at` time, and `outdated` (recomputed on read — true when the
+ * universe has changed since the evaluation was generated).
+ */
+export interface AssetUniverseEvaluation {
+  narrative: string;
+  strengths: string[];
+  concerns: string[];
+  suggestions: string[];
+  generated_at: string;
+  outdated: boolean;
+}
+
+/**
+ * Envelope for the universe evaluation. Mirrors the backend
+ * `AssetUniverseEvaluationResponse`: `evaluation` is `null` when the universe is
+ * empty (nothing to assess yet).
+ */
+export interface AssetUniverseEvaluationResponse {
+  evaluation: AssetUniverseEvaluation | null;
+}
+
+/**
  * A single daily closing price in an asset's price-history series. `date` is an
  * ISO `YYYY-MM-DD` calendar day; `close` is the closing price in the asset's
  * native trading currency.
