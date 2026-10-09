@@ -191,6 +191,36 @@ describe('SessionComparisonChart', () => {
     expect(within(tooltip).getByText('10.00%')).toBeInTheDocument();
   });
 
+  it('resolves to the line the pointer is vertically nearest, not just the first series', async () => {
+    renderChart([
+      // Alpha is the upper line (+10%), Beta the lower line (+4%) at the latest
+      // date. Hovering low on the plot must select Beta, not the first series.
+      series('a', 'Alpha', 100000, [
+        ['2026-01-04', 100000],
+        ['2026-01-05', 110000],
+      ]),
+      series('b', 'Beta', 50000, [
+        ['2026-01-04', 50000],
+        ['2026-01-05', 52000],
+      ]),
+    ]);
+
+    const svg = await screen.findByRole('img', { name: /return percent/i });
+    const wrapper = stubWrapper(svg);
+
+    // Near the bottom of the plot → the lower line (Beta, +4%) wins.
+    fireEvent.pointerMove(wrapper, { clientX: 800, clientY: 160 });
+    let tooltip = screen.getByTestId('chart-tooltip');
+    expect(within(tooltip).getByText('Beta')).toBeInTheDocument();
+    expect(within(tooltip).getByText('4.00%')).toBeInTheDocument();
+
+    // Near the top of the plot → the upper line (Alpha, +10%) wins.
+    fireEvent.pointerMove(wrapper, { clientX: 800, clientY: 0 });
+    tooltip = screen.getByTestId('chart-tooltip');
+    expect(within(tooltip).getByText('Alpha')).toBeInTheDocument();
+    expect(within(tooltip).getByText('10.00%')).toBeInTheDocument();
+  });
+
   it('formats the hover tooltip value for the active metric', async () => {
     renderChart([
       series('a', 'Alpha', 100000, [

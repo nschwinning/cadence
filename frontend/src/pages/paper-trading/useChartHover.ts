@@ -16,10 +16,16 @@ export interface ChartHoverPoint<T> {
 }
 
 /**
- * Maps the pointer's horizontal position — a 0..1 ratio of the plot's rendered
- * width — to the nearest plotted point, or `null` when nothing is resolvable.
+ * Maps the pointer's position — `xRatio`/`yRatio` are 0..1 fractions of the
+ * plot's rendered width and height (0 = left/top edge, 1 = right/bottom edge) —
+ * to the nearest plotted point, or `null` when nothing is resolvable. Single-line
+ * charts need only `xRatio`; multi-line charts use `yRatio` to disambiguate which
+ * overlapping line the pointer is nearest to vertically.
  */
-export type ChartHoverResolver<T> = (ratio: number) => ChartHoverPoint<T> | null;
+export type ChartHoverResolver<T> = (
+  xRatio: number,
+  yRatio: number,
+) => ChartHoverPoint<T> | null;
 
 export interface ChartHover<T> {
   active: ChartHoverPoint<T> | null;
@@ -33,11 +39,13 @@ export interface ChartHover<T> {
  * The charts render with `preserveAspectRatio="none"`, so their 0–800 viewBox
  * x-units are stretched to the container's rendered pixel width. Hit-testing
  * therefore works in rendered-pixel space: the pointer's `clientX` is converted
- * to a 0..1 ratio of the handler element's measured width (read fresh from the
- * event target each move so it tracks responsive layout), and that ratio is
- * handed to a chart-supplied resolver that knows its own x-projection (index vs
- * calendar-time). The resolver returns the point plus its plot-fraction position,
- * which the caller uses to place an HTML tooltip and an optional SVG marker.
+ * to a 0..1 ratio of the handler element's measured width (and height, read
+ * fresh from the event target each move so it tracks responsive layout), and
+ * those ratios are handed to a chart-supplied resolver that knows its own
+ * x-projection (index vs calendar-time) and, for multi-line charts, uses the
+ * vertical ratio to pick which overlapping line the pointer is nearest. The
+ * resolver returns the point plus its plot-fraction position, which the caller
+ * uses to place an HTML tooltip and an optional SVG marker.
  */
 export function useChartHover<T>(resolve: ChartHoverResolver<T>): ChartHover<T> {
   const [active, setActive] = useState<ChartHoverPoint<T> | null>(null);
@@ -46,11 +54,15 @@ export function useChartHover<T>(resolve: ChartHoverResolver<T>): ChartHover<T> 
     (event: ReactPointerEvent<Element>) => {
       const rect = event.currentTarget.getBoundingClientRect();
       if (rect.width <= 0 || !Number.isFinite(event.clientX)) return;
-      const ratio = Math.min(
+      const xRatio = Math.min(
         1,
         Math.max(0, (event.clientX - rect.left) / rect.width),
       );
-      setActive(resolve(ratio));
+      const yRatio =
+        rect.height > 0 && Number.isFinite(event.clientY)
+          ? Math.min(1, Math.max(0, (event.clientY - rect.top) / rect.height))
+          : 0;
+      setActive(resolve(xRatio, yRatio));
     },
     [resolve],
   );

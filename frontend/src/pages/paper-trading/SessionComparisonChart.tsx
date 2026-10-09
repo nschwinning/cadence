@@ -150,24 +150,35 @@ function ComparisonPlot({
     formatAxisDate(new Date(maxT).toISOString().slice(0, 10)),
   ];
 
-  // Hover: map the pointer ratio to a target calendar time, then pick the single
-  // nearest plotted point across all series (by time distance). The value is
-  // formatted for the active metric so the tooltip tracks the toggle.
-  const hover = useChartHover<ComparisonHover>((ratio) => {
+  // Hover: map the pointer's x to a target calendar time and find each series'
+  // nearest point in time (the hovered date column), then pick the series whose
+  // point sits closest to the pointer vertically. Because every series shares the
+  // same dates, selecting on time alone would always resolve to the same (first)
+  // line; the vertical tiebreak lets the pointer reach each overlapping line. The
+  // value is formatted for the active metric so the tooltip tracks the toggle.
+  const hover = useChartHover<ComparisonHover>((xRatio, yRatio) => {
     const dataPos = Math.min(
       1,
-      Math.max(0, (ratio * width - pad) / (width - 2 * pad)),
+      Math.max(0, (xRatio * width - pad) / (width - 2 * pad)),
     );
     const target = minT + dataPos * tSpan;
     let best: ComparisonHover | null = null;
-    let bestDist = Infinity;
+    let bestVerticalDist = Infinity;
     for (const s of plottable) {
+      let nearest: PlotPoint | null = null;
+      let nearestTimeDist = Infinity;
       for (const point of s.points) {
         const dist = Math.abs(point.t - target);
-        if (dist < bestDist) {
-          bestDist = dist;
-          best = { label: s.label, color: s.color, point };
+        if (dist < nearestTimeDist) {
+          nearestTimeDist = dist;
+          nearest = point;
         }
+      }
+      if (!nearest) continue;
+      const verticalDist = Math.abs(y(nearest.value) / height - yRatio);
+      if (verticalDist < bestVerticalDist) {
+        bestVerticalDist = verticalDist;
+        best = { label: s.label, color: s.color, point: nearest };
       }
     }
     if (!best) return null;
