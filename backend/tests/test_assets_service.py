@@ -348,6 +348,45 @@ def test_backfill_fractionable_is_idempotent(db_session: Session) -> None:
     assert updated == 0
 
 
+def test_backfill_alpaca_symbols_populates_null_rows_fail_open(
+    db_session: Session,
+) -> None:
+    # Simulate rows predating add-time verification: add five assets, then null
+    # their alpaca_symbol column as the (backfill-less) migration left legacy rows.
+    for ticker in ("AAPL", "BRK-B", "GHOST", "ERR", "NOTR"):
+        service.add_asset(db_session, ticker, _eligible_provider(), _broker())
+    db_session.query(Asset).update({Asset.alpaca_symbol: None})
+    db_session.commit()
+
+    broker = _broker(
+        not_found={"GHOST"}, raise_for={"ERR"}, not_tradable={"NOTR"}
+    )
+    updated = service.backfill_alpaca_symbols(db_session, broker)
+
+    assert updated == 2
+    by_ticker = {a.ticker: a for a in service.list_assets(db_session)}
+    # A tradable asset whose canonical symbol matches its ticker is stored as-is.
+    assert by_ticker["AAPL"].alpaca_symbol == "AAPL"
+    # A tradable class share stores the brokerage's canonical symbol (BRK-B -> BRK.B).
+    assert by_ticker["BRK-B"].alpaca_symbol == "BRK.B"
+    # Not listed, raising, and listed-but-not-tradable rows stay NULL (still flagged).
+    assert by_ticker["GHOST"].alpaca_symbol is None
+    assert by_ticker["ERR"].alpaca_symbol is None
+    assert by_ticker["NOTR"].alpaca_symbol is None
+
+
+def test_backfill_alpaca_symbols_is_idempotent(db_session: Session) -> None:
+    # Add-time verification already populated alpaca_symbol, so a pass touches
+    # nothing and leaves the resolved symbol unchanged.
+    service.add_asset(db_session, "AAPL", _eligible_provider(), _broker())
+
+    updated = service.backfill_alpaca_symbols(db_session, _broker())
+
+    assert updated == 0
+    [asset] = service.list_assets(db_session)
+    assert asset.alpaca_symbol == "AAPL"
+
+
 def test_add_asset_rejects_when_broker_does_not_list_asset(
     db_session: Session,
 ) -> None:

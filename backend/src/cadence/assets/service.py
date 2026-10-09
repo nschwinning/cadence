@@ -217,6 +217,52 @@ def backfill_fractionable(session: Session, broker: Broker) -> int:
     return updated
 
 
+def backfill_alpaca_symbols(session: Session, broker: Broker) -> int:
+    """Resolve ``alpaca_symbol`` on assets that predate add-time brokerage verification.
+
+    The ``alpaca_symbol`` column was added as nullable with no backfill, so every
+    asset created before add-time verification existed still has ``NULL`` — which
+    the not-tradable badge and the AI universe panel both read as "not tradable on
+    Alpaca", falsely flagging genuinely-tradable legacy rows. This iterates every
+    asset whose ``alpaca_symbol`` is still ``NULL``, looks it up once on the
+    brokerage, and stores the brokerage's canonical symbol when the asset is listed
+    as tradable (mirroring ``add_asset``'s tradability gate). A row the broker does
+    not list, or lists as not tradable, is left ``NULL`` so genuinely-foreign
+    listings (e.g. AIR.PA, TTE.PA) stay flagged.
+
+    Idempotent and fail-open: it only selects ``NULL`` rows, so a re-run retries
+    only the still-unresolved ones, and a per-asset lookup error is logged and
+    skipped so one failure never aborts the pass. Returns the number of rows updated.
+
+    Kept out of the Alembic migration on purpose — the migration owns the schema,
+    services own external I/O — so an unreachable brokerage can never fail a deploy.
+    """
+    rows = session.scalars(
+        select(Asset).where(Asset.alpaca_symbol.is_(None))
+    ).all()
+    updated = 0
+    for asset in rows:
+        asset_class = (
+            AssetClass.CRYPTO
+            if asset.category == AssetCategory.CRYPTO.value
+            else AssetClass.EQUITY
+        )
+        try:
+            broker_asset = broker.get_asset(asset.ticker, asset_class)
+        except Exception as exc:  # noqa: BLE001 - one asset must not abort the backfill
+            logger.warning(
+                "alpaca_symbol backfill failed for %s: %s", asset.ticker, exc
+            )
+            continue
+        if broker_asset is None or not broker_asset.tradable:
+            continue
+        asset.alpaca_symbol = broker_asset.symbol
+        updated += 1
+    if updated:
+        session.commit()
+    return updated
+
+
 # Sortable columns exposed to the API, mapped to their model attribute.
 SORT_FIELDS = ("ticker", "name")
 SORT_DIRECTIONS = ("asc", "desc")
