@@ -77,12 +77,14 @@ class Settings(BaseSettings):
     # excess return over a non-zero benchmark.
     SHARPE_RISK_FREE_RATE: float = 0.0
 
-    # Fixed transaction cost charged on every executed paper trade (in USD, per
-    # trade, regardless of side). Modeled so reported performance reflects a real
-    # broker's per-fill cost and the AI rebalancer avoids churning small positions.
-    # Applied at the single point where a trade is recorded and accumulated on the
-    # session; set to 0 to disable.
-    TRANSACTION_COST_USD: float = 1.0
+    # Asset-class-aware transaction cost charged on every executed paper trade,
+    # matching Alpaca's real fee schedule: US equities/ETFs are commission-free
+    # (market-order slippage is already in the fill price), while crypto incurs a
+    # percentage taker fee on the executed notional. This is the crypto taker fee
+    # as a fraction of notional (0.0025 = 0.25%, Alpaca base tier); equities are
+    # charged nothing. Applied at the single point where a trade is recorded and
+    # accumulated on the session; set to 0 to disable the crypto fee.
+    CRYPTO_FEE_PCT: float = 0.0025
 
     # Bounded lookback (in years) used when backfilling an asset's daily close
     # history on add, and the window the daily price-history ingestion pass
@@ -166,10 +168,11 @@ class Settings(BaseSettings):
     # invested target (weights summing to ~1.0) does not deploy 100% of the
     # session's value and then overdraw on per-trade fees and market-order fill
     # slippage, driving unallocated cash negative. The reserved amount is the
-    # GREATER of this fraction of the sizing base and the estimated total trade
-    # fees for the run (candidate order count * ``TRANSACTION_COST_USD``); the
-    # base is reduced by that reserve before any target weight is applied. Set to
-    # 0 (together with ``TRANSACTION_COST_USD`` = 0) to disable the reserve.
+    # GREATER of this fraction of the sizing base and the estimated crypto trade
+    # fees for the run (``CRYPTO_FEE_PCT`` * the base when the run includes any
+    # crypto candidate, else 0 — equities are free); the base is reduced by that
+    # reserve before any target weight is applied. Set to 0 (together with
+    # ``CRYPTO_FEE_PCT`` = 0) to disable the reserve.
     REBALANCE_CASH_BUFFER_PCT: float = 0.015
 
     # Per-probe timeout (seconds) for the system-status endpoint. Each external

@@ -99,6 +99,7 @@ def test_record_trade_derives_notional(db_session: Session) -> None:
         quantity=10,
         price=25.0,
         signal_type="entry",
+        asset_class=AssetClass.EQUITY,
         order_status=OrderStatus.FILLED,
     )
     assert trade.notional == 250.0
@@ -107,7 +108,7 @@ def test_record_trade_derives_notional(db_session: Session) -> None:
     assert service.count_session_trades(db_session, sess.id) == 1
 
 
-def test_record_trade_charges_transaction_fee(db_session: Session) -> None:
+def test_record_trade_equity_charges_no_fee(db_session: Session) -> None:
     portfolio = _portfolio(db_session)
     sess = service.create_session(
         db_session, portfolio_id=portfolio.id, strategy_key="s", rebalance_prompt_version=1, crypto_rebalance_prompt_version=1, benchmark=Benchmark.SP500)
@@ -122,10 +123,45 @@ def test_record_trade_charges_transaction_fee(db_session: Session) -> None:
             quantity=1,
             price=10.0,
             signal_type="entry",
+            asset_class=AssetClass.EQUITY,
         )
-    # Every recorded trade charges the flat per-trade cost onto the session.
+    # Equities trade commission-free on Alpaca — no fee accrues.
     refreshed = service.get_session(db_session, sess.id)
-    assert refreshed.total_fees == pytest.approx(2 * settings.TRANSACTION_COST_USD)
+    assert refreshed.total_fees == pytest.approx(0.0)
+
+
+def test_record_trade_crypto_charges_pct_of_notional(
+    db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(settings, "CRYPTO_FEE_PCT", 0.0025)
+    portfolio = _portfolio(db_session)
+    sess = service.create_session(
+        db_session, portfolio_id=portfolio.id, strategy_key="s", rebalance_prompt_version=1, crypto_rebalance_prompt_version=1, benchmark=Benchmark.SP500)
+    # Two crypto trades each accrue pct × notional (filled price when present).
+    service.record_trade(
+        db_session,
+        session_id=sess.id,
+        ticker="BTC-USD",
+        side=OrderSide.BUY,
+        quantity=2.0,
+        price=100.0,
+        signal_type="entry",
+        asset_class=AssetClass.CRYPTO,
+    )
+    service.record_trade(
+        db_session,
+        session_id=sess.id,
+        ticker="BTC-USD",
+        side=OrderSide.BUY,
+        quantity=1.0,
+        price=100.0,
+        filled_price=200.0,
+        signal_type="entry",
+        asset_class=AssetClass.CRYPTO,
+    )
+    refreshed = service.get_session(db_session, sess.id)
+    # 0.0025 * (2 * 100) + 0.0025 * (1 * 200) = 0.5 + 0.5 = 1.0.
+    assert refreshed.total_fees == pytest.approx(0.0025 * 200.0 + 0.0025 * 200.0)
 
 
 def test_record_run(db_session: Session) -> None:
@@ -459,6 +495,7 @@ def test_reconcile_updates_nonterminal_buy_to_filled(db_session: Session) -> Non
         quantity=10,
         price=100.0,
         signal_type="entry",
+        asset_class=AssetClass.EQUITY,
         order_id="o1",
         order_status=OrderStatus.SUBMITTED,
     )
@@ -483,13 +520,13 @@ def test_reconcile_leaves_terminal_and_orderless_trades_untouched(
     # Already terminal — never re-queried.
     service.record_trade(
         db_session, session_id=sess.id, ticker="AAPL", side=OrderSide.BUY,
-        quantity=1, price=10.0, signal_type="entry", order_id="done",
-        order_status=OrderStatus.FILLED,
+        quantity=1, price=10.0, signal_type="entry", asset_class=AssetClass.EQUITY,
+        order_id="done", order_status=OrderStatus.FILLED,
     )
     # No broker order id — nothing to reconcile against.
     service.record_trade(
         db_session, session_id=sess.id, ticker="MSFT", side=OrderSide.BUY,
-        quantity=1, price=20.0, signal_type="entry",
+        quantity=1, price=20.0, signal_type="entry", asset_class=AssetClass.EQUITY,
         order_status=OrderStatus.SUBMITTED,
     )
     broker = _OrderBroker(
@@ -506,18 +543,18 @@ def test_reconcile_skips_missing_or_failing_order_and_continues(
     sess = _ai_session(db_session)
     service.record_trade(
         db_session, session_id=sess.id, ticker="AAPL", side=OrderSide.BUY,
-        quantity=1, price=10.0, signal_type="entry", order_id="gone",
-        order_status=OrderStatus.SUBMITTED,
+        quantity=1, price=10.0, signal_type="entry", asset_class=AssetClass.EQUITY,
+        order_id="gone", order_status=OrderStatus.SUBMITTED,
     )
     service.record_trade(
         db_session, session_id=sess.id, ticker="MSFT", side=OrderSide.BUY,
-        quantity=1, price=20.0, signal_type="entry", order_id="boom",
-        order_status=OrderStatus.SUBMITTED,
+        quantity=1, price=20.0, signal_type="entry", asset_class=AssetClass.EQUITY,
+        order_id="boom", order_status=OrderStatus.SUBMITTED,
     )
     service.record_trade(
         db_session, session_id=sess.id, ticker="NVDA", side=OrderSide.BUY,
-        quantity=1, price=30.0, signal_type="entry", order_id="ok",
-        order_status=OrderStatus.SUBMITTED,
+        quantity=1, price=30.0, signal_type="entry", asset_class=AssetClass.EQUITY,
+        order_id="ok", order_status=OrderStatus.SUBMITTED,
     )
     broker = _OrderBroker(
         {
@@ -541,8 +578,8 @@ def test_reconcile_corrects_ledger_cost_basis_on_price_delta(
     _buy(db_session, sess.id, "AAPL", 10, 100.0)
     service.record_trade(
         db_session, session_id=sess.id, ticker="AAPL", side=OrderSide.BUY,
-        quantity=10, price=100.0, signal_type="entry", order_id="o1",
-        order_status=OrderStatus.SUBMITTED,
+        quantity=10, price=100.0, signal_type="entry", asset_class=AssetClass.EQUITY,
+        order_id="o1", order_status=OrderStatus.SUBMITTED,
     )
     # Broker reports the actual fill at 105 -> +5/share correction over 10 shares.
     broker = _OrderBroker(
@@ -564,8 +601,8 @@ def test_reconcile_equal_fill_price_is_noop_for_ledger(
     _buy(db_session, sess.id, "AAPL", 10, 100.0)
     service.record_trade(
         db_session, session_id=sess.id, ticker="AAPL", side=OrderSide.BUY,
-        quantity=10, price=100.0, signal_type="entry", order_id="o1",
-        order_status=OrderStatus.SUBMITTED,
+        quantity=10, price=100.0, signal_type="entry", asset_class=AssetClass.EQUITY,
+        order_id="o1", order_status=OrderStatus.SUBMITTED,
     )
     broker = _OrderBroker(
         {"o1": _filled_order("AAPL", OrderSide.BUY, 10, 100.0, order_id="o1")}
@@ -584,8 +621,8 @@ def test_reconcile_price_delta_on_closed_position_skips_ledger(
     # A pending buy whose position never opened (or was already fully sold).
     service.record_trade(
         db_session, session_id=sess.id, ticker="AAPL", side=OrderSide.BUY,
-        quantity=10, price=100.0, signal_type="entry", order_id="o1",
-        order_status=OrderStatus.SUBMITTED,
+        quantity=10, price=100.0, signal_type="entry", asset_class=AssetClass.EQUITY,
+        order_id="o1", order_status=OrderStatus.SUBMITTED,
     )
     broker = _OrderBroker(
         {"o1": _filled_order("AAPL", OrderSide.BUY, 10, 105.0, order_id="o1")}
@@ -943,21 +980,25 @@ def test_session_kpis_live_figures_and_total_return(db_session: Session) -> None
     assert kpis.sharpe_ratio is None
 
 
-def test_session_kpis_net_of_fees_and_gross_realised(db_session: Session) -> None:
+def test_session_kpis_net_of_fees_and_gross_realised(
+    db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(settings, "CRYPTO_FEE_PCT", 0.0025)
     sess = _ai_session(db_session)
     _buy(db_session, sess.id, "AAPL", 10, 100.0)  # +20/share -> +200 unrealised
-    # Two executed trades accrue transaction fees on the session.
+    # Two crypto trades accrue percentage transaction fees on the session.
     for _ in range(2):
         service.record_trade(
             db_session,
             session_id=sess.id,
-            ticker="AAPL",
+            ticker="BTC-USD",
             side=OrderSide.BUY,
             quantity=1,
-            price=10.0,
+            price=100.0,
             signal_type="entry",
+            asset_class=AssetClass.CRYPTO,
         )
-    fees = 2 * settings.TRANSACTION_COST_USD
+    fees = 2 * 0.0025 * 100.0  # pct × notional per crypto trade
     kpis = service.session_kpis(
         db_session, session_id=sess.id, broker=_QuoteBroker({"AAPL": 120.0})
     )
@@ -969,7 +1010,7 @@ def test_session_kpis_net_of_fees_and_gross_realised(db_session: Session) -> Non
     assert kpis.realised_pnl == pytest.approx(0.0)
 
 
-def test_session_kpis_daily_avg_transaction_cost(db_session: Session) -> None:
+def test_session_kpis_daily_avg_orders(db_session: Session) -> None:
     sess = _ai_session(db_session)
     for _ in range(3):
         service.record_trade(
@@ -980,19 +1021,19 @@ def test_session_kpis_daily_avg_transaction_cost(db_session: Session) -> None:
             quantity=1,
             price=10.0,
             signal_type="entry",
+            asset_class=AssetClass.EQUITY,
         )
-    fees = 3 * settings.TRANSACTION_COST_USD
     base = date(2026, 1, 1)
     for i in range(4):  # four recorded snapshot days
         _add_snapshot(db_session, sess.id, base + timedelta(days=i), 0.0)
     kpis = service.session_kpis(
         db_session, session_id=sess.id, broker=_QuoteBroker({"AAPL": 10.0})
     )
-    # Cumulative fees spread over the number of snapshot days.
-    assert kpis.daily_avg_transaction_cost == pytest.approx(fees / 4)
+    # Recorded orders spread over the number of snapshot days (3 / 4).
+    assert kpis.daily_avg_orders == pytest.approx(3 / 4)
 
 
-def test_session_kpis_daily_avg_transaction_cost_none_without_snapshots(
+def test_session_kpis_daily_avg_orders_none_without_snapshots(
     db_session: Session,
 ) -> None:
     sess = _ai_session(db_session)
@@ -1004,12 +1045,13 @@ def test_session_kpis_daily_avg_transaction_cost_none_without_snapshots(
         quantity=1,
         price=10.0,
         signal_type="entry",
+        asset_class=AssetClass.EQUITY,
     )
     kpis = service.session_kpis(
         db_session, session_id=sess.id, broker=_QuoteBroker({"AAPL": 10.0})
     )
     # No snapshots yet -> daily average is not yet available (no divide-by-zero).
-    assert kpis.daily_avg_transaction_cost is None
+    assert kpis.daily_avg_orders is None
 
 
 def test_session_kpis_sharpe_none_until_enough_history(db_session: Session) -> None:
@@ -1370,10 +1412,15 @@ def test_change_session_scope_narrowing_liquidates_out_of_scope_holdings(
     closed = service.get_closed_positions(db_session, sess.id, limit=100)
     assert {c.ticker for c in closed} == {"BTC-USD"}
 
-    # The forced sell was recorded as a trade tagged for the scope change and charged
-    # exactly one transaction cost into total_fees.
+    # The forced sell was recorded as a trade tagged for the scope change. It is a
+    # crypto position, so total_fees carries the percentage fee on its notional.
     row = service.get_session(db_session, sess.id)
-    assert row.total_fees == pytest.approx(settings.TRANSACTION_COST_USD)
+    (sell,) = service.get_session_trades(db_session, sess.id)
+    executed = sell.filled_price if sell.filled_price is not None else sell.price
+    assert settings.CRYPTO_FEE_PCT > 0.0  # default model charges crypto
+    assert row.total_fees == pytest.approx(
+        settings.CRYPTO_FEE_PCT * sell.quantity * executed
+    )
     assert row.total_trades == 1
     trades = service.get_session_trades(db_session, sess.id)
     assert [t.signal_type for t in trades] == [service.SCOPE_CHANGE_SIGNAL_TYPE]

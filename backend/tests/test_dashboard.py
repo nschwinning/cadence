@@ -16,7 +16,7 @@ from tests.fakes import FakeBroker, FakeMarketDataProvider
 
 from cadence.assets import service as assets_service
 from cadence.assets.market_data import AssetInfo, HistoryBar
-from cadence.broker.models import OrderSide
+from cadence.broker.models import AssetClass, OrderSide
 from cadence.dashboard import service
 from cadence.paper_trading import service as paper_trading_service
 from cadence.paper_trading.constants import Benchmark
@@ -96,6 +96,7 @@ def _seed_activity(db_session: Session) -> None:
             quantity=10.0,
             price=50.0,
             signal_type="entry",
+            asset_class=AssetClass.EQUITY,
         )
 
 

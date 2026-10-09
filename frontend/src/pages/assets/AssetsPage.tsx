@@ -119,6 +119,27 @@ function EligibilityBadge({ asset }: { asset: Asset }) {
   );
 }
 
+/**
+ * Flags an asset that can't be traded on Alpaca — a foreign or otherwise
+ * unpriceable listing, identified by the absence of a resolved Alpaca symbol
+ * (`alpaca_symbol` is null). This is the same signal the AI universe-evaluation
+ * panel reports as an "unpriceable listing". Orthogonal to eligibility: an
+ * eligible asset can still be untradable, hence the distinct amber styling.
+ */
+function NotTradableBadge({ asset }: { asset: Asset }) {
+  if (asset.alpaca_symbol != null) return null;
+
+  return (
+    <span
+      title="Not tradable on Alpaca — a foreign or unpriceable listing. Replace it with its US listing/ADR to make it tradable."
+      className="inline-flex cursor-help items-center gap-1 rounded-full bg-amber-100 px-2.5 py-0.5 text-xs font-medium text-amber-800"
+    >
+      <span aria-hidden="true" className="h-1.5 w-1.5 rounded-full bg-amber-500" />
+      Not on Alpaca
+    </span>
+  );
+}
+
 function AssetRow({ asset }: { asset: Asset }) {
   const deleteAsset = useDeleteAsset();
 
@@ -149,7 +170,10 @@ function AssetRow({ asset }: { asset: Asset }) {
         {formatYears(asset.history_years)}
       </td>
       <td className="px-4 py-3">
-        <EligibilityBadge asset={asset} />
+        <div className="flex flex-wrap items-center gap-1.5">
+          <EligibilityBadge asset={asset} />
+          <NotTradableBadge asset={asset} />
+        </div>
       </td>
       <td className="px-4 py-3 text-right">
         <button

@@ -55,6 +55,7 @@ def _seed(db_session: Session) -> uuid.UUID:
         quantity=5,
         price=20.0,
         signal_type="entry",
+        asset_class=AssetClass.EQUITY,
     )
     service.record_session_run(
         db_session, session_id=sess.id, signals_scanned=3, orders_executed=1
@@ -212,6 +213,7 @@ def test_trades_runs_positions_paginate_by_limit_and_offset(
             quantity=1,
             price=float(i + 1),
             signal_type="entry",
+            asset_class=AssetClass.EQUITY,
         )
         service.record_session_run(
             db_session, session_id=session_id, signals_scanned=i, orders_executed=1
@@ -357,6 +359,7 @@ def test_reconcile_session_returns_counts_and_refreshed_trades(
         quantity=5,
         price=20.0,
         signal_type="entry",
+        asset_class=AssetClass.EQUITY,
         order_id="o1",
         order_status=OrderStatus.SUBMITTED,
     )
@@ -557,7 +560,7 @@ def test_session_kpis_returns_live_figures(
         "realised_pnl",
         "unrealised_pnl",
         "total_fees",
-        "daily_avg_transaction_cost",
+        "daily_avg_orders",
         "total_return",
         "total_return_pct",
         "sharpe_ratio",
@@ -574,8 +577,8 @@ def test_session_kpis_returns_live_figures(
     }
     # Ledger buy above did not go through record_trade, so no fees accrued.
     assert body["total_fees"] == 0.0
-    # No daily snapshots yet -> daily average transaction cost withheld.
-    assert body["daily_avg_transaction_cost"] is None
+    # No daily snapshots yet -> daily average orders withheld.
+    assert body["daily_avg_orders"] is None
     assert body["current_value"] == 100_200.0
     # Unallocated cash = live value minus the 10 AAPL @ $120 ($1,200) position.
     assert body["unallocated_cash"] == 99_000.0

@@ -163,6 +163,30 @@ describe('AssetsPage', () => {
     );
   });
 
+  it('flags an asset with no Alpaca symbol as not tradable, and leaves tradable assets unflagged', async () => {
+    const foreign: Asset = {
+      ...apple,
+      id: 20,
+      ticker: 'ASML.AS',
+      name: 'ASML Amsterdam',
+      alpaca_symbol: null,
+    };
+    mockedGet.mockResolvedValue(page([apple, foreign]));
+
+    renderWithClient(<AssetsPage />);
+
+    const foreignRow = (await screen.findByText('ASML Amsterdam')).closest('tr');
+    expect(foreignRow).not.toBeNull();
+    expect(
+      within(foreignRow as HTMLElement).getByText('Not on Alpaca'),
+    ).toBeInTheDocument();
+
+    const tradableRow = screen.getByText('Apple Inc.').closest('tr');
+    expect(
+      within(tradableRow as HTMLElement).queryByText('Not on Alpaca'),
+    ).not.toBeInTheDocument();
+  });
+
   it('surfaces a specific message when adding a duplicate ticker (409)', async () => {
     const user = userEvent.setup();
     mockedPost.mockRejectedValue({

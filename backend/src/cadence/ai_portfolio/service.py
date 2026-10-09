@@ -583,6 +583,7 @@ def run_build_event(
             trade_results,
             signal_prefix="ai_build",
             event_id=event.id,
+            asset_classes=asset_classes,
         )
         paper_service.record_session_run(
             session,
@@ -830,8 +831,9 @@ def run_rebalance_event(
         #    and has no deployable cash to buy crypto (free cash, net of the reserved
         #    buffer, is <= 0) — it can neither rotate existing crypto nor deploy cash.
         #    This catches a crypto-scoped session holding only equity shares with no
-        #    free capital. The buffer reserve mirrors the executor's; the candidate
-        #    count is unknown here, so one transaction fee is a safe floor.
+        #    free capital. The buffer reserve mirrors the executor's: a crypto run
+        #    reserves the greater of the percentage buffer and the crypto fee
+        #    estimate (``CRYPTO_FEE_PCT`` of the budget, a conservative bound).
         #  - full run: the equities market is closed and no crypto is held/targeted.
         # ``crypto_skip_reason`` captures *which* crypto condition fired so the
         # user-facing notification states the true reason rather than asserting
@@ -845,7 +847,7 @@ def run_rebalance_event(
             )
             crypto_reserve = max(
                 crypto_budget * settings.REBALANCE_CASH_BUFFER_PCT,
-                settings.TRANSACTION_COST_USD,
+                crypto_budget * settings.CRYPTO_FEE_PCT,
             )
             crypto_deployable_cash = valuation.cash_value - crypto_reserve
             if not any_crypto:
@@ -1105,7 +1107,11 @@ def run_rebalance_event(
             return
 
         executed, realized_pnl = _apply_rebalance_trades(
-            session, session_id, trade_results, event_id=event.id
+            session,
+            session_id,
+            trade_results,
+            event_id=event.id,
+            asset_classes=asset_classes,
         )
 
         paper_service.record_session_run(
@@ -1263,6 +1269,7 @@ def close_session(
             session_id,
             trade_results,
             event_id=event.id,
+            asset_classes=asset_classes,
             signal_prefix="ai_close",
         )
 
@@ -1482,8 +1489,9 @@ def _build_run_document(
     ``run`` carries the day's rebalance reasoning/result (``result_payload``), the
     indicator values the agent saw (``trend_context``), and the run outcome stats
     (``run_stats``) — or ``None`` on a day with no run. ``orders`` is the day's
-    reconciled filled orders. ``valuation`` is the day's P&L from the value snapshot.
-    No indicator is recomputed and the agent is not re-run.
+    reconciled filled orders and ``orders_count`` their number (``0`` on a no-run
+    day). ``valuation`` is the day's P&L from the value snapshot. No indicator is
+    recomputed and the agent is not re-run.
     """
     run: dict[str, Any] | None = None
     if event is not None:
@@ -1500,6 +1508,7 @@ def _build_run_document(
     return {
         "run": run,
         "orders": [_order_document(t) for t in trades],
+        "orders_count": len(trades),
         "valuation": {
             "total_value": snapshot.total_value,
             "cash_value": snapshot.cash_value,
@@ -1775,8 +1784,9 @@ def _stop_out_position(
 
     Sells the whole position through the executor's close path, then records a
     ``stop_loss`` trade (no AI-event reference), a closed position with realized P&L
-    (the flat transaction cost is charged at ``record_trade``), a ``stop_loss``
-    session run, and a cooldown quarantine, and fires a best-effort notification.
+    (the asset-class-aware transaction fee is charged at ``record_trade``), a
+    ``stop_loss`` session run, and a cooldown quarantine, and fires a best-effort
+    notification.
     Returns the outcome, or ``None`` when the sell did not execute.
     """
     t0 = time.monotonic()
@@ -1809,6 +1819,7 @@ def _stop_out_position(
         quantity=result.shares,
         price=result.price or 0.0,
         signal_type=STOP_LOSS_SIGNAL_TYPE,
+        asset_class=cls,
         order_id=result.order_id,
         order_status=result.order_status,
         filled_price=result.filled_price,
@@ -2478,11 +2489,14 @@ def _record_trades(
     *,
     signal_prefix: str,
     event_id: uuid.UUID,
+    asset_classes: dict[str, AssetClass],
 ) -> int:
     """Persist each executed trade + open its ledger entry; return the count.
 
     Build trades are opening buys, so each executed fill opens or increases the
-    session's ledger entry at the filled price (the cost basis).
+    session's ledger entry at the filled price (the cost basis). ``asset_classes``
+    maps each ticker to its class so ``record_trade`` can charge the
+    asset-class-aware fee (crypto only); unknown tickers default to equity.
     """
     executed = 0
     for tr in trade_results:
@@ -2497,6 +2511,7 @@ def _record_trades(
             quantity=tr.shares,
             price=tr.price or 0.0,
             signal_type=f"{signal_prefix}_{tr.side}",
+            asset_class=asset_classes.get(tr.ticker, AssetClass.EQUITY),
             order_id=tr.order_id,
             order_status=tr.order_status,
             filled_price=tr.filled_price,
@@ -2520,6 +2535,7 @@ def _apply_rebalance_trades(
     trade_results: list[TradeResult],
     *,
     event_id: uuid.UUID,
+    asset_classes: dict[str, AssetClass],
     signal_prefix: str = "ai_rebalance",
 ) -> tuple[int, float]:
     """Record rebalance trades + closed positions; return (executed, realized_pnl).
@@ -2531,7 +2547,9 @@ def _apply_rebalance_trades(
     ledger. The end-state ticker list is derived from the AI targets by the caller,
     so no add/remove bookkeeping is done here. ``signal_prefix`` tags the recorded
     trades (``"ai_rebalance"`` for a rebalance, ``"ai_close"`` for a full
-    liquidation).
+    liquidation). ``asset_classes`` maps each ticker to its class so
+    ``record_trade`` can charge the asset-class-aware fee (crypto only); unknown
+    tickers default to equity.
     """
     executed = 0
     realized_pnl_total = 0.0
@@ -2550,6 +2568,7 @@ def _apply_rebalance_trades(
             quantity=tr.shares,
             price=tr.price or 0.0,
             signal_type=f"{signal_prefix}_{tr.side}",
+            asset_class=asset_classes.get(tr.ticker, AssetClass.EQUITY),
             order_id=tr.order_id,
             order_status=tr.order_status,
             filled_price=tr.filled_price,

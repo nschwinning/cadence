@@ -284,21 +284,23 @@ class AIPortfolioExecutor:
         # SKIPPED run instead of applying trades.
         self.skipped_noop = False
 
-    def _reserve_cash_buffer(self, base: float, candidate_count: int) -> float:
+    def _reserve_cash_buffer(self, base: float, has_crypto: bool) -> float:
         """Shrink the sizing ``base`` by the reserved cash buffer.
 
         The reserve is the GREATER of a configured percentage of ``base`` and the
-        estimated total trade fees for the run (``candidate_count`` orders, an
-        upper bound of one per candidate ticker, times the per-trade transaction
-        cost). Reducing the base before any target weight is applied keeps a
-        fully invested target from deploying 100% of the session's value and then
+        estimated crypto trade fees for the run. Under the asset-class-aware fee
+        model equities are free, so the fee estimate is ``0`` when the run has no
+        crypto candidate and a conservative ``CRYPTO_FEE_PCT * base`` upper bound
+        when it does (crypto notional for the run can never exceed the sizing
+        base). Reducing the base before any target weight is applied keeps a fully
+        invested target from deploying 100% of the session's value and then
         overdrawing on fees and fill slippage, so unallocated cash stays
-        non-negative. Returns the net base, floored at 0. When both the buffer
-        percentage and the transaction cost are 0 the reserve is 0 and the base
-        is unchanged.
+        non-negative. Returns the net base, floored at 0. When the buffer
+        percentage is 0 and either there is no crypto or ``CRYPTO_FEE_PCT`` is 0,
+        the reserve is 0 and the base is unchanged.
         """
         pct_reserve = base * settings.REBALANCE_CASH_BUFFER_PCT
-        fee_reserve = max(0, candidate_count) * settings.TRANSACTION_COST_USD
+        fee_reserve = base * settings.CRYPTO_FEE_PCT if has_crypto else 0.0
         reserve = max(pct_reserve, fee_reserve)
         return max(base - reserve, 0.0)
 
@@ -384,9 +386,14 @@ class AIPortfolioExecutor:
         results: list[TradeResult] = []
 
         # Reserve a cash buffer so the build does not deploy the full allocated
-        # capital and then overdraw on per-trade fees / fill slippage. At most
-        # one order is placed per stock, so ``len(stocks)`` upper-bounds the fees.
-        net_base = self._reserve_cash_buffer(self.allocated_capital, len(stocks))
+        # capital and then overdraw on crypto fees / fill slippage. Only crypto
+        # candidates incur a fee, so reserve against the fee estimate only when the
+        # build includes any crypto name.
+        has_crypto = any(
+            classes.get(s.ticker, AssetClass.EQUITY) is AssetClass.CRYPTO
+            for s in stocks
+        )
+        net_base = self._reserve_cash_buffer(self.allocated_capital, has_crypto)
 
         if caps is None:
             total_alloc = sum(s.allocation_pct for s in stocks)
@@ -613,11 +620,14 @@ class AIPortfolioExecutor:
         tickers = sorted(set(current_positions) | set(target_weight))
 
         # Reserve a cash buffer before sizing so a fully invested target does not
-        # deploy the whole value and then overdraw on fees / fill slippage. Each
-        # candidate ticker yields at most one order, so ``len(tickers)``
-        # upper-bounds the run's fees. The crypto-only budget already flows
-        # through ``base``, so its base is reduced the same way.
-        net_base = self._reserve_cash_buffer(base, len(tickers))
+        # deploy the whole value and then overdraw on crypto fees / fill slippage.
+        # Only crypto candidates incur a fee, so reserve against the fee estimate
+        # only when any candidate ticker is crypto. The crypto-only budget already
+        # flows through ``base``, so its base is reduced the same way.
+        has_crypto = any(
+            classes.get(t, AssetClass.EQUITY) is AssetClass.CRYPTO for t in tickers
+        )
+        net_base = self._reserve_cash_buffer(base, has_crypto)
 
         # Phase 0: decide and size every ticker into an order intent (no
         # submission yet). Non-order outcomes — equity skipped while the market is

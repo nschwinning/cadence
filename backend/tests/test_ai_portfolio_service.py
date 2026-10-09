@@ -64,8 +64,10 @@ from cadence.paper_trading.constants import (
 )
 from cadence.paper_trading.models import (
     BenchmarkPrice,
+    PaperTrade,
     PaperTradingSession,
     SessionDailyRunSnapshot,
+    SessionValueSnapshot,
     StopLossQuarantine,
 )
 from cadence.portfolios import service as portfolios_service
@@ -318,7 +320,7 @@ def test_run_build_event_freezes_guardrails_and_caps_trades(
     # Isolate guardrail sizing from the cash-buffer reserve: pin both off so the
     # trade quantities are sized off the capped weight against the full base.
     monkeypatch.setattr(settings, "REBALANCE_CASH_BUFFER_PCT", 0.0)
-    monkeypatch.setattr(settings, "TRANSACTION_COST_USD", 0.0)
+    monkeypatch.setattr(settings, "CRYPTO_FEE_PCT", 0.0)
     provider = _seed_universe(db_session, "AAPL", "MSFT")
     agent = FakeAIPortfolioAgent(build_result=_build_result("AAPL", "MSFT"))
     broker = StubBroker()
@@ -507,7 +509,7 @@ def test_run_rebalance_event_clamps_target_over_cap(
     # cap clamps to 0.5 so AAPL is bought up to 0.5 — not the full 1.0.
     # Pin the cash-buffer reserve off so the clamp assertion is exact.
     monkeypatch.setattr(settings, "REBALANCE_CASH_BUFFER_PCT", 0.0)
-    monkeypatch.setattr(settings, "TRANSACTION_COST_USD", 0.0)
+    monkeypatch.setattr(settings, "CRYPTO_FEE_PCT", 0.0)
     provider = _seed_universe(db_session, "AAPL", "MSFT")
     broker = StubBroker()
     session_id, _ = _seed_session(
@@ -545,7 +547,7 @@ def test_run_rebalance_event_opted_out_is_unclamped(
     # target sizes to the full allocation. Pin the cash-buffer reserve off so the
     # full-allocation quantity is exact.
     monkeypatch.setattr(settings, "REBALANCE_CASH_BUFFER_PCT", 0.0)
-    monkeypatch.setattr(settings, "TRANSACTION_COST_USD", 0.0)
+    monkeypatch.setattr(settings, "CRYPTO_FEE_PCT", 0.0)
     provider = _seed_universe(db_session, "AAPL", "MSFT")
     broker = StubBroker()
     session_id, _ = _seed_session(db_session, broker, provider)
@@ -1206,6 +1208,133 @@ def test_rebalance_prompt_v2_seed_describes_transaction_cost() -> None:
     assert "{max_web_searches}" in v2._V2_INSTRUCTIONS
     # Input template is unchanged from version 1.
     assert v2._V2_INPUT_TEMPLATE == v1._SEED_INPUT_TEMPLATE
+
+
+def test_restate_asset_class_aware_fees_backfill(db_session: Session) -> None:
+    # Data-only restatement migration: past equity fees -> $0, past crypto fees ->
+    # pct × notional (replacing the retired flat $1), with value snapshots lifted by
+    # the cumulative removed-fee correction and their daily P&L recomputed.
+    migration = _load_migration(
+        "b1c2d3e4f5a6_restate_asset_class_aware_fees.py"
+    )
+    pct = migration.CRYPTO_FEE_PCT  # frozen 0.0025 literal in the migration
+
+    portfolio = portfolios_service.create_portfolio(
+        db_session, name="Restate", stocks=["BTC-USD"]
+    )
+    sess = paper_service.create_session(
+        db_session,
+        portfolio_id=portfolio.id,
+        strategy_key="ai_buy_hold",
+        allocated_capital=100_000.0,
+        rebalance_prompt_version=1,
+        crypto_rebalance_prompt_version=1,
+        benchmark=Benchmark.SP500,
+    )
+    # Catalogue a crypto and an equity ticker so the fee join can classify trades.
+    db_session.add(
+        Asset(
+            ticker="BTC-USD",
+            category=AssetCategory.CRYPTO.value,
+            currency="USD",
+            is_eligible=True,
+            criteria_results=[],
+        )
+    )
+    db_session.add(
+        Asset(
+            ticker="AAPL",
+            category=AssetCategory.STOCK.value,
+            currency="USD",
+            is_eligible=True,
+            criteria_results=[],
+        )
+    )
+    d1 = date(2026, 1, 2)
+    d2 = date(2026, 1, 3)
+    # D1: crypto (new_fee 0.5, correction 0.5) + equity (new_fee 0, correction 1.0).
+    # D2: crypto with no filled price -> sizes off `price` (new_fee 1.0, correction 0).
+    trades = [
+        ("BTC-USD", 2.0, 100.0, 100.0, d1),
+        ("AAPL", 10.0, 50.0, 50.0, d1),
+        ("BTC-USD", 4.0, 100.0, None, d2),
+    ]
+    for ticker, qty, price, filled, exec_date in trades:
+        db_session.add(
+            PaperTrade(
+                session_id=sess.id,
+                ticker=ticker,
+                side=OrderSide.BUY.value,
+                quantity=qty,
+                price=price,
+                notional=qty * price,
+                signal_type="entry",
+                filled_price=filled,
+                executed_at=datetime(exec_date.year, exec_date.month, exec_date.day, tzinfo=UTC),
+            )
+        )
+    # Two snapshots recorded under the old flat-fee valuation.
+    db_session.add(
+        SessionValueSnapshot(
+            session_id=sess.id, snapshot_date=d1, total_value=100_000.0,
+            cash_value=90_000.0, positions_value=10_000.0, daily_pnl=0.0,
+            daily_pnl_pct=0.0, positions=[],
+        )
+    )
+    db_session.add(
+        SessionValueSnapshot(
+            session_id=sess.id, snapshot_date=d2, total_value=100_500.0,
+            cash_value=90_500.0, positions_value=10_000.0, daily_pnl=0.0,
+            daily_pnl_pct=0.0, positions=[],
+        )
+    )
+    db_session.flush()
+
+    migration._restate(db_session.connection(), forward=True)
+    db_session.expire_all()
+
+    # total_fees recomputed from the ledger: crypto pct × notional only.
+    expected_fees = pct * (2.0 * 100.0) + pct * (4.0 * 100.0)
+    assert paper_service.get_session(db_session, sess.id).total_fees == pytest.approx(
+        expected_fees
+    )
+
+    snaps = {
+        s.snapshot_date: s
+        for s in db_session.query(SessionValueSnapshot)
+        .filter(SessionValueSnapshot.session_id == sess.id)
+        .all()
+    }
+    corr_d1 = (1.0 - pct * 200.0) + (1.0 - 0.0)  # crypto + equity corrections
+    # D1: total/cash lifted by the cumulative correction; positions untouched.
+    assert snaps[d1].total_value == pytest.approx(100_000.0 + corr_d1)
+    assert snaps[d1].cash_value == pytest.approx(90_000.0 + corr_d1)
+    assert snaps[d1].positions_value == pytest.approx(10_000.0)
+    # D2 adds the second crypto trade's correction (1.0 - pct*400 = 0.0).
+    corr_d2 = corr_d1 + (1.0 - pct * 400.0)
+    assert snaps[d2].total_value == pytest.approx(100_500.0 + corr_d2)
+    # Daily P&L recomputed from the corrected series (no capital events).
+    assert snaps[d1].daily_pnl == pytest.approx((100_000.0 + corr_d1) - 100_000.0)
+    assert snaps[d2].daily_pnl == pytest.approx(
+        (100_500.0 + corr_d2) - (100_000.0 + corr_d1)
+    )
+
+    # Idempotence of the computation: re-deriving from the same ledger and the
+    # ORIGINAL snapshots yields identical results (the upgrade logic is a pure
+    # function of its inputs).
+    trade_inputs = [
+        {"quantity": q, "price": p, "filled_price": f,
+         "exec_date": ed, "is_crypto": tk == "BTC-USD"}
+        for tk, q, p, f, ed in trades
+    ]
+    snap_inputs = [
+        {"id": 1, "snapshot_date": d1, "total_value": 100_000.0, "cash_value": 90_000.0},
+        {"id": 2, "snapshot_date": d2, "total_value": 100_500.0, "cash_value": 90_500.0},
+    ]
+    first = migration.compute_restatement(100_000.0, trade_inputs, snap_inputs, [], forward=True)
+    second = migration.compute_restatement(100_000.0, trade_inputs, snap_inputs, [], forward=True)
+    assert first == second
+    assert first[0] == pytest.approx(expected_fees)
 
 
 def test_get_active_rebalance_prompt_raises_when_empty(db_session: Session) -> None:
@@ -2033,7 +2162,7 @@ def test_run_rebalance_event_buy_only_no_cash_skips_and_informs(
     # the session fully invested (cash 0) with headroom in its total value so the
     # AAPL target rounds up into a BUY rather than a trim.
     monkeypatch.setattr(settings, "REBALANCE_CASH_BUFFER_PCT", 0.0)
-    monkeypatch.setattr(settings, "TRANSACTION_COST_USD", 0.0)
+    monkeypatch.setattr(settings, "CRYPTO_FEE_PCT", 0.0)
     broker = StubBroker()
     assets_service.add_asset(db_session, "AAPL", _provider(), broker)
     sess, _ = _manual_ai_session(
@@ -2656,6 +2785,7 @@ def _record_day_rebalance_event(
         quantity=5,
         price=100.0,
         signal_type="entry",
+        asset_class=AssetClass.EQUITY,
         order_id="o-1",
         order_status=OrderStatus.FILLED,
         filled_price=101.25,
@@ -2692,6 +2822,7 @@ def test_assemble_daily_run_snapshots_consolidates_a_run(
     assert doc["run"]["run_stats"]["realized_pnl"] == 12.5
     # Orders carry the reconciled filled price, not just the decided price.
     assert len(doc["orders"]) == 1
+    assert doc["orders_count"] == 1
     order = doc["orders"][0]
     assert order["ticker"] == "AAPL"
     assert order["filled_price"] == 101.25
@@ -2742,6 +2873,7 @@ def test_assemble_daily_run_snapshots_day_without_a_run(db_session: Session) -> 
     assert row.ai_portfolio_event_id is None
     assert row.document["run"] is None
     assert row.document["orders"] == []
+    assert row.document["orders_count"] == 0
     assert "daily_pnl" in row.document["valuation"]
 
 
@@ -3261,11 +3393,23 @@ def test_scan_stop_losses_ignores_non_opted_in_sessions(db_session: Session) -> 
 
 def test_scan_stop_losses_records_trade_run_closed_and_fee(
     db_session: Session,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    session_id, broker = _stop_loss_session(db_session, "AAPL", pct=0.15)
+    # A crypto stop-loss sell charges the pct-of-notional fee at record_trade;
+    # an equity sell would be free under the asset-class-aware model.
+    monkeypatch.setattr(settings, "CRYPTO_FEE_PCT", 0.0025)
+    _seed_mixed_universe(db_session)
+    broker = _StopLossBroker()
+    agent = FakeAIPortfolioAgent(build_result=_build_result("BTC-USD"))
+    event = service.create_build_event(
+        db_session, _params(stop_loss_enabled=True, stop_loss_pct=0.15)
+    )
+    service.run_build_event(db_session, event.id, agent, broker, _provider())
+    session_id = service.get_event(db_session, event.id).session_id
+
     fees_before = paper_service.get_session(db_session, session_id).total_fees
-    aapl = _ledger_by_ticker(db_session, session_id)["AAPL"]
-    broker.set_overrides({"AAPL": _below_trigger(aapl, 0.15)})
+    btc = _ledger_by_ticker(db_session, session_id)["BTC-USD"]
+    broker.set_overrides({"BTC-USD": _below_trigger(btc, 0.15)})
 
     outcomes = service.scan_stop_losses(db_session, broker=broker)
     assert len(outcomes) == 1
@@ -3281,10 +3425,18 @@ def test_scan_stop_losses_records_trade_run_closed_and_fee(
     assert stop_run.ai_portfolio_event_id is None
 
     closed = paper_service.get_closed_positions(db_session, session_id, limit=100)
-    assert any(c.ticker == "AAPL" for c in closed)
+    assert any(c.ticker == "BTC-USD" for c in closed)
 
+    executed = (
+        stop_trade.filled_price
+        if stop_trade.filled_price is not None
+        else stop_trade.price
+    )
     fees_after = paper_service.get_session(db_session, session_id).total_fees
-    assert fees_after > fees_before  # the flat transaction cost was charged
+    assert settings.CRYPTO_FEE_PCT > 0.0
+    assert fees_after == pytest.approx(
+        fees_before + settings.CRYPTO_FEE_PCT * stop_trade.quantity * executed
+    )
 
 
 def _seed_and_build_mixed_stop_loss(
@@ -3515,6 +3667,7 @@ def _session_with_build_trades(
                 quantity=1,
                 price=10.0,
                 signal_type="entry",
+                asset_class=AssetClass.EQUITY,
                 order_id=order_id,
                 order_status=status,
                 ai_portfolio_event_id=event.id,

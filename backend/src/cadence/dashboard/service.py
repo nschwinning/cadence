@@ -26,6 +26,7 @@ from cadence.ai_portfolio import service as ai_portfolio_service
 from cadence.ai_portfolio.constants import EventStatus, EventType
 from cadence.ai_portfolio.models import AIPortfolioEvent
 from cadence.assets import service as assets_service
+from cadence.assets.category import AssetCategory
 from cadence.assets.models import Asset
 from cadence.assets.sector import Sector
 from cadence.broker.base import Broker
@@ -352,19 +353,29 @@ def _range_start_datetime(start_date: date | None) -> datetime | None:
 def _range_fees(
     session: Session, session_id: uuid.UUID, start_dt: datetime | None
 ) -> float:
-    """Per-trade transaction cost incurred by a session within the range.
+    """Asset-class-aware transaction cost incurred by a session within the range.
 
-    Each recorded trade is charged a flat :data:`settings.TRANSACTION_COST_USD`, so
-    the range fee is the count of trades executed on/after the range start times
-    that cost (all trades for ``Max``).
+    Under the asset-class-aware fee model equities are free and crypto is charged
+    :data:`settings.CRYPTO_FEE_PCT` of notional, so the range fee is
+    ``CRYPTO_FEE_PCT`` times the summed notional of the *crypto* trades executed
+    on/after the range start (all trades for ``Max``). A trade is crypto iff its
+    ticker joins to an :class:`Asset` whose category is crypto; equity trades
+    contribute zero. This uses the stored ``notional`` (``quantity * price``); the
+    tiny filled-vs-quoted difference is acceptable for a projection.
     """
-    stmt = select(func.count(PaperTrade.id)).where(
-        PaperTrade.session_id == session_id
+    stmt = (
+        select(func.coalesce(func.sum(PaperTrade.notional), 0.0))
+        .select_from(PaperTrade)
+        .join(Asset, Asset.ticker == PaperTrade.ticker)
+        .where(
+            PaperTrade.session_id == session_id,
+            Asset.category == AssetCategory.CRYPTO.value,
+        )
     )
     if start_dt is not None:
         stmt = stmt.where(PaperTrade.executed_at >= start_dt)
-    count = session.execute(stmt).scalar_one()
-    return count * settings.TRANSACTION_COST_USD
+    crypto_notional = session.execute(stmt).scalar_one()
+    return crypto_notional * settings.CRYPTO_FEE_PCT
 
 
 def _session_performance(

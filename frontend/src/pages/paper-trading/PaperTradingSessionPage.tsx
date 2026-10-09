@@ -801,10 +801,10 @@ function KpiRow({ sessionId }: { sessionId: string }) {
     );
   const winRate =
     data.win_rate === null ? 'Not yet available' : formatPercent(data.win_rate);
-  const dailyAvgCost =
-    data.daily_avg_transaction_cost === null
+  const dailyAvgOrders =
+    data.daily_avg_orders === null
       ? 'Not yet available'
-      : formatCurrency(data.daily_avg_transaction_cost);
+      : data.daily_avg_orders.toFixed(2);
 
   return (
     <div className="flex flex-col gap-6">
@@ -836,15 +836,15 @@ function KpiRow({ sessionId }: { sessionId: string }) {
           <KpiTile
             label="Transaction fees"
             value={formatCurrency(data.total_fees)}
-            hint="$1 per executed trade"
+            hint="0.25% on crypto notional; equities free"
           />
           <KpiTile
-            label="Daily avg. transaction cost"
-            value={dailyAvgCost}
+            label="Daily avg. orders"
+            value={dailyAvgOrders}
             hint={
-              data.daily_avg_transaction_cost === null
+              data.daily_avg_orders === null
                 ? 'Needs a snapshot day'
-                : 'Fees per snapshot day'
+                : 'Orders per snapshot day'
             }
           />
           <KpiTile

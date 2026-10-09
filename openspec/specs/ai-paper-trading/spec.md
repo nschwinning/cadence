@@ -886,18 +886,18 @@ sessions and trades were reconciled.
 - **WHEN** reconciling one session fails during a scheduled run
 - **THEN** the system SHALL continue reconciling the remaining sessions
 
-### Requirement: Live session performance KPIs
+### Requirement: Live session performance KPI summary
 
-The system SHALL expose, on demand for a given paper-trading session, a summary of the session's live performance comprising: the current portfolio value (net asset value: cash plus open positions valued at current market quotes, net of cumulative transaction fees), the session's **unallocated (free) cash** (the current portfolio value less the market value of open positions), cumulative realised profit/loss, live unrealised profit/loss on open positions, cumulative transaction fees paid, the **daily average transaction cost** (defined below), total return (as both an absolute money amount and a fraction), a risk-adjusted Sharpe ratio, the benchmark it is compared against, the benchmark's total return over the same period as a fraction, and the session's excess return over the benchmark as a fraction. The **absolute total return** SHALL be the current portfolio value minus the session's contributed capital (so a capital contribution raises both equally and is not counted as a gain). The **total return fraction** SHALL be **time-weighted**: it SHALL be computed from the session's contribution-adjusted daily return series (each day's return excluding any capital contributed that day) chained across the session's life, so that capital contributed mid-session does not inflate or dilute the reported return; for a session that has had no capital increase this time-weighted fraction SHALL equal the session's simple return of current value over its single contribution. The benchmark return SHALL be the fractional return of a buy-and-hold of the benchmark from the session's start to the latest available benchmark price, derived from the stored benchmark price series, and the excess return SHALL be the session's time-weighted return fraction minus the benchmark's return fraction. When the benchmark has insufficient stored prices to compute a return the benchmark return and excess return SHALL be reported as unavailable (no value) rather than failing the request.
+The system SHALL expose, on demand for a given paper-trading session, a summary of the session's live performance comprising: the current portfolio value (net asset value: cash plus open positions valued at current market quotes, net of cumulative transaction fees), the session's **unallocated (free) cash** (the current portfolio value less the market value of open positions), cumulative realised profit/loss, live unrealised profit/loss on open positions, cumulative transaction fees paid, the **daily average orders** (defined below), total return (as both an absolute money amount and a fraction), a risk-adjusted Sharpe ratio, the benchmark it is compared against, the benchmark's total return over the same period as a fraction, and the session's excess return over the benchmark as a fraction. The **absolute total return** SHALL be the current portfolio value minus the session's contributed capital (so a capital contribution raises both equally and is not counted as a gain). The **total return fraction** SHALL be **time-weighted**: it SHALL be computed from the session's contribution-adjusted daily return series (each day's return excluding any capital contributed that day) chained across the session's life, so that capital contributed mid-session does not inflate or dilute the reported return; for a session that has had no capital increase this time-weighted fraction SHALL equal the session's simple return of current value over its single contribution. The benchmark return SHALL be the fractional return of a buy-and-hold of the benchmark from the session's start to the latest available benchmark price, derived from the stored benchmark price series, and the excess return SHALL be the session's time-weighted return fraction minus the benchmark's return fraction. When the benchmark has insufficient stored prices to compute a return the benchmark return and excess return SHALL be reported as unavailable (no value) rather than failing the request.
 
-The **daily average transaction cost** SHALL be the session's cumulative transaction fees divided by the number of recorded daily value snapshots for the session. When the session has no recorded daily value snapshots the daily average transaction cost SHALL be reported as unavailable (no value) rather than dividing by zero.
+The **daily average orders** SHALL be the session's total number of recorded orders (executed trades) divided by the number of recorded daily value snapshots for the session. When the session has no recorded daily value snapshots the daily average orders SHALL be reported as unavailable (no value) rather than dividing by zero.
 
 Requesting the summary SHALL value the session's open positions against current quotes at request time (marking to market on load) rather than returning a stale stored valuation. A request for an unknown session SHALL fail as not found.
 
 #### Scenario: Summary for a session with open positions
 
 - **WHEN** a client requests the KPI summary for an existing session
-- **THEN** the system SHALL mark the session's open positions to market and return the current portfolio value (net of transaction fees), the unallocated cash, realised P&L, unrealised P&L, cumulative transaction fees, the daily average transaction cost (or an unavailable value when the session has no snapshots), total return (absolute and time-weighted fraction), the Sharpe ratio (or an unavailable Sharpe when history is insufficient), the benchmark return, and the excess return over the benchmark
+- **THEN** the system SHALL mark the session's open positions to market and return the current portfolio value (net of transaction fees), the unallocated cash, realised P&L, unrealised P&L, cumulative transaction fees, the daily average orders (or an unavailable value when the session has no snapshots), total return (absolute and time-weighted fraction), the Sharpe ratio (or an unavailable Sharpe when history is insufficient), the benchmark return, and the excess return over the benchmark
 
 #### Scenario: Unknown session
 
@@ -939,15 +939,15 @@ Requesting the summary SHALL value the session's open positions against current 
 - **WHEN** a client requests the KPI summary for a session that has executed trades
 - **THEN** the summary SHALL include the session's cumulative transaction fees as a non-negative money amount
 
-#### Scenario: Daily average transaction cost reported
+#### Scenario: Daily average orders reported
 
 - **WHEN** the KPI summary is computed for a session that has at least one recorded daily value snapshot
-- **THEN** the summary SHALL include the daily average transaction cost as the cumulative transaction fees divided by the number of recorded daily value snapshots
+- **THEN** the summary SHALL include the daily average orders as the session's total number of recorded orders divided by the number of recorded daily value snapshots
 
-#### Scenario: Daily average transaction cost without snapshots
+#### Scenario: Daily average orders without snapshots
 
 - **WHEN** the KPI summary is computed for a session that has no recorded daily value snapshots
-- **THEN** the summary SHALL report the daily average transaction cost as unavailable rather than failing the request or dividing by zero
+- **THEN** the summary SHALL report the daily average orders as unavailable rather than failing the request or dividing by zero
 
 ### Requirement: Sharpe ratio from the session's daily NAV series
 
@@ -1056,14 +1056,18 @@ the rebalance prompt only; the AI build prompt is unaffected.
   the rebalance prompt is missing
 - **AND** SHALL NOT invoke the agent with an empty prompt
 
-### Requirement: Per-trade transaction cost
+### Requirement: Asset-class-aware transaction cost
 
-The system SHALL charge a fixed transaction cost on every executed trade it
-records for a paper-trading session, regardless of side (buy or sell). The cost
-per trade SHALL be a single configurable amount (defaulting to one US dollar) and
-SHALL be applied at the single point where a trade is recorded, so that no trade
-can be recorded without incurring the cost. The system SHALL accumulate these
-costs per session as a cumulative, non-negative transaction-fees total.
+The system SHALL charge an **asset-class-aware** transaction cost on every executed
+trade it records for a paper-trading session, regardless of side (buy or sell),
+matching the broker's real fee schedule: **equity (and any non-crypto) trades
+SHALL incur no transaction cost**, and **crypto trades SHALL incur a fee equal to a
+configurable percentage of the trade's executed notional** (the filled price, or
+the quoted price when no fill price is available, times the traded quantity),
+defaulting to 0.25%. The cost SHALL be applied at the single point where a trade is
+recorded, so that no trade can be recorded without the correct cost being assessed,
+and the system SHALL accumulate these costs per session as a cumulative,
+non-negative transaction-fees total.
 
 A session's current portfolio value SHALL be net of its cumulative transaction
 fees: the value SHALL equal the allocated capital plus cumulative realised
@@ -1074,18 +1078,41 @@ individual closed position SHALL remain gross (derived from entry and exit price
 only) — transaction fees SHALL be tracked at the session level rather than folded
 into per-position realised profit/loss.
 
-The transaction cost SHALL apply going forward only: sessions that predate this
-capability SHALL begin with a cumulative fees total of zero and SHALL NOT have
-historical trades re-priced. New trades on any session, old or new, SHALL incur
-the cost from this point on.
+When this model is first adopted, the system SHALL **restate historical fees** so
+that every session's recorded fees and historical valuations reflect the new model
+as if it had always applied, rather than preserving the retired flat per-trade fee:
+
+- Each session's cumulative transaction-fees total SHALL be **recomputed** as the
+  sum, over that session's recorded trades, of the asset-class-aware fee for each
+  trade — **zero for equity (non-crypto) trades** and the **crypto fee percentage
+  times the trade's executed notional** (its filled price when present, otherwise
+  its recorded price, times its quantity) for crypto trades. A trade's asset class
+  SHALL be determined from its instrument's recorded category.
+- Each session's **recorded daily value snapshots SHALL be re-derived** so that the
+  snapshot's portfolio value and cash reflect the recomputed (lower) cumulative fees
+  as of that snapshot's date, and each snapshot's day-over-day profit and loss SHALL
+  be recomputed consistently from the corrected values. A snapshot's positions value
+  SHALL be unchanged. The restatement SHALL NOT re-quote prices or re-run valuation
+  against the broker; it SHALL adjust the stored values by the change in cumulative
+  fees only.
+- The restatement SHALL be a one-time data migration that changes recorded values
+  only (no table or column is added or removed), SHALL use a fixed crypto fee
+  percentage captured in the migration (independent of any later change to the
+  configured percentage), and SHALL be idempotent in effect (re-deriving from the
+  trade ledger yields the same recomputed fees and snapshot values).
 
 #### Scenario: Recording a trade charges the cost
 
-- **WHEN** the system records an executed trade for a session
+- **WHEN** the system records an executed trade for a crypto asset
 - **THEN** the session's cumulative transaction fees SHALL increase by the
-  configured per-trade cost
-- **AND** a session that executes two trades in a run SHALL accrue twice the
-  per-trade cost
+  configured crypto fee percentage times the trade's executed notional
+- **AND** a session that executes two crypto trades in a run SHALL accrue the fee
+  for each
+
+#### Scenario: Recording an equity trade charges no fee
+
+- **WHEN** the system records an executed trade for an equity (non-crypto) asset
+- **THEN** the session's cumulative transaction fees SHALL NOT increase
 
 #### Scenario: Portfolio value is net of fees
 
@@ -1099,11 +1126,22 @@ the cost from this point on.
 - **THEN** that per-position realised profit/loss SHALL be derived from entry and
   exit prices only and SHALL NOT be reduced by the transaction cost
 
-#### Scenario: Existing sessions start at zero fees
+#### Scenario: Historical fees restated under the new model
 
-- **WHEN** the transaction-cost capability is first deployed
-- **THEN** every existing session SHALL have a cumulative transaction-fees total of
-  zero and its already-recorded trades SHALL NOT be retroactively charged
+- **WHEN** the new fee model is adopted for a session that had recorded trades and
+  fees under the retired flat per-trade fee
+- **THEN** the session's cumulative transaction fees SHALL be recomputed to zero for
+  its equity trades and the crypto fee percentage times notional for its crypto
+  trades, replacing the previously accrued flat-fee total
+
+#### Scenario: Historical value snapshots re-derived
+
+- **WHEN** the historical fees are restated for a session that has recorded daily
+  value snapshots
+- **THEN** each snapshot's portfolio value and cash SHALL be increased by the
+  reduction in cumulative fees as of that snapshot's date (its positions value
+  unchanged), and its day-over-day profit and loss SHALL be recomputed from the
+  corrected values
 
 ### Requirement: Rebalancing prompt informs the agent of transaction costs
 
@@ -1405,22 +1443,23 @@ current-value base.
 The AI executor SHALL reserve a **cash buffer** before sizing build or rebalance
 orders, so that executed buys cannot claim the full value available and the
 session's **unallocated cash is not driven negative** by fully deploying value
-plus per-trade transaction fees and market-order fill slippage.
+plus transaction fees and market-order fill slippage.
 
 The reserved buffer SHALL be the **greater of**:
 
 1. a **configurable percentage** of the sizing base (the allocated capital at
    build, the session's current marked-to-market value at rebalance), and
-2. the **estimated total transaction fees** for the run — the number of
-   candidate orders for the run multiplied by the per-trade transaction cost.
+2. the **estimated transaction fees** for the run under the asset-class-aware fee
+   model — **zero for equity orders**, and the **crypto fee percentage applied to
+   the estimated crypto order notional** for the run (bounded above by the crypto
+   fee percentage times the sizing base).
 
 The sizing base SHALL be reduced by the reserved buffer **before** any target
 weight is applied, so every per-ticker allocation is sized against the net
 (post-buffer) base. The reserve SHALL be applied consistently at both the
 initial build and every rebalance, and SHALL apply to a crypto-only rebalance's
-crypto-scoped base as well. When the per-trade transaction cost is zero and the
-buffer percentage is zero, the reserve SHALL be zero and sizing SHALL be
-unchanged.
+crypto-scoped base as well. When the crypto fee percentage and the buffer
+percentage are both zero, the reserve SHALL be zero and sizing SHALL be unchanged.
 
 The buffer SHALL only shrink the base the executor sizes against; it SHALL NOT
 change the target-weight delta model, guardrail enforcement, crypto-only
@@ -1436,7 +1475,7 @@ scoping, the `market_open` equity-skip, or the sells-before-buys phasing.
 
 #### Scenario: Buffer is the greater of the percentage and the fee estimate
 
-- **WHEN** the estimated total fees for a run exceed the configured percentage of
+- **WHEN** the estimated fees for a run exceed the configured percentage of
   the sizing base
 - **THEN** the executor SHALL reserve the fee estimate rather than the smaller
   percentage, and conversely SHALL reserve the percentage when it is the larger
@@ -1451,7 +1490,7 @@ scoping, the `market_open` equity-skip, or the sells-before-buys phasing.
 
 #### Scenario: Zero cost and zero percentage disable the reserve
 
-- **WHEN** the per-trade transaction cost and the buffer percentage are both zero
+- **WHEN** the crypto fee percentage and the buffer percentage are both zero
 - **THEN** the reserved buffer SHALL be zero and sizing SHALL match the behavior
   with no buffer
 
@@ -1748,7 +1787,8 @@ Each learning snapshot SHALL consolidate, from data already persisted elsewhere
   snapshot, gate counts, and guardrail observations) as recorded on the run;
 - the day's filled orders including each order's reconciled filled price, filled
   timestamp, and order status, taken from the session's reconciled trade ledger for
-  that day; and
+  that day, **together with the count of the day's filled orders** so the day's
+  trading activity is recorded explicitly for offline learning; and
 - the day's profit and loss and valuation (total value, cash value, positions
   value, absolute and percent day's P&L, and the per-position breakdown) taken from
   that day's value snapshot.
@@ -1761,9 +1801,10 @@ export and offline learning only.
 On a day a session has **no rebalancing run** (for example a skipped run, a weekend,
 or a stocks-only session on a non-trading day) but **does** have a value snapshot,
 the system SHALL still record a learning snapshot carrying that day's P&L and
-valuation with the rebalancing, reasoning, indicator, and order portions absent. On
-a day a session has **no value snapshot** (it was not selected for the day), the
-system SHALL skip the session, recording no learning snapshot for it.
+valuation with the rebalancing, reasoning, indicator, and order portions absent (its
+recorded order count being zero). On a day a session has **no value snapshot** (it
+was not selected for the day), the system SHALL skip the session, recording no
+learning snapshot for it.
 
 #### Scenario: Learning snapshot consolidates a day's run
 
@@ -1773,6 +1814,12 @@ system SHALL skip the session, recording no learning snapshot for it.
   containing the run's reasoning/result, the indicator values the run used, the run's
   outcome statistics, the day's filled orders with their reconciled filled prices, and
   the day's P&L and valuation
+
+#### Scenario: Learning snapshot records the day's order count
+
+- **WHEN** the assembly runs for a session on a day it filled orders
+- **THEN** the recorded learning snapshot SHALL include the count of the day's
+  filled orders alongside the orders themselves
 
 #### Scenario: Learning snapshot is idempotent per day
 
@@ -1785,7 +1832,8 @@ system SHALL skip the session, recording no learning snapshot for it.
 - **WHEN** the assembly runs for a session that has a value snapshot for the day but
   had no rebalancing run that day
 - **THEN** the system SHALL record a learning snapshot carrying the day's P&L and
-  valuation with the rebalancing, reasoning, indicator, and order portions absent
+  valuation with the rebalancing, reasoning, indicator, and order portions absent and
+  its recorded order count being zero
 
 #### Scenario: Day with no value snapshot is skipped
 

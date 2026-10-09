@@ -31,13 +31,13 @@ def _no_cash_buffer(monkeypatch: pytest.MonkeyPatch) -> None:
     """Pin the cash-buffer reserve off so sizing tests assert the raw base.
 
     The executor now reserves ``max(base * REBALANCE_CASH_BUFFER_PCT,
-    candidate_count * TRANSACTION_COST_USD)`` before sizing. The bulk of this
-    suite asserts base-scaling / delta semantics, so we disable the reserve by
-    default; the dedicated cash-buffer tests re-enable it with their own
+    base * CRYPTO_FEE_PCT when the run has crypto else 0)`` before sizing. The bulk
+    of this suite asserts base-scaling / delta semantics, so we disable the reserve
+    by default; the dedicated cash-buffer tests re-enable it with their own
     ``monkeypatch.setattr`` calls, which take effect after this fixture.
     """
     monkeypatch.setattr(settings, "REBALANCE_CASH_BUFFER_PCT", 0.0)
-    monkeypatch.setattr(settings, "TRANSACTION_COST_USD", 0.0)
+    monkeypatch.setattr(settings, "CRYPTO_FEE_PCT", 0.0)
 
 
 def _stock(ticker: str, alloc: float) -> AIPortfolioStock:
@@ -1063,11 +1063,11 @@ def test_rebalance_unallocated_cash_none_preserves_behavior() -> None:
 
 
 def _enable_buffer(
-    monkeypatch: pytest.MonkeyPatch, *, pct: float, cost: float
+    monkeypatch: pytest.MonkeyPatch, *, pct: float, crypto_pct: float
 ) -> None:
     """Re-enable the cash buffer (the module autouse fixture pins it off)."""
     monkeypatch.setattr(settings, "REBALANCE_CASH_BUFFER_PCT", pct)
-    monkeypatch.setattr(settings, "TRANSACTION_COST_USD", cost)
+    monkeypatch.setattr(settings, "CRYPTO_FEE_PCT", crypto_pct)
 
 
 def _deployed(results: list) -> float:
@@ -1075,44 +1075,57 @@ def _deployed(results: list) -> float:
     return sum(r.shares * r.price for r in results if r.side == "long" and r.executed)
 
 
-def test_reserve_cash_buffer_takes_greater_of_pct_and_fees(monkeypatch) -> None:
+def test_reserve_cash_buffer_takes_greater_of_pct_and_crypto_fee(monkeypatch) -> None:
     executor = AIPortfolioExecutor(StubBroker(), allocated_capital=0.0)
-    _enable_buffer(monkeypatch, pct=0.015, cost=1.0)
+    _enable_buffer(monkeypatch, pct=0.015, crypto_pct=0.0025)
 
-    # Percentage dominates: 1.5% of 100_000 = 1_500 > 2 trades * $1.
-    assert executor._reserve_cash_buffer(100_000.0, 2) == pytest.approx(98_500.0)
-    # Fee estimate dominates: 50 trades * $1 = 50 > 1.5% of 100 = 1.5.
-    assert executor._reserve_cash_buffer(100.0, 50) == pytest.approx(50.0)
+    # Percentage dominates: 1.5% of 100_000 = 1_500 > 0.25% crypto = 250.
+    assert executor._reserve_cash_buffer(100_000.0, True) == pytest.approx(98_500.0)
+    # Crypto-fee estimate dominates when the percentage is tiny: pin pct low.
+    monkeypatch.setattr(settings, "REBALANCE_CASH_BUFFER_PCT", 0.001)
+    # 0.25% of 100_000 = 250 > 0.1% = 100 -> net 99_750.
+    assert executor._reserve_cash_buffer(100_000.0, True) == pytest.approx(99_750.0)
 
 
-def test_reserve_cash_buffer_disabled_when_pct_and_cost_zero(monkeypatch) -> None:
+def test_reserve_cash_buffer_no_fee_reserve_for_equity_only(monkeypatch) -> None:
     executor = AIPortfolioExecutor(StubBroker(), allocated_capital=0.0)
-    _enable_buffer(monkeypatch, pct=0.0, cost=0.0)
+    # Zero the percentage so only the (crypto) fee term could reserve anything.
+    _enable_buffer(monkeypatch, pct=0.0, crypto_pct=0.0025)
+
+    # Equity-only run (has_crypto=False): no fee reserve, base is unchanged.
+    assert executor._reserve_cash_buffer(100_000.0, False) == pytest.approx(100_000.0)
+    # Crypto present: the fee term now reserves 0.25% of the base.
+    assert executor._reserve_cash_buffer(100_000.0, True) == pytest.approx(99_750.0)
+
+
+def test_reserve_cash_buffer_disabled_when_pct_and_crypto_zero(monkeypatch) -> None:
+    executor = AIPortfolioExecutor(StubBroker(), allocated_capital=0.0)
+    _enable_buffer(monkeypatch, pct=0.0, crypto_pct=0.0)
 
     # With both inputs zero the reserve is zero: the base is unchanged.
-    assert executor._reserve_cash_buffer(100_000.0, 25) == pytest.approx(100_000.0)
+    assert executor._reserve_cash_buffer(100_000.0, True) == pytest.approx(100_000.0)
 
 
 def test_reserve_cash_buffer_never_negative(monkeypatch) -> None:
     executor = AIPortfolioExecutor(StubBroker(), allocated_capital=0.0)
-    _enable_buffer(monkeypatch, pct=0.015, cost=1.0)
+    # A crypto fee fraction larger than 1 would over-reserve; the net base floors at 0.
+    _enable_buffer(monkeypatch, pct=0.015, crypto_pct=2.0)
 
-    # A fee estimate larger than the whole base floors the net base at 0.
-    assert executor._reserve_cash_buffer(10.0, 1_000) == pytest.approx(0.0)
+    assert executor._reserve_cash_buffer(10.0, True) == pytest.approx(0.0)
 
 
 def test_execute_build_reserves_buffer(monkeypatch) -> None:
-    _enable_buffer(monkeypatch, pct=0.015, cost=1.0)
+    _enable_buffer(monkeypatch, pct=0.015, crypto_pct=0.0025)
     broker = StubBroker()
     executor = AIPortfolioExecutor(broker, allocated_capital=100_000.0)
     stocks = [_stock("AAPL", 0.5), _stock("MSFT", 0.5)]
 
     results = executor.execute_build(stocks)
 
-    # pct (1_500) dominates 2 * $1 -> net base 98_500. Whole-share flooring only
-    # reduces deployment further, so the build never spends more than the net base
-    # and leaves at least the reserve as cash.
-    net_base = executor._reserve_cash_buffer(100_000.0, len(stocks))
+    # Equity-only build: pct (1_500) is the whole reserve -> net base 98_500.
+    # Whole-share flooring only reduces deployment further, so the build never
+    # spends more than the net base and leaves at least the reserve as cash.
+    net_base = executor._reserve_cash_buffer(100_000.0, False)
     assert net_base == pytest.approx(98_500.0)
     assert _deployed(results) <= net_base + 1e-6
     # And it sized against the net base, not the full capital: deployment is within
@@ -1122,7 +1135,7 @@ def test_execute_build_reserves_buffer(monkeypatch) -> None:
 
 
 def test_execute_rebalance_reserves_buffer_from_flat(monkeypatch) -> None:
-    _enable_buffer(monkeypatch, pct=0.015, cost=1.0)
+    _enable_buffer(monkeypatch, pct=0.015, crypto_pct=0.0025)
     broker = StubBroker()
     executor = AIPortfolioExecutor(broker, allocated_capital=50_000.0)
     # Size against a grown live value (gains included); from flat so every order is
@@ -1136,18 +1149,36 @@ def test_execute_rebalance_reserves_buffer_from_flat(monkeypatch) -> None:
         base_capital=grown_value,
     )
 
-    # 1.5% of 120_000 = 1_800 dominates 2 * $1, so sizing uses 118_200. The buys
-    # never deploy more than the net base, so the session keeps a cash reserve
-    # instead of overdrawing into negative unallocated cash.
-    net_base = executor._reserve_cash_buffer(grown_value, len(targets))
+    # Equity-only rebalance: 1.5% of 120_000 = 1_800 is the reserve, so sizing uses
+    # 118_200. The buys never deploy more than the net base, so the session keeps a
+    # cash reserve instead of overdrawing into negative unallocated cash.
+    net_base = executor._reserve_cash_buffer(grown_value, False)
     assert net_base == pytest.approx(118_200.0)
+    assert _deployed(results) <= net_base + 1e-6
+
+
+def test_execute_build_reserves_crypto_fee_when_pct_zeroed(monkeypatch) -> None:
+    # With the percentage buffer off, only a crypto-present run reserves anything:
+    # the executor detects crypto among the built tickers and reserves the fee term.
+    _enable_buffer(monkeypatch, pct=0.0, crypto_pct=0.0025)
+    broker = StubBroker()
+    executor = AIPortfolioExecutor(broker, allocated_capital=100_000.0)
+    stocks = [_stock("AAPL", 0.5), _stock("BTC-USD", 0.5)]
+
+    results = executor.execute_build(
+        stocks, asset_classes=_MIXED
+    )
+
+    # has_crypto=True -> net base = 100_000 - 0.25% = 99_750; deployment stays within.
+    net_base = executor._reserve_cash_buffer(100_000.0, True)
+    assert net_base == pytest.approx(99_750.0)
     assert _deployed(results) <= net_base + 1e-6
 
 
 def test_buffer_leaves_crypto_only_and_market_closed_behavior_unchanged(
     monkeypatch,
 ) -> None:
-    _enable_buffer(monkeypatch, pct=0.015, cost=1.0)
+    _enable_buffer(monkeypatch, pct=0.015, crypto_pct=0.0025)
 
     # crypto_only still drops equities entirely, even with the buffer on.
     broker = StubBroker()
@@ -1253,7 +1284,7 @@ def test_rebalance_redeployment_respects_reserved_cash_buffer(
     # against net_base = base - buffer, so deployable cash is never driven below
     # the reserve.
     monkeypatch.setattr(settings, "REBALANCE_CASH_BUFFER_PCT", 0.02)
-    monkeypatch.setattr(settings, "TRANSACTION_COST_USD", 0.0)
+    monkeypatch.setattr(settings, "CRYPTO_FEE_PCT", 0.0)
     broker = _QuoteControlBroker(
         prices={"AAPL": 100.0, "MSFT": 100.0}, unpriceable={"ASML.AS"}
     )

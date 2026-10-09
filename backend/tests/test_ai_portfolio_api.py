@@ -1014,6 +1014,7 @@ def test_reconcile_daily_aggregates_across_sessions(
         quantity=5,
         price=20.0,
         signal_type="entry",
+        asset_class=AssetClass.EQUITY,
         order_id="o1",
         order_status=OrderStatus.SUBMITTED,
     )

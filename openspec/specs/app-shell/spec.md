@@ -21,7 +21,7 @@ The system SHALL present a persistent shell (header and sidebar navigation with 
 
 ### Requirement: Asset management views
 
-The system SHALL provide a view to add an asset, browse the paginated/searchable/filterable asset list, and open an asset's detail (including its recent price history and profile). Errors from the API (duplicate, unknown ticker, data unavailable) SHALL be surfaced to the user with a meaningful message.
+The system SHALL provide a view to add an asset, browse the paginated/searchable/filterable asset list, and open an asset's detail (including its recent price history and profile). Errors from the API (duplicate, unknown ticker, data unavailable) SHALL be surfaced to the user with a meaningful message. In the asset list, each asset that is not tradable on Alpaca — a foreign or otherwise unpriceable listing, identified by the absence of a resolved Alpaca symbol — SHALL be visually flagged as not tradable, distinct from the asset's eligibility status; assets that are tradable on Alpaca SHALL NOT carry that flag.
 
 #### Scenario: Add and browse assets
 
@@ -32,6 +32,16 @@ The system SHALL provide a view to add an asset, browse the paginated/searchable
 
 - **WHEN** adding a ticker returns a duplicate/unknown/unavailable error
 - **THEN** the UI SHALL display a corresponding message and remain usable
+
+#### Scenario: Not-tradable asset is flagged in the list
+
+- **WHEN** a user browses the asset list and an asset has no resolved Alpaca symbol (a foreign or unpriceable listing)
+- **THEN** the UI SHALL show a not-tradable indicator on that asset's row, separate from its eligibility status, that explains the asset cannot be traded on Alpaca and should be replaced with a tradable US listing
+
+#### Scenario: Tradable asset is not flagged
+
+- **WHEN** a user browses the asset list and an asset has a resolved Alpaca symbol
+- **THEN** the UI SHALL NOT show the not-tradable indicator on that asset's row
 
 ### Requirement: AI run views with polling
 
@@ -278,18 +288,18 @@ position values SHALL become visible without requiring a manual page reload.
 - **WHEN** every order in the open session has reached a terminal status
 - **THEN** the UI SHALL stop the recurring refresh
 
-### Requirement: Session performance KPI tiles
+### Requirement: Session performance KPI tile grid
 
-The paper-trading session detail view SHALL present the session's live performance KPIs as headline tiles: current portfolio value, **unallocated (free) cash**, realised profit/loss, unrealised profit/loss, cumulative transaction fees, **daily average transaction cost**, total return, Sharpe ratio, benchmark return, and excess return over the benchmark. The total return tile SHALL show both the absolute money amount and the percentage. The unallocated-cash tile SHALL show the session's free cash as a money amount. The benchmark-return tile SHALL show the benchmark's return as a percentage and identify the benchmark. The excess-return tile SHALL show the session's return minus the benchmark's return as a percentage. Monetary profit/loss, the total return, and the excess return SHALL be visually distinguished by sign (gain versus loss / outperformance versus underperformance). The transaction-fees tile SHALL show the cumulative fees paid as a money amount. The daily-average-transaction-cost tile SHALL show the average transaction cost per snapshot day as a money amount, and SHALL display a clear "not yet available" state whenever the daily average transaction cost is unavailable because the session has no recorded daily value snapshots. The Sharpe tile SHALL display a clear "not yet available" state, with a brief explanatory hint, whenever the Sharpe ratio has not yet been computed because the session lacks sufficient history. The benchmark-return and excess-return tiles SHALL display a clear "not yet available" state whenever the benchmark figures are unavailable. The tiles SHALL reflect the values returned by the session KPI summary each time the view loads.
+The paper-trading session detail view SHALL present the session's live performance KPIs as headline tiles: current portfolio value, **unallocated (free) cash**, realised profit/loss, unrealised profit/loss, cumulative transaction fees, **daily average orders**, total return, Sharpe ratio, benchmark return, and excess return over the benchmark. The total return tile SHALL show both the absolute money amount and the percentage. The unallocated-cash tile SHALL show the session's free cash as a money amount. The benchmark-return tile SHALL show the benchmark's return as a percentage and identify the benchmark. The excess-return tile SHALL show the session's return minus the benchmark's return as a percentage. Monetary profit/loss, the total return, and the excess return SHALL be visually distinguished by sign (gain versus loss / outperformance versus underperformance). The transaction-fees tile SHALL show the cumulative fees paid as a money amount. The daily-average-orders tile SHALL show the session's average number of filled orders per snapshot day as a number, and SHALL display a clear "not yet available" state whenever the daily average orders is unavailable because the session has no recorded daily value snapshots. The Sharpe tile SHALL display a clear "not yet available" state, with a brief explanatory hint, whenever the Sharpe ratio has not yet been computed because the session lacks sufficient history. The benchmark-return and excess-return tiles SHALL display a clear "not yet available" state whenever the benchmark figures are unavailable. The tiles SHALL reflect the values returned by the session KPI summary each time the view loads.
 
 The performance KPI tiles section SHALL display a **live-data indicator** (for example, a "Live" badge beside the section heading) communicating that the tiles reflect current broker quotes as of when the summary was loaded, together with a brief explanatory hint that the figures are marked to market and can differ from the end-of-day value chart intraday. The indicator SHALL NOT change any tile value.
 
-The headline performance tiles (current value, unallocated cash, realised P&L, unrealised P&L, transaction fees, daily average transaction cost, total return, Sharpe ratio, benchmark return, and excess return) SHALL be laid out as a compact grid of up to five tiles per row so the ten performance tiles occupy two rows on a wide viewport, and the KPI tiles SHALL use a reduced tile and font size relative to the prior layout while remaining legible and responsive on narrow viewports.
+The headline performance tiles (current value, unallocated cash, realised P&L, unrealised P&L, transaction fees, daily average orders, total return, Sharpe ratio, benchmark return, and excess return) SHALL be laid out as a compact grid of up to five tiles per row so the ten performance tiles occupy two rows on a wide viewport, and the KPI tiles SHALL use a reduced tile and font size relative to the prior layout while remaining legible and responsive on narrow viewports.
 
 #### Scenario: KPIs shown on the session page
 
 - **WHEN** a user opens a paper-trading session
-- **THEN** the view SHALL display tiles for current portfolio value, unallocated cash, realised P&L, unrealised P&L, cumulative transaction fees, daily average transaction cost, total return, Sharpe ratio, benchmark return, and excess return using the session's live KPI summary
+- **THEN** the view SHALL display tiles for current portfolio value, unallocated cash, realised P&L, unrealised P&L, cumulative transaction fees, daily average orders, total return, Sharpe ratio, benchmark return, and excess return using the session's live KPI summary
 
 #### Scenario: Performance tiles marked as live
 
@@ -336,15 +346,15 @@ The headline performance tiles (current value, unallocated cash, realised P&L, u
 - **WHEN** a session has accrued transaction fees
 - **THEN** the session detail view SHALL display a tile showing the cumulative transaction fees as a money amount
 
-#### Scenario: Daily average transaction cost tile
+#### Scenario: Daily average orders tile
 
-- **WHEN** the session KPI summary reports a daily average transaction cost
-- **THEN** the session detail view SHALL display a tile showing the average transaction cost per snapshot day as a money amount
+- **WHEN** the session KPI summary reports a daily average orders value
+- **THEN** the session detail view SHALL display a tile showing the session's average number of filled orders per snapshot day as a number
 
-#### Scenario: Daily average transaction cost not yet available
+#### Scenario: Daily average orders not yet available
 
-- **WHEN** the session KPI summary reports the daily average transaction cost as unavailable
-- **THEN** the daily-average-transaction-cost tile SHALL show a "not yet available" state instead of a numeric value
+- **WHEN** the session KPI summary reports the daily average orders as unavailable
+- **THEN** the daily-average-orders tile SHALL show a "not yet available" state instead of a numeric value
 
 ### Requirement: AI build form asset scope and default capital
 

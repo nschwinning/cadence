@@ -12,6 +12,7 @@ from __future__ import annotations
 import uuid
 from datetime import UTC, date, datetime, timedelta
 
+import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
 from tests.fakes import FakeBroker, FakeMarketDataProvider
@@ -21,6 +22,7 @@ from cadence.ai_portfolio.models import AIPortfolioEvent
 from cadence.assets import service as assets_service
 from cadence.assets.market_data import AssetInfo, HistoryBar
 from cadence.broker.stub import StubBroker
+from cadence.config import settings
 from cadence.dashboard import service
 from cadence.dashboard.constants import RECENT_ACTIVITY_LIMIT, DashboardRange
 from cadence.paper_trading import service as paper_trading_service
@@ -109,16 +111,22 @@ def _add_snapshot(
 
 
 def _add_trade(
-    db_session: Session, session_id: uuid.UUID, *, executed_at: datetime
+    db_session: Session,
+    session_id: uuid.UUID,
+    *,
+    executed_at: datetime,
+    ticker: str = "TECH",
+    quantity: float = 1.0,
+    price: float = 10.0,
 ) -> None:
     db_session.add(
         PaperTrade(
             session_id=session_id,
-            ticker="TECH",
+            ticker=ticker,
             side="buy",
-            quantity=1.0,
-            price=10.0,
-            notional=10.0,
+            quantity=quantity,
+            price=price,
+            notional=quantity * price,
             signal_type="entry",
             executed_at=executed_at,
         )
@@ -224,12 +232,37 @@ def test_session_starting_within_range_baselines_on_allocated(
     assert perf.pnl == 0.0
 
 
-def test_range_fees_count_trades_within_window(db_session: Session) -> None:
+def test_range_fees_sum_crypto_notional_within_window(db_session: Session) -> None:
     session_row = _make_session(db_session, name="Gamma", strategy_key="s3")
-    # Two trades inside the 1M window, one before it.
-    _add_trade(db_session, session_row.id, executed_at=datetime(2026, 5, 1, tzinfo=UTC))
-    _add_trade(db_session, session_row.id, executed_at=datetime(2026, 6, 1, tzinfo=UTC))
-    _add_trade(db_session, session_row.id, executed_at=datetime(2026, 6, 10, tzinfo=UTC))
+    # Catalogue the traded tickers so the fee join can classify them. Only crypto
+    # notional is charged a fee; equities are commission-free.
+    assets_service.add_asset(
+        db_session, "TECH", _provider(sector_key="technology"), _broker()
+    )
+    assets_service.add_asset(
+        db_session,
+        "BTC-USD",
+        _provider(quote_type="CRYPTOCURRENCY", sector_key=None),
+        _broker(),
+    )
+    # Two crypto trades inside the 1M window, one crypto trade before it, plus an
+    # in-window equity trade (contributes no fee).
+    _add_trade(
+        db_session, session_row.id, ticker="BTC-USD", quantity=1.0, price=100.0,
+        executed_at=datetime(2026, 5, 1, tzinfo=UTC),  # before window
+    )
+    _add_trade(
+        db_session, session_row.id, ticker="BTC-USD", quantity=1.0, price=200.0,
+        executed_at=datetime(2026, 6, 1, tzinfo=UTC),  # in window
+    )
+    _add_trade(
+        db_session, session_row.id, ticker="BTC-USD", quantity=2.0, price=300.0,
+        executed_at=datetime(2026, 6, 10, tzinfo=UTC),  # in window
+    )
+    _add_trade(
+        db_session, session_row.id, ticker="TECH", quantity=10.0, price=50.0,
+        executed_at=datetime(2026, 6, 10, tzinfo=UTC),  # in window, equity -> no fee
+    )
 
     overview = service.get_dashboard_overview(
         db_session,
@@ -239,8 +272,11 @@ def test_range_fees_count_trades_within_window(db_session: Session) -> None:
         now=_NOW,
     )
 
-    # Flat $1/trade transaction cost; only the two in-window trades count.
-    assert overview.sessions[0].fees == 2.0
+    # Only the two in-window crypto trades count: 0.0025 × (200 + 600).
+    in_window_crypto_notional = 1.0 * 200.0 + 2.0 * 300.0
+    assert overview.sessions[0].fees == pytest.approx(
+        settings.CRYPTO_FEE_PCT * in_window_crypto_notional
+    )
 
 
 def test_only_active_sessions_are_included(db_session: Session) -> None:

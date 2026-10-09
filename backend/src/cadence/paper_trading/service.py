@@ -443,6 +443,7 @@ def _liquidate_out_of_scope_positions(
             quantity=result.shares,
             price=result.price or 0.0,
             signal_type=SCOPE_CHANGE_SIGNAL_TYPE,
+            asset_class=cls,
             order_id=result.order_id,
             order_status=result.order_status,
             filled_price=result.filled_price,
@@ -524,6 +525,7 @@ def record_trade(
     quantity: float,
     price: float,
     signal_type: str,
+    asset_class: AssetClass,
     order_id: str | None = None,
     order_status: OrderStatus = OrderStatus.FILLED,
     filled_price: float | None = None,
@@ -535,10 +537,13 @@ def record_trade(
     ``ai_portfolio_event_id`` links the trade to the AI run that produced it; it is
     left NULL for non-AI strategies.
 
-    Recording a trade also charges the session a flat transaction cost
-    (``settings.TRANSACTION_COST_USD``) into its cumulative ``total_fees``. This is
-    the single choke point for persisting a trade, so every executed fill is
-    charged and skipped orders (never recorded) are correctly free.
+    Recording a trade also charges the session an asset-class-aware transaction
+    cost into its cumulative ``total_fees``, matching Alpaca's fee schedule:
+    equity (and any non-crypto) fills are free, while crypto fills are charged
+    ``settings.CRYPTO_FEE_PCT`` of the executed notional (the filled price when
+    present, else the quoted ``price``, times ``quantity``). This is the single
+    choke point for persisting a trade, so every executed fill is charged
+    correctly and skipped orders (never recorded) are correctly free.
     """
     trade = PaperTrade(
         session_id=session_id,
@@ -555,9 +560,15 @@ def record_trade(
         filled_at=filled_at,
     )
     session.add(trade)
-    # Charge the flat per-trade transaction cost onto the owning session.
+    # Charge the asset-class-aware transaction cost onto the owning session:
+    # crypto pays a percentage of executed notional; equities are free.
+    if asset_class is AssetClass.CRYPTO:
+        executed_price = filled_price if filled_price is not None else price
+        fee = settings.CRYPTO_FEE_PCT * quantity * executed_price
+    else:
+        fee = 0.0
     row = get_session(session, session_id)
-    row.total_fees = row.total_fees + settings.TRANSACTION_COST_USD
+    row.total_fees = row.total_fees + fee
     session.commit()
     session.refresh(trade)
     return trade
@@ -1768,10 +1779,11 @@ class SessionKpis:
     ``unallocated_cash`` the portion of that value currently held as cash (the live
     value minus the marked-to-market positions value); ``realised_pnl``
     the session's cumulative gross realised P&L; ``unrealised_pnl`` the live
-    mark-to-market on open positions; ``total_fees`` the cumulative per-trade
-    transaction cost charged to date; ``daily_avg_transaction_cost`` the cumulative
-    fees divided by the number of recorded daily value snapshots (``None`` until the
-    session has at least one snapshot); ``total_return`` the absolute gain/loss versus
+    mark-to-market on open positions; ``total_fees`` the cumulative
+    transaction cost charged to date; ``daily_avg_orders`` the number of recorded
+    orders (trades) divided by the number of recorded daily value snapshots
+    (``None`` until the session has at least one snapshot); ``total_return`` the
+    absolute gain/loss versus
     total contributed capital (``current_value − allocated_capital``) and
     ``total_return_pct`` the *time-weighted* fractional return (the chained
     contribution-adjusted daily series, so a mid-session capital increase is not
@@ -1802,7 +1814,7 @@ class SessionKpis:
     realised_pnl: float
     unrealised_pnl: float
     total_fees: float
-    daily_avg_transaction_cost: float | None
+    daily_avg_orders: float | None
     total_return: float
     total_return_pct: float
     sharpe_ratio: float | None
@@ -1862,11 +1874,13 @@ def session_kpis(
     daily_returns = contribution_adjusted_returns(snapshots, contributions)
     daily_risk_free = settings.SHARPE_RISK_FREE_RATE / SHARPE_TRADING_DAYS_PER_YEAR
 
-    # Average transaction cost per snapshot day: cumulative fees spread over the
-    # number of recorded daily value snapshots. None until the first snapshot so we
-    # never divide by zero.
-    daily_avg_transaction_cost = (
-        session_row.total_fees / len(snapshots) if snapshots else None
+    # Average orders per snapshot day: the session's recorded trade count spread
+    # over the number of recorded daily value snapshots. None until the first
+    # snapshot so we never divide by zero.
+    daily_avg_orders = (
+        count_session_trades(session, session_id) / len(snapshots)
+        if snapshots
+        else None
     )
 
     # Benchmark comparison: buy-and-hold return from the session's start (its first
@@ -1912,7 +1926,7 @@ def session_kpis(
         realised_pnl=session_row.total_pnl,
         unrealised_pnl=valuation.unrealized_pnl,
         total_fees=session_row.total_fees,
-        daily_avg_transaction_cost=daily_avg_transaction_cost,
+        daily_avg_orders=daily_avg_orders,
         total_return=total_return,
         total_return_pct=total_return_pct,
         sharpe_ratio=sharpe_ratio(daily_returns, risk_free=daily_risk_free),
