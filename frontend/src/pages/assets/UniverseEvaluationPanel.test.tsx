@@ -140,4 +140,32 @@ describe('UniverseEvaluationPanel', () => {
       await screen.findByText(/Could not generate the universe evaluation/),
     ).toBeInTheDocument();
   });
+
+  it('is expanded by default and collapses/expands via the toggle', async () => {
+    const user = userEvent.setup();
+    mockedGet.mockResolvedValue({ data: { evaluation: EVALUATION } });
+
+    renderWithClient(<UniverseEvaluationPanel />);
+
+    // Body visible by default, toggle reports expanded.
+    await screen.findByText('Technology dominates.');
+    const toggle = screen.getByRole('button', { name: /Hide/ });
+    expect(toggle).toHaveAttribute('aria-expanded', 'true');
+
+    // Collapsing hides the body; header/Refresh stay visible.
+    await user.click(toggle);
+    expect(screen.queryByText('Technology dominates.')).not.toBeInTheDocument();
+    expect(
+      screen.getByRole('button', { name: /Refresh/ }),
+    ).toBeInTheDocument();
+    const collapsedToggle = screen.getByRole('button', { name: /Show/ });
+    expect(collapsedToggle).toHaveAttribute('aria-expanded', 'false');
+
+    // Expanding shows the body again.
+    await user.click(collapsedToggle);
+    expect(screen.getByText('Technology dominates.')).toBeInTheDocument();
+    expect(
+      screen.getByRole('button', { name: /Hide/ }),
+    ).toHaveAttribute('aria-expanded', 'true');
+  });
 });

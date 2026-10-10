@@ -1,6 +1,15 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { renderHook, waitFor } from '@testing-library/react';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { createElement, type ReactNode } from 'react';
 import { apiClient } from './client';
-import { assetKeys, listAssets } from './assets';
+import {
+  assetKeys,
+  listAssets,
+  useAddAsset,
+  useDeleteAsset,
+} from './assets';
+import { dashboardKeys } from './dashboard';
 import type { AssetPage } from '../types/api';
 
 // Mock the shared axios client rather than the network.
@@ -13,6 +22,8 @@ vi.mock('./client', () => ({
 }));
 
 const mockedGet = vi.mocked(apiClient.get);
+const mockedPost = vi.mocked(apiClient.post);
+const mockedDelete = vi.mocked(apiClient.delete);
 
 const emptyPage: { data: AssetPage } = { data: { items: [], total: 0 } };
 
@@ -103,5 +114,45 @@ describe('listAssets URL + param serialization', () => {
         }),
       }),
     );
+  });
+});
+
+describe('asset mutations refresh the composition donuts', () => {
+  function wrapperWithClient() {
+    const queryClient = new QueryClient({
+      defaultOptions: { mutations: { retry: false } },
+    });
+    const invalidateSpy = vi.spyOn(queryClient, 'invalidateQueries');
+    const wrapper = ({ children }: { children: ReactNode }) =>
+      createElement(QueryClientProvider, { client: queryClient }, children);
+    return { wrapper, invalidateSpy };
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('invalidates both assets and dashboard metrics after adding an asset', async () => {
+    mockedPost.mockResolvedValue({ data: { id: 1, ticker: 'AAPL' } });
+    const { wrapper, invalidateSpy } = wrapperWithClient();
+
+    const { result } = renderHook(() => useAddAsset(), { wrapper });
+    result.current.mutate('AAPL');
+
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: assetKeys.all });
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: dashboardKeys.all });
+  });
+
+  it('invalidates both assets and dashboard metrics after deleting an asset', async () => {
+    mockedDelete.mockResolvedValue({ data: undefined });
+    const { wrapper, invalidateSpy } = wrapperWithClient();
+
+    const { result } = renderHook(() => useDeleteAsset(), { wrapper });
+    result.current.mutate(1);
+
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: assetKeys.all });
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: dashboardKeys.all });
   });
 });

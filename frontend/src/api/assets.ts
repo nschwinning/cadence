@@ -5,6 +5,7 @@ import {
   useQueryClient,
 } from '@tanstack/react-query';
 import { apiClient } from './client';
+import { dashboardKeys } from './dashboard';
 import type {
   Asset,
   AssetCategory,
@@ -188,6 +189,9 @@ export function useAddAsset() {
     mutationFn: addAsset,
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: assetKeys.all });
+      // The composition donuts read from the dashboard metrics, so refresh
+      // them too — otherwise they stay stale until a page reload.
+      queryClient.invalidateQueries({ queryKey: dashboardKeys.all });
     },
   });
 }
@@ -199,6 +203,8 @@ export function useDeleteAsset() {
     mutationFn: deleteAsset,
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: assetKeys.all });
+      // Keep the composition donuts (sourced from dashboard metrics) in sync.
+      queryClient.invalidateQueries({ queryKey: dashboardKeys.all });
     },
   });
 }

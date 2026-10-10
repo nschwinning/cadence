@@ -1,3 +1,5 @@
+import { useState } from 'react';
+
 import {
   useAssetUniverseEvaluation,
   useRefreshAssetUniverseEvaluation,
@@ -82,6 +84,8 @@ function EvaluationBody({ evaluation }: { evaluation: AssetUniverseEvaluation })
 export function UniverseEvaluationPanel() {
   const query = useAssetUniverseEvaluation();
   const refresh = useRefreshAssetUniverseEvaluation();
+  // Session-local only; defaults to expanded to preserve existing behavior.
+  const [expanded, setExpanded] = useState(true);
 
   const evaluation = query.data?.evaluation ?? null;
   // The GET lazy-generates when empty, so an initial load may take seconds.
@@ -105,23 +109,37 @@ export function UniverseEvaluationPanel() {
             concentration, quality, and gaps.
           </p>
         </div>
-        <button
-          type="button"
-          onClick={() => refresh.mutate()}
-          disabled={generating}
-          aria-busy={refresh.isPending}
-          className="inline-flex items-center gap-2 rounded border border-slate-300 px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 focus-visible:ring-offset-1"
-        >
-          {refresh.isPending && (
-            <span
-              aria-hidden="true"
-              className="h-3.5 w-3.5 rounded-full border-2 border-slate-300 border-t-emerald-500 motion-safe:animate-spin"
-            />
-          )}
-          {refresh.isPending ? 'Refreshing…' : 'Refresh'}
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={() => refresh.mutate()}
+            disabled={generating}
+            aria-busy={refresh.isPending}
+            className="inline-flex items-center gap-2 rounded border border-slate-300 px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 focus-visible:ring-offset-1"
+          >
+            {refresh.isPending && (
+              <span
+                aria-hidden="true"
+                className="h-3.5 w-3.5 rounded-full border-2 border-slate-300 border-t-emerald-500 motion-safe:animate-spin"
+              />
+            )}
+            {refresh.isPending ? 'Refreshing…' : 'Refresh'}
+          </button>
+          <button
+            type="button"
+            onClick={() => setExpanded((value) => !value)}
+            aria-expanded={expanded}
+            aria-controls="universe-evaluation-body"
+            className="inline-flex items-center gap-2 rounded border border-slate-300 px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 focus-visible:ring-offset-1"
+          >
+            <span aria-hidden="true">{expanded ? '▾' : '▸'}</span>
+            {expanded ? 'Hide' : 'Show'}
+          </button>
+        </div>
       </div>
 
+      {expanded && (
+        <div id="universe-evaluation-body">
       {evaluation?.outdated && (
         <p
           role="status"
@@ -173,6 +191,8 @@ export function UniverseEvaluationPanel() {
         <p className="mt-4 text-sm text-slate-500">
           Add assets to the universe to generate an evaluation.
         </p>
+      )}
+        </div>
       )}
     </section>
   );

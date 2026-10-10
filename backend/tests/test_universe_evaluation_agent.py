@@ -51,6 +51,19 @@ def test_prompt_includes_totals_composition_and_listings() -> None:
     assert "numeric scores" in prompt
 
 
+def test_prompt_states_cadence_trading_scope() -> None:
+    prompt = build_universe_evaluation_prompt(_summary()).lower()
+
+    # Scope: US-tradable individual stocks + crypto, long-only.
+    assert "stocks and crypto" in prompt
+    assert "long-only" in prompt
+    # Unsupported instrument classes are called out as out of scope.
+    assert "etf" in prompt
+    assert "fixed-income" in prompt
+    # Suggestions must not recommend the unsupported classes.
+    assert "do not recommend" in prompt
+
+
 def test_prompt_handles_empty_listings() -> None:
     summary = UniverseSummary(
         total=2,

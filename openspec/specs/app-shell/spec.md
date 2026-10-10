@@ -801,6 +801,13 @@ evaluation was generated, and SHALL provide a refresh control that regenerates t
 evaluation. When no evaluation exists yet, the panel SHALL trigger generation on
 first load and show a generating state until it completes.
 
+The panel SHALL be collapsible. Its header (title, subtitle, and refresh control)
+SHALL remain visible when collapsed, and a disclosure toggle SHALL show or hide the
+panel body (the narrative, key findings, generation time, and the
+outdated/generating/error/empty states). The panel SHALL default to expanded, and
+the disclosure toggle SHALL expose its expanded or collapsed state to assistive
+technology.
+
 #### Scenario: Panel renders the evaluation under the donuts
 
 - **WHEN** the Assets page loads and a current evaluation exists
@@ -829,3 +836,20 @@ first load and show a generating state until it completes.
 - **WHEN** the Assets page loads and no evaluation has ever been generated
 - **THEN** the panel triggers generation and shows a generating state until the
   evaluation is available
+
+#### Scenario: Body expanded by default
+
+- **WHEN** the Assets page loads and the evaluation panel renders
+- **THEN** the panel body is visible and the disclosure toggle reports an expanded
+  state
+
+#### Scenario: Collapse hides the body
+
+- **WHEN** the operator activates the disclosure toggle while the panel is expanded
+- **THEN** the panel body is hidden, the header and refresh control remain visible,
+  and the toggle reports a collapsed state
+
+#### Scenario: Expand shows the body again
+
+- **WHEN** the operator activates the disclosure toggle while the panel is collapsed
+- **THEN** the panel body is shown again and the toggle reports an expanded state

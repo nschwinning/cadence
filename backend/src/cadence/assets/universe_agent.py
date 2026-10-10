@@ -31,6 +31,18 @@ unpriceable listings that cannot be traded. Judge only the summary you are given
 do not invent assets or facts not present in it. Write a concise markdown
 narrative plus short bulleted findings. Do not assign numeric scores or ratings.
 Keep each bullet to a single, specific sentence.
+
+Scope — the portfolio this universe feeds can ONLY hold US-exchange-tradable
+individual equities (common stocks) and crypto, and is managed long-only with
+full-universe weight allocation (no shorting, leverage, options, or other
+derivatives). It CANNOT hold ETFs, mutual funds, index funds, bond or
+money-market funds, fixed-income instruments, cash-equivalents, or foreign
+(non-US-listed) securities. Keep every suggestion within this scope — for
+example adding specific individual US stocks or crypto to improve
+diversification or sector balance, reducing concentration, addressing quality
+gaps, or resolving a foreign/unpriceable listing by replacing it with its US
+listing or ADR. NEVER recommend ETFs, funds, fixed income, bonds,
+cash-equivalents, options, or any instrument class outside this scope.
 """.strip()
 
 
@@ -133,10 +145,19 @@ By sector: {_render_counts(summary.sector_counts)}
 Largest concentrations (sector): {concentration_line}
 Foreign/unpriceable listings: {unpriceable_line}
 
+Scope: this universe can only hold US-tradable individual stocks and crypto,
+managed long-only. It cannot hold ETFs, mutual or index funds, bond or
+money-market funds, fixed-income, cash-equivalents, or foreign (non-US-listed)
+securities.
+
 Evaluate diversification, sector and category concentration, overall quality,
 notable gaps, and the risk from any foreign or unpriceable listings. Respond with
-a markdown narrative plus bulleted strengths, concerns, and suggestions. Do not
-use numeric scores.
+a markdown narrative plus bulleted strengths, concerns, and suggestions. Keep
+every suggestion in scope — e.g. add specific individual stocks or crypto, reduce
+concentration, address quality gaps, or resolve a foreign/unpriceable listing to
+its US listing or ADR — and do not recommend ETFs, funds, fixed income, bonds,
+cash-equivalents, options, or any out-of-scope instrument class. Do not use
+numeric scores.
 """.strip()
 
 
