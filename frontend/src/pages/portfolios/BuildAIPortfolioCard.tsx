@@ -6,7 +6,10 @@ import {
   useBuildStatus,
 } from '../../api/aiPortfolio';
 import { portfolioKeys } from '../../api/portfolios';
-import { paperTradingKeys, useBenchmarks } from '../../api/paperTrading';
+import {
+  invalidateSessionDependents,
+  useBenchmarks,
+} from '../../api/paperTrading';
 import type { AIEventStatus } from '../../types/api';
 
 /** Default benchmark id preselected in the build form (S&P 500). */
@@ -168,6 +171,8 @@ export function BuildAIPortfolioCard() {
   const [maxAssetClassPct, setMaxAssetClassPct] = useState('60');
   const [minPositions, setMinPositions] = useState('5');
   const [maxInvestedPct, setMaxInvestedPct] = useState('95');
+  const [learningFeedbackEnabled, setLearningFeedbackEnabled] = useState(false);
+  const [learningWindow, setLearningWindow] = useState('5');
   const [benchmark, setBenchmark] = useState<string>(DEFAULT_BENCHMARK);
   const [eventId, setEventId] = useState<string | null>(null);
 
@@ -209,7 +214,15 @@ export function BuildAIPortfolioCard() {
       fractionInRange(maxInvestedFraction) &&
       minPositionsValid);
 
-  const canSubmit = capitalValid && stopLossValid && guardrailsValid;
+  // The learning window is an integer count of recent days; it must be >= 1
+  // when learning feedback is enabled.
+  const learningWindowValue = Number.parseInt(learningWindow, 10);
+  const learningWindowValid =
+    !learningFeedbackEnabled ||
+    (Number.isInteger(learningWindowValue) && learningWindowValue >= 1);
+
+  const canSubmit =
+    capitalValid && stopLossValid && guardrailsValid && learningWindowValid;
 
   // Per-field invalid flags drive the inline red hints (only surfaced once the
   // relevant toggle is on so untouched, hidden fields never look erroneous).
@@ -221,6 +234,7 @@ export function BuildAIPortfolioCard() {
   const maxInvestedInvalid =
     guardrailsEnabled && !fractionInRange(maxInvestedFraction);
   const minPositionsInvalid = guardrailsEnabled && !minPositionsValid;
+  const learningWindowInvalid = learningFeedbackEnabled && !learningWindowValid;
 
   // Refresh portfolios + sessions once the build reaches a terminal state.
   const settledEventId = useRef<string | null>(null);
@@ -228,7 +242,9 @@ export function BuildAIPortfolioCard() {
     if (eventId !== null && terminal && settledEventId.current !== eventId) {
       settledEventId.current = eventId;
       queryClient.invalidateQueries({ queryKey: portfolioKeys.all });
-      queryClient.invalidateQueries({ queryKey: paperTradingKeys.all });
+      // A new session shows up in the sessions list, the runs history and the
+      // dashboard tiles/leaderboard — refresh every session-dependent view.
+      invalidateSessionDependents(queryClient);
     }
   }, [eventId, terminal, queryClient]);
 
@@ -250,6 +266,10 @@ export function BuildAIPortfolioCard() {
         max_asset_class_pct: guardrailsEnabled ? maxAssetClassFraction : null,
         min_positions: guardrailsEnabled ? minPositionsValue : null,
         max_invested_pct: guardrailsEnabled ? maxInvestedFraction : null,
+        learning_feedback_enabled: learningFeedbackEnabled,
+        learning_feedback_window: learningFeedbackEnabled
+          ? learningWindowValue
+          : null,
       },
       { onSuccess: (res) => setEventId(res.event_id) },
     );
@@ -513,6 +533,47 @@ export function BuildAIPortfolioCard() {
                       onChange={setMaxInvestedPct}
                       hint="Remainder is held as cash."
                       invalid={maxInvestedInvalid}
+                    />
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* Learning feedback (prior-run outcomes into the rebalance prompt). */}
+            <div className="flex flex-col gap-1">
+              <label className="flex items-center gap-2 text-sm font-medium text-slate-800">
+                <input
+                  type="checkbox"
+                  checked={learningFeedbackEnabled}
+                  onChange={(e) => setLearningFeedbackEnabled(e.target.checked)}
+                  aria-expanded={learningFeedbackEnabled}
+                  aria-controls="ai-learning-feedback-panel"
+                  className="h-4 w-4 rounded border-slate-300 text-emerald-600 focus:ring-emerald-500"
+                />
+                Enable learning feedback
+              </label>
+              <p className="text-xs text-slate-500">
+                When enabled, each rebalance is shown a compact, cost-forward
+                summary of this session's own recent daily outcomes so the AI can
+                learn from what its prior decisions produced. Advisory only — it
+                adds no hard constraints.
+              </p>
+              {learningFeedbackEnabled && (
+                <div
+                  id="ai-learning-feedback-panel"
+                  className="ml-6 mt-1 border-l-2 border-slate-100 pl-4"
+                >
+                  <div className="sm:w-48">
+                    <NumberField
+                      id="ai-learning-window"
+                      label="Learning window (days)"
+                      min={1}
+                      max={60}
+                      step={1}
+                      value={learningWindow}
+                      onChange={setLearningWindow}
+                      hint="Number of recent daily runs to summarize."
+                      invalid={learningWindowInvalid}
                     />
                   </div>
                 </div>

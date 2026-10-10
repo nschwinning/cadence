@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { assetKeys, SUPPORTED_CATEGORIES } from '../../api/assets';
+import { dashboardKeys } from '../../api/dashboard';
 import {
   isTerminalPhase,
   useCreateRecommendationRun,
@@ -251,6 +252,9 @@ export function RecommendAssetsCard({ onViewUniverse }: RecommendAssetsCardProps
     ) {
       invalidatedRunId.current = runId;
       queryClient.invalidateQueries({ queryKey: assetKeys.all });
+      // Newly added recommendations change the composition donuts (sourced from
+      // dashboard metrics), so refresh those too — otherwise they stay stale.
+      queryClient.invalidateQueries({ queryKey: dashboardKeys.all });
     }
   }, [runId, phase, queryClient]);
 

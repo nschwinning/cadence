@@ -220,6 +220,21 @@ class PaperTradingSession(Base):
     # is held as a cash buffer), frozen at build time. Meaningful only when
     # ``risk_guardrails_enabled`` is true; nullable (disabled/pre-existing rows).
     max_invested_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # Whether this session opts into learning feedback, chosen at build time and frozen
+    # for the session's lifetime (like the stop-loss/guardrail opt-ins). When true, the
+    # rebalance agent is shown an advisory, cost-forward summary of the session's own
+    # recent daily-run outcomes. Non-nullable and defaults to false (opt-in); backfilled
+    # to false for pre-existing sessions by the migration, so already-built sessions keep
+    # their prior (learning-off) behavior.
+    learning_feedback_enabled: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="false"
+    )
+    # How many recent daily-run snapshots the rebalance agent is shown, frozen at build
+    # time. Meaningful only when ``learning_feedback_enabled`` is true; nullable because
+    # a disabled session has no window (and pre-existing rows have none). When an enabled
+    # session has no explicit window, the build fills it from
+    # ``settings.LEARNING_FEEDBACK_DEFAULT_WINDOW``.
+    learning_feedback_window: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
     trades: Mapped[list[PaperTrade]] = relationship(
         back_populates="session",
@@ -316,6 +331,15 @@ class PaperTrade(Base):
     filled_price: Mapped[float | None] = mapped_column(Float, nullable=True)
     filled_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
+    )
+    # The asset-class-aware transaction cost assessed on this fill when it was
+    # recorded (equity/non-crypto fills are free; crypto fills pay
+    # ``CRYPTO_FEE_PCT`` of executed notional). Recorded here in addition to the
+    # session's cumulative ``total_fees`` so the daily-run learning document can
+    # attribute cost per order and per day. Non-nullable, defaults to 0; backfilled
+    # to 0 for pre-existing trades (their fee is not reconstructed).
+    fee: Mapped[float] = mapped_column(
+        Float, nullable=False, default=0.0, server_default="0"
     )
 
     session: Mapped[PaperTradingSession] = relationship(back_populates="trades")

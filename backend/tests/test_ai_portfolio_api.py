@@ -273,6 +273,50 @@ def test_build_request_rejects_out_of_range_stop_loss_threshold() -> None:
         )
 
 
+def test_build_request_defaults_learning_feedback_window_when_enabled() -> None:
+    from cadence.api.schemas import AIPortfolioBuildRequest
+
+    req = AIPortfolioBuildRequest(
+        allocated_capital=100_000, learning_feedback_enabled=True
+    )
+    assert req.learning_feedback_window == settings.LEARNING_FEEDBACK_DEFAULT_WINDOW
+
+
+def test_build_request_keeps_explicit_learning_feedback_window() -> None:
+    from cadence.api.schemas import AIPortfolioBuildRequest
+
+    req = AIPortfolioBuildRequest(
+        allocated_capital=100_000,
+        learning_feedback_enabled=True,
+        learning_feedback_window=9,
+    )
+    assert req.learning_feedback_window == 9
+
+
+def test_build_request_clears_learning_feedback_window_when_disabled() -> None:
+    from cadence.api.schemas import AIPortfolioBuildRequest
+
+    req = AIPortfolioBuildRequest(
+        allocated_capital=100_000,
+        learning_feedback_enabled=False,
+        learning_feedback_window=9,
+    )
+    assert req.learning_feedback_window is None
+
+
+def test_build_request_rejects_out_of_range_learning_feedback_window() -> None:
+    from pydantic import ValidationError
+
+    from cadence.api.schemas import AIPortfolioBuildRequest
+
+    with pytest.raises(ValidationError):
+        AIPortfolioBuildRequest(
+            allocated_capital=100_000,
+            learning_feedback_enabled=True,
+            learning_feedback_window=0,
+        )
+
+
 def test_build_request_defaults_guardrail_params_when_enabled() -> None:
     from cadence.api.schemas import AIPortfolioBuildRequest
 
@@ -396,6 +440,39 @@ def test_build_persists_stop_loss_opt_in_via_api(
     session = paper_service.get_session(db_session, uuid.UUID(session_id))
     assert session.stop_loss_enabled is True
     assert session.stop_loss_pct == 0.1
+
+
+def test_build_persists_learning_feedback_opt_in_via_api(
+    client: TestClient, db_session: Session
+) -> None:
+    executor = ManualExecutor(run_immediately=True)
+    _seed_universe(db_session, _provider())
+    _wire(db_session, executor)
+
+    resp = client.post(
+        "/api/v1/ai-portfolio/build",
+        json={
+            "allocated_capital": 100000,
+            "learning_feedback_enabled": True,
+            "learning_feedback_window": 6,
+        },
+    )
+    assert resp.status_code == 202
+    executor.run_pending()
+    event_id = resp.json()["event_id"]
+    session_id = client.get(
+        f"/api/v1/ai-portfolio/build/status/{event_id}"
+    ).json()["session_id"]
+
+    session = paper_service.get_session(db_session, uuid.UUID(session_id))
+    assert session.learning_feedback_enabled is True
+    assert session.learning_feedback_window == 6
+
+    # The session read schema exposes both fields over the API.
+    items = client.get("/api/v1/paper-trading/sessions").json()["items"]
+    row = next(s for s in items if s["id"] == session_id)
+    assert row["learning_feedback_enabled"] is True
+    assert row["learning_feedback_window"] == 6
 
 
 def test_build_status_unknown_event_404(

@@ -301,6 +301,12 @@ class PaperTradingSessionRead(BaseModel):
     max_asset_class_pct: float | None
     min_positions: int | None
     max_invested_pct: float | None
+    # Whether the session opted into learning feedback (frozen at build time). False
+    # for sessions built before this option existed.
+    learning_feedback_enabled: bool
+    # The frozen learning window (number of recent days) shown to the rebalance
+    # agent; null when learning feedback is disabled.
+    learning_feedback_window: int | None
 
     @model_validator(mode="after")
     def _populate_asset_types(self) -> PaperTradingSessionRead:
@@ -830,6 +836,20 @@ class AIPortfolioBuildRequest(BaseModel):
         "risk_guardrails_enabled is true; defaults to the configured default when "
         "enabled without an explicit value.",
     )
+    learning_feedback_enabled: bool = Field(
+        default=False,
+        description="Opt this portfolio into learning feedback (frozen at build "
+        "time). When enabled, each rebalance shows the agent an advisory, "
+        "cost-forward summary of the session's own recent daily-run outcomes. "
+        "Defaults to off (opt-in).",
+    )
+    learning_feedback_window: int | None = Field(
+        default=None,
+        ge=1,
+        description="Number of recent daily-run snapshots the rebalance agent is "
+        "shown. Applies only when learning_feedback_enabled is true; defaults to the "
+        "configured default window when enabled without an explicit value.",
+    )
 
     @field_validator("asset_types")
     @classmethod
@@ -880,6 +900,24 @@ class AIPortfolioBuildRequest(BaseModel):
             self.max_asset_class_pct = None
             self.min_positions = None
             self.max_invested_pct = None
+        return self
+
+    @model_validator(mode="after")
+    def _default_learning_feedback(self) -> AIPortfolioBuildRequest:
+        """Fill the learning window from the configured default when enabled.
+
+        When the build opts into learning feedback without an explicit window, the
+        configured ``LEARNING_FEEDBACK_DEFAULT_WINDOW`` applies. When learning
+        feedback is off, any supplied window is dropped so a disabled session never
+        carries one.
+        """
+        if self.learning_feedback_enabled:
+            if self.learning_feedback_window is None:
+                self.learning_feedback_window = (
+                    settings.LEARNING_FEEDBACK_DEFAULT_WINDOW
+                )
+        else:
+            self.learning_feedback_window = None
         return self
 
 

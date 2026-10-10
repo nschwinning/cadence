@@ -59,6 +59,8 @@ const activeSession: PaperTradingSession = {
   max_asset_class_pct: null,
   min_positions: null,
   max_invested_pct: null,
+  learning_feedback_enabled: false,
+  learning_feedback_window: null,
 };
 
 /**

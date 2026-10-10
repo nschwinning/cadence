@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { renderHook } from '@testing-library/react';
+import { renderHook, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { createElement, type ReactNode } from 'react';
 import { apiClient } from './client';
@@ -7,7 +7,11 @@ import {
   aiPortfolioKeys,
   isTerminalEventStatus,
   useBuildStatus,
+  useCloseSession,
+  useRebalanceSession,
 } from './aiPortfolio';
+import { paperTradingKeys } from './paperTrading';
+import { dashboardKeys } from './dashboard';
 import type { AIEventStatus, AIPortfolioEvent } from '../types/api';
 
 // Mock the shared axios client rather than the network.
@@ -19,6 +23,7 @@ vi.mock('./client', () => ({
 }));
 
 const mockedGet = vi.mocked(apiClient.get);
+const mockedPost = vi.mocked(apiClient.post);
 
 function makeEvent(status: AIEventStatus): AIPortfolioEvent {
   return {
@@ -135,5 +140,65 @@ describe('useBuildStatus polling', () => {
 
     await vi.advanceTimersByTimeAsync(3000);
     expect(mockedGet).not.toHaveBeenCalled();
+  });
+});
+
+describe('session mutations refresh every dependent view', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('rebalance invalidates the session events, sessions, dashboard and runs', async () => {
+    mockedPost.mockResolvedValue({
+      data: { event_id: 'evt-1', status: 'queued', started: true },
+    });
+
+    const queryClient = new QueryClient({
+      defaultOptions: { mutations: { retry: false } },
+    });
+    const invalidate = vi.spyOn(queryClient, 'invalidateQueries');
+
+    const { result } = renderHook(() => useRebalanceSession('sess-1'), {
+      wrapper: wrapper(queryClient),
+    });
+
+    result.current.mutate();
+
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+
+    expect(invalidate).toHaveBeenCalledWith({
+      queryKey: aiPortfolioKeys.sessionEventsPrefix('sess-1'),
+    });
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: paperTradingKeys.all });
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: dashboardKeys.all });
+    expect(invalidate).toHaveBeenCalledWith({
+      queryKey: ['ai-portfolio', 'runs'],
+    });
+  });
+
+  it('close invalidates the session events, all runs, sessions and dashboard', async () => {
+    mockedPost.mockResolvedValue({
+      data: { event: makeEvent('succeeded'), trades: [], closed_positions: [] },
+    });
+
+    const queryClient = new QueryClient({
+      defaultOptions: { mutations: { retry: false } },
+    });
+    const invalidate = vi.spyOn(queryClient, 'invalidateQueries');
+
+    const { result } = renderHook(() => useCloseSession('sess-1'), {
+      wrapper: wrapper(queryClient),
+    });
+
+    result.current.mutate();
+
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+
+    expect(invalidate).toHaveBeenCalledWith({
+      queryKey: aiPortfolioKeys.sessionEventsPrefix('sess-1'),
+    });
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: aiPortfolioKeys.all });
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: paperTradingKeys.all });
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: dashboardKeys.all });
   });
 });

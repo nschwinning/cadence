@@ -164,6 +164,92 @@ def test_record_trade_crypto_charges_pct_of_notional(
     assert refreshed.total_fees == pytest.approx(0.0025 * 200.0 + 0.0025 * 200.0)
 
 
+def test_record_trade_stores_fee_on_the_trade(
+    db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(settings, "CRYPTO_FEE_PCT", 0.0025)
+    portfolio = _portfolio(db_session)
+    sess = service.create_session(
+        db_session, portfolio_id=portfolio.id, strategy_key="s", rebalance_prompt_version=1, crypto_rebalance_prompt_version=1, benchmark=Benchmark.SP500)
+    # An equity fill carries no fee on the trade itself.
+    equity_trade = service.record_trade(
+        db_session,
+        session_id=sess.id,
+        ticker="AAPL",
+        side=OrderSide.BUY,
+        quantity=1,
+        price=10.0,
+        signal_type="entry",
+        asset_class=AssetClass.EQUITY,
+    )
+    assert equity_trade.fee == pytest.approx(0.0)
+    # A crypto fill carries its per-order fee (pct × executed notional) on the trade.
+    crypto_trade = service.record_trade(
+        db_session,
+        session_id=sess.id,
+        ticker="BTC-USD",
+        side=OrderSide.BUY,
+        quantity=2.0,
+        price=100.0,
+        filled_price=150.0,
+        signal_type="entry",
+        asset_class=AssetClass.CRYPTO,
+    )
+    assert crypto_trade.fee == pytest.approx(0.0025 * 2.0 * 150.0)
+
+
+def test_create_session_persists_learning_feedback_params(db_session: Session) -> None:
+    portfolio = _portfolio(db_session)
+    # Defaults: learning feedback is off and the window is unset.
+    off = service.create_session(
+        db_session, portfolio_id=portfolio.id, strategy_key="off", rebalance_prompt_version=1, crypto_rebalance_prompt_version=1, benchmark=Benchmark.SP500)
+    assert off.learning_feedback_enabled is False
+    assert off.learning_feedback_window is None
+    # When enabled, the frozen window is persisted verbatim.
+    on = service.create_session(
+        db_session,
+        portfolio_id=portfolio.id,
+        strategy_key="on",
+        rebalance_prompt_version=1,
+        crypto_rebalance_prompt_version=1,
+        benchmark=Benchmark.SP500,
+        learning_feedback_enabled=True,
+        learning_feedback_window=7,
+    )
+    assert on.learning_feedback_enabled is True
+    assert on.learning_feedback_window == 7
+
+
+def test_list_daily_run_snapshots_orders_and_limits(db_session: Session) -> None:
+    portfolio = _portfolio(db_session)
+    sess = service.create_session(
+        db_session, portfolio_id=portfolio.id, strategy_key="s", rebalance_prompt_version=1, crypto_rebalance_prompt_version=1, benchmark=Benchmark.SP500)
+    # No snapshots yet -> empty.
+    assert service.list_daily_run_snapshots(db_session, session_id=sess.id, limit=5) == []
+    days = [date(2026, 1, 3), date(2026, 1, 1), date(2026, 1, 2)]
+    for day in days:
+        service.record_daily_run_snapshot(
+            db_session,
+            session_id=sess.id,
+            portfolio_id=sess.portfolio_id,
+            run_date=day,
+            ai_portfolio_event_id=None,
+            document={"day": day.isoformat()},
+        )
+    # Most recent first, regardless of insertion order.
+    newest = service.list_daily_run_snapshots(db_session, session_id=sess.id, limit=5)
+    assert [s.run_date for s in newest] == [
+        date(2026, 1, 3),
+        date(2026, 1, 2),
+        date(2026, 1, 1),
+    ]
+    # Limit caps the window to the most recent N.
+    capped = service.list_daily_run_snapshots(db_session, session_id=sess.id, limit=2)
+    assert [s.run_date for s in capped] == [date(2026, 1, 3), date(2026, 1, 2)]
+    # A non-positive limit disables the feature (empty list).
+    assert service.list_daily_run_snapshots(db_session, session_id=sess.id, limit=0) == []
+
+
 def test_record_run(db_session: Session) -> None:
     portfolio = _portfolio(db_session)
     sess = service.create_session(

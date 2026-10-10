@@ -701,6 +701,20 @@ function SessionHeader({
         </div>
         <div>
           <dt className="text-xs font-semibold uppercase tracking-wide text-slate-500">
+            Learning feedback
+          </dt>
+          <dd className="text-sm text-slate-900">
+            {session.learning_feedback_enabled
+              ? `On · ${
+                  session.learning_feedback_window == null
+                    ? '—'
+                    : `${session.learning_feedback_window}-day window`
+                }`
+              : 'Off'}
+          </dd>
+        </div>
+        <div>
+          <dt className="text-xs font-semibold uppercase tracking-wide text-slate-500">
             Scope
           </dt>
           <dd className="text-sm text-slate-900">

@@ -107,6 +107,8 @@ describe('BuildAIPortfolioCard', () => {
       max_asset_class_pct: null,
       min_positions: null,
       max_invested_pct: null,
+      learning_feedback_enabled: false,
+      learning_feedback_window: null,
     });
 
     // Backend advances the event to terminal; force the poll's refetch (jsdom
@@ -269,6 +271,59 @@ describe('BuildAIPortfolioCard', () => {
         max_asset_class_pct: null,
         min_positions: null,
         max_invested_pct: null,
+      }),
+    );
+  });
+
+  it('enables learning feedback with its window when the toggle is checked', async () => {
+    mockedPost.mockResolvedValue({ data: { event_id: 'evt-1', status: 'queued' } });
+    mockedGet.mockImplementation(routeGet(() => 'running'));
+    const user = userEvent.setup();
+
+    renderWithClient(<BuildAIPortfolioCard />);
+
+    // Defaults off: the toggle starts unchecked and the window input is hidden.
+    const toggle = screen.getByRole('checkbox', {
+      name: /Enable learning feedback/i,
+    });
+    expect(toggle).not.toBeChecked();
+    expect(
+      screen.queryByLabelText('Learning window (days)'),
+    ).not.toBeInTheDocument();
+
+    await user.click(toggle);
+
+    // Enabling reveals the window input pre-filled with the configured default.
+    const window = screen.getByLabelText('Learning window (days)');
+    expect(window).toHaveValue(5);
+    await user.clear(window);
+    await user.type(window, '8');
+
+    await user.click(screen.getByRole('button', { name: 'Build portfolio' }));
+
+    expect(mockedPost).toHaveBeenCalledWith(
+      '/api/v1/ai-portfolio/build',
+      expect.objectContaining({
+        learning_feedback_enabled: true,
+        learning_feedback_window: 8,
+      }),
+    );
+  });
+
+  it('sends learning feedback disabled when the toggle is left off', async () => {
+    mockedPost.mockResolvedValue({ data: { event_id: 'evt-1', status: 'queued' } });
+    mockedGet.mockImplementation(routeGet(() => 'running'));
+    const user = userEvent.setup();
+
+    renderWithClient(<BuildAIPortfolioCard />);
+
+    await user.click(screen.getByRole('button', { name: 'Build portfolio' }));
+
+    expect(mockedPost).toHaveBeenCalledWith(
+      '/api/v1/ai-portfolio/build',
+      expect.objectContaining({
+        learning_feedback_enabled: false,
+        learning_feedback_window: null,
       }),
     );
   });

@@ -1,6 +1,12 @@
 import { useEffect } from 'react';
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import {
+  useMutation,
+  useQuery,
+  useQueryClient,
+  type QueryClient,
+} from '@tanstack/react-query';
 import { apiClient } from './client';
+import { dashboardKeys } from './dashboard';
 import type {
   BenchmarkCatalogEntry,
   ClosedPositionListResponse,
@@ -66,6 +72,22 @@ export const paperTradingKeys = {
     ['paper-trading', 'session', sessionId, 'order-sync'] as const,
   benchmarks: () => ['paper-trading', 'benchmarks'] as const,
 };
+
+/**
+ * Invalidate every cache surface a session-level change can affect: the
+ * paper-trading queries (session lists, KPIs, value history, comparison, sector
+ * performance), the dashboard aggregates (hero tiles, leaderboard, combined
+ * equity curve, overview, universe metrics), and the AI runs history + run
+ * detail. A build/rebalance/close/capital/scope/benchmark/archive change touches
+ * all three surfaces, so they must refresh together — otherwise the dashboard
+ * and runs views stay stale until a page reload. The AI-runs prefix is written
+ * as a literal to avoid a circular import with `aiPortfolio.ts`.
+ */
+export function invalidateSessionDependents(queryClient: QueryClient): void {
+  queryClient.invalidateQueries({ queryKey: paperTradingKeys.all });
+  queryClient.invalidateQueries({ queryKey: dashboardKeys.all });
+  queryClient.invalidateQueries({ queryKey: ['ai-portfolio', 'runs'] });
+}
 
 /** Fetch paper-trading sessions (most recently updated first) plus the total. */
 export async function listSessions(
@@ -340,13 +362,9 @@ export function useChangeSessionBenchmark(sessionId: string) {
     mutationFn: (benchmark: string) =>
       changeSessionBenchmark(sessionId, benchmark),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: paperTradingKeys.all });
-      queryClient.invalidateQueries({
-        queryKey: paperTradingKeys.kpis(sessionId),
-      });
-      queryClient.invalidateQueries({
-        queryKey: paperTradingKeys.valueHistory(sessionId),
-      });
+      // KPIs and value-history are children of `paperTradingKeys.all`, so the
+      // shared helper already refreshes the benchmark figures and chart overlay.
+      invalidateSessionDependents(queryClient);
     },
   });
 }
@@ -362,13 +380,9 @@ export function useChangeSessionScope(sessionId: string) {
     mutationFn: (assetTypes: 'stocks' | 'crypto' | 'both') =>
       changeSessionScope(sessionId, assetTypes),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: paperTradingKeys.all });
-      queryClient.invalidateQueries({
-        queryKey: paperTradingKeys.kpis(sessionId),
-      });
-      queryClient.invalidateQueries({
-        queryKey: paperTradingKeys.valueHistory(sessionId),
-      });
+      // A narrowing that liquidated out-of-scope holdings changes the session
+      // figures, chart, composition, and dashboard equity — all covered here.
+      invalidateSessionDependents(queryClient);
     },
   });
 }
@@ -383,13 +397,9 @@ export function useIncreaseSessionCapital(sessionId: string) {
   return useMutation<PaperTradingSession, unknown, number>({
     mutationFn: (amount: number) => changeSessionCapital(sessionId, amount),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: paperTradingKeys.all });
-      queryClient.invalidateQueries({
-        queryKey: paperTradingKeys.kpis(sessionId),
-      });
-      queryClient.invalidateQueries({
-        queryKey: paperTradingKeys.valueHistory(sessionId),
-      });
+      // Raised capital and added investable cash change the session figures,
+      // chart, and dashboard aggregates — all covered by the shared helper.
+      invalidateSessionDependents(queryClient);
     },
   });
 }
@@ -430,29 +440,34 @@ export function useSessionOrderSync(sessionId: string) {
     queryClient.invalidateQueries({
       queryKey: paperTradingKeys.valueHistory(sessionId),
     });
+    // New fills change the session's value, so the dashboard equity curve and
+    // hero/leaderboard tiles that aggregate it must refresh too.
+    queryClient.invalidateQueries({ queryKey: dashboardKeys.all });
   }, [reconciled, updatedAt, queryClient, sessionId]);
 
   return query;
 }
 
-/** Mutation archiving a session; invalidates the sessions list on success. */
+/** Mutation archiving a session; refreshes the session and dashboard views. */
 export function useArchiveSession() {
   const queryClient = useQueryClient();
   return useMutation<PaperTradingSession, unknown, string>({
     mutationFn: (sessionId: string) => archiveSession(sessionId),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: paperTradingKeys.all });
+      // Archiving removes the session from the lists and the dashboard leaderboard.
+      invalidateSessionDependents(queryClient);
     },
   });
 }
 
-/** Mutation unarchiving a session; invalidates the sessions list on success. */
+/** Mutation unarchiving a session; refreshes the session and dashboard views. */
 export function useUnarchiveSession() {
   const queryClient = useQueryClient();
   return useMutation<PaperTradingSession, unknown, string>({
     mutationFn: (sessionId: string) => unarchiveSession(sessionId),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: paperTradingKeys.all });
+      // Unarchiving brings the session back into the lists and the leaderboard.
+      invalidateSessionDependents(queryClient);
     },
   });
 }

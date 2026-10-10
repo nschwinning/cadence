@@ -50,6 +50,8 @@ const session: PaperTradingSession = {
   max_asset_class_pct: null,
   min_positions: null,
   max_invested_pct: null,
+  learning_feedback_enabled: false,
+  learning_feedback_window: null,
 };
 
 function makeEvent(
@@ -658,8 +660,8 @@ describe('PaperTradingSessionPage', () => {
     await screen.findByRole('heading', { name: 'Aggressive Jolly Wozniak' });
 
     expect(screen.getByText('Stop-loss')).toBeInTheDocument();
-    // Both the Stop-loss and Risk-guardrails tiles read "Off" by default.
-    expect(screen.getAllByText('Off')).toHaveLength(2);
+    // The Stop-loss, Risk-guardrails, and Learning-feedback tiles read "Off" by default.
+    expect(screen.getAllByText('Off')).toHaveLength(3);
   });
 
   it('shows the risk-guardrail configuration when the session opted in', async () => {
@@ -704,8 +706,48 @@ describe('PaperTradingSessionPage', () => {
     await screen.findByRole('heading', { name: 'Aggressive Jolly Wozniak' });
 
     expect(screen.getByText('Risk guardrails')).toBeInTheDocument();
-    // Both Stop-loss and Risk guardrails read "Off" for the default session.
-    expect(screen.getAllByText('Off')).toHaveLength(2);
+    // Stop-loss, Risk guardrails, and Learning feedback read "Off" by default.
+    expect(screen.getAllByText('Off')).toHaveLength(3);
+  });
+
+  it('shows the learning-feedback configuration when the session opted in', async () => {
+    const withLearning: PaperTradingSession = {
+      ...session,
+      learning_feedback_enabled: true,
+      learning_feedback_window: 7,
+    };
+    mockedGet.mockImplementation((url: string) => {
+      if (url.endsWith('/paper-trading/sessions')) {
+        return Promise.resolve({ data: { items: [withLearning], total: 1 } });
+      }
+      if (url.endsWith('/kpis')) {
+        return Promise.resolve({ data: KPIS });
+      }
+      if (url.endsWith('/sector-performance')) {
+        return Promise.resolve({ data: { by_sector: [], by_category: [] } });
+      }
+      if (url.includes('/ai-portfolio/sessions/') && url.endsWith('/events')) {
+        return Promise.resolve({ data: { items: [], total: 0 } });
+      }
+      return Promise.resolve({ data: { items: [], total: 0 } });
+    });
+
+    renderPage(<PaperTradingSessionPage />);
+    await screen.findByRole('heading', { name: 'Aggressive Jolly Wozniak' });
+
+    expect(screen.getByText('Learning feedback')).toBeInTheDocument();
+    expect(screen.getByText('On · 7-day window')).toBeInTheDocument();
+  });
+
+  it('shows the learning-feedback config as Off when the session did not opt in', async () => {
+    installGet(() => 'running');
+
+    renderPage(<PaperTradingSessionPage />);
+    await screen.findByRole('heading', { name: 'Aggressive Jolly Wozniak' });
+
+    expect(screen.getByText('Learning feedback')).toBeInTheDocument();
+    // Stop-loss, Risk guardrails, and Learning feedback all read "Off".
+    expect(screen.getAllByText('Off')).toHaveLength(3);
   });
 
   it('badges stop-loss trades and runs as stop-loss activity', async () => {

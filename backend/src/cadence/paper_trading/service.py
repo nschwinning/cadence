@@ -93,6 +93,8 @@ def create_session(
     max_asset_class_pct: float | None = None,
     min_positions: int | None = None,
     max_invested_pct: float | None = None,
+    learning_feedback_enabled: bool = False,
+    learning_feedback_window: int | None = None,
 ) -> PaperTradingSession:
     """Create a paper-trading session for a ``(portfolio, strategy)`` pair.
 
@@ -111,7 +113,10 @@ def create_session(
     ``max_asset_class_pct``, ``min_positions``, and ``max_invested_pct`` freeze the
     guardrail parameters. When disabled these params stay None / ``max_allocation_pct``
     stays its 1.0 no-op default, and every later rebalance reads them back rather
-    than re-deciding.
+    than re-deciding. ``learning_feedback_enabled`` and ``learning_feedback_window``
+    freeze the learning-feedback opt-in and its window at build time (default off /
+    no window); when enabled, the rebalance agent is shown an advisory summary of the
+    session's own recent daily-run outcomes.
 
     Raises:
         DuplicateSessionError: if a session already exists for the same
@@ -134,6 +139,8 @@ def create_session(
         max_asset_class_pct=max_asset_class_pct,
         min_positions=min_positions,
         max_invested_pct=max_invested_pct,
+        learning_feedback_enabled=learning_feedback_enabled,
+        learning_feedback_window=learning_feedback_window,
     )
     session.add(row)
     try:
@@ -567,6 +574,10 @@ def record_trade(
         fee = settings.CRYPTO_FEE_PCT * quantity * executed_price
     else:
         fee = 0.0
+    # Record the per-trade fee on the trade itself (in addition to the session's
+    # cumulative total) so the daily-run learning document can attribute cost per
+    # order and per day.
+    trade.fee = fee
     row = get_session(session, session_id)
     row.total_fees = row.total_fees + fee
     session.commit()
@@ -1425,6 +1436,26 @@ def get_daily_run_snapshot(
         SessionDailyRunSnapshot.run_date == run_date,
     )
     return session.execute(stmt).scalars().first()
+
+
+def list_daily_run_snapshots(
+    session: Session, *, session_id: uuid.UUID, limit: int
+) -> list[SessionDailyRunSnapshot]:
+    """Return the session's most recent consolidated learning snapshots, newest first.
+
+    Ordered by ``run_date`` descending and capped at ``limit`` (``<= 0`` returns an
+    empty list). Read-only; used to feed the rebalance agent a short, recent window of
+    its own prior daily-run outcomes when learning feedback is enabled.
+    """
+    if limit <= 0:
+        return []
+    stmt = (
+        select(SessionDailyRunSnapshot)
+        .where(SessionDailyRunSnapshot.session_id == session_id)
+        .order_by(SessionDailyRunSnapshot.run_date.desc())
+        .limit(limit)
+    )
+    return list(session.execute(stmt).scalars().all())
 
 
 def record_daily_run_snapshot(

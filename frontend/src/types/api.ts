@@ -341,6 +341,17 @@ export interface PaperTradingSession {
   max_asset_class_pct: number | null;
   min_positions: number | null;
   max_invested_pct: number | null;
+  /**
+   * Whether this session opted into learning feedback (frozen at build time):
+   * the rebalance agent is informed of the session's own recent prior-run
+   * outcomes. False for sessions built before this option existed.
+   */
+  learning_feedback_enabled: boolean;
+  /**
+   * The frozen learning window (number of recent daily runs summarized for the
+   * rebalance agent), or `null` when learning feedback is disabled.
+   */
+  learning_feedback_window: number | null;
 }
 
 /** One entry in the fixed benchmark catalog. Mirrors `BenchmarkCatalogEntry`. */
@@ -644,6 +655,18 @@ export interface AIPortfolioBuildRequest {
   min_positions?: number | null;
   /** Maximum invested fraction; the remainder is held as cash. As above. */
   max_invested_pct?: number | null;
+  /**
+   * Opt this portfolio into learning feedback (frozen at build time): the
+   * rebalance agent is shown the session's own recent prior-run outcomes.
+   * Defaults to off (opt-in).
+   */
+  learning_feedback_enabled?: boolean;
+  /**
+   * Learning window — number of recent daily runs summarized for the rebalance
+   * agent. Applies only when `learning_feedback_enabled`; defaults to the
+   * server-side default when enabled without one.
+   */
+  learning_feedback_window?: number | null;
 }
 
 /**

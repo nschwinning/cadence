@@ -204,6 +204,89 @@ Candidate universe (JSON):
 """
 
 
+def _summarize_recent_outcomes(
+    recent_outcomes: list[dict[str, Any]],
+) -> str | None:
+    """Distill recent daily-run snapshots into a compact, cost-forward summary.
+
+    Each entry is ``{"run_date": <iso str | None>, "document": <daily-run document>}``
+    and the caller passes them most-recent-first. Each day renders to one line that
+    leads with **net-of-fees** realized P&L (the run's gross ``realized_pnl`` minus the
+    day's ``fees_total``) and the **fees paid**, then the order count and the
+    end-of-day valuation/return, plus a gate-drop count when present — the agent's
+    known failure mode is churn whose fees erode returns, so cost leads.
+
+    Reads everything defensively with ``.get(...)`` because the document schema has
+    evolved over time: a missing field is simply omitted (a missing ``fees_total``
+    reads as 0, so net equals gross), and an entry that yields nothing contributes no
+    line. Returns ``None`` when there is nothing to show so the caller omits the
+    section entirely (keeping the prompt byte-identical).
+    """
+    lines: list[str] = []
+    for entry in recent_outcomes:
+        document = entry.get("document")
+        if not isinstance(document, dict):
+            continue
+        run = document.get("run")
+        run_stats = run.get("run_stats") if isinstance(run, dict) else None
+        run_stats = run_stats if isinstance(run_stats, dict) else {}
+        valuation = document.get("valuation")
+        valuation = valuation if isinstance(valuation, dict) else {}
+
+        realized = run_stats.get("realized_pnl")
+        fees_raw = document.get("fees_total")
+        fees = float(fees_raw) if isinstance(fees_raw, (int, float)) else 0.0
+        orders_count = document.get("orders_count")
+        total_value = valuation.get("total_value")
+        daily_pnl_pct = valuation.get("daily_pnl_pct")
+        gate = run_stats.get("gate")
+        dropped = gate.get("dropped") if isinstance(gate, dict) else None
+
+        parts: list[str] = []
+        if isinstance(realized, (int, float)):
+            parts.append(f"net realized P&L {_signed_money(float(realized) - fees)}")
+        parts.append(f"fees {_money(fees)}")
+        if isinstance(orders_count, int):
+            parts.append(f"{orders_count} orders")
+        if isinstance(total_value, (int, float)):
+            value_part = f"end value {_money(float(total_value))}"
+            if isinstance(daily_pnl_pct, (int, float)):
+                value_part += f" ({float(daily_pnl_pct) * 100:+.2f}%)"
+            parts.append(value_part)
+        if isinstance(dropped, int) and dropped > 0:
+            parts.append(f"{dropped} candidates gated out")
+
+        if not parts:
+            continue
+        date_label = entry.get("run_date") or "recent"
+        lines.append(f"- {date_label}: " + "; ".join(parts))
+
+    if not lines:
+        return None
+    return "\n".join(lines)
+
+
+def _money(value: float) -> str:
+    """Format a dollar amount, e.g. ``$1,234.56``."""
+    return f"${value:,.2f}"
+
+
+def _signed_money(value: float) -> str:
+    """Format a signed dollar amount, e.g. ``+$12.34`` / ``-$5.00``."""
+    sign = "+" if value >= 0 else "-"
+    return f"{sign}${abs(value):,.2f}"
+
+
+def _recent_outcomes_block(summary: str) -> str:
+    """Wrap the distilled per-day summary in its advisory prompt section."""
+    return (
+        "Recent run outcomes (advisory — your own recent daily results, most recent "
+        "first). Use these to avoid churn whose transaction fees erode returns; they "
+        "add no hard constraints:\n"
+        f"{summary}"
+    )
+
+
 def _build_rebalance_input(
     input_template: str,
     holdings: list[dict[str, Any]],
@@ -211,11 +294,15 @@ def _build_rebalance_input(
     candidates: list[dict[str, Any]],
     risk_profile: str,
     guardrails: GuardrailInstruction | None = None,
+    recent_outcomes: list[dict[str, Any]] | None = None,
 ) -> str:
     """Render the versioned rebalance ``input_template`` with the run's values.
 
     When guardrails are enabled the advisory caps block is appended after the
-    rendered template so the AI can plan within the frozen caps.
+    rendered template so the AI can plan within the frozen caps. When
+    ``recent_outcomes`` are supplied and distill to a non-empty summary, an advisory
+    "Recent run outcomes" section is appended; otherwise the prompt is byte-identical
+    to the no-feedback case.
     """
     rendered = _render(
         input_template,
@@ -226,6 +313,10 @@ def _build_rebalance_input(
     )
     if guardrails:
         rendered = f"{rendered}\n{_guardrails_block(guardrails)}"
+    if recent_outcomes:
+        summary = _summarize_recent_outcomes(recent_outcomes)
+        if summary:
+            rendered = f"{rendered}\n{_recent_outcomes_block(summary)}"
     return rendered
 
 
@@ -281,6 +372,7 @@ def rebalance_ai_portfolio(
     instructions: str,
     input_template: str,
     guardrails: GuardrailInstruction | None = None,
+    recent_outcomes: list[dict[str, Any]] | None = None,
 ) -> AIRebalanceResult:
     """Run the rebalance agent and return its validated :class:`AIRebalanceResult`.
 
@@ -288,7 +380,9 @@ def rebalance_ai_portfolio(
     from the database by the caller; both may carry ``{name}`` placeholders that
     are filled here (the reasoning/discovery caps on the instructions; the run
     values on the input template). ``guardrails`` (when set) appends the advisory
-    cap block to the rendered input.
+    cap block to the rendered input. ``recent_outcomes`` (when set) appends the
+    advisory "Recent run outcomes" section distilled from the session's recent
+    daily-run snapshots.
     """
     return asyncio.run(
         _run_rebalance(
@@ -299,6 +393,7 @@ def rebalance_ai_portfolio(
             instructions=instructions,
             input_template=input_template,
             guardrails=guardrails,
+            recent_outcomes=recent_outcomes,
         )
     )
 
@@ -311,6 +406,7 @@ async def _run_rebalance(
     instructions: str,
     input_template: str,
     guardrails: GuardrailInstruction | None = None,
+    recent_outcomes: list[dict[str, Any]] | None = None,
 ) -> AIRebalanceResult:
     agent = build_agent(
         name="AIRebalanceEvaluatorAgent",
@@ -335,6 +431,7 @@ async def _run_rebalance(
                     candidates,
                     risk_profile,
                     guardrails,
+                    recent_outcomes,
                 ),
                 max_turns=settings.AI_PORTFOLIO_MAX_TURNS,
             ),
@@ -379,12 +476,15 @@ class AIPortfolioAgent(Protocol):
         instructions: str,
         input_template: str,
         guardrails: GuardrailInstruction | None = None,
+        recent_outcomes: list[dict[str, Any]] | None = None,
     ) -> AIRebalanceResult:
         """Return the agent's structured rebalance target weights.
 
         ``instructions``/``input_template`` are the active versioned prompt the
         caller loaded from the database (both may carry ``{name}`` placeholders).
         ``guardrails`` (when set) tells the AI the advisory caps to plan within.
+        ``recent_outcomes`` (when set) is the session's recent daily-run snapshots,
+        distilled into the advisory "Recent run outcomes" prompt section.
         """
         ...
 
@@ -411,6 +511,7 @@ class OpenAIAIPortfolioAgent:
         instructions: str,
         input_template: str,
         guardrails: GuardrailInstruction | None = None,
+        recent_outcomes: list[dict[str, Any]] | None = None,
     ) -> AIRebalanceResult:
         return rebalance_ai_portfolio(
             holdings=holdings,
@@ -420,4 +521,5 @@ class OpenAIAIPortfolioAgent:
             instructions=instructions,
             input_template=input_template,
             guardrails=guardrails,
+            recent_outcomes=recent_outcomes,
         )

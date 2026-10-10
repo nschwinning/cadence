@@ -138,6 +138,8 @@ def build_ai_portfolio_endpoint(
         max_asset_class_pct=payload.max_asset_class_pct,
         min_positions=payload.min_positions,
         max_invested_pct=payload.max_invested_pct,
+        learning_feedback_enabled=payload.learning_feedback_enabled,
+        learning_feedback_window=payload.learning_feedback_window,
     )
     try:
         event = job_runner.start_build(db, params, agent, broker, provider)

@@ -123,6 +123,13 @@ class Settings(BaseSettings):
     #: is held as a cash buffer; 0.95 = keep at least 5% cash).
     GUARDRAIL_DEFAULT_MAX_INVESTED_PCT: float = 0.95
 
+    # Default learning-feedback window applied when a session opts into learning
+    # feedback at build time without specifying its own window. Number of recent
+    # daily-run snapshots the rebalance agent is shown (5 ≈ a trading week). This is
+    # a build-form default / fallback only — it is never read at rebalance time
+    # (rebalance always uses the session's frozen ``learning_feedback_window``).
+    LEARNING_FEEDBACK_DEFAULT_WINDOW: int = 5
+
     # Model id the AI portfolio manager runs on.
     AI_PORTFOLIO_MODEL: str = "gpt-5-mini"
 

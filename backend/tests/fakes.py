@@ -316,6 +316,7 @@ class FakeAIPortfolioAgent:
         instructions: str = "",
         input_template: str = "",
         guardrails: Any = None,
+        recent_outcomes: Any = None,
     ) -> AIRebalanceResult:
         self.rebalance_calls.append(
             {
@@ -326,6 +327,7 @@ class FakeAIPortfolioAgent:
                 "instructions": instructions,
                 "input_template": input_template,
                 "guardrails": guardrails,
+                "recent_outcomes": recent_outcomes,
             }
         )
         self._emit_research()

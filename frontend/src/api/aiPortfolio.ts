@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { apiClient } from './client';
-import { paperTradingKeys } from './paperTrading';
+import { invalidateSessionDependents } from './paperTrading';
 import type {
   AIEventStatus,
   AIEventType,
@@ -174,9 +174,9 @@ export function useRebalanceSession(sessionId: string) {
       queryClient.invalidateQueries({
         queryKey: aiPortfolioKeys.sessionEventsPrefix(sessionId),
       });
-      queryClient.invalidateQueries({
-        queryKey: paperTradingKeys.all,
-      });
+      // A rebalance changes positions, valuation, KPIs and the dashboard views,
+      // so refresh every session-dependent query, not just the sessions list.
+      invalidateSessionDependents(queryClient);
     },
   });
 }
@@ -195,7 +195,9 @@ export function useCloseSession(sessionId: string) {
         queryKey: aiPortfolioKeys.sessionEventsPrefix(sessionId),
       });
       queryClient.invalidateQueries({ queryKey: aiPortfolioKeys.all });
-      queryClient.invalidateQueries({ queryKey: paperTradingKeys.all });
+      // Closing stops the session and liquidates it, which also moves the
+      // dashboard leaderboard/equity curve — refresh every dependent view.
+      invalidateSessionDependents(queryClient);
     },
   });
 }

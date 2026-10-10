@@ -20,7 +20,7 @@ from tests.fakes import (
     RecordingNotifier,
 )
 
-from cadence.ai_portfolio import service
+from cadence.ai_portfolio import service, snapshots, stop_loss
 from cadence.ai_portfolio.agent import (
     AIPortfolioBuildResult,
     AIPortfolioStock,
@@ -38,6 +38,7 @@ from cadence.ai_portfolio.errors import (
     RebalancePromptNotFoundError,
     SessionNotEligibleError,
 )
+from cadence.ai_portfolio.flows import rebalance
 from cadence.ai_portfolio.models import AIPortfolioEvent, RebalancePrompt
 from cadence.ai_portfolio.service import AIBuildParams
 from cadence.assets import service as assets_service
@@ -419,6 +420,57 @@ def test_run_build_event_guardrails_off_keeps_no_op_config(
     assert (refreshed.run_stats or {}).get("guardrails") is None
 
 
+def test_run_build_event_freezes_learning_feedback(db_session: Session) -> None:
+    # Enabling learning feedback at build time freezes the flag + window on the session.
+    provider = _seed_universe(db_session, "AAPL", "MSFT")
+    agent = FakeAIPortfolioAgent(build_result=_build_result("AAPL", "MSFT"))
+    event = service.create_build_event(
+        db_session,
+        _params(learning_feedback_enabled=True, learning_feedback_window=4),
+    )
+
+    service.run_build_event(db_session, event.id, agent, StubBroker(), provider)
+
+    refreshed = service.get_event(db_session, event.id)
+    session_row = paper_service.get_session(db_session, refreshed.session_id)
+    assert session_row.learning_feedback_enabled is True
+    assert session_row.learning_feedback_window == 4
+
+
+def test_run_build_event_learning_feedback_defaults_window(
+    db_session: Session,
+) -> None:
+    # Enabling without a window falls back to the configured default window.
+    provider = _seed_universe(db_session, "AAPL", "MSFT")
+    agent = FakeAIPortfolioAgent(build_result=_build_result("AAPL", "MSFT"))
+    event = service.create_build_event(
+        db_session, _params(learning_feedback_enabled=True)
+    )
+
+    service.run_build_event(db_session, event.id, agent, StubBroker(), provider)
+
+    refreshed = service.get_event(db_session, event.id)
+    session_row = paper_service.get_session(db_session, refreshed.session_id)
+    assert session_row.learning_feedback_enabled is True
+    assert session_row.learning_feedback_window == settings.LEARNING_FEEDBACK_DEFAULT_WINDOW
+
+
+def test_run_build_event_learning_feedback_off_leaves_window_null(
+    db_session: Session,
+) -> None:
+    # A default build leaves learning feedback off with a null frozen window.
+    provider = _seed_universe(db_session, "AAPL", "MSFT")
+    agent = FakeAIPortfolioAgent(build_result=_build_result("AAPL", "MSFT"))
+    event = service.create_build_event(db_session, _params())
+
+    service.run_build_event(db_session, event.id, agent, StubBroker(), provider)
+
+    refreshed = service.get_event(db_session, event.id)
+    session_row = paper_service.get_session(db_session, refreshed.session_id)
+    assert session_row.learning_feedback_enabled is False
+    assert session_row.learning_feedback_window is None
+
+
 def test_run_build_event_persists_run_stats(db_session: Session) -> None:
     # The machine-readable run_stats payload is captured for later offline learning
     # (never surfaced in the API/UI): order counts + per-trade details incl. the
@@ -483,6 +535,64 @@ def test_run_rebalance_event_run_stats_includes_pnl_and_account(
     assert "orders" in stats and "trades" in stats
     assert "realized_pnl" in stats
     assert "account" in stats
+
+
+def test_run_rebalance_event_threads_recent_outcomes_when_enabled(
+    db_session: Session,
+) -> None:
+    # A learning-feedback session feeds the agent its recent daily-run snapshots,
+    # most recent first and capped at the frozen window.
+    provider = _seed_universe(db_session, "AAPL", "MSFT")
+    broker = StubBroker()
+    session_id, portfolio_id = _seed_session(
+        db_session,
+        broker,
+        provider,
+        learning_feedback_enabled=True,
+        learning_feedback_window=2,
+    )
+    for day in (date(2026, 1, 1), date(2026, 1, 2), date(2026, 1, 3)):
+        paper_service.record_daily_run_snapshot(
+            db_session,
+            session_id=session_id,
+            portfolio_id=portfolio_id,
+            run_date=day,
+            ai_portfolio_event_id=None,
+            document={"day": day.isoformat()},
+        )
+
+    rebalance = FakeAIPortfolioAgent(rebalance_result=_flat_rebalance_result())
+    rb_event = service.create_rebalance_event(db_session, session_id)
+    service.run_rebalance_event(db_session, rb_event.id, rebalance, broker, provider)
+
+    outcomes = rebalance.rebalance_calls[0]["recent_outcomes"]
+    assert outcomes is not None
+    # Window=2 -> the two most recent days, newest first, each a {run_date, document}.
+    assert [o["run_date"] for o in outcomes] == ["2026-01-03", "2026-01-02"]
+    assert outcomes[0]["document"] == {"day": "2026-01-03"}
+
+
+def test_run_rebalance_event_no_recent_outcomes_when_disabled(
+    db_session: Session,
+) -> None:
+    # A default session (learning feedback off) never fetches prior outcomes.
+    provider = _seed_universe(db_session, "AAPL", "MSFT")
+    broker = StubBroker()
+    session_id, portfolio_id = _seed_session(db_session, broker, provider)
+    paper_service.record_daily_run_snapshot(
+        db_session,
+        session_id=session_id,
+        portfolio_id=portfolio_id,
+        run_date=date(2026, 1, 1),
+        ai_portfolio_event_id=None,
+        document={"day": "2026-01-01"},
+    )
+
+    rebalance = FakeAIPortfolioAgent(rebalance_result=_flat_rebalance_result())
+    rb_event = service.create_rebalance_event(db_session, session_id)
+    service.run_rebalance_event(db_session, rb_event.id, rebalance, broker, provider)
+
+    assert rebalance.rebalance_calls[0]["recent_outcomes"] is None
 
 
 def _single_target(ticker: str, pct: float) -> AIRebalanceResult:
@@ -1466,14 +1576,14 @@ def _capture_rebalance_base(
 ) -> dict[str, float | None]:
     """Patch the executor so tests can read the ``base_capital`` the seam passes."""
     captured: dict[str, float | None] = {}
-    real_exec = service.AIPortfolioExecutor
+    real_exec = rebalance.AIPortfolioExecutor
 
     class _CapturingExecutor(real_exec):  # type: ignore[valid-type, misc]
         def execute_rebalance(self, *args: object, **kwargs: object):  # type: ignore[override, no-untyped-def]
             captured["base_capital"] = kwargs.get("base_capital")
             return super().execute_rebalance(*args, **kwargs)  # type: ignore[arg-type]
 
-    monkeypatch.setattr(service, "AIPortfolioExecutor", _CapturingExecutor)
+    monkeypatch.setattr(rebalance, "AIPortfolioExecutor", _CapturingExecutor)
     return captured
 
 
@@ -2827,9 +2937,63 @@ def test_assemble_daily_run_snapshots_consolidates_a_run(
     assert order["ticker"] == "AAPL"
     assert order["filled_price"] == 101.25
     assert order["order_status"] == OrderStatus.FILLED.value
+    # Equity fills are free, so both the per-order fee and the day's total are zero.
+    assert order["fee"] == 0.0
+    assert doc["fees_total"] == 0.0
     # Valuation carries the day's P&L from the value snapshot.
     assert "total_value" in doc["valuation"]
     assert "daily_pnl" in doc["valuation"]
+
+
+def test_assemble_daily_run_snapshots_carries_crypto_fees(
+    db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(settings, "CRYPTO_FEE_PCT", 0.0025)
+    broker = StubBroker()
+    as_of = date(2026, 1, 5)
+    sess = _held_ai_session(db_session, "AI Crypto", "AAPL")
+    created = datetime(as_of.year, as_of.month, as_of.day, 16, 30, tzinfo=UTC)
+    event = AIPortfolioEvent(
+        session_id=sess.id,
+        portfolio_id=sess.portfolio_id,
+        event_type=EventType.REBALANCE.value,
+        status=EventStatus.SUCCEEDED.value,
+        result_payload={"thesis": "accumulate"},
+        run_stats={"orders": {"executed": 1, "total": 1}, "realized_pnl": 0.0},
+        created_at=created,
+    )
+    db_session.add(event)
+    db_session.commit()
+    db_session.refresh(event)
+    paper_service.record_trade(
+        db_session,
+        session_id=sess.id,
+        ticker="BTC-USD",
+        side=OrderSide.BUY,
+        quantity=2.0,
+        price=100.0,
+        signal_type="entry",
+        asset_class=AssetClass.CRYPTO,
+        order_id="o-1",
+        order_status=OrderStatus.FILLED,
+        filled_price=150.0,
+        filled_at=created,
+        ai_portfolio_event_id=event.id,
+    )
+    paper_service.record_value_snapshot(
+        db_session, session_id=sess.id, as_of=as_of, broker=broker
+    )
+
+    service.assemble_daily_run_snapshots(db_session, as_of=as_of)
+
+    row = paper_service.get_daily_run_snapshot(
+        db_session, session_id=sess.id, run_date=as_of
+    )
+    assert row is not None
+    expected_fee = 0.0025 * 2.0 * 150.0
+    # The per-order fee and the day's total both reflect the crypto fill's cost.
+    assert row.document["orders"][0]["fee"] == pytest.approx(expected_fee)
+    assert row.document["fees_total"] == pytest.approx(expected_fee)
 
 
 def test_assemble_daily_run_snapshots_is_idempotent(db_session: Session) -> None:
@@ -2874,6 +3038,7 @@ def test_assemble_daily_run_snapshots_day_without_a_run(db_session: Session) -> 
     assert row.document["run"] is None
     assert row.document["orders"] == []
     assert row.document["orders_count"] == 0
+    assert row.document["fees_total"] == 0.0
     assert "daily_pnl" in row.document["valuation"]
 
 
@@ -2907,14 +3072,14 @@ def test_assemble_daily_run_snapshots_best_effort_per_session(
         )
 
     # Make assembly raise for exactly one session; the batch must still record the rest.
-    real_assemble = service._assemble_session_daily_run
+    real_assemble = snapshots._assemble_session_daily_run
 
     def flaky(session: Session, session_row: object, run_date: date) -> bool:
         if session_row.id == failing.id:
             raise RuntimeError("boom")
         return real_assemble(session, session_row, run_date)
 
-    monkeypatch.setattr(service, "_assemble_session_daily_run", flaky)
+    monkeypatch.setattr(snapshots, "_assemble_session_daily_run", flaky)
 
     recorded = service.assemble_daily_run_snapshots(db_session, as_of=as_of)
 
@@ -3495,14 +3660,14 @@ def test_scan_stop_losses_isolates_session_failures(
     s1, _ = _build_stop_loss_session(db_session, provider, "AAPL", pct=0.15, broker=broker)
     s2, _ = _build_stop_loss_session(db_session, provider, "MSFT", pct=0.15, broker=broker)
 
-    original = service._scan_session_stop_losses
+    original = stop_loss._scan_session_stop_losses
 
     def flaky(session, session_row, **kwargs):  # type: ignore[no-untyped-def]
         if session_row.id == s1:
             raise RuntimeError("boom")
         return original(session, session_row, **kwargs)
 
-    monkeypatch.setattr(service, "_scan_session_stop_losses", flaky)
+    monkeypatch.setattr(stop_loss, "_scan_session_stop_losses", flaky)
 
     ledger1 = _ledger_by_ticker(db_session, s1)
     ledger2 = _ledger_by_ticker(db_session, s2)

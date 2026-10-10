@@ -12,6 +12,7 @@ import {
   useSessionOrderSync,
   useSessionsValueComparison,
 } from './paperTrading';
+import { dashboardKeys } from './dashboard';
 import type {
   PaperTrade,
   PaperTradeReconcileResult,
@@ -169,10 +170,12 @@ describe('useChangeSessionBenchmark', () => {
       max_asset_class_pct: null,
       min_positions: null,
       max_invested_pct: null,
+      learning_feedback_enabled: false,
+      learning_feedback_window: null,
     };
   }
 
-  it('PUTs to the benchmark endpoint and invalidates session/kpis/value-history keys', async () => {
+  it('PUTs to the benchmark endpoint and refreshes every session-dependent view', async () => {
     mockedPut.mockResolvedValue({ data: makeSession('DJIA') });
 
     const queryClient = new QueryClient({
@@ -192,16 +195,16 @@ describe('useChangeSessionBenchmark', () => {
       '/api/v1/paper-trading/sessions/sess-1/benchmark',
       { benchmark: 'DJIA' },
     );
+    // The KPI + value-history queries are children of `paperTradingKeys.all`, so
+    // the parent invalidation covers them; the dashboard + runs views refresh too.
     expect(invalidate).toHaveBeenCalledWith({ queryKey: paperTradingKeys.all });
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: dashboardKeys.all });
     expect(invalidate).toHaveBeenCalledWith({
-      queryKey: paperTradingKeys.kpis('sess-1'),
-    });
-    expect(invalidate).toHaveBeenCalledWith({
-      queryKey: paperTradingKeys.valueHistory('sess-1'),
+      queryKey: ['ai-portfolio', 'runs'],
     });
   });
 
-  it('PUTs to the scope endpoint and invalidates the same keys as the benchmark hook', async () => {
+  it('PUTs to the scope endpoint and refreshes the same views as the benchmark hook', async () => {
     mockedPut.mockResolvedValue({ data: { ...makeSession('SP500'), asset_types: 'stocks' } });
 
     const queryClient = new QueryClient({
@@ -222,15 +225,13 @@ describe('useChangeSessionBenchmark', () => {
       { asset_types: 'stocks' },
     );
     expect(invalidate).toHaveBeenCalledWith({ queryKey: paperTradingKeys.all });
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: dashboardKeys.all });
     expect(invalidate).toHaveBeenCalledWith({
-      queryKey: paperTradingKeys.kpis('sess-1'),
-    });
-    expect(invalidate).toHaveBeenCalledWith({
-      queryKey: paperTradingKeys.valueHistory('sess-1'),
+      queryKey: ['ai-portfolio', 'runs'],
     });
   });
 
-  it('POSTs to the capital endpoint and invalidates session/kpis/value-history keys', async () => {
+  it('POSTs to the capital endpoint and refreshes every session-dependent view', async () => {
     mockedPost.mockResolvedValue({
       data: { ...makeSession('SP500'), allocated_capital: 12500, contributed_capital: 12500 },
     });
@@ -253,11 +254,9 @@ describe('useChangeSessionBenchmark', () => {
       { amount: 2500 },
     );
     expect(invalidate).toHaveBeenCalledWith({ queryKey: paperTradingKeys.all });
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: dashboardKeys.all });
     expect(invalidate).toHaveBeenCalledWith({
-      queryKey: paperTradingKeys.kpis('sess-1'),
-    });
-    expect(invalidate).toHaveBeenCalledWith({
-      queryKey: paperTradingKeys.valueHistory('sess-1'),
+      queryKey: ['ai-portfolio', 'runs'],
     });
   });
 });
@@ -363,5 +362,8 @@ describe('useSessionOrderSync polling', () => {
     expect(invalidate).toHaveBeenCalledWith({
       queryKey: paperTradingKeys.tradesPrefix('sess-1'),
     });
+    // New fills move the session's value, so the dashboard equity curve and
+    // hero/leaderboard tiles that aggregate it must refresh too.
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: dashboardKeys.all });
   });
 });

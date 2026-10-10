@@ -29,6 +29,7 @@ from cadence.ai_portfolio.agent import (
     PositionSide,
     _build_portfolio_input,
     _build_rebalance_input,
+    _summarize_recent_outcomes,
     build_ai_portfolio,
     rebalance_ai_portfolio,
 )
@@ -240,6 +241,98 @@ def test_build_rebalance_input_omits_guardrails_when_absent() -> None:
         risk_profile="balanced",
     )
     assert "Risk guardrails" not in prompt
+
+
+def _outcome(
+    run_date: str,
+    *,
+    realized_pnl: float | None = None,
+    fees_total: float | None = None,
+    orders_count: int | None = None,
+    total_value: float | None = None,
+    daily_pnl_pct: float | None = None,
+    dropped: int | None = None,
+) -> dict[str, Any]:
+    run_stats: dict[str, Any] = {}
+    if realized_pnl is not None:
+        run_stats["realized_pnl"] = realized_pnl
+    if dropped is not None:
+        run_stats["gate"] = {"dropped": dropped}
+    valuation: dict[str, Any] = {}
+    if total_value is not None:
+        valuation["total_value"] = total_value
+    if daily_pnl_pct is not None:
+        valuation["daily_pnl_pct"] = daily_pnl_pct
+    document: dict[str, Any] = {"run": {"run_stats": run_stats}, "valuation": valuation}
+    if fees_total is not None:
+        document["fees_total"] = fees_total
+    if orders_count is not None:
+        document["orders_count"] = orders_count
+    return {"run_date": run_date, "document": document}
+
+
+def test_summarize_recent_outcomes_is_cost_forward() -> None:
+    summary = _summarize_recent_outcomes(
+        [
+            _outcome(
+                "2026-01-05",
+                realized_pnl=50.0,
+                fees_total=12.5,
+                orders_count=3,
+                total_value=101_000.0,
+                daily_pnl_pct=0.0125,
+                dropped=2,
+            )
+        ]
+    )
+    assert summary is not None
+    # Net realized P&L = gross 50 − fees 12.5 = 37.5, and fees are called out explicitly.
+    assert "net realized P&L +$37.50" in summary
+    assert "fees $12.50" in summary
+    assert "3 orders" in summary
+    assert "end value $101,000.00 (+1.25%)" in summary
+    assert "2 candidates gated out" in summary
+    assert summary.startswith("- 2026-01-05:")
+
+
+def test_summarize_recent_outcomes_tolerates_missing_fields() -> None:
+    # A document with no run stats / valuation still yields a line (fees default to $0).
+    summary = _summarize_recent_outcomes([{"run_date": "2026-01-04", "document": {}}])
+    assert summary == "- 2026-01-04: fees $0.00"
+    # Entirely empty / malformed input yields no section.
+    assert _summarize_recent_outcomes([]) is None
+    assert _summarize_recent_outcomes([{"run_date": "x", "document": None}]) is None
+
+
+def test_build_rebalance_input_includes_recent_outcomes_when_given() -> None:
+    template = _load_seed_migration()._SEED_INPUT_TEMPLATE
+    prompt = _build_rebalance_input(
+        template,
+        holdings=[{"ticker": "AAPL"}],
+        account_summary={"cash_available": 1000},
+        candidates=[{"ticker": "MSFT"}],
+        risk_profile="balanced",
+        recent_outcomes=[
+            _outcome("2026-01-05", realized_pnl=50.0, fees_total=12.5, orders_count=3)
+        ],
+    )
+    assert "Recent run outcomes" in prompt
+    assert "net realized P&L +$37.50" in prompt
+
+
+def test_build_rebalance_input_omits_recent_outcomes_when_none_or_empty() -> None:
+    template = _load_seed_migration()._SEED_INPUT_TEMPLATE
+    base_kwargs: dict[str, Any] = {
+        "holdings": [{"ticker": "AAPL"}],
+        "account_summary": {"cash_available": 1000},
+        "candidates": [{"ticker": "MSFT"}],
+        "risk_profile": "balanced",
+    }
+    assert "Recent run outcomes" not in _build_rebalance_input(template, **base_kwargs)
+    # An empty window (feature off / no snapshots) adds no section.
+    assert "Recent run outcomes" not in _build_rebalance_input(
+        template, recent_outcomes=[], **base_kwargs
+    )
 
 
 def test_seeded_rebalance_prompt_matches_legacy_output() -> None:
