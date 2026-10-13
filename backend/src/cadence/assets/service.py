@@ -36,6 +36,7 @@ from cadence.assets.models import (
     AssetUniverseEvaluation,
 )
 from cadence.assets.universe_agent import (
+    RosterEntry,
     UniverseEvaluationAgent,
     UniverseSummary,
     get_universe_evaluation_model,
@@ -514,15 +515,40 @@ def _universe_summary(assets: list[Asset]) -> UniverseSummary:
     category_counts: dict[str, int] = {}
     sector_counts: dict[str, int] = {}
     unpriceable: list[str] = []
+    roster_groups: dict[str, list[RosterEntry]] = {}
     for asset in assets:
         category_counts[asset.category] = category_counts.get(asset.category, 0) + 1
         sector_key = asset.sector if asset.sector else "none"
         sector_counts[sector_key] = sector_counts.get(sector_key, 0) + 1
         if asset.alpaca_symbol is None:
             unpriceable.append(asset.ticker)
+        if asset.category == AssetCategory.CRYPTO.value:
+            roster_label = "Crypto"
+        elif asset.sector:
+            roster_label = asset.sector
+        else:
+            roster_label = "Unsectored"
+        roster_groups.setdefault(roster_label, []).append(
+            RosterEntry(
+                ticker=asset.ticker,
+                name=asset.name or asset.ticker,
+                is_eligible=asset.is_eligible,
+            )
+        )
     top_concentrations = sorted(
         sector_counts.items(), key=lambda item: (-item[1], item[0])
     )[:_TOP_CONCENTRATIONS]
+    # Groups ordered by descending holding count then label; tickers sorted
+    # within a group — deterministic so the prompt is stable and unit-testable.
+    sector_roster = tuple(
+        (
+            label,
+            tuple(sorted(entries, key=lambda entry: entry.ticker)),
+        )
+        for label, entries in sorted(
+            roster_groups.items(), key=lambda item: (-len(item[1]), item[0])
+        )
+    )
     return UniverseSummary(
         total=total,
         eligible_count=eligible,
@@ -531,6 +557,7 @@ def _universe_summary(assets: list[Asset]) -> UniverseSummary:
         sector_counts=sector_counts,
         top_concentrations=top_concentrations,
         unpriceable_listings=sorted(unpriceable),
+        sector_roster=sector_roster,
     )
 
 

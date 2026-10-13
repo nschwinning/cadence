@@ -83,6 +83,41 @@ def test_universe_summary_counts(db_session: Session) -> None:
     assert summary.unpriceable_listings == ["AIR.PA"]
 
 
+def test_universe_summary_builds_sector_grouped_roster(
+    db_session: Session,
+) -> None:
+    assets = [
+        _asset("BBB", sector="technology"),
+        _asset("AAA", sector="technology"),
+        _asset("CCC", sector="energy", is_eligible=False),
+        _asset("DDD", category=AssetCategory.CRYPTO.value, sector=None),
+        _asset("EEE", sector=None),
+    ]
+    _seed(db_session, assets)
+
+    summary = service._universe_summary(service.get_universe_assets(db_session))
+
+    # Groups ordered by descending count then label; crypto under "Crypto",
+    # no-sector equities under "Unsectored"; tickers sorted within a group.
+    labels = [label for label, _ in summary.sector_roster]
+    assert labels == ["technology", "Crypto", "Unsectored", "energy"]
+
+    roster = dict(summary.sector_roster)
+    assert [entry.ticker for entry in roster["technology"]] == ["AAA", "BBB"]
+    assert roster["Crypto"][0].ticker == "DDD"
+    assert roster["Unsectored"][0].ticker == "EEE"
+    # The ineligible holding is flagged.
+    assert roster["energy"][0] == ("CCC", "CCC Co", False)
+
+
+def test_universe_summary_roster_empty_for_empty_universe(
+    db_session: Session,
+) -> None:
+    summary = service._universe_summary(service.get_universe_assets(db_session))
+
+    assert summary.sector_roster == ()
+
+
 # --- fingerprint -------------------------------------------------------------
 
 

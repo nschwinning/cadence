@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
-from typing import Protocol, runtime_checkable
+from typing import NamedTuple, Protocol, runtime_checkable
 
 from agents.run import Runner
 from pydantic import BaseModel, Field
@@ -43,7 +43,19 @@ diversification or sector balance, reducing concentration, addressing quality
 gaps, or resolving a foreign/unpriceable listing by replacing it with its US
 listing or ADR. NEVER recommend ETFs, funds, fixed income, bonds,
 cash-equivalents, options, or any instrument class outside this scope.
+
+The prompt lists the assets already in the universe, grouped by sector. NEVER
+suggest adding a ticker that is already in that roster — every suggested addition
+must name a ticker that is not already present.
 """.strip()
+
+
+class RosterEntry(NamedTuple):
+    """One holding in the sector-grouped roster shown to the agent."""
+
+    ticker: str
+    name: str
+    is_eligible: bool
 
 
 @dataclass(frozen=True)
@@ -55,7 +67,10 @@ class UniverseSummary:
     label (a sector slug, or ``"none"`` for assets with no sector) to its count;
     ``top_concentrations`` lists the largest sector groups (label, count) for the
     concentration read; ``unpriceable_listings`` are tickers with no brokerage
-    symbol (foreign/unpriceable listings).
+    symbol (foreign/unpriceable listings). ``sector_roster`` lists the actual
+    holdings grouped by sector (crypto under its own ``"Crypto"`` heading,
+    no-sector equities under ``"Unsectored"``) so the agent knows exactly which
+    assets are already present and does not suggest adding them.
     """
 
     total: int
@@ -65,6 +80,7 @@ class UniverseSummary:
     sector_counts: dict[str, int]
     top_concentrations: list[tuple[str, int]]
     unpriceable_listings: list[str]
+    sector_roster: tuple[tuple[str, tuple[RosterEntry, ...]], ...]
 
 
 class UniverseEvaluationOutput(BaseModel):
@@ -113,6 +129,26 @@ def _render_counts(counts: dict[str, int]) -> str:
     return ", ".join(f"{label} {count}" for label, count in ordered)
 
 
+def _render_roster(
+    sector_roster: tuple[tuple[str, tuple[RosterEntry, ...]], ...],
+) -> str:
+    """Render the sector-grouped roster of holdings as a prompt block.
+
+    Each sector is a ``Sector (count):`` heading followed by indented
+    ``TICKER — Name`` lines, with ineligible holdings flagged inline. Returns
+    ``"none"`` for an empty universe.
+    """
+    if not sector_roster:
+        return "none"
+    lines: list[str] = []
+    for label, entries in sector_roster:
+        lines.append(f"{label} ({len(entries)}):")
+        for entry in entries:
+            flag = " [INELIGIBLE]" if not entry.is_eligible else ""
+            lines.append(f"  {entry.ticker} — {entry.name}{flag}")
+    return "\n".join(lines)
+
+
 def build_universe_evaluation_prompt(summary: UniverseSummary) -> str:
     """Compose the agent input from a universe summary.
 
@@ -145,6 +181,9 @@ By sector: {_render_counts(summary.sector_counts)}
 Largest concentrations (sector): {concentration_line}
 Foreign/unpriceable listings: {unpriceable_line}
 
+Assets already in the universe (grouped by sector):
+{_render_roster(summary.sector_roster)}
+
 Scope: this universe can only hold US-tradable individual stocks and crypto,
 managed long-only. It cannot hold ETFs, mutual or index funds, bond or
 money-market funds, fixed-income, cash-equivalents, or foreign (non-US-listed)
@@ -156,8 +195,9 @@ a markdown narrative plus bulleted strengths, concerns, and suggestions. Keep
 every suggestion in scope — e.g. add specific individual stocks or crypto, reduce
 concentration, address quality gaps, or resolve a foreign/unpriceable listing to
 its US listing or ADR — and do not recommend ETFs, funds, fixed income, bonds,
-cash-equivalents, options, or any out-of-scope instrument class. Do not use
-numeric scores.
+cash-equivalents, options, or any out-of-scope instrument class. Only suggest
+adding tickers that are NOT already in the roster above; never recommend adding an
+asset that is already in the universe. Do not use numeric scores.
 """.strip()
 
 

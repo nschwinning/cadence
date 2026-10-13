@@ -16,6 +16,7 @@ from cadence.assets import universe_agent as agent_module
 from cadence.assets.errors import AssetEvaluationUnavailableError
 from cadence.assets.universe_agent import (
     OpenAIUniverseEvaluationAgent,
+    RosterEntry,
     UniverseEvaluationOutput,
     UniverseSummary,
     build_universe_evaluation_prompt,
@@ -31,6 +32,18 @@ def _summary() -> UniverseSummary:
         sector_counts={"technology": 3, "energy": 1, "none": 1},
         top_concentrations=[("technology", 3), ("energy", 1)],
         unpriceable_listings=["AIR.PA", "TTE.PA"],
+        sector_roster=(
+            (
+                "technology",
+                (
+                    RosterEntry("AAPL", "Apple Inc.", True),
+                    RosterEntry("MSFT", "Microsoft Corp.", True),
+                    RosterEntry("NVDA", "NVIDIA Corp.", False),
+                ),
+            ),
+            ("energy", (RosterEntry("XOM", "Exxon Mobil Corp.", True),)),
+            ("Crypto", (RosterEntry("BTC-USD", "Bitcoin", True),)),
+        ),
     )
 
 
@@ -73,10 +86,68 @@ def test_prompt_handles_empty_listings() -> None:
         sector_counts={"technology": 2},
         top_concentrations=[("technology", 2)],
         unpriceable_listings=[],
+        sector_roster=(
+            (
+                "technology",
+                (
+                    RosterEntry("AAPL", "Apple Inc.", True),
+                    RosterEntry("MSFT", "Microsoft Corp.", True),
+                ),
+            ),
+        ),
     )
     prompt = build_universe_evaluation_prompt(summary)
 
     assert "Foreign/unpriceable listings: none" in prompt
+
+
+def test_prompt_lists_roster_and_forbids_duplicate_suggestions() -> None:
+    prompt = build_universe_evaluation_prompt(_summary())
+
+    # The roster block names each holding as "TICKER — Name" under its sector.
+    assert "Assets already in the universe (grouped by sector)" in prompt
+    assert "technology (3):" in prompt
+    assert "AAPL — Apple Inc." in prompt
+    assert "XOM — Exxon Mobil Corp." in prompt
+    # Crypto grouped under its own heading.
+    assert "Crypto (1):" in prompt
+    assert "BTC-USD — Bitcoin" in prompt
+    # Ineligible holdings flagged inline.
+    assert "NVDA — NVIDIA Corp. [INELIGIBLE]" in prompt
+    # The agent is told to suggest only tickers that are not already present.
+    lowered = prompt.lower()
+    assert "not already in the roster" in lowered
+
+
+def test_prompt_handles_empty_roster() -> None:
+    summary = UniverseSummary(
+        total=0,
+        eligible_count=0,
+        ineligible_count=0,
+        category_counts={},
+        sector_counts={},
+        top_concentrations=[],
+        unpriceable_listings=[],
+        sector_roster=(),
+    )
+    prompt = build_universe_evaluation_prompt(summary)
+
+    assert "Assets already in the universe (grouped by sector):\nnone" in prompt
+
+
+def test_prompt_is_deterministic_for_a_fixed_summary() -> None:
+    summary = _summary()
+
+    assert build_universe_evaluation_prompt(summary) == (
+        build_universe_evaluation_prompt(summary)
+    )
+
+
+def test_agent_instructions_forbid_suggesting_existing_holdings() -> None:
+    instructions = agent_module._AGENT_INSTRUCTIONS.lower()
+
+    assert "already in that roster" in instructions
+    assert "not already present" in instructions
 
 
 def test_evaluate_raises_domain_error_on_timeout(
