@@ -17,7 +17,7 @@ from cadence.api.schemas import (
     AssetUniverseEvaluationResponse,
 )
 from cadence.assets import service
-from cadence.assets.category import AssetCategory
+from cadence.assets.category import AssetCategory, AssetMembership
 from cadence.assets.errors import (
     AssetEvaluationUnavailableError,
     AssetNotFoundError,
@@ -100,6 +100,8 @@ ALLOWED_PAGE_SIZES = (20, 50, 100)
 VALID_CATEGORIES = frozenset(member.value for member in AssetCategory)
 # Known economic sectors accepted by the sector filter.
 VALID_SECTORS = frozenset(member.value for member in Sector)
+# Known membership buckets accepted by the membership filter.
+VALID_MEMBERSHIPS = frozenset(member.value for member in AssetMembership)
 
 
 @router.get("", response_model=AssetListResponse)
@@ -126,12 +128,17 @@ def list_assets(
         list[str] | None,
         Query(description="Filter by sector (repeatable); empty = all"),
     ] = None,
+    membership: Annotated[
+        str,
+        Query(description="Bucket to list: 'universe' (default) or 'watchlist'"),
+    ] = AssetMembership.UNIVERSE.value,
 ) -> AssetListResponse:
     """Return a sorted, filtered page of assets plus the matching total.
 
     Ordered by ``sort``/``direction`` (default ticker asc). ``search`` and the
-    repeatable ``category`` and ``sector`` filters compose across the whole
-    universe.
+    repeatable ``category`` and ``sector`` filters compose across the selected
+    ``membership`` bucket (default the tradable universe; ``watchlist`` lists the
+    emerging-companies watchlist).
     """
     if limit not in ALLOWED_PAGE_SIZES:
         raise HTTPException(
@@ -162,6 +169,12 @@ def list_assets(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                 detail=f"unknown sector values: {invalid_sectors}",
             )
+    if membership not in VALID_MEMBERSHIPS:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"membership must be one of {sorted(VALID_MEMBERSHIPS)}",
+        )
+    membership_filter = AssetMembership(membership)
     items = [
         AssetRead.model_validate(asset)
         for asset in service.list_assets(
@@ -173,10 +186,15 @@ def list_assets(
             direction=direction,
             categories=category,
             sectors=sector,
+            membership=membership_filter,
         )
     ]
     total = service.count_assets(
-        db, search=search, categories=category, sectors=sector
+        db,
+        search=search,
+        categories=category,
+        sectors=sector,
+        membership=membership_filter,
     )
     return AssetListResponse(items=items, total=total)
 

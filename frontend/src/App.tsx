@@ -3,6 +3,7 @@ import { Layout } from './components/layout/Layout';
 import { DashboardPage } from './pages/dashboard/DashboardPage';
 import { AssetsPage } from './pages/assets/AssetsPage';
 import { AssetDetailPage } from './pages/assets/AssetDetailPage';
+import { WatchlistPage } from './pages/watchlist/WatchlistPage';
 import { PortfoliosPage } from './pages/portfolios/PortfoliosPage';
 import { PortfolioDetailPage } from './pages/portfolios/PortfolioDetailPage';
 import { PaperTradingPage } from './pages/paper-trading/PaperTradingPage';
@@ -19,6 +20,7 @@ export function App() {
         <Route index element={<DashboardPage />} />
         <Route path="assets" element={<AssetsPage />} />
         <Route path="assets/:ticker" element={<AssetDetailPage />} />
+        <Route path="watchlist" element={<WatchlistPage />} />
         <Route path="portfolios" element={<PortfoliosPage />} />
         <Route path="portfolios/:id" element={<PortfolioDetailPage />} />
         <Route path="paper-trading" element={<PaperTradingPage />} />

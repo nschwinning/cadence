@@ -15,7 +15,7 @@ from __future__ import annotations
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from cadence.assets.category import SUPPORTED_CATEGORIES
+from cadence.assets.category import SUPPORTED_CATEGORIES, AssetCategory, AssetMembership
 from cadence.assets.errors import (
     DuplicateAssetError,
     MarketDataUnavailableError,
@@ -23,8 +23,14 @@ from cadence.assets.errors import (
     UnsupportedCategoryError,
     UntradeableTickerError,
 )
+from cadence.assets.fundamentals import FundamentalsProvider
 from cadence.assets.market_data import MarketDataProvider
-from cadence.assets.service import add_asset, delete_asset, list_assets
+from cadence.assets.service import (
+    add_asset,
+    delete_asset,
+    list_assets,
+    record_fundamentals,
+)
 from cadence.broker.base import Broker
 from cadence.dashboard.service import get_universe_composition
 from cadence.recommendations.agent import (
@@ -36,6 +42,7 @@ from cadence.recommendations.constants import (
     MIN_CANDIDATES_REQUESTED,
     CandidateOutcome,
     RunPhase,
+    RunTarget,
 )
 from cadence.recommendations.errors import (
     RecommendationValidationError,
@@ -48,13 +55,15 @@ def create_run(
     session: Session,
     count: int,
     categories: list[str],
+    target: RunTarget = RunTarget.UNIVERSE,
 ) -> int:
     """Validate the request and insert a queued run; return its id.
 
     Raises:
         RecommendationValidationError: if ``count`` is not positive, no category
-            is provided, or a category outside the supported set (stock, crypto)
-            is requested.
+            is provided, a category outside the supported set (stock, crypto) is
+            requested, or a ``watchlist`` target names any non-stock category
+            (watchlist fundamentals come from equity filings).
     """
     if count <= 0:
         raise RecommendationValidationError("count must be greater than zero")
@@ -67,9 +76,14 @@ def create_run(
             f"unsupported categories {unsupported}; only "
             f"{sorted(supported)} are supported"
         )
+    if target == RunTarget.WATCHLIST and set(categories) != {AssetCategory.STOCK.value}:
+        raise RecommendationValidationError(
+            "a watchlist run supports only the stock category"
+        )
 
     run = RecommendationRun(
         status=RunPhase.QUEUED.value,
+        target=target.value,
         requested_count=count,
         requested_categories=list(categories),
         tool_call_count=0,
@@ -115,6 +129,7 @@ def execute_run(
     agent: RecommenderAgent,
     provider: MarketDataProvider,
     broker: Broker,
+    fundamentals: FundamentalsProvider,
 ) -> None:
     """Drive a queued run to a terminal phase.
 
@@ -123,42 +138,54 @@ def execute_run(
     failure are left intact and no partially-formed asset remains. A broker
     ``ConnectionError`` is systemic (Alpaca unconfigured/unreachable) and fails
     the whole run rather than being swallowed per-candidate.
+
+    The run's ``target`` selects the prompt (universe vs emerging-companies
+    watchlist) and the add path: a watchlist run adds candidates as ``WATCHLIST``
+    members, does not reject them for maturity ineligibility, and fetches their
+    SEC EDGAR fundamentals via ``fundamentals`` after adding.
     """
     run = get_run(session, run_id)
     try:
+        target = RunTarget(run.target)
         criteria = default_eligibility_criteria()
         categories = list(run.requested_categories)
         ask_for = _candidate_count(run.requested_count)
         # Snapshot the universe composition now so the agent is steered toward
         # under-represented sectors; the recorded prompt reflects it.
         composition = get_universe_composition(session)
-        # The tickers already in the universe, passed to the agent as a hard
-        # exclusion so it stops re-proposing existing assets (server-side dedup
-        # remains as a safety net).
-        exclude_tickers = [asset.ticker for asset in list_assets(session)]
+        # The tickers already tracked as assets (universe AND watchlist), passed
+        # to the agent as a hard exclusion so it stops re-proposing existing
+        # assets (server-side dedup remains as a safety net). ``membership=None``
+        # dedupes across both buckets.
+        exclude_tickers = [
+            asset.ticker for asset in list_assets(session, membership=None)
+        ]
 
         # Phase: searching — record the exact prompt, then run the agent.
         run.prompt = agent.build_prompt(
-            categories, ask_for, criteria, composition, exclude_tickers
+            categories, ask_for, criteria, composition, exclude_tickers, target
         )
         run.status = RunPhase.SEARCHING.value
         session.commit()
 
         result = agent.recommend(
-            categories, ask_for, criteria, composition, exclude_tickers
+            categories, ask_for, criteria, composition, exclude_tickers, target
         )
 
         run.tool_call_count = result.tool_call_count
         run.status = RunPhase.VALIDATING.value
         session.commit()
 
-        # Phase: validating — re-validate and add eligible new assets.
+        # Phase: validating — re-validate and add new assets (eligible only for a
+        # universe run; emerging-but-ineligible allowed for a watchlist run).
         outcomes = _validate_and_add(
             session,
             provider,
             broker,
+            fundamentals,
             candidates=[c.ticker for c in result.output.candidates],
             limit=run.requested_count,
+            target=target,
         )
         run.results = outcomes
         run.status = RunPhase.COMPLETED.value
@@ -172,16 +199,27 @@ def _validate_and_add(
     session: Session,
     provider: MarketDataProvider,
     broker: Broker,
+    fundamentals: FundamentalsProvider,
     candidates: list[str],
     limit: int,
+    target: RunTarget = RunTarget.UNIVERSE,
 ) -> list[dict[str, str | None]]:
-    """Add eligible, new candidates up to ``limit``; return per-candidate outcomes.
+    """Add new candidates up to ``limit``; return per-candidate outcomes.
 
-    Reuses ``assets.service.add_asset`` (which enforces its own eligibility
-    evaluation and duplicate check). An asset that comes back ineligible is
-    deleted again so the hard eligibility filter holds. Adding stops once
-    ``limit`` eligible assets have been added.
+    Reuses ``assets.service.add_asset`` (which enforces its own category and
+    duplicate checks, and the brokerage tradability floor).
+
+    For a **universe** run, an asset that comes back ineligible is deleted again
+    so the hard eligibility filter holds. For a **watchlist** run, ineligible
+    (emerging) names are kept — that is the point — the candidate is stamped as a
+    ``WATCHLIST`` member and its SEC EDGAR fundamentals are fetched and persisted
+    after adding; the add is additionally scoped to the stock category only.
+    Adding stops once ``limit`` assets have been added.
     """
+    is_watchlist = target == RunTarget.WATCHLIST
+    membership = AssetMembership.WATCHLIST if is_watchlist else AssetMembership.UNIVERSE
+    allowed_categories = {AssetCategory.STOCK} if is_watchlist else None
+
     outcomes: list[dict[str, str | None]] = []
     added = 0
 
@@ -189,7 +227,14 @@ def _validate_and_add(
         if added >= limit:
             break
         try:
-            asset = add_asset(session, ticker, provider, broker)
+            asset = add_asset(
+                session,
+                ticker,
+                provider,
+                broker,
+                allowed_categories=allowed_categories,
+                membership=membership,
+            )
         except DuplicateAssetError:
             outcomes.append(_outcome(ticker, CandidateOutcome.SKIPPED_DUPLICATE))
             continue
@@ -206,11 +251,15 @@ def _validate_and_add(
             )
             continue
 
-        if not asset.is_eligible:
+        if not is_watchlist and not asset.is_eligible:
             # Hard filter: never keep an ineligible asset in the universe.
             delete_asset(session, asset.id)
             outcomes.append(_outcome(ticker, CandidateOutcome.SKIPPED_INELIGIBLE))
             continue
+
+        if is_watchlist:
+            # Best-effort fundamentals fetch — never fails the add.
+            record_fundamentals(session, asset, fundamentals)
 
         added += 1
         outcomes.append(_outcome(ticker, CandidateOutcome.ADDED))

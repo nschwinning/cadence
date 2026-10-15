@@ -5,6 +5,18 @@ from __future__ import annotations
 from enum import StrEnum
 
 
+class RunTarget(StrEnum):
+    """Which bucket a recommendation run populates.
+
+    ``UNIVERSE`` (the default) runs propose tradable-universe assets; ``WATCHLIST``
+    runs seek emerging companies and add them to the watchlist. Values are part of
+    the API contract.
+    """
+
+    UNIVERSE = "universe"
+    WATCHLIST = "watchlist"
+
+
 class RunPhase(StrEnum):
     """Coarse lifecycle phase of a recommendation run.
 

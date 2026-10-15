@@ -35,6 +35,20 @@ SUPPORTED_CATEGORIES: frozenset[AssetCategory] = frozenset(
 )
 
 
+class AssetMembership(StrEnum):
+    """Which bucket an asset belongs to within the ``assets`` table.
+
+    ``UNIVERSE`` assets are the curated, tradable universe; ``WATCHLIST`` assets
+    are emerging, tracked-but-not-traded candidates. Membership is orthogonal to
+    eligibility and is the default (``UNIVERSE``) for every manual add, every
+    universe-recommendation add, and every row that predates this column. Values
+    are part of the API contract.
+    """
+
+    UNIVERSE = "universe"
+    WATCHLIST = "watchlist"
+
+
 class AssetScope(StrEnum):
     """Which supported asset categories an AI-managed portfolio may hold.
 

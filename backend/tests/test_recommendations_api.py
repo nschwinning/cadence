@@ -9,6 +9,7 @@ from datetime import date
 from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
 from tests.fakes import (
+    FakeFundamentalsProvider,
     FakeMarketDataProvider,
     FakeRecommenderAgent,
     ManualExecutor,
@@ -16,9 +17,15 @@ from tests.fakes import (
 
 from cadence.api.app import app
 from cadence.api.routers.recommendations import (
+    get_fundamentals_provider,
     get_job_runner,
     get_market_data_provider,
     get_recommender_agent,
+)
+from cadence.assets.fundamentals import (
+    SOURCE_SEC_EDGAR,
+    Fundamentals,
+    FundamentalsStatus,
 )
 from cadence.assets.market_data import AssetInfo, HistoryBar
 from cadence.recommendations.agent import RecommendationCandidate
@@ -42,6 +49,19 @@ def _provider() -> FakeMarketDataProvider:
     )
 
 
+def _fundamentals() -> FakeFundamentalsProvider:
+    return FakeFundamentalsProvider(
+        by_ticker={
+            "EMERG": Fundamentals(
+                status=FundamentalsStatus.AVAILABLE,
+                source=SOURCE_SEC_EDGAR,
+                cik="1",
+                document={"figures": {"revenue": {"value": 1.0}}},
+            )
+        }
+    )
+
+
 def _wire(
     client: TestClient,
     db_session: Session,
@@ -55,6 +75,7 @@ def _wire(
     runner = RecommendationJobRunner(session_factory=factory, executor=executor)
     app.dependency_overrides[get_recommender_agent] = lambda: agent
     app.dependency_overrides[get_market_data_provider] = _provider
+    app.dependency_overrides[get_fundamentals_provider] = _fundamentals
     app.dependency_overrides[get_job_runner] = lambda: runner
 
 
@@ -77,6 +98,8 @@ def test_create_poll_history_and_404(
     run_id = body["id"]
     assert body["status"] == "queued"
     assert body["requested_categories"] == ["stock"]
+    # The read echoes the run target, defaulting to the universe.
+    assert body["target"] == "universe"
 
     # Drive the deferred job to completion.
     executor.run_pending()
@@ -118,5 +141,42 @@ def test_create_rejects_unsupported_category(
 
     resp = client.post(
         "/api/v1/recommendations", json={"count": 1, "categories": ["etf"]}
+    )
+    assert resp.status_code == 422
+
+
+def test_create_watchlist_run_echoes_target_and_completes(
+    client: TestClient, db_session: Session
+) -> None:
+    agent = FakeRecommenderAgent(
+        candidates=[RecommendationCandidate(ticker="EMERG", rationale="x")],
+        tool_call_count=1,
+    )
+    executor = ManualExecutor()
+    _wire(client, db_session, agent, executor)
+
+    created = client.post(
+        "/api/v1/recommendations",
+        json={"count": 1, "categories": ["stock"], "target": "watchlist"},
+    )
+    assert created.status_code == 202
+    body = created.json()
+    assert body["target"] == "watchlist"
+
+    executor.run_pending()
+    polled = client.get(f"/api/v1/recommendations/{body['id']}")
+    assert polled.status_code == 200
+    assert polled.json()["target"] == "watchlist"
+
+
+def test_create_rejects_watchlist_with_crypto(
+    client: TestClient, db_session: Session
+) -> None:
+    agent = FakeRecommenderAgent(candidates=[], tool_call_count=0)
+    _wire(client, db_session, agent, ManualExecutor())
+
+    resp = client.post(
+        "/api/v1/recommendations",
+        json={"count": 1, "categories": ["crypto"], "target": "watchlist"},
     )
     assert resp.status_code == 422

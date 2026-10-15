@@ -25,7 +25,7 @@ from sqlalchemy import Enum as SQLEnum
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
-from cadence.assets.category import AssetCategory
+from cadence.assets.category import AssetCategory, AssetMembership
 from cadence.assets.sector import Sector
 from cadence.database import Base
 
@@ -79,6 +79,20 @@ class Asset(Base):
     exchange: Mapped[str | None] = mapped_column(String, nullable=True)
     # Native trading currency (ISO code).
     currency: Mapped[str] = mapped_column(String, nullable=False)
+    # Which bucket the asset belongs to: the tradable ``universe`` (default) or
+    # the ``watchlist`` of emerging candidates. Stored as the enum's string value
+    # (non-native enum, like ``category``). Non-nullable with a ``universe``
+    # default so every existing row and every manual/universe-recommendation add
+    # is a universe member; only watchlist-targeted runs set ``watchlist``.
+    # Indexed because every asset-list and universe read filters on it.
+    membership: Mapped[str] = mapped_column(
+        SQLEnum(AssetMembership, native_enum=False, values_callable=lambda enum: [
+            member.value for member in enum
+        ]),
+        nullable=False,
+        server_default=AssetMembership.UNIVERSE.value,
+        index=True,
+    )
     # Stable company-profile fields, captured from the provider at add time and
     # refreshed when the asset is re-added. All nullable: any field the provider
     # omits (and every asset added before this change) is stored as NULL. Unlike
@@ -103,6 +117,14 @@ class Asset(Base):
         back_populates="asset",
         cascade="all, delete-orphan",
         passive_deletes=True,
+    )
+    # At most one fundamentals record per asset (1:1). General-purpose: populated
+    # for watchlist assets today, available to universe assets in a later change.
+    fundamentals: Mapped[AssetFundamentals | None] = relationship(
+        back_populates="asset",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+        uselist=False,
     )
 
 
@@ -152,6 +174,41 @@ class AssetDailySnapshot(Base):
     )
 
     asset: Mapped[Asset] = relationship(back_populates="snapshots")
+
+
+class AssetFundamentals(Base):
+    """Company fundamentals for an asset, sourced from SEC EDGAR (1:1 with Asset).
+
+    Raw storage only (no derived indicators or quality screen in this change).
+    ``document`` holds the mostly-opaque figures the provider mapped from EDGAR
+    facts — revenue, margin inputs, cash flow, earnings, and company details — as
+    a JSONB object. ``status`` records whether the fetch produced usable data
+    (``available``/``partial``/``unavailable``); ``source`` names the provider
+    (``sec_edgar``). A row with ``status = unavailable`` records that a fetch was
+    attempted but EDGAR had no CIK/facts or was unreachable, so creation still
+    succeeded. ``cik`` is the resolved EDGAR identifier when known.
+    """
+
+    __tablename__ = "asset_fundamentals"
+    __table_args__ = (
+        UniqueConstraint("asset_id", name="uq_asset_fundamentals_asset"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    asset_id: Mapped[int] = mapped_column(
+        ForeignKey("assets.id", ondelete="CASCADE"),
+        index=True,
+        nullable=False,
+    )
+    source: Mapped[str] = mapped_column(String, nullable=False)
+    status: Mapped[str] = mapped_column(String, nullable=False)
+    cik: Mapped[str | None] = mapped_column(String, nullable=True)
+    document: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
+    fetched_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    asset: Mapped[Asset] = relationship(back_populates="fundamentals")
 
 
 class AssetUniverseEvaluation(Base):

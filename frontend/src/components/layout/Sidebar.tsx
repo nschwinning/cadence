@@ -2,6 +2,7 @@ import type { ReactNode } from 'react';
 import { NavLink } from 'react-router-dom';
 import { DashboardIcon } from '../icons/DashboardIcon';
 import { AssetsIcon } from '../icons/AssetsIcon';
+import { WatchlistIcon } from '../icons/WatchlistIcon';
 import { PortfoliosIcon } from '../icons/PortfoliosIcon';
 import { PaperTradingIcon } from '../icons/PaperTradingIcon';
 import { RunsIcon } from '../icons/RunsIcon';
@@ -26,6 +27,11 @@ interface NavItem {
 const NAV_ITEMS: NavItem[] = [
   { to: '/', label: 'Dashboard', icon: <DashboardIcon className="h-5 w-5" />, end: true },
   { to: '/assets', label: 'Assets', icon: <AssetsIcon className="h-5 w-5" /> },
+  {
+    to: '/watchlist',
+    label: 'Watchlist',
+    icon: <WatchlistIcon className="h-5 w-5" />,
+  },
   { to: '/portfolios', label: 'Portfolios', icon: <PortfoliosIcon className="h-5 w-5" /> },
   {
     to: '/paper-trading',

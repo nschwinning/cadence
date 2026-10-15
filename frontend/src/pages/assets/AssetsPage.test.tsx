@@ -41,9 +41,11 @@ const apple: Asset = {
   market_cap_usd: 2_500_000_000_000,
   avg_daily_turnover_usd: 8_000_000_000,
   history_years: 20,
+  membership: 'universe',
   is_eligible: true,
   criteria_results: [],
   created_at: '2026-08-01T00:00:00Z',
+  fundamentals: null,
 };
 
 const bitcoin: Asset = {

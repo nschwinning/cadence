@@ -68,6 +68,7 @@ export const assetKeys = {
   all: ['assets'] as const,
   list: (params: AssetsListParams) => ['assets', 'list', params] as const,
   detail: (ticker: string) => ['assets', 'detail', ticker] as const,
+  watchlist: ['assets', 'watchlist'] as const,
 };
 
 /**
@@ -101,6 +102,29 @@ export async function listAssets(params: {
     paramsSerializer: { indexes: null },
   });
   return data;
+}
+
+/**
+ * Fetch the watchlist: assets whose `membership` is `watchlist`, newest first.
+ * Requests a generous single page (the watchlist is small by design) so the page
+ * renders every entry with its fundamentals without paging.
+ */
+export async function listWatchlist(): Promise<Asset[]> {
+  const { data } = await apiClient.get<AssetPage>('/api/v1/assets', {
+    params: { membership: 'watchlist', limit: 200, offset: 0 },
+  });
+  return data.items;
+}
+
+/**
+ * React Query hook listing the watchlist (membership=watchlist). Separate key
+ * from the universe list so the two never collide in the cache.
+ */
+export function useWatchlist() {
+  return useQuery<Asset[]>({
+    queryKey: assetKeys.watchlist,
+    queryFn: listWatchlist,
+  });
 }
 
 /**

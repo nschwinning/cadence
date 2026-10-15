@@ -16,7 +16,7 @@ from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
 from cadence.database import Base
-from cadence.recommendations.constants import RunPhase
+from cadence.recommendations.constants import RunPhase, RunTarget
 
 
 class RecommendationRun(Base):
@@ -37,6 +37,15 @@ class RecommendationRun(Base):
     # One of cadence.recommendations.constants.RunPhase values.
     status: Mapped[str] = mapped_column(
         String, nullable=False, default=RunPhase.QUEUED.value
+    )
+    # One of cadence.recommendations.constants.RunTarget values: which bucket the
+    # run populates (``universe`` default, or ``watchlist``). Non-nullable with a
+    # ``universe`` server default so every existing row is a universe run.
+    target: Mapped[str] = mapped_column(
+        String,
+        nullable=False,
+        default=RunTarget.UNIVERSE.value,
+        server_default=RunTarget.UNIVERSE.value,
     )
     requested_count: Mapped[int] = mapped_column(Integer, nullable=False)
     requested_categories: Mapped[list[str]] = mapped_column(JSONB, nullable=False)

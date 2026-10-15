@@ -9,11 +9,12 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from cadence.assets.category import AssetScope
+from cadence.assets.category import AssetMembership, AssetScope
 from cadence.config import settings
 from cadence.dashboard.constants import DashboardRange
 from cadence.paper_trading.constants import Benchmark
 from cadence.portfolios.constants import PortfolioSource, RiskProfile
+from cadence.recommendations.constants import RunTarget
 
 
 class ServiceStatus(str, Enum):
@@ -52,6 +53,24 @@ class CriterionResult(BaseModel):
     threshold: float
 
 
+class AssetFundamentalsRead(BaseModel):
+    """Company fundamentals for an asset, as fetched from SEC EDGAR.
+
+    ``status`` is one of ``available``/``partial``/``unavailable``; ``document``
+    is the raw mapped figures + company details (opaque to the API). An
+    ``unavailable`` row records that a fetch was attempted but EDGAR had no
+    CIK/facts or was unreachable.
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    source: str
+    status: str
+    cik: str | None
+    document: dict[str, Any]
+    fetched_at: datetime
+
+
 class AssetRead(BaseModel):
     """Full snapshot of a stored asset, including its eligibility breakdown."""
 
@@ -65,12 +84,18 @@ class AssetRead(BaseModel):
     sector: str | None
     exchange: str | None
     currency: str
+    # Which bucket the asset belongs to: the tradable ``universe`` (default) or
+    # the ``watchlist`` of emerging candidates.
+    membership: str = AssetMembership.UNIVERSE.value
     market_cap_usd: float | None
     avg_daily_turnover_usd: float | None
     history_years: float | None
     is_eligible: bool
     criteria_results: list[CriterionResult]
     created_at: datetime
+    # Company fundamentals (SEC EDGAR), when fetched (watchlist assets today).
+    # ``None`` for assets that have no fundamentals row.
+    fundamentals: AssetFundamentalsRead | None = None
 
 
 class AssetListResponse(BaseModel):
@@ -156,6 +181,11 @@ class RecommendationRunCreate(BaseModel):
     categories: list[str] = Field(
         ..., min_length=1, description="Asset categories to restrict candidates to"
     )
+    target: RunTarget = Field(
+        default=RunTarget.UNIVERSE,
+        description="Which bucket to populate: 'universe' (default) or "
+        "'watchlist' (emerging companies; stock-only).",
+    )
 
 
 class RecommendationCandidateResult(BaseModel):
@@ -174,6 +204,8 @@ class RecommendationRunRead(BaseModel):
     id: int
     created_at: datetime
     status: str
+    # Which bucket the run populates ('universe' default, or 'watchlist').
+    target: str = RunTarget.UNIVERSE.value
     requested_count: int
     requested_categories: list[str]
     prompt: str | None

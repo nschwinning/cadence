@@ -16,9 +16,10 @@ from cadence.recommendations.agent import (
     RecommendationCandidate,
     RecommendationOutput,
     RecommendationResult,
-    build_recommendation_prompt,
+    build_prompt_for_target,
 )
 from cadence.recommendations.composition import UniverseComposition
+from cadence.recommendations.constants import RunTarget
 
 #: Canned, liquid large-cap tickers per category. Chosen to comfortably clear
 #: the eligibility thresholds so the smoke actually adds assets.
@@ -42,9 +43,10 @@ class StubRecommenderAgent:
         criteria: EligibilityCriteria,
         composition: UniverseComposition,
         exclude_tickers: list[str],
+        target: RunTarget = RunTarget.UNIVERSE,
     ) -> str:
-        return build_recommendation_prompt(
-            categories, count, criteria, composition, exclude_tickers
+        return build_prompt_for_target(
+            categories, count, criteria, composition, exclude_tickers, target
         )
 
     def recommend(
@@ -54,6 +56,7 @@ class StubRecommenderAgent:
         criteria: EligibilityCriteria,
         composition: UniverseComposition,
         exclude_tickers: list[str],
+        target: RunTarget = RunTarget.UNIVERSE,
     ) -> RecommendationResult:
         tickers = self._pool_for(categories, exclude_tickers)
         candidates = [

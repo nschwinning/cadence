@@ -60,6 +60,52 @@ export type Sector =
   | 'utilities'
   | 'communication-services';
 
+/**
+ * Which bucket an asset belongs to. `universe` assets are the tradable set used
+ * for portfolio build/rebalance; `watchlist` assets are emerging candidates held
+ * for research only. Mirrors the backend `AssetMembership` enum.
+ */
+export type AssetMembership = 'universe' | 'watchlist';
+
+/**
+ * Whether company fundamentals were successfully fetched. `available` — core
+ * figures found; `partial` — a CIK resolved but only some figures; `unavailable`
+ * — a fetch was attempted but EDGAR had no CIK/facts or was unreachable. Mirrors
+ * the backend `FundamentalsStatus` values.
+ */
+export type FundamentalsStatus = 'available' | 'partial' | 'unavailable';
+
+/**
+ * One mapped annual figure from SEC EDGAR (e.g. revenue, net income, EPS), with
+ * the reporting unit and the fiscal period it was taken from. Extra keys may be
+ * present; the `document` is otherwise opaque.
+ */
+export interface FundamentalsFigure {
+  value: number;
+  unit?: string;
+  fiscal_year?: number | null;
+  period_end?: string | null;
+  form?: string | null;
+}
+
+/**
+ * Company fundamentals for an asset, as fetched from SEC EDGAR. Mirrors the
+ * backend `AssetFundamentalsRead`. `document` is the raw mapped figures + company
+ * details and is opaque to the API; `figures`/`company_details` are the known
+ * top-level keys the watchlist view renders.
+ */
+export interface AssetFundamentals {
+  source: string;
+  status: FundamentalsStatus;
+  cik: string | null;
+  document: {
+    figures?: Record<string, FundamentalsFigure>;
+    company_details?: Record<string, unknown>;
+    [key: string]: unknown;
+  };
+  fetched_at: string;
+}
+
 /** Columns the assets list can be sorted by. Mirrors the backend `SORT_FIELDS`. */
 export type AssetSortField = 'ticker' | 'name';
 
@@ -83,12 +129,19 @@ export interface Asset {
   sector: Sector | null;
   exchange: string | null;
   currency: string;
+  /** The bucket the asset belongs to: the tradable `universe` or the `watchlist`. */
+  membership: AssetMembership;
   market_cap_usd: number | null;
   avg_daily_turnover_usd: number | null;
   history_years: number | null;
   is_eligible: boolean;
   criteria_results: CriterionResult[];
   created_at: string;
+  /**
+   * Company fundamentals (SEC EDGAR), when fetched — populated for watchlist
+   * assets. `null` for assets that have no fundamentals row.
+   */
+  fundamentals: AssetFundamentals | null;
 }
 
 /**
@@ -183,6 +236,13 @@ export type RunPhase =
   | 'failed';
 
 /**
+ * Which asset bucket a recommendation run targets. `universe` (default) adds
+ * tradable universe members; `watchlist` seeks emerging companies added as
+ * watchlist entries. Mirrors the backend `RunTarget` enum.
+ */
+export type RunTarget = 'universe' | 'watchlist';
+
+/**
  * The disposition of a single candidate ticker the run evaluated. Mirrors the
  * backend `CandidateOutcome` enum values.
  */
@@ -217,6 +277,8 @@ export interface RecommendationRun {
   tool_call_count: number;
   results: RecommendationCandidateResult[];
   error: string | null;
+  /** The asset bucket this run targeted (defaults to `universe`). */
+  target: RunTarget;
 }
 
 /**
@@ -227,6 +289,12 @@ export interface RecommendationRun {
 export interface RecommendationRunCreate {
   count: number;
   categories: AssetCategory[];
+  /**
+   * Which asset bucket to add results to. Omitted/`universe` targets the
+   * tradable universe; `watchlist` seeks emerging companies. A `watchlist`
+   * target rejects any non-stock category (422).
+   */
+  target?: RunTarget;
 }
 
 // --------------------------------------------------------------------------- //

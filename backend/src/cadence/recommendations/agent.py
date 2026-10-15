@@ -22,6 +22,7 @@ from cadence.agents.tools import web_search
 from cadence.assets import constants as asset_constants
 from cadence.config import settings
 from cadence.recommendations.composition import UniverseComposition
+from cadence.recommendations.constants import RunTarget
 from cadence.recommendations.errors import RecommendationAgentError
 
 _AGENT_NAME = "AssetRecommenderAgent"
@@ -37,6 +38,29 @@ exchange ticker symbols. Do not invent tickers. Never propose an asset that is
 already in the universe: the prompt lists the tickers to exclude, and any such
 proposal is wasted because it will be rejected as a duplicate.
 """.strip()
+
+_WATCHLIST_AGENT_INSTRUCTIONS = """
+You are an emerging-companies scout for a European (EUR) investor's watchlist.
+Your job is to propose real, currently-listed US companies that are EMERGING —
+young, fast-growing names from promising sectors that are NOT yet mature enough
+for a conservative tradable universe (they may have a short listing history or a
+smaller market capitalization). Use the web_search tool to check recent facts
+before proposing a company. Base your final answer on tool results from this run;
+if the evidence is insufficient, return fewer candidates rather than guessing.
+Only return valid US exchange ticker symbols for companies (common stock), never
+ETFs, funds, or crypto. Do not invent tickers. Never propose a ticker that is
+already tracked: the prompt lists the tickers to exclude, and any such proposal
+is wasted because it will be rejected as a duplicate.
+""".strip()
+
+
+def _agent_instructions(target: RunTarget) -> str:
+    """Return the system instructions for the run's target."""
+    return (
+        _WATCHLIST_AGENT_INSTRUCTIONS
+        if target == RunTarget.WATCHLIST
+        else _AGENT_INSTRUCTIONS
+    )
 
 
 @dataclass(frozen=True)
@@ -110,10 +134,13 @@ class RecommenderAgent(Protocol):
         criteria: EligibilityCriteria,
         composition: UniverseComposition,
         exclude_tickers: list[str],
+        target: RunTarget = RunTarget.UNIVERSE,
     ) -> RecommendationResult:
         """Return up to ``count``-worth of candidates for the given categories.
 
-        ``exclude_tickers`` are already in the universe and MUST NOT be proposed.
+        ``exclude_tickers`` are already tracked as assets and MUST NOT be
+        proposed. ``target`` selects the universe (default) or the
+        emerging-companies watchlist prompt.
         """
         ...
 
@@ -124,6 +151,7 @@ class RecommenderAgent(Protocol):
         criteria: EligibilityCriteria,
         composition: UniverseComposition,
         exclude_tickers: list[str],
+        target: RunTarget = RunTarget.UNIVERSE,
     ) -> str:
         """Return the exact prompt text that would be sent for this request."""
         ...
@@ -216,6 +244,70 @@ fewer rather than guessing.
 """.strip()
 
 
+def build_watchlist_recommendation_prompt(
+    categories: list[str],
+    count: int,
+    criteria: EligibilityCriteria,
+    composition: UniverseComposition,
+    exclude_tickers: list[str],
+) -> str:
+    """Compose the watchlist (emerging-companies) agent input.
+
+    Unlike the universe prompt, this explicitly seeks EMERGING US companies from
+    promising sectors and deliberately RELAXES the maturity thresholds (history,
+    market capitalization) — young, growing names are the point. It keeps the hard
+    executability floor (a real, currently-listed, brokerage-tradable US common
+    stock) and the all-assets exclusion list. ``criteria`` is shown only as the
+    universe bar these companies need not yet clear, so the agent understands what
+    "not yet mature" means. ``composition`` is unused here (the watchlist is not
+    diversified against the universe) but kept in the signature for symmetry.
+    """
+    _ = composition  # watchlist scouting is not steered by universe composition
+    category_line = ", ".join(categories) if categories else "stock"
+    return f"""
+Find up to {count} distinct EMERGING US companies for an investor's watchlist.
+
+Restrict candidates to these categories: {category_line}. Only US-listed common
+stock — no ETFs, funds, or crypto.
+
+{_render_exclusions(exclude_tickers)}
+
+Seek young, fast-growing companies from PROMISING SECTORS (for example AI,
+semiconductors, clean energy, biotech, fintech, space, robotics) that are NOT yet
+mature enough for a conservative tradable universe. It is EXPECTED and WELCOME
+that these names do not yet clear the mature-universe bar below — admitting
+emerging, not-yet-eligible companies is the entire purpose of the watchlist:
+- Latest price greater than {criteria.min_price_usd:,.0f} USD.
+- Average daily turnover at least {criteria.min_avg_daily_turnover_usd:,.0f} USD.
+- Market capitalization greater than {criteria.min_market_cap_usd:,.0f} USD.
+- At least {criteria.min_history_years:,.0f} years of price history.
+
+Do NOT screen candidates out merely for missing those maturity thresholds. The
+only hard requirement is that each candidate is a real, currently-listed US
+common stock that a US brokerage can trade. Use web_search to confirm the company
+is genuinely listed and tradable before proposing it. Return only valid US ticker
+symbols with a one-line rationale each. If you cannot verify enough companies,
+return fewer rather than guessing.
+""".strip()
+
+
+def build_prompt_for_target(
+    categories: list[str],
+    count: int,
+    criteria: EligibilityCriteria,
+    composition: UniverseComposition,
+    exclude_tickers: list[str],
+    target: RunTarget,
+) -> str:
+    """Dispatch to the universe or watchlist prompt builder for ``target``."""
+    builder = (
+        build_watchlist_recommendation_prompt
+        if target == RunTarget.WATCHLIST
+        else build_recommendation_prompt
+    )
+    return builder(categories, count, criteria, composition, exclude_tickers)
+
+
 class OpenAIRecommenderAgent:
     """Production :class:`RecommenderAgent` backed by ``openai-agents``.
 
@@ -230,9 +322,10 @@ class OpenAIRecommenderAgent:
         criteria: EligibilityCriteria,
         composition: UniverseComposition,
         exclude_tickers: list[str],
+        target: RunTarget = RunTarget.UNIVERSE,
     ) -> str:
-        return build_recommendation_prompt(
-            categories, count, criteria, composition, exclude_tickers
+        return build_prompt_for_target(
+            categories, count, criteria, composition, exclude_tickers, target
         )
 
     def recommend(
@@ -242,16 +335,17 @@ class OpenAIRecommenderAgent:
         criteria: EligibilityCriteria,
         composition: UniverseComposition,
         exclude_tickers: list[str],
+        target: RunTarget = RunTarget.UNIVERSE,
     ) -> RecommendationResult:
         prompt = self.build_prompt(
-            categories, count, criteria, composition, exclude_tickers
+            categories, count, criteria, composition, exclude_tickers, target
         )
-        return asyncio.run(self._run(prompt))
+        return asyncio.run(self._run(prompt, target))
 
-    async def _run(self, prompt: str) -> RecommendationResult:
+    async def _run(self, prompt: str, target: RunTarget) -> RecommendationResult:
         agent = build_agent(
             name=_AGENT_NAME,
-            instructions=_AGENT_INSTRUCTIONS,
+            instructions=_agent_instructions(target),
             output_type=RecommendationOutput,
             tools=[web_search],
         )

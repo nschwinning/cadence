@@ -61,6 +61,18 @@ class Settings(BaseSettings):
     #: Hard SDK-enforced turn cap per recommender run (bounds tool-call loops).
     RECOMMENDER_MAX_TURNS: int = 24
 
+    # SEC EDGAR fundamentals provider (used when creating watchlist assets).
+    # EDGAR requires a descriptive User-Agent identifying the caller (name +
+    # contact); set a real one in deployment. Fetching is best-effort and never
+    # fails asset creation, so a placeholder here degrades gracefully to
+    # "fundamentals unavailable" rather than erroring.
+    SEC_EDGAR_USER_AGENT: str = "Cadence (paper-trading research) contact@example.com"
+    #: Base URL for the SEC static files (ticker→CIK map) and the data API.
+    SEC_EDGAR_WWW_BASE_URL: str = "https://www.sec.gov"
+    SEC_EDGAR_DATA_BASE_URL: str = "https://data.sec.gov"
+    #: Wall-clock ceiling (seconds) for a single EDGAR HTTP request.
+    SEC_EDGAR_TIMEOUT_SECONDS: float = 10.0
+
     # Alpaca paper-trading credentials/config. Keys are optional so the app boots
     # without them; a rebalance run fails cleanly when a required key is missing.
     ALPACA_API_KEY: str = ""

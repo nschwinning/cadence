@@ -20,6 +20,14 @@ describe('Sidebar', () => {
     expect(link).toHaveAttribute('href', '/technical-indicators');
   });
 
+  it('renders the Watchlist nav entry linking to its route', () => {
+    renderSidebar();
+
+    const link = screen.getByRole('link', { name: /watchlist/i });
+    expect(link).toBeInTheDocument();
+    expect(link).toHaveAttribute('href', '/watchlist');
+  });
+
   it('renders the System nav entry linking to its route', () => {
     renderSidebar();
 

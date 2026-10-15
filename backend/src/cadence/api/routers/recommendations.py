@@ -13,6 +13,10 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
 from cadence.api.schemas import RecommendationRunCreate, RecommendationRunRead
+from cadence.assets.fundamentals import (
+    FundamentalsProvider,
+    SecEdgarFundamentalsProvider,
+)
 from cadence.assets.market_data import MarketDataProvider, YFinanceMarketDataProvider
 from cadence.broker import Broker, get_broker
 from cadence.config import settings
@@ -48,6 +52,11 @@ def get_market_data_provider() -> MarketDataProvider:
     return YFinanceMarketDataProvider()
 
 
+def get_fundamentals_provider() -> FundamentalsProvider:
+    """Provide the SEC EDGAR fundamentals provider. Overridden with a fake in tests."""
+    return SecEdgarFundamentalsProvider()
+
+
 def get_job_runner() -> RecommendationJobRunner:
     """Provide the process-wide job runner. Overridden in tests."""
     return default_job_runner
@@ -56,6 +65,7 @@ def get_job_runner() -> RecommendationJobRunner:
 DbSession = Annotated[Session, Depends(get_db)]
 Agent = Annotated[RecommenderAgent, Depends(get_recommender_agent)]
 Provider = Annotated[MarketDataProvider, Depends(get_market_data_provider)]
+Fundamentals = Annotated[FundamentalsProvider, Depends(get_fundamentals_provider)]
 BrokerDep = Annotated[Broker, Depends(get_broker)]
 JobRunner = Annotated[RecommendationJobRunner, Depends(get_job_runner)]
 
@@ -70,6 +80,7 @@ def create_recommendation_run(
     db: DbSession,
     agent: Agent,
     provider: Provider,
+    fundamentals: Fundamentals,
     broker: BrokerDep,
     job_runner: JobRunner,
 ) -> RecommendationRunRead:
@@ -87,6 +98,8 @@ def create_recommendation_run(
             agent=agent,
             provider=provider,
             broker=broker,
+            fundamentals=fundamentals,
+            target=payload.target,
         )
     except RecommendationValidationError as exc:
         raise HTTPException(

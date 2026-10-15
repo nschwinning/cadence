@@ -9,6 +9,7 @@ from datetime import date
 from sqlalchemy.orm import Session
 from tests.fakes import (
     FakeBroker,
+    FakeFundamentalsProvider,
     FakeMarketDataProvider,
     FakeRecommenderAgent,
     ManualExecutor,
@@ -45,6 +46,10 @@ def _broker() -> FakeBroker:
     return FakeBroker()
 
 
+def _fundamentals() -> FakeFundamentalsProvider:
+    return FakeFundamentalsProvider()
+
+
 def _runner(db_session: Session, executor: ManualExecutor) -> RecommendationJobRunner:
     @contextmanager
     def factory() -> Iterator[Session]:
@@ -69,6 +74,7 @@ def test_start_run_returns_before_completion(db_session: Session) -> None:
         agent=agent,
         provider=_provider(),
         broker=_broker(),
+        fundamentals=_fundamentals(),
     )
 
     # The job has been submitted but not yet run: still queued.
@@ -93,6 +99,7 @@ def test_single_run_guard_returns_inflight(db_session: Session) -> None:
         agent=agent,
         provider=_provider(),
         broker=_broker(),
+        fundamentals=_fundamentals(),
     )
     second, second_started = runner.start_run(
         db_session,
@@ -101,6 +108,7 @@ def test_single_run_guard_returns_inflight(db_session: Session) -> None:
         agent=agent,
         provider=_provider(),
         broker=_broker(),
+        fundamentals=_fundamentals(),
     )
 
     assert first_started is True
@@ -127,6 +135,7 @@ def test_status_reaps_dead_worker(db_session: Session) -> None:
         FakeRecommenderAgent(),
         _provider(),
         _broker(),
+        _fundamentals(),
     )
     crashing._active[run_id] = future
 

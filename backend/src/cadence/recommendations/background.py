@@ -18,11 +18,12 @@ from typing import Protocol, cast
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from cadence.assets.fundamentals import FundamentalsProvider
 from cadence.assets.market_data import MarketDataProvider
 from cadence.broker.base import Broker
 from cadence.database import SessionLocal
 from cadence.recommendations.agent import RecommenderAgent
-from cadence.recommendations.constants import TERMINAL_PHASES, RunPhase
+from cadence.recommendations.constants import TERMINAL_PHASES, RunPhase, RunTarget
 from cadence.recommendations.models import RecommendationRun
 from cadence.recommendations.service import create_run, execute_run, get_run
 
@@ -70,6 +71,8 @@ class RecommendationJobRunner:
         agent: RecommenderAgent,
         provider: MarketDataProvider,
         broker: Broker,
+        fundamentals: FundamentalsProvider,
+        target: RunTarget = RunTarget.UNIVERSE,
     ) -> tuple[RecommendationRun, bool]:
         """Create and submit a run, or return the in-flight one.
 
@@ -82,9 +85,9 @@ class RecommendationJobRunner:
             if inflight_id is not None:
                 return get_run(session, inflight_id), False
 
-            run_id = create_run(session, count, categories)
+            run_id = create_run(session, count, categories, target)
             future = self._executor.submit(
-                self._job, run_id, agent, provider, broker
+                self._job, run_id, agent, provider, broker, fundamentals
             )
             self._active[run_id] = future
 
@@ -110,9 +113,10 @@ class RecommendationJobRunner:
         agent: RecommenderAgent,
         provider: MarketDataProvider,
         broker: Broker,
+        fundamentals: FundamentalsProvider,
     ) -> None:
         with self._session_factory() as session:
-            execute_run(session, run_id, agent, provider, broker)
+            execute_run(session, run_id, agent, provider, broker, fundamentals)
 
     def _inflight_locked(self) -> int | None:
         """Return the id of a still-running job, pruning finished ones."""

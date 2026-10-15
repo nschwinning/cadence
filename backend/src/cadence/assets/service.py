@@ -19,7 +19,11 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import InstrumentedAttribute, Session
 from sqlalchemy.sql.expression import ColumnElement, UnaryExpression
 
-from cadence.assets.category import SUPPORTED_CATEGORIES, AssetCategory
+from cadence.assets.category import (
+    SUPPORTED_CATEGORIES,
+    AssetCategory,
+    AssetMembership,
+)
 from cadence.assets.errors import (
     AssetNotFoundError,
     DuplicateAssetError,
@@ -28,11 +32,18 @@ from cadence.assets.errors import (
     UntradeableTickerError,
 )
 from cadence.assets.evaluation import EvaluationResult, evaluate
+from cadence.assets.fundamentals import (
+    SOURCE_SEC_EDGAR,
+    Fundamentals,
+    FundamentalsProvider,
+    FundamentalsStatus,
+)
 from cadence.assets.market_data import HistoryBar, MarketDataProvider
 from cadence.assets.metrics import derive_metrics
 from cadence.assets.models import (
     Asset,
     AssetDailySnapshot,
+    AssetFundamentals,
     AssetUniverseEvaluation,
 )
 from cadence.assets.universe_agent import (
@@ -59,6 +70,7 @@ def add_asset(
     provider: MarketDataProvider,
     broker: Broker,
     allowed_categories: Collection[AssetCategory] | None = None,
+    membership: AssetMembership = AssetMembership.UNIVERSE,
 ) -> Asset:
     """Fetch, classify, convert, verify tradability, evaluate, and persist an asset.
 
@@ -72,6 +84,11 @@ def add_asset(
     stock discovered for a crypto-only portfolio). When ``None`` (the default,
     used by manual add and the recommender) only the supported-category gate
     applies, so those callers are unchanged.
+
+    ``membership`` stamps the bucket the asset is persisted into — ``UNIVERSE``
+    (the default, for manual adds and universe recommendations) or ``WATCHLIST``
+    (for watchlist-targeted recommendation runs). Eligibility is recorded the same
+    way regardless; this method never rejects an asset for being ineligible.
 
     Raises:
         DuplicateAssetError: if the (normalized) ticker already exists.
@@ -167,6 +184,7 @@ def add_asset(
         history_years=derived.metrics.history_years,
         is_eligible=result.is_eligible,
         criteria_results=_serialize_criteria(result),
+        membership=membership.value,
     )
     session.add(asset)
     session.commit()
@@ -178,6 +196,52 @@ def add_asset(
     price_history_service.backfill(session, provider, asset)
 
     return asset
+
+
+def record_fundamentals(
+    session: Session,
+    asset: Asset,
+    provider: FundamentalsProvider,
+) -> AssetFundamentals:
+    """Fetch and persist company fundamentals for ``asset`` (best-effort).
+
+    Calls the :class:`FundamentalsProvider` seam, then upserts the asset's single
+    :class:`AssetFundamentals` row with the result. Deliberately robust: the
+    provider contract never raises, but any unexpected error here is caught and
+    stored as a ``status=unavailable`` row so recording fundamentals can never
+    fail the watchlist add that triggered it. A row always exists afterwards,
+    recording that a fetch was attempted (``unavailable`` when EDGAR had no
+    CIK/facts or was unreachable).
+    """
+    try:
+        fetched = provider.fetch_fundamentals(asset.ticker)
+    except Exception as exc:  # noqa: BLE001 - fetching must never fail the add
+        logger.warning("fundamentals fetch failed for %s: %s", asset.ticker, exc)
+        fetched = Fundamentals(
+            status=FundamentalsStatus.UNAVAILABLE, source=SOURCE_SEC_EDGAR
+        )
+
+    existing = session.scalars(
+        select(AssetFundamentals).where(AssetFundamentals.asset_id == asset.id)
+    ).first()
+    if existing is None:
+        record = AssetFundamentals(
+            asset_id=asset.id,
+            source=fetched.source,
+            status=fetched.status.value,
+            cik=fetched.cik,
+            document=fetched.document,
+        )
+        session.add(record)
+    else:
+        existing.source = fetched.source
+        existing.status = fetched.status.value
+        existing.cik = fetched.cik
+        existing.document = fetched.document
+        record = existing
+    session.commit()
+    session.refresh(record)
+    return record
 
 
 def backfill_fractionable(session: Session, broker: Broker) -> int:
@@ -295,6 +359,7 @@ def _filters(
     search: str | None,
     categories: list[str] | None,
     sectors: list[str] | None = None,
+    membership: AssetMembership | None = AssetMembership.UNIVERSE,
 ) -> list[ColumnElement[bool]]:
     """Build the combined WHERE conditions shared by list and count.
 
@@ -303,6 +368,11 @@ def _filters(
     ``sectors`` means "all" for that dimension. A sector filter matches only
     rows whose sector is among the selected slugs, so null-sector rows are
     excluded whenever any sector is selected (``NULL NOT IN (...)``).
+
+    ``membership`` restricts to a single bucket and defaults to ``UNIVERSE`` so
+    every caller that does not opt out sees only the tradable universe (watchlist
+    assets never leak into trading/analytics reads). Pass ``membership=None`` to
+    include every bucket (used by the recommender's cross-bucket dedupe).
     """
     conditions: list[ColumnElement[bool]] = []
     search_condition = _search_filter(search)
@@ -312,6 +382,8 @@ def _filters(
         conditions.append(Asset.category.in_(categories))
     if sectors:
         conditions.append(Asset.sector.in_(sectors))
+    if membership is not None:
+        conditions.append(Asset.membership == AssetMembership(membership).value)
     return conditions
 
 
@@ -347,6 +419,7 @@ def list_assets(
     direction: str = "asc",
     categories: list[str] | None = None,
     sectors: list[str] | None = None,
+    membership: AssetMembership | None = AssetMembership.UNIVERSE,
 ) -> list[Asset]:
     """Return stored assets in the requested order, optionally paged/filtered.
 
@@ -354,12 +427,15 @@ def list_assets(
     substring), ``categories`` restricts to the given instrument categories,
     and ``sectors`` restricts to the given economic sectors (empty/``None`` =
     all for each); all are applied across the whole universe and compose (AND).
-    ``sort`` (``ticker``/``name``) and ``direction`` (``asc``/``desc``) order
-    the result deterministically (default ``ticker asc``). ``limit``/``offset``
-    page the ordered result; ``limit=None`` returns all matching rows.
+    ``membership`` restricts to a single bucket and defaults to ``UNIVERSE``, so
+    every trading/analytics caller sees only the universe; pass ``None`` for all
+    buckets or ``WATCHLIST`` for the watchlist listing. ``sort``
+    (``ticker``/``name``) and ``direction`` (``asc``/``desc``) order the result
+    deterministically (default ``ticker asc``). ``limit``/``offset`` page the
+    ordered result; ``limit=None`` returns all matching rows.
     """
     stmt = select(Asset).order_by(*_order_by(sort, direction))
-    for condition in _filters(search, categories, sectors):
+    for condition in _filters(search, categories, sectors, membership):
         stmt = stmt.where(condition)
     if offset:
         stmt = stmt.offset(offset)
@@ -373,10 +449,11 @@ def count_assets(
     search: str | None = None,
     categories: list[str] | None = None,
     sectors: list[str] | None = None,
+    membership: AssetMembership | None = AssetMembership.UNIVERSE,
 ) -> int:
-    """Count stored assets matching ``search``/``categories``/``sectors`` (all if unset)."""
+    """Count stored assets matching the filters (``UNIVERSE`` membership by default)."""
     stmt = select(func.count()).select_from(Asset)
-    for condition in _filters(search, categories, sectors):
+    for condition in _filters(search, categories, sectors, membership):
         stmt = stmt.where(condition)
     return session.execute(stmt).scalar_one()
 
@@ -601,8 +678,18 @@ def _universe_fingerprint(assets: list[Asset]) -> str:
 
 
 def get_universe_assets(session: Session) -> list[Asset]:
-    """Return the full universe (ticker asc) for evaluation/fingerprinting."""
-    return list(session.scalars(select(Asset).order_by(Asset.ticker)))
+    """Return the full universe (ticker asc) for evaluation/fingerprinting.
+
+    Restricted to ``UNIVERSE`` members so watchlist assets never enter the
+    universe evaluation or its change-detection fingerprint.
+    """
+    return list(
+        session.scalars(
+            select(Asset)
+            .where(Asset.membership == AssetMembership.UNIVERSE.value)
+            .order_by(Asset.ticker)
+        )
+    )
 
 
 def get_evaluation(session: Session) -> AssetUniverseEvaluation | None:

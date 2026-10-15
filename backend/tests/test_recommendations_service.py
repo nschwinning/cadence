@@ -6,13 +6,24 @@ from datetime import date
 
 import pytest
 from sqlalchemy.orm import Session
-from tests.fakes import FakeBroker, FakeMarketDataProvider, FakeRecommenderAgent
+from tests.fakes import (
+    FakeBroker,
+    FakeFundamentalsProvider,
+    FakeMarketDataProvider,
+    FakeRecommenderAgent,
+)
 
 from cadence.assets import service as assets_service
+from cadence.assets.category import AssetMembership
+from cadence.assets.fundamentals import (
+    SOURCE_SEC_EDGAR,
+    Fundamentals,
+    FundamentalsStatus,
+)
 from cadence.assets.market_data import AssetInfo, HistoryBar
 from cadence.recommendations import service
 from cadence.recommendations.agent import RecommendationCandidate
-from cadence.recommendations.constants import CandidateOutcome, RunPhase
+from cadence.recommendations.constants import CandidateOutcome, RunPhase, RunTarget
 from cadence.recommendations.errors import RecommendationValidationError
 
 
@@ -61,6 +72,10 @@ def _eligible_provider_with_profile() -> FakeMarketDataProvider:
 
 def _broker() -> FakeBroker:
     return FakeBroker()
+
+
+def _fundamentals() -> FakeFundamentalsProvider:
+    return FakeFundamentalsProvider()
 
 
 def _agent(tickers: list[str], tool_call_count: int = 2) -> FakeRecommenderAgent:
@@ -118,7 +133,9 @@ def test_execute_run_completes_and_records_prompt_and_tool_calls(
     run_id = service.create_run(db_session, count=1, categories=["stock"])
     agent = _agent(["AAA"], tool_call_count=4)
 
-    service.execute_run(db_session, run_id, agent, _eligible_provider(), _broker())
+    service.execute_run(
+        db_session, run_id, agent, _eligible_provider(), _broker(), _fundamentals()
+    )
 
     run = service.get_run(db_session, run_id)
     assert run.status == RunPhase.COMPLETED.value
@@ -140,7 +157,9 @@ def test_execute_run_prompt_reflects_universe_composition(
     run_id = service.create_run(db_session, count=1, categories=["stock"])
     agent = _agent(["AAA"])
 
-    service.execute_run(db_session, run_id, agent, _eligible_provider(), _broker())
+    service.execute_run(
+        db_session, run_id, agent, _eligible_provider(), _broker(), _fundamentals()
+    )
 
     run = service.get_run(db_session, run_id)
     assert run.prompt is not None
@@ -165,7 +184,9 @@ def test_ineligible_candidate_not_persisted_and_recorded(
     run_id = service.create_run(db_session, count=2, categories=["stock"])
     agent = _agent(["BAD"])
 
-    service.execute_run(db_session, run_id, agent, _ineligible_provider(), _broker())
+    service.execute_run(
+        db_session, run_id, agent, _ineligible_provider(), _broker(), _fundamentals()
+    )
 
     run = service.get_run(db_session, run_id)
     assert run.status == RunPhase.COMPLETED.value
@@ -181,7 +202,9 @@ def test_duplicate_candidate_recorded_as_skipped(db_session: Session) -> None:
 
     run_id = service.create_run(db_session, count=2, categories=["stock"])
     agent = _agent(["DUP"])
-    service.execute_run(db_session, run_id, agent, _eligible_provider(), _broker())
+    service.execute_run(
+        db_session, run_id, agent, _eligible_provider(), _broker(), _fundamentals()
+    )
 
     run = service.get_run(db_session, run_id)
     outcomes = {r["ticker"]: r["outcome"] for r in run.results}
@@ -196,7 +219,9 @@ def test_untradeable_candidate_recorded_as_error_run_completes(
     run_id = service.create_run(db_session, count=2, categories=["stock"])
     agent = _agent(["BAYN.DE", "GOOD"])
 
-    service.execute_run(db_session, run_id, agent, _eligible_provider(), _broker())
+    service.execute_run(
+        db_session, run_id, agent, _eligible_provider(), _broker(), _fundamentals()
+    )
 
     run = service.get_run(db_session, run_id)
     assert run.status == RunPhase.COMPLETED.value
@@ -216,7 +241,9 @@ def test_execute_run_passes_existing_tickers_as_exclusions(
 
     run_id = service.create_run(db_session, count=1, categories=["stock"])
     agent = _agent(["NEW"])
-    service.execute_run(db_session, run_id, agent, _eligible_provider(), _broker())
+    service.execute_run(
+        db_session, run_id, agent, _eligible_provider(), _broker(), _fundamentals()
+    )
 
     assert agent.exclude_calls == [["SEED"]]
     run = service.get_run(db_session, run_id)
@@ -233,7 +260,9 @@ def test_added_assets_capped_at_requested_count(db_session: Session) -> None:
     agent = _agent(["AAA", "BBB", "CCC", "DDD"])
 
     before = _tickers(db_session)
-    service.execute_run(db_session, run_id, agent, _eligible_provider(), _broker())
+    service.execute_run(
+        db_session, run_id, agent, _eligible_provider(), _broker(), _fundamentals()
+    )
 
     run = service.get_run(db_session, run_id)
     added = [
@@ -259,10 +288,169 @@ def test_failed_run_records_reason_and_keeps_prior_assets(
     run_id = service.create_run(db_session, count=2, categories=["stock"])
     agent = FakeRecommenderAgent(error=RuntimeError("agent exploded"))
 
-    service.execute_run(db_session, run_id, agent, _eligible_provider(), _broker())
+    service.execute_run(
+        db_session, run_id, agent, _eligible_provider(), _broker(), _fundamentals()
+    )
 
     run = service.get_run(db_session, run_id)
     assert run.status == RunPhase.FAILED.value
     assert run.error is not None and "exploded" in run.error
     # The asset added before the failing run survives.
     assert "KEEP" in _tickers(db_session)
+
+
+# --- 4.6 watchlist runs -----------------------------------------------------
+
+
+def _watchlist_fundamentals(ticker: str) -> FakeFundamentalsProvider:
+    return FakeFundamentalsProvider(
+        by_ticker={
+            ticker: Fundamentals(
+                status=FundamentalsStatus.AVAILABLE,
+                source=SOURCE_SEC_EDGAR,
+                cik="0000320193",
+                document={"figures": {"revenue": {"value": 1.0, "unit": "USD"}}},
+            )
+        }
+    )
+
+
+def test_create_run_rejects_watchlist_with_non_stock_category(
+    db_session: Session,
+) -> None:
+    # The watchlist is equities-only (EDGAR fundamentals), so a crypto category
+    # is rejected at queue time.
+    with pytest.raises(RecommendationValidationError):
+        service.create_run(
+            db_session,
+            count=1,
+            categories=["crypto"],
+            target=RunTarget.WATCHLIST,
+        )
+    with pytest.raises(RecommendationValidationError):
+        service.create_run(
+            db_session,
+            count=1,
+            categories=["stock", "crypto"],
+            target=RunTarget.WATCHLIST,
+        )
+
+
+def test_watchlist_run_adds_ineligible_stock_with_fundamentals(
+    db_session: Session,
+) -> None:
+    # An emerging (ineligible, sub-threshold market cap) stock is KEPT as a
+    # watchlist member — not deleted the way a universe run would — and its
+    # fundamentals are fetched and persisted.
+    run_id = service.create_run(
+        db_session, count=1, categories=["stock"], target=RunTarget.WATCHLIST
+    )
+    agent = _agent(["EMERG"])
+
+    service.execute_run(
+        db_session,
+        run_id,
+        agent,
+        _ineligible_provider(),
+        _broker(),
+        _watchlist_fundamentals("EMERG"),
+    )
+
+    run = service.get_run(db_session, run_id)
+    assert run.status == RunPhase.COMPLETED.value
+    outcomes = {r["ticker"]: r["outcome"] for r in run.results}
+    assert outcomes["EMERG"] == CandidateOutcome.ADDED.value
+    # The agent ran under the watchlist target.
+    assert agent.target_calls == [RunTarget.WATCHLIST]
+
+    emerg = next(
+        a
+        for a in assets_service.list_assets(db_session, membership=None)
+        if a.ticker == "EMERG"
+    )
+    assert emerg.membership == AssetMembership.WATCHLIST.value
+    assert emerg.is_eligible is False
+    # Fundamentals were recorded for the watchlist member.
+    assert emerg.fundamentals is not None
+    assert emerg.fundamentals.status == FundamentalsStatus.AVAILABLE.value
+    # It stays out of the universe candidate reads.
+    assert "EMERG" not in _tickers(db_session)
+
+
+def test_watchlist_run_records_untradable_candidate_as_error(
+    db_session: Session,
+) -> None:
+    run_id = service.create_run(
+        db_session, count=2, categories=["stock"], target=RunTarget.WATCHLIST
+    )
+    agent = _agent(["BAYN.DE", "GOOD"])
+
+    service.execute_run(
+        db_session,
+        run_id,
+        agent,
+        _ineligible_provider(),
+        _broker(),
+        _watchlist_fundamentals("GOOD"),
+    )
+
+    run = service.get_run(db_session, run_id)
+    assert run.status == RunPhase.COMPLETED.value
+    outcomes = {r["ticker"]: r["outcome"] for r in run.results}
+    assert outcomes["BAYN.DE"] == CandidateOutcome.ERROR.value
+    assert outcomes["GOOD"] == CandidateOutcome.ADDED.value
+
+
+def test_watchlist_run_skips_existing_ticker(db_session: Session) -> None:
+    # A ticker already tracked (here, in the universe) is deduped against ALL
+    # assets, not just the watchlist.
+    assets_service.add_asset(db_session, "DUP", _eligible_provider(), _broker())
+
+    run_id = service.create_run(
+        db_session, count=1, categories=["stock"], target=RunTarget.WATCHLIST
+    )
+    agent = _agent(["DUP"])
+    service.execute_run(
+        db_session,
+        run_id,
+        agent,
+        _ineligible_provider(),
+        _broker(),
+        _watchlist_fundamentals("DUP"),
+    )
+
+    run = service.get_run(db_session, run_id)
+    outcomes = {r["ticker"]: r["outcome"] for r in run.results}
+    assert outcomes["DUP"] == CandidateOutcome.SKIPPED_DUPLICATE.value
+    # The pre-existing universe asset is unchanged (still a universe member).
+    dup = next(
+        a
+        for a in assets_service.list_assets(db_session, membership=None)
+        if a.ticker == "DUP"
+    )
+    assert dup.membership == AssetMembership.UNIVERSE.value
+
+
+def test_universe_run_leaves_membership_universe_without_fundamentals(
+    db_session: Session,
+) -> None:
+    # A universe run (the default target) adds universe members and fetches no
+    # fundamentals, even when a fundamentals provider is supplied.
+    run_id = service.create_run(db_session, count=1, categories=["stock"])
+    agent = _agent(["UNI"])
+    provider = _watchlist_fundamentals("UNI")
+
+    service.execute_run(
+        db_session, run_id, agent, _eligible_provider(), _broker(), provider
+    )
+
+    assert agent.target_calls == [RunTarget.UNIVERSE]
+    uni = next(
+        a
+        for a in assets_service.list_assets(db_session, membership=None)
+        if a.ticker == "UNI"
+    )
+    assert uni.membership == AssetMembership.UNIVERSE.value
+    assert uni.fundamentals is None
+    # The fundamentals provider was never consulted on a universe run.
+    assert provider.fetch_calls == []

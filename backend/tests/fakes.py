@@ -9,6 +9,11 @@ from typing import Any
 
 from cadence.agents.tools import note_web_search
 from cadence.ai_portfolio.agent import AIPortfolioBuildResult, AIRebalanceResult
+from cadence.assets.fundamentals import (
+    SOURCE_SEC_EDGAR,
+    Fundamentals,
+    FundamentalsStatus,
+)
 from cadence.assets.market_data import AssetDetailData, AssetInfo, HistoryBar
 from cadence.assets.universe_agent import (
     UniverseEvaluationOutput,
@@ -22,9 +27,10 @@ from cadence.recommendations.agent import (
     RecommendationCandidate,
     RecommendationOutput,
     RecommendationResult,
-    build_recommendation_prompt,
+    build_prompt_for_target,
 )
 from cadence.recommendations.composition import UniverseComposition
+from cadence.recommendations.constants import RunTarget
 
 
 def _synthetic_series(
@@ -183,6 +189,7 @@ class FakeRecommenderAgent:
         self._error = error
         self.recommend_calls: list[tuple[list[str], int]] = []
         self.exclude_calls: list[list[str]] = []
+        self.target_calls: list[RunTarget] = []
 
     def build_prompt(
         self,
@@ -191,9 +198,10 @@ class FakeRecommenderAgent:
         criteria: EligibilityCriteria,
         composition: UniverseComposition,
         exclude_tickers: list[str],
+        target: RunTarget = RunTarget.UNIVERSE,
     ) -> str:
-        return build_recommendation_prompt(
-            categories, count, criteria, composition, exclude_tickers
+        return build_prompt_for_target(
+            categories, count, criteria, composition, exclude_tickers, target
         )
 
     def recommend(
@@ -203,14 +211,48 @@ class FakeRecommenderAgent:
         criteria: EligibilityCriteria,
         composition: UniverseComposition,
         exclude_tickers: list[str],
+        target: RunTarget = RunTarget.UNIVERSE,
     ) -> RecommendationResult:
         self.recommend_calls.append((list(categories), count))
         self.exclude_calls.append(list(exclude_tickers))
+        self.target_calls.append(target)
         if self._error is not None:
             raise self._error
         return RecommendationResult(
             output=RecommendationOutput(candidates=list(self._candidates)),
             tool_call_count=self._tool_call_count,
+        )
+
+
+class FakeFundamentalsProvider:
+    """In-memory :class:`FundamentalsProvider` for tests (no network).
+
+    ``by_ticker`` maps a ticker to the :class:`Fundamentals` to return; a ticker
+    absent from the map yields an ``UNAVAILABLE`` result (the missing-CIK path).
+    Set ``error`` to raise from :meth:`fetch_fundamentals` so the service's
+    best-effort guard (which must still persist ``UNAVAILABLE`` and never fail the
+    add) can be exercised. ``fetch_calls`` records each ticker fetched.
+    """
+
+    def __init__(
+        self,
+        *,
+        by_ticker: dict[str, Fundamentals] | None = None,
+        error: Exception | None = None,
+    ) -> None:
+        self._by_ticker = {t.upper(): f for t, f in (by_ticker or {}).items()}
+        self._error = error
+        self.fetch_calls: list[str] = []
+
+    def fetch_fundamentals(self, ticker: str) -> Fundamentals:
+        self.fetch_calls.append(ticker)
+        if self._error is not None:
+            raise self._error
+        found = self._by_ticker.get(ticker.strip().upper())
+        if found is not None:
+            return found
+        return Fundamentals(
+            status=FundamentalsStatus.UNAVAILABLE, source=SOURCE_SEC_EDGAR
         )
 
 

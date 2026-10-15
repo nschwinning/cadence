@@ -7,10 +7,13 @@ from datetime import date
 
 import pytest
 from fastapi.testclient import TestClient
-from tests.fakes import FakeMarketDataProvider
+from sqlalchemy.orm import Session
+from tests.fakes import FakeBroker, FakeMarketDataProvider
 
 from cadence.api.app import app
 from cadence.api.routers.assets import get_market_data_provider
+from cadence.assets import service as assets_service
+from cadence.assets.category import AssetMembership
 from cadence.assets.errors import (
     MarketDataUnavailableError,
     UnknownTickerError,
@@ -126,16 +129,21 @@ def test_create_asset_success(client: TestClient) -> None:
         "sector",
         "exchange",
         "currency",
+        "membership",
         "market_cap_usd",
         "avg_daily_turnover_usd",
         "history_years",
         "is_eligible",
         "criteria_results",
+        "fundamentals",
         "created_at",
     }
     # The broker's canonical symbol is captured at add time; for a US equity it
     # equals the ticker.
     assert body["alpaca_symbol"] == "AAPL"
+    # A manual add is a universe member with no fundamentals fetched.
+    assert body["membership"] == "universe"
+    assert body["fundamentals"] is None
     # Sector is present and null-safe: this eligible provider reports no sector.
     assert body["sector"] is None
     names = {c["name"] for c in body["criteria_results"]}
@@ -235,6 +243,37 @@ def test_list_assets_returns_envelope_ticker_asc_by_default(
     assert body["total"] == 3
     # Default order is ticker ascending.
     assert [a["ticker"] for a in body["items"]] == ["AAA", "BBB", "CCC"]
+
+
+def test_list_assets_honors_membership_filter_and_count(
+    client: TestClient, db_session: Session
+) -> None:
+    # Two universe assets via the API, one watchlist asset seeded directly.
+    _use_provider(_eligible_provider())
+    _add(client, "AAA")
+    _add(client, "BBB")
+    assets_service.add_asset(
+        db_session,
+        "WATCH",
+        _eligible_provider(),
+        FakeBroker(),
+        membership=AssetMembership.WATCHLIST,
+    )
+
+    # Default listing is the universe only.
+    default = client.get("/api/v1/assets").json()
+    assert [a["ticker"] for a in default["items"]] == ["AAA", "BBB"]
+    assert default["total"] == 2
+
+    # The watchlist listing returns only the watchlist member, with its own count.
+    watch = client.get("/api/v1/assets", params={"membership": "watchlist"}).json()
+    assert [a["ticker"] for a in watch["items"]] == ["WATCH"]
+    assert watch["total"] == 1
+    assert watch["items"][0]["membership"] == "watchlist"
+
+    # An unknown membership value is rejected.
+    bad = client.get("/api/v1/assets", params={"membership": "bogus"})
+    assert bad.status_code == 422
 
 
 def test_list_assets_pagination_offset_and_total(client: TestClient) -> None:
