@@ -100,6 +100,14 @@ describe('WatchlistPage', () => {
 
     const heading = await screen.findByText('EMERG');
     const card = heading.closest('li') as HTMLElement;
+    // The watchlist is fetched with an allowed page size (the backend rejects
+    // any limit outside {20, 50, 100} with a 422), filtered to watchlist members.
+    expect(mockedGet).toHaveBeenCalledWith(
+      '/api/v1/assets',
+      expect.objectContaining({
+        params: expect.objectContaining({ membership: 'watchlist', limit: 100 }),
+      }),
+    );
     // Revenue is rendered compactly with its margin basis and derived margins.
     expect(within(card).getByText('Revenue')).toBeInTheDocument();
     expect(within(card).getByText(/\$400\.0B/)).toBeInTheDocument();

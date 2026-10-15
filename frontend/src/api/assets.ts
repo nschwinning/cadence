@@ -110,8 +110,10 @@ export async function listAssets(params: {
  * renders every entry with its fundamentals without paging.
  */
 export async function listWatchlist(): Promise<Asset[]> {
+  // 100 is the largest allowed page size; the watchlist is small by design so a
+  // single max-size page covers it without paging.
   const { data } = await apiClient.get<AssetPage>('/api/v1/assets', {
-    params: { membership: 'watchlist', limit: 200, offset: 0 },
+    params: { membership: 'watchlist', limit: 100, offset: 0 },
   });
   return data.items;
 }
