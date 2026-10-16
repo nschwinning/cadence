@@ -7,14 +7,17 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from sqlalchemy.orm import Session
 
+from cadence.api.cron_auth import require_valid_cron_token
 from cadence.api.schemas import (
     AssetCreate,
     AssetDetailHistoryPoint,
     AssetDetailRead,
+    AssetFundamentalsRead,
     AssetListResponse,
     AssetRead,
     AssetUniverseEvaluationRead,
     AssetUniverseEvaluationResponse,
+    FundamentalsRefreshRead,
 )
 from cadence.assets import service
 from cadence.assets.category import AssetCategory, AssetMembership
@@ -26,6 +29,10 @@ from cadence.assets.errors import (
     UnknownTickerError,
     UnsupportedCategoryError,
     UntradeableTickerError,
+)
+from cadence.assets.fundamentals import (
+    FundamentalsProvider,
+    SecEdgarFundamentalsProvider,
 )
 from cadence.assets.market_data import (
     MarketDataProvider,
@@ -53,9 +60,17 @@ def get_universe_evaluation_agent() -> UniverseEvaluationAgent:
     return OpenAIUniverseEvaluationAgent()
 
 
+def get_fundamentals_provider() -> FundamentalsProvider:
+    """Provide the SEC EDGAR fundamentals provider. Overridden with a fake in tests."""
+    return SecEdgarFundamentalsProvider()
+
+
 DbSession = Annotated[Session, Depends(get_db)]
 Provider = Annotated[MarketDataProvider, Depends(get_market_data_provider)]
 BrokerDep = Annotated[Broker, Depends(get_broker)]
+FundamentalsDep = Annotated[
+    FundamentalsProvider, Depends(get_fundamentals_provider)
+]
 EvaluationAgentDep = Annotated[
     UniverseEvaluationAgent, Depends(get_universe_evaluation_agent)
 ]
@@ -67,14 +82,18 @@ def create_asset(
     db: DbSession,
     provider: Provider,
     broker: BrokerDep,
+    fundamentals: FundamentalsDep,
 ) -> AssetRead:
     """Add an asset by ticker: enrich, classify, verify tradability, and persist.
 
-    A brokerage :class:`ConnectionError` (unconfigured/unreachable Alpaca) is
-    handled globally and returned as 503; see ``create_app``.
+    Stock assets also get their SEC EDGAR fundamentals fetched on creation
+    (best-effort). A brokerage :class:`ConnectionError` (unconfigured/unreachable
+    Alpaca) is handled globally and returned as 503; see ``create_app``.
     """
     try:
-        asset = service.add_asset(db, payload.ticker, provider, broker)
+        asset = service.add_asset(
+            db, payload.ticker, provider, broker, fundamentals=fundamentals
+        )
     except DuplicateAssetError as exc:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT, detail=str(exc)
@@ -92,6 +111,22 @@ def create_asset(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)
         ) from exc
     return AssetRead.model_validate(asset)
+
+
+@router.post("/fundamentals/refresh", response_model=FundamentalsRefreshRead)
+def refresh_fundamentals(
+    db: DbSession,
+    fundamentals: FundamentalsDep,
+    _token: Annotated[None, Depends(require_valid_cron_token)],
+) -> FundamentalsRefreshRead:
+    """Re-fetch SEC EDGAR fundamentals for every stock asset (quarterly cron).
+
+    Guarded by the ``X-Cron-Token`` header. Runs the best-effort batch refresh
+    synchronously and returns a summary of the run. Also serves as the one-time
+    backfill for existing stocks (invoked once after deploy).
+    """
+    summary = service.refresh_stock_fundamentals(db, fundamentals)
+    return FundamentalsRefreshRead.model_validate(summary)
 
 
 # Allowed page sizes, kept in lockstep with the frontend selector.
@@ -322,6 +357,13 @@ def get_asset_details(
             for point in snapshot.price_history
         ],
         snapshot_date=snapshot.snapshot_date,
+        # Surface the asset's stored fundamentals when present; absent (null)
+        # otherwise. Reading the relationship never triggers a fetch.
+        fundamentals=(
+            AssetFundamentalsRead.model_validate(asset.fundamentals)
+            if asset.fundamentals is not None
+            else None
+        ),
     )
 
 

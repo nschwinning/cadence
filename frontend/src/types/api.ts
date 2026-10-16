@@ -217,6 +217,12 @@ export interface AssetDetail {
   avg_volume: number | null;
   price_history: AssetDetailHistoryPoint[];
   snapshot_date: string;
+  /**
+   * The asset's SEC EDGAR fundamentals when a record exists (populated for
+   * watchlist assets today), or `null` when none has been fetched. Surfacing it
+   * never triggers a fetch.
+   */
+  fundamentals: AssetFundamentals | null;
 }
 
 // --------------------------------------------------------------------------- //
@@ -1067,6 +1073,54 @@ export interface TechnicalIndicatorConfig {
   indicators: IndicatorInfo[];
   trend_gate: TrendGateConfig;
   reversal_flags: ReversalFlagsConfig;
+}
+
+/**
+ * One watchlist asset's short-window technical profile. Mirrors the backend
+ * `WatchlistIndicatorRead`. Only the short-window (momentum / mean-reversion)
+ * subset is carried — the long-window indicators and the uptrend trend-gate
+ * verdict are deliberately omitted, as they are not a meaningful signal for
+ * emerging names. When `insufficient_history` is `true` (fewer than the
+ * minimum-bars floor, or no snapshot yet) the value fields are `null`.
+ */
+export interface WatchlistIndicator {
+  asset_id: number;
+  ticker: string;
+  trading_date: string | null;
+  bar_count: number | null;
+  insufficient_history: boolean;
+  rsi_14: number | null;
+  macd_line: number | null;
+  macd_signal: number | null;
+  macd_hist: number | null;
+  ema_20: number | null;
+  bb_pctb: number | null;
+  bb_width: number | null;
+  hvol_20: number | null;
+  vol_ratio_50: number | null;
+  obv_change_20d: number | null;
+  rev_macd_hist_rollover: boolean;
+  rev_rsi_rollover: boolean;
+  rev_return_decel: boolean;
+  rev_obv_price_divergence: boolean;
+}
+
+/** The batched watchlist indicators response plus the minimum-bars floor. */
+export interface WatchlistIndicatorsResponse {
+  min_bars: number;
+  items: WatchlistIndicator[];
+}
+
+/**
+ * A single asset's short-window technical profile with the minimum-bars floor.
+ * Mirrors the backend `AssetIndicatorResponse` for
+ * `GET /api/v1/technical-indicators/assets/{ticker}`. Serves assets of any
+ * membership. `indicator` is `null` only when the asset has no stored snapshot;
+ * an asset below the floor is returned with `insufficient_history` set.
+ */
+export interface AssetIndicatorResponse {
+  min_bars: number;
+  indicator: WatchlistIndicator | null;
 }
 
 // --- System status ---------------------------------------------------------

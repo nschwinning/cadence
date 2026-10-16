@@ -431,11 +431,11 @@ def test_watchlist_run_skips_existing_ticker(db_session: Session) -> None:
     assert dup.membership == AssetMembership.UNIVERSE.value
 
 
-def test_universe_run_leaves_membership_universe_without_fundamentals(
+def test_universe_run_adds_member_and_fetches_fundamentals(
     db_session: Session,
 ) -> None:
-    # A universe run (the default target) adds universe members and fetches no
-    # fundamentals, even when a fundamentals provider is supplied.
+    # A universe run (the default target) adds universe members and — like every
+    # stock-creation path — fetches and persists their fundamentals on creation.
     run_id = service.create_run(db_session, count=1, categories=["stock"])
     agent = _agent(["UNI"])
     provider = _watchlist_fundamentals("UNI")
@@ -451,6 +451,7 @@ def test_universe_run_leaves_membership_universe_without_fundamentals(
         if a.ticker == "UNI"
     )
     assert uni.membership == AssetMembership.UNIVERSE.value
-    assert uni.fundamentals is None
-    # The fundamentals provider was never consulted on a universe run.
-    assert provider.fetch_calls == []
+    # Fundamentals were fetched and persisted for the universe member.
+    assert provider.fetch_calls == ["UNI"]
+    assert uni.fundamentals is not None
+    assert uni.fundamentals.status == FundamentalsStatus.AVAILABLE.value

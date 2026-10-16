@@ -51,6 +51,12 @@ class TechnicalIndicator(Base):
     # The calendar day of the latest bar the snapshot was computed from.
     trading_date: Mapped[date] = mapped_column(Date, nullable=False)
 
+    # Number of daily bars the snapshot was computed from. Used to derive the
+    # watchlist short-window insufficient-history marker
+    # (bar_count < WATCHLIST_MIN_BARS). Nullable: rows written before this column
+    # existed have NULL and are treated as insufficient for watchlist reads.
+    bar_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
     # --- Indicator values (nullable: NULL when history is insufficient) ----
     close: Mapped[float | None] = mapped_column(Float, nullable=True)
     sma_50: Mapped[float | None] = mapped_column(Float, nullable=True)

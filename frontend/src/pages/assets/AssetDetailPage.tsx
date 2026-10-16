@@ -1,8 +1,11 @@
 import { Link, useParams } from 'react-router-dom';
 import axios from 'axios';
 import { useAssetDetail } from '../../api/assets';
+import { useAssetIndicators } from '../../api/technicalIndicators';
 import { CategoryBadge } from '../../components/CategoryBadge';
 import { SectorBadge } from '../../components/SectorBadge';
+import { FundamentalsPanel } from '../../components/FundamentalsPanel';
+import { TechnicalPanel } from '../../components/TechnicalPanel';
 import type { AssetDetail, AssetDetailHistoryPoint } from '../../types/api';
 
 /**
@@ -142,6 +145,50 @@ function Fact({ label, value }: { label: string; value: string }) {
   );
 }
 
+/**
+ * The short-window technical-indicator section for the detail page. Fetches the
+ * per-asset profile independently of the detail read so a technical load error
+ * surfaces a message here without blocking the rest of the page.
+ */
+function TechnicalSection({ ticker }: { ticker: string }) {
+  const { data, isPending, isError, refetch, isFetching } =
+    useAssetIndicators(ticker);
+
+  return (
+    <div className="rounded-lg border border-slate-200 bg-white p-6 shadow-sm">
+      <h2 className="text-lg font-semibold text-slate-900">
+        Technical indicators
+      </h2>
+      <div className="mt-4">
+        {isPending ? (
+          <p role="status" aria-live="polite" className="text-sm text-slate-500">
+            Loading technical indicators…
+          </p>
+        ) : isError ? (
+          <div
+            role="alert"
+            className="rounded border border-red-300 bg-red-50 px-3 py-2 text-sm text-red-800"
+          >
+            <p className="font-semibold">
+              Could not load technical indicators.
+            </p>
+            <button
+              type="button"
+              onClick={() => refetch()}
+              disabled={isFetching}
+              className="mt-2 inline-flex rounded border border-red-300 px-2.5 py-1 text-xs font-medium text-red-700 hover:bg-red-100 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {isFetching ? 'Retrying…' : 'Retry'}
+            </button>
+          </div>
+        ) : (
+          <TechnicalPanel indicator={data.indicator} minBars={data.min_bars} />
+        )}
+      </div>
+    </div>
+  );
+}
+
 function DetailView({ detail }: { detail: AssetDetail }) {
   const change = computeChange(detail.current_price, detail.previous_close);
   const trend = change?.direction ?? 'flat';
@@ -268,6 +315,17 @@ function DetailView({ detail }: { detail: AssetDetail }) {
           </div>
         </dl>
       </div>
+
+      {/* Fundamentals (from the detail read; unavailable when absent) */}
+      <div className="rounded-lg border border-slate-200 bg-white p-6 shadow-sm">
+        <h2 className="text-lg font-semibold text-slate-900">Fundamentals</h2>
+        <div className="mt-4">
+          <FundamentalsPanel fundamentals={detail.fundamentals} />
+        </div>
+      </div>
+
+      {/* Technical indicators (fetched separately; errors don't block the page) */}
+      <TechnicalSection ticker={detail.ticker} />
     </section>
   );
 }

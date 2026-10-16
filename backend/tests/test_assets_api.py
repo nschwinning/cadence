@@ -7,20 +7,31 @@ from datetime import date
 
 import pytest
 from fastapi.testclient import TestClient
+from sqlalchemy import select
 from sqlalchemy.orm import Session
-from tests.fakes import FakeBroker, FakeMarketDataProvider
+from tests.fakes import FakeBroker, FakeFundamentalsProvider, FakeMarketDataProvider
 
 from cadence.api.app import app
-from cadence.api.routers.assets import get_market_data_provider
+from cadence.api.routers.assets import (
+    get_fundamentals_provider,
+    get_market_data_provider,
+)
 from cadence.assets import service as assets_service
-from cadence.assets.category import AssetMembership
+from cadence.assets.category import AssetCategory, AssetMembership
 from cadence.assets.errors import (
     MarketDataUnavailableError,
     UnknownTickerError,
 )
+from cadence.assets.fundamentals import (
+    SOURCE_SEC_EDGAR,
+    Fundamentals,
+    FundamentalsStatus,
+)
 from cadence.assets.market_data import AssetDetailData, AssetInfo, HistoryBar
+from cadence.assets.models import Asset, AssetFundamentals
 from cadence.broker import get_broker
 from cadence.broker.stub import StubBroker
+from cadence.config import settings
 
 _EXPECTED_CRITERIA = {"price", "avg_daily_turnover", "market_cap", "history"}
 
@@ -42,6 +53,7 @@ _DETAIL_KEYS = {
     "avg_volume",
     "price_history",
     "snapshot_date",
+    "fundamentals",
 }
 
 
@@ -54,6 +66,23 @@ def _detail_provider() -> FakeMarketDataProvider:
         employees=164_000,
         website="https://apple.com",
     )
+    provider._detail = AssetDetailData(
+        current_price=191.0,
+        previous_close=188.0,
+        short_description="A canned description.",
+        price_history=[
+            HistoryBar(date=date(2024, 1, 2), close=180.0, volume=1_000_000.0),
+            HistoryBar(date=date(2024, 1, 3), close=185.0, volume=1_100_000.0),
+        ],
+        volume=52_140_300,
+        avg_volume=58_910_000,
+    )
+    return provider
+
+
+def _detail_provider_crypto() -> FakeMarketDataProvider:
+    # A crypto variant of _detail_provider: creation does not fetch fundamentals.
+    provider = _eligible_provider(quote_type="CRYPTOCURRENCY")
     provider._detail = AssetDetailData(
         current_price=191.0,
         previous_close=188.0,
@@ -141,9 +170,11 @@ def test_create_asset_success(client: TestClient) -> None:
     # The broker's canonical symbol is captured at add time; for a US equity it
     # equals the ticker.
     assert body["alpaca_symbol"] == "AAPL"
-    # A manual add is a universe member with no fundamentals fetched.
+    # A manual add is a universe member; a stock add now fetches fundamentals on
+    # creation. The default test provider has no data, so the row is unavailable.
     assert body["membership"] == "universe"
-    assert body["fundamentals"] is None
+    assert body["fundamentals"] is not None
+    assert body["fundamentals"]["status"] == "unavailable"
     # Sector is present and null-safe: this eligible provider reports no sector.
     assert body["sector"] is None
     names = {c["name"] for c in body["criteria_results"]}
@@ -639,6 +670,50 @@ def test_get_asset_details_success(client: TestClient) -> None:
         assert set(point.keys()) == {"date", "close"}
 
 
+def test_get_asset_details_includes_available_fundamentals(
+    client: TestClient,
+    db_session: Session,
+) -> None:
+    # Fundamentals are fetched on creation; the detail read surfaces them.
+    _use_provider(_detail_provider())
+    _use_fundamentals(
+        FakeFundamentalsProvider(
+            by_ticker={
+                "AAPL": Fundamentals(
+                    status=FundamentalsStatus.AVAILABLE,
+                    source=SOURCE_SEC_EDGAR,
+                    cik="0000320193",
+                    document={"figures": {"revenue": {"value": 400_000_000_000}}},
+                )
+            }
+        )
+    )
+    client.post("/api/v1/assets", json={"ticker": "AAPL"})
+
+    response = client.get("/api/v1/assets/aapl/details")
+
+    assert response.status_code == 200
+    fundamentals = response.json()["fundamentals"]
+    assert fundamentals is not None
+    assert fundamentals["status"] == "available"
+    assert fundamentals["cik"] == "0000320193"
+    assert fundamentals["document"]["figures"]["revenue"]["value"] == 400_000_000_000
+
+
+def test_get_asset_details_absent_fundamentals_serve_null(
+    client: TestClient,
+) -> None:
+    # A crypto asset has no fundamentals row (no fetch is attempted); the detail
+    # read reports it as null and still succeeds.
+    _use_provider(_detail_provider_crypto())
+    client.post("/api/v1/assets", json={"ticker": "BTC"})
+
+    response = client.get("/api/v1/assets/btc/details")
+
+    assert response.status_code == 200
+    assert response.json()["fundamentals"] is None
+
+
 def test_get_asset_details_absent_company_fields_serve_null(
     client: TestClient,
 ) -> None:
@@ -690,7 +765,172 @@ def test_get_asset_details_fetch_failure_returns_503(
     assert response.status_code == 503
 
 
+def _use_fundamentals(fake: FakeFundamentalsProvider) -> None:
+    app.dependency_overrides[get_fundamentals_provider] = lambda: fake
+
+
+# --- Fetch fundamentals on stock creation ----------------------------------
+
+
+def test_create_stock_asset_persists_fundamentals(
+    client: TestClient, db_session: Session
+) -> None:
+    _use_provider(_eligible_provider())
+    _use_fundamentals(
+        FakeFundamentalsProvider(
+            by_ticker={
+                "AAPL": Fundamentals(
+                    status=FundamentalsStatus.AVAILABLE,
+                    source=SOURCE_SEC_EDGAR,
+                    cik="0000320193",
+                    document={"figures": {"revenue": {"value": 1.0}}},
+                )
+            }
+        )
+    )
+
+    body = client.post("/api/v1/assets", json={"ticker": "AAPL"}).json()
+
+    asset = db_session.get(Asset, body["id"])
+    assert asset is not None
+    row = db_session.scalars(
+        select(AssetFundamentals).where(AssetFundamentals.asset_id == asset.id)
+    ).one()
+    assert row.status == FundamentalsStatus.AVAILABLE.value
+    assert row.cik == "0000320193"
+
+
+def test_create_crypto_asset_persists_no_fundamentals(
+    client: TestClient, db_session: Session
+) -> None:
+    _use_provider(_eligible_provider(quote_type="CRYPTOCURRENCY"))
+    fake = FakeFundamentalsProvider()
+    _use_fundamentals(fake)
+
+    body = client.post("/api/v1/assets", json={"ticker": "BTC"}).json()
+
+    assert body["category"] == "crypto"
+    # Crypto never triggers a fundamentals fetch and has no fundamentals row.
+    assert fake.fetch_calls == []
+    assert (
+        db_session.scalars(
+            select(AssetFundamentals).where(
+                AssetFundamentals.asset_id == body["id"]
+            )
+        ).first()
+        is None
+    )
+
+
+def test_create_stock_asset_survives_fundamentals_fetch_error(
+    client: TestClient, db_session: Session
+) -> None:
+    _use_provider(_eligible_provider())
+    _use_fundamentals(FakeFundamentalsProvider(error=RuntimeError("edgar boom")))
+
+    response = client.post("/api/v1/assets", json={"ticker": "AAPL"})
+
+    # The add still succeeds; the fundamentals row is persisted as unavailable.
+    assert response.status_code == 201
+    row = db_session.scalars(
+        select(AssetFundamentals).where(
+            AssetFundamentals.asset_id == response.json()["id"]
+        )
+    ).one()
+    assert row.status == FundamentalsStatus.UNAVAILABLE.value
+
+
+# --- Quarterly fundamentals refresh endpoint -------------------------------
+
+_REFRESH = "/api/v1/assets/fundamentals/refresh"
+
+
+def _seed_stock(db_session: Session, ticker: str) -> Asset:
+    asset = Asset(
+        ticker=ticker,
+        name=f"{ticker} Co",
+        alpaca_symbol=ticker,
+        fractionable=True,
+        category=AssetCategory.STOCK.value,
+        sector="technology",
+        exchange="NASDAQ",
+        currency="USD",
+        country="United States",
+        is_eligible=True,
+        market_cap_usd=5_000_000_000.0,
+        avg_daily_turnover_usd=10_000_000.0,
+        history_years=10.0,
+        criteria_results=[],
+    )
+    db_session.add(asset)
+    db_session.commit()
+    db_session.refresh(asset)
+    return asset
+
+
+def test_refresh_fundamentals_rejects_without_token(
+    client: TestClient, db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(settings, "REBALANCE_CRON_TOKEN", "secret")
+    _seed_stock(db_session, "AAA")
+    fake = FakeFundamentalsProvider()
+    _use_fundamentals(fake)
+
+    resp = client.post(_REFRESH)
+
+    assert resp.status_code == 403
+    # The refresh never ran.
+    assert fake.fetch_calls == []
+
+
+def test_refresh_fundamentals_rejects_wrong_token(
+    client: TestClient, db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(settings, "REBALANCE_CRON_TOKEN", "secret")
+    _seed_stock(db_session, "AAA")
+    fake = FakeFundamentalsProvider()
+    _use_fundamentals(fake)
+
+    resp = client.post(_REFRESH, headers={"X-Cron-Token": "wrong"})
+
+    assert resp.status_code == 403
+    assert fake.fetch_calls == []
+
+
+def test_refresh_fundamentals_runs_with_valid_token(
+    client: TestClient, db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(settings, "REBALANCE_CRON_TOKEN", "secret")
+    _seed_stock(db_session, "AAA")
+    _seed_stock(db_session, "BBB")
+    fake = FakeFundamentalsProvider(
+        by_ticker={
+            "AAA": Fundamentals(
+                status=FundamentalsStatus.AVAILABLE,
+                source=SOURCE_SEC_EDGAR,
+                cik="1",
+                document={"figures": {"revenue": {"value": 1.0}}},
+            )
+        }
+    )
+    _use_fundamentals(fake)
+
+    resp = client.post(_REFRESH, headers={"X-Cron-Token": "secret"})
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body == {
+        "stocks_considered": 2,
+        "refreshed": 2,
+        "available": 1,
+        "partial": 0,
+        "unavailable": 1,
+    }
+    assert fake.fetch_calls == ["AAA", "BBB"]
+
+
 @pytest.fixture(autouse=True)
 def _clear_provider_override() -> Iterator[None]:
     yield
     app.dependency_overrides.pop(get_market_data_provider, None)
+    app.dependency_overrides.pop(get_fundamentals_provider, None)

@@ -231,7 +231,9 @@ class FakeFundamentalsProvider:
     absent from the map yields an ``UNAVAILABLE`` result (the missing-CIK path).
     Set ``error`` to raise from :meth:`fetch_fundamentals` so the service's
     best-effort guard (which must still persist ``UNAVAILABLE`` and never fail the
-    add) can be exercised. ``fetch_calls`` records each ticker fetched.
+    add) can be exercised. ``error_by_ticker`` raises only for specific tickers, so
+    a batch-refresh test can drive one asset's failure while the rest succeed.
+    ``fetch_calls`` records each ticker fetched.
     """
 
     def __init__(
@@ -239,13 +241,20 @@ class FakeFundamentalsProvider:
         *,
         by_ticker: dict[str, Fundamentals] | None = None,
         error: Exception | None = None,
+        error_by_ticker: dict[str, Exception] | None = None,
     ) -> None:
         self._by_ticker = {t.upper(): f for t, f in (by_ticker or {}).items()}
         self._error = error
+        self._error_by_ticker = {
+            t.upper(): e for t, e in (error_by_ticker or {}).items()
+        }
         self.fetch_calls: list[str] = []
 
     def fetch_fundamentals(self, ticker: str) -> Fundamentals:
         self.fetch_calls.append(ticker)
+        keyed = self._error_by_ticker.get(ticker.strip().upper())
+        if keyed is not None:
+            raise keyed
         if self._error is not None:
             raise self._error
         found = self._by_ticker.get(ticker.strip().upper())

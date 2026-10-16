@@ -93,18 +93,23 @@ been computed yet.
 ### Requirement: Nightly indicator computation job with run audit
 
 The system SHALL provide a background job that computes and stores indicator
-snapshots for every asset in the universe, executed by a single-worker runner so
-that only one computation run proceeds at a time. Each run SHALL be recorded as an
-audit entry capturing at least the run's status, its start and finish, and counts
-of assets processed and failed. A failure to compute one asset's indicators SHALL
-be recorded and SHALL NOT abort the run for the remaining assets. The job SHALL be
-processed in the background and SHALL commit progress per asset so a mid-run
-failure preserves the snapshots already computed.
+snapshots for every asset in the universe **and for every watchlist asset**,
+executed by a single-worker runner so that only one computation run proceeds at a
+time. Each run SHALL be recorded as an audit entry capturing at least the run's
+status, its start and finish, and counts of assets processed and failed. A failure
+to compute one asset's indicators SHALL be recorded and SHALL NOT abort the run for
+the remaining assets. The job SHALL be processed in the background and SHALL commit
+progress per asset so a mid-run failure preserves the snapshots already computed.
 
 #### Scenario: Job computes snapshots for the universe
 
 - **WHEN** the indicator computation job runs
 - **THEN** the system SHALL compute and store a latest snapshot for each asset in the universe and record a run-audit entry summarizing the outcome
+
+#### Scenario: Job computes snapshots for watchlist assets
+
+- **WHEN** the indicator computation job runs while watchlist assets exist
+- **THEN** the system SHALL also compute and store a latest snapshot (or an insufficient-history marker) for each watchlist asset, included in the same run audit's processed/failed counts
 
 #### Scenario: One asset's failure does not abort the run
 
@@ -152,3 +157,90 @@ The system SHALL expose the configured technical-indicator setup over an unauthe
 
 - **WHEN** a client requests the configuration without supplying the cron token
 - **THEN** the system SHALL return the configuration successfully rather than rejecting the request for a missing token
+
+### Requirement: Watchlist short-window indicator profile with a minimum-history floor
+
+For watchlist assets the system SHALL expose a **short-window** subset of the
+computed indicators as the meaningful technical profile, because watchlist assets
+are emerging companies whose history is typically too short for the long-window
+indicators and the uptrend trend gate to be meaningful. The short-window profile
+SHALL consist of: the 14-period Wilder RSI, the MACD line/signal/histogram
+(12/26/9), the 20-period exponential moving average, the Bollinger %b and
+bandwidth (20-period, 2 standard deviations), the 20-day historical volatility,
+the volume ratio versus the 50-day average volume, the on-balance-volume 20-day
+change, and the reversal flags whose inputs are entirely short-window. The
+long-window indicators (the 50- and 200-period simple moving averages and their
+ratios, the SMA200 slope, the 120-day rate of change, the distance from the
+52-week high, and the 252-day drawdown) and the derived uptrend trend-gate verdict
+SHALL NOT be presented as a trading signal for watchlist assets.
+
+The system SHALL apply a **minimum-history floor**, a tunable constant number of
+daily bars, below which a watchlist asset's short-window profile is not
+meaningful. A watchlist asset with fewer daily bars than the floor SHALL be
+recorded with an **insufficient-history** marker rather than a snapshot of
+mostly-absent short-window values; at or above the floor the short-window values
+SHALL be produced and stored. A read of a watchlist asset's indicators SHALL
+expose the short-window subset together with the insufficient-history marker.
+
+This requirement governs only how indicators are surfaced for watchlist assets;
+it SHALL NOT make watchlist assets eligible for trading and SHALL NOT alter the
+universe trend gate or any trading flow.
+
+#### Scenario: Watchlist asset at or above the floor gets the short-window profile
+
+- **WHEN** the computation job processes a watchlist asset whose daily-bar count is at or above the minimum-history floor
+- **THEN** the system SHALL store its short-window indicator values and expose them on read, without an insufficient-history marker
+
+#### Scenario: Watchlist asset below the floor is marked insufficient history
+
+- **WHEN** the computation job processes a watchlist asset whose daily-bar count is below the minimum-history floor
+- **THEN** the system SHALL record an insufficient-history marker for that asset rather than a snapshot of mostly-absent short-window values
+
+#### Scenario: Trend-gate verdict is not a watchlist trading signal
+
+- **WHEN** a watchlist asset's indicators are read
+- **THEN** the system SHALL expose the short-window subset and SHALL NOT present the long-window indicators or the uptrend trend-gate verdict as a trading signal for that asset
+
+### Requirement: Per-asset short-window indicator read
+
+The system SHALL expose a read that returns the short-window technical-indicator
+profile for a single asset identified by ticker, for an asset of any universe
+membership (universe or watchlist). The response SHALL carry the same short-window
+subset defined for watchlist assets — the 14-period Wilder RSI, the MACD
+line/signal/histogram, the 20-period EMA, the Bollinger %b and bandwidth, the
+20-day historical volatility, the volume ratio versus the 50-day average volume,
+the on-balance-volume 20-day change, and the short-window reversal flags — together
+with the minimum-history floor and an insufficient-history marker, derived from the
+asset's latest stored indicator snapshot. The read SHALL apply the same
+minimum-history floor semantics: an asset below the floor SHALL be reported with an
+insufficient-history marker rather than mostly-absent values. The read SHALL report
+an asset that has no stored snapshot as absent/insufficient rather than failing, and
+SHALL respond not-found when the ticker is not in the universe. The read SHALL NOT
+present the long-window indicators or the uptrend trend-gate verdict as a trading
+signal, SHALL NOT require the cron token or any other authentication, and SHALL NOT
+trigger or alter indicator computation.
+
+#### Scenario: Read a universe asset's short-window profile
+
+- **WHEN** a client requests the per-asset technical read for a universe asset whose daily-bar count is at or above the minimum-history floor and whose snapshot has been computed
+- **THEN** the system SHALL return that asset's short-window indicator values and the minimum-history floor, without an insufficient-history marker and without the uptrend trend-gate verdict
+
+#### Scenario: Read a watchlist asset's short-window profile
+
+- **WHEN** a client requests the per-asset technical read for a watchlist asset whose daily-bar count is at or above the minimum-history floor
+- **THEN** the system SHALL return that asset's short-window indicator values and the minimum-history floor
+
+#### Scenario: Asset below the minimum-history floor
+
+- **WHEN** a client requests the per-asset technical read for an asset whose daily-bar count is below the minimum-history floor
+- **THEN** the system SHALL return an insufficient-history marker for that asset rather than mostly-absent short-window values
+
+#### Scenario: Asset without a computed snapshot
+
+- **WHEN** a client requests the per-asset technical read for an existing asset that has no stored indicator snapshot
+- **THEN** the system SHALL report the profile as absent/insufficient rather than failing the request
+
+#### Scenario: Read for an unknown ticker
+
+- **WHEN** a client requests the per-asset technical read for a ticker that is not in the universe
+- **THEN** the system SHALL respond not-found

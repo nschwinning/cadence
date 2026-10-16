@@ -19,9 +19,13 @@ from sqlalchemy.orm import Session
 
 # Import every model module so ``Base.metadata`` is fully populated before we
 # create the schema on the test database.
+from tests.fakes import FakeFundamentalsProvider
+
 from cadence.ai_portfolio import models as _ai_portfolio_models  # noqa: F401
 from cadence.api.app import app
+from cadence.api.routers.assets import get_fundamentals_provider
 from cadence.assets import models as _assets_models  # noqa: F401
+from cadence.assets.fundamentals import FundamentalsProvider
 from cadence.broker import Broker, get_broker
 from cadence.broker.stub import StubBroker
 from cadence.config import settings
@@ -154,8 +158,15 @@ def client(db_session: Session) -> Iterator[TestClient]:
     def override_get_broker() -> Broker:
         return StubBroker()
 
+    def override_get_fundamentals_provider() -> FundamentalsProvider:
+        # Offline by default: add-time stock fundamentals never hit SEC EDGAR.
+        return FakeFundamentalsProvider()
+
     app.dependency_overrides[get_db] = override_get_db
     app.dependency_overrides[get_broker] = override_get_broker
+    app.dependency_overrides[get_fundamentals_provider] = (
+        override_get_fundamentals_provider
+    )
     try:
         with TestClient(app) as test_client:
             yield test_client

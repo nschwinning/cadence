@@ -71,6 +71,7 @@ def add_asset(
     broker: Broker,
     allowed_categories: Collection[AssetCategory] | None = None,
     membership: AssetMembership = AssetMembership.UNIVERSE,
+    fundamentals: FundamentalsProvider | None = None,
 ) -> Asset:
     """Fetch, classify, convert, verify tradability, evaluate, and persist an asset.
 
@@ -89,6 +90,15 @@ def add_asset(
     (the default, for manual adds and universe recommendations) or ``WATCHLIST``
     (for watchlist-targeted recommendation runs). Eligibility is recorded the same
     way regardless; this method never rejects an asset for being ineligible.
+
+    ``fundamentals`` optionally supplies a :class:`FundamentalsProvider`; when
+    given and the created asset is a stock, its SEC EDGAR fundamentals are fetched
+    and persisted (best-effort via :func:`record_fundamentals`) as part of the
+    add, so every stock-creation path that wires a provider (manual add, the
+    recommendation runner) gets fundamentals immediately rather than waiting for
+    the quarterly refresh. Crypto creation never fetches. A fetch failure never
+    fails the add. When ``None`` (e.g. the AI discovery path), no fetch is done
+    and the quarterly refresh backfills the asset later.
 
     Raises:
         DuplicateAssetError: if the (normalized) ticker already exists.
@@ -195,6 +205,12 @@ def add_asset(
     # the asset added with no history rather than failing the add.
     price_history_service.backfill(session, provider, asset)
 
+    # Fetch company fundamentals on creation for stock assets when a provider is
+    # supplied. Best-effort and stock-only: crypto never fetches, and a provider
+    # failure (handled inside record_fundamentals) never fails the add.
+    if fundamentals is not None and derived.category == AssetCategory.STOCK:
+        record_fundamentals(session, asset, fundamentals)
+
     return asset
 
 
@@ -209,9 +225,10 @@ def record_fundamentals(
     :class:`AssetFundamentals` row with the result. Deliberately robust: the
     provider contract never raises, but any unexpected error here is caught and
     stored as a ``status=unavailable`` row so recording fundamentals can never
-    fail the watchlist add that triggered it. A row always exists afterwards,
-    recording that a fetch was attempted (``unavailable`` when EDGAR had no
-    CIK/facts or was unreachable).
+    fail its caller (add-time fetch on creation, or the quarterly refresh). A row
+    always exists afterwards, recording that a fetch was attempted (``unavailable``
+    when EDGAR had no CIK/facts or was unreachable); on a re-fetch the existing row
+    is upserted in place and its ``fetched_at`` advanced.
     """
     try:
         fetched = provider.fetch_fundamentals(asset.ticker)
@@ -238,10 +255,84 @@ def record_fundamentals(
         existing.status = fetched.status.value
         existing.cik = fetched.cik
         existing.document = fetched.document
+        # fetched_at only gets a server_default on insert; advance it explicitly on
+        # update so a re-fetch (e.g. the quarterly refresh) records the new time.
+        existing.fetched_at = datetime.now(UTC)
         record = existing
     session.commit()
     session.refresh(record)
     return record
+
+
+@dataclass(frozen=True)
+class FundamentalsRefreshSummary:
+    """Outcome of a :func:`refresh_stock_fundamentals` run.
+
+    ``stocks_considered`` is the number of stock-category assets seen; ``refreshed``
+    is the number whose fundamentals row was upserted without an unexpected error.
+    ``available`` / ``partial`` / ``unavailable`` break the refreshed rows down by
+    their resulting fundamentals status for observability.
+    """
+
+    stocks_considered: int = 0
+    refreshed: int = 0
+    available: int = 0
+    partial: int = 0
+    unavailable: int = 0
+
+
+def refresh_stock_fundamentals(
+    session: Session,
+    provider: FundamentalsProvider,
+) -> FundamentalsRefreshSummary:
+    """Re-fetch and upsert SEC EDGAR fundamentals for every stock asset.
+
+    Selects all ``category == stock`` assets (deterministically, by ticker) and
+    calls :func:`record_fundamentals` for each — reusing the single-row upsert,
+    the 1:1 guarantee, and the degrade-to-unavailable behavior. Every stock is
+    refreshed regardless of how recently its fundamentals were last fetched; there
+    is no staleness skip. Crypto assets are excluded (SEC EDGAR covers US company
+    filers only).
+
+    Best-effort per asset: ``record_fundamentals`` never raises, but any unexpected
+    error here is caught and logged so one asset cannot abort the batch; the rest
+    are still refreshed. Returns a :class:`FundamentalsRefreshSummary` tallying the
+    stocks considered, the number refreshed, and a breakdown by resulting status.
+    """
+    stocks = session.scalars(
+        select(Asset)
+        .where(Asset.category == AssetCategory.STOCK.value)
+        .order_by(Asset.ticker)
+    ).all()
+
+    considered = len(stocks)
+    refreshed = 0
+    available = 0
+    partial = 0
+    unavailable = 0
+    for asset in stocks:
+        try:
+            record = record_fundamentals(session, asset, provider)
+        except Exception as exc:  # noqa: BLE001 - one asset must not abort the batch
+            logger.warning(
+                "fundamentals refresh failed for %s: %s", asset.ticker, exc
+            )
+            continue
+        refreshed += 1
+        if record.status == FundamentalsStatus.AVAILABLE.value:
+            available += 1
+        elif record.status == FundamentalsStatus.PARTIAL.value:
+            partial += 1
+        else:
+            unavailable += 1
+
+    return FundamentalsRefreshSummary(
+        stocks_considered=considered,
+        refreshed=refreshed,
+        available=available,
+        partial=partial,
+        unavailable=unavailable,
+    )
 
 
 def backfill_fractionable(session: Session, broker: Broker) -> int:

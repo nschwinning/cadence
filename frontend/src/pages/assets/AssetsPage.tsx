@@ -195,7 +195,7 @@ function AssetRow({ asset }: { asset: Asset }) {
  * that requests sorting by `field`: clicking an inactive column sorts it
  * ascending; clicking the active column toggles direction.
  */
-function SortableHeader({
+export function SortableHeader({
   label,
   field,
   sort,
@@ -233,7 +233,7 @@ function SortableHeader({
 }
 
 /** One selectable option in a multi-select dropdown. */
-interface FilterOption<T extends string> {
+export interface FilterOption<T extends string> {
   value: T;
   label: string;
 }
@@ -243,7 +243,7 @@ interface FilterOption<T extends string> {
  * badge when any options are selected; opening it reveals a checkbox per option.
  * An empty selection means "all". Clicking outside the panel closes it.
  */
-function MultiSelectDropdown<T extends string>({
+export function MultiSelectDropdown<T extends string>({
   label,
   options,
   selected,
@@ -320,17 +320,19 @@ function MultiSelectDropdown<T extends string>({
 }
 
 /** Category filter options (value + display label), in the canonical order. */
-const CATEGORY_OPTIONS: readonly FilterOption<AssetCategory>[] =
+export const CATEGORY_OPTIONS: readonly FilterOption<AssetCategory>[] =
   SUPPORTED_CATEGORIES.map((value) => ({
     value,
     label: CATEGORY_STYLES[value].label,
   }));
 
 /** Sector filter options (value + display label), in the canonical order. */
-const SECTOR_OPTIONS: readonly FilterOption<Sector>[] = SECTORS.map((value) => ({
-  value,
-  label: SECTOR_STYLES[value].label,
-}));
+export const SECTOR_OPTIONS: readonly FilterOption<Sector>[] = SECTORS.map(
+  (value) => ({
+    value,
+    label: SECTOR_STYLES[value].label,
+  }),
+);
 
 /** localStorage key holding the user's chosen assets-table page size. */
 const PAGE_SIZE_STORAGE_KEY = 'cadence.assets.pageSize';

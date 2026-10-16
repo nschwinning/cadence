@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+import dataclasses
 from datetime import date, timedelta
 
 from sqlalchemy.orm import Session
 from tests.fakes import FakeMarketDataProvider
 
-from cadence.assets.category import AssetCategory
+from cadence.assets.category import AssetCategory, AssetMembership
 from cadence.assets.market_data import HistoryBar
 from cadence.assets.models import Asset
 from cadence.config import settings
@@ -34,13 +35,19 @@ def _uptrend_bars(n: int = 320) -> list[HistoryBar]:
     ]
 
 
-def _add_asset(session: Session, ticker: str) -> Asset:
+def _add_asset(
+    session: Session,
+    ticker: str,
+    *,
+    membership: AssetMembership = AssetMembership.UNIVERSE,
+) -> Asset:
     asset = Asset(
         ticker=ticker,
         name=ticker,
         category=AssetCategory.STOCK.value,
         currency="USD",
         is_eligible=True,
+        membership=membership.value,
         criteria_results=[],
     )
     session.add(asset)
@@ -281,3 +288,148 @@ def test_get_indicator_config_reflects_constants() -> None:
         "obv_price_divergence",
         "sma200_slope_flattening",
     }
+
+
+# --- watchlist short-window profile ---------------------------------------
+
+
+def test_watchlist_asset_above_floor_has_short_window_values(
+    db_session: Session,
+) -> None:
+    """A watchlist asset with ample history exposes its short-window values."""
+    asset = _add_asset(db_session, "WLA", membership=AssetMembership.WATCHLIST)
+    provider = FakeMarketDataProvider(history=_uptrend_bars(320))
+    assert service.compute_and_store(db_session, asset, provider) is True
+
+    snaps = service.get_watchlist_indicators(db_session)
+    assert [s.ticker for s in snaps] == ["WLA"]
+    snap = snaps[0]
+    assert snap.insufficient_history is False
+    assert snap.bar_count is not None and snap.bar_count >= c.WATCHLIST_MIN_BARS
+    # The short-window momentum/mean-reversion subset is populated.
+    assert snap.rsi_14 is not None
+    assert snap.macd_line is not None
+    assert snap.ema_20 is not None
+
+
+def test_watchlist_asset_below_floor_is_insufficient_history(
+    db_session: Session,
+) -> None:
+    """A watchlist asset below the bar floor is flagged, values blanked."""
+    asset = _add_asset(db_session, "WLB", membership=AssetMembership.WATCHLIST)
+    short = c.WATCHLIST_MIN_BARS - 10
+    provider = FakeMarketDataProvider(history=_uptrend_bars(short))
+    # A row is still stored (compute never errors on short history)...
+    assert service.compute_and_store(db_session, asset, provider) is True
+    stored = service.get_latest_snapshot(db_session, asset.id)
+    assert stored is not None and stored.bar_count == short
+
+    # ...but the watchlist read reports insufficient history with blanked values.
+    snap = service.get_watchlist_indicators(db_session)[0]
+    assert snap.insufficient_history is True
+    assert snap.bar_count == short
+    assert snap.rsi_14 is None
+    assert snap.macd_line is None
+
+
+def test_execute_run_processes_watchlist_assets(db_session: Session) -> None:
+    """The nightly run covers watchlist assets and records their bar count."""
+    wl = _add_asset(db_session, "WLC", membership=AssetMembership.WATCHLIST)
+    provider = FakeMarketDataProvider(history=_uptrend_bars(320))
+    run = service.create_run(db_session)
+
+    result = service.execute_run(db_session, run.id, provider)
+
+    assert result.status == RunPhase.COMPLETED.value
+    stored = service.get_latest_snapshot(db_session, wl.id)
+    assert stored is not None and stored.bar_count is not None
+
+
+def test_watchlist_snapshot_omits_long_window_and_trend_gate() -> None:
+    """The watchlist view carries only the short-window subset — no long-window
+    indicators and no trend-gate verdict."""
+    names = {f.name for f in dataclasses.fields(service.WatchlistIndicatorSnapshot)}
+    # Short-window keys are present.
+    assert set(c.WATCHLIST_SHORT_WINDOW_KEYS) <= names
+    assert set(c.WATCHLIST_SHORT_WINDOW_REVERSAL_KEYS) <= names
+    # Long-window indicators and the trend-gate verdict are deliberately absent.
+    forbidden = {
+        "sma_50",
+        "sma_200",
+        "close_sma200",
+        "sma50_sma200",
+        "sma200_slope",
+        "roc_120",
+        "dist_high_52w",
+        "drawdown_from_max",
+        "gate_pass",
+        "regime_pass",
+        "momentum_pass",
+        "obv_rising",
+        "rev_sma200_slope_flattening",
+    }
+    assert forbidden.isdisjoint(names)
+
+
+def test_watchlist_read_excludes_universe_assets(db_session: Session) -> None:
+    """get_watchlist_indicators is watchlist-only; universe reads are unchanged."""
+    uni = _add_asset(db_session, "UNI", membership=AssetMembership.UNIVERSE)
+    wl = _add_asset(db_session, "WLD", membership=AssetMembership.WATCHLIST)
+    provider = FakeMarketDataProvider(history=_uptrend_bars(320))
+    service.compute_and_store(db_session, uni, provider)
+    service.compute_and_store(db_session, wl, provider)
+
+    tickers = {s.ticker for s in service.get_watchlist_indicators(db_session)}
+    assert tickers == {"WLD"}
+
+    # The universe asset's full snapshot (trend gate included) is unaffected.
+    uni_snap = service.get_latest_snapshot(db_session, uni.id)
+    assert uni_snap is not None
+    assert uni_snap.gate_pass is True
+    assert uni_snap.bar_count is not None
+
+
+def test_get_asset_indicators_serves_any_membership(db_session: Session) -> None:
+    """The per-asset read projects the short-window view for a universe asset too
+    (not just watchlist), reusing the same floor logic."""
+    uni = _add_asset(db_session, "UNV", membership=AssetMembership.UNIVERSE)
+    provider = FakeMarketDataProvider(history=_uptrend_bars(320))
+    service.compute_and_store(db_session, uni, provider)
+
+    snap = service.get_asset_indicators(db_session, "unv")
+    assert snap.ticker == "UNV"
+    assert snap.insufficient_history is False
+    assert snap.rsi_14 is not None
+
+
+def test_get_asset_indicators_below_floor_is_insufficient(
+    db_session: Session,
+) -> None:
+    asset = _add_asset(db_session, "LOW", membership=AssetMembership.UNIVERSE)
+    short = c.WATCHLIST_MIN_BARS - 10
+    provider = FakeMarketDataProvider(history=_uptrend_bars(short))
+    service.compute_and_store(db_session, asset, provider)
+
+    snap = service.get_asset_indicators(db_session, "LOW")
+    assert snap.insufficient_history is True
+    assert snap.bar_count == short
+    assert snap.rsi_14 is None
+
+
+def test_get_asset_indicators_no_snapshot_is_insufficient(
+    db_session: Session,
+) -> None:
+    _add_asset(db_session, "NOSNAP", membership=AssetMembership.UNIVERSE)
+    snap = service.get_asset_indicators(db_session, "NOSNAP")
+    assert snap.insufficient_history is True
+    assert snap.bar_count is None
+    assert snap.trading_date is None
+
+
+def test_get_asset_indicators_unknown_ticker_raises(db_session: Session) -> None:
+    import pytest
+
+    from cadence.assets.errors import AssetNotFoundError
+
+    with pytest.raises(AssetNotFoundError):
+        service.get_asset_indicators(db_session, "GHOST")

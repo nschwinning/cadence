@@ -1,12 +1,12 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, within } from '@testing-library/react';
+import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { MemoryRouter } from 'react-router-dom';
 import type { ReactNode } from 'react';
 import { WatchlistPage } from './WatchlistPage';
 import { apiClient } from '../../api/client';
-import type { Asset, AssetFundamentals, RecommendationRun } from '../../types/api';
+import type { Asset, RecommendationRun } from '../../types/api';
 
 vi.mock('../../api/client', () => ({
   apiClient: { get: vi.fn(), post: vi.fn() },
@@ -14,30 +14,6 @@ vi.mock('../../api/client', () => ({
 
 const mockedGet = vi.mocked(apiClient.get);
 const mockedPost = vi.mocked(apiClient.post);
-
-function makeFundamentals(
-  overrides: Partial<AssetFundamentals> = {},
-): AssetFundamentals {
-  return {
-    source: 'sec-edgar',
-    status: 'available',
-    cik: '0000320193',
-    document: {
-      figures: {
-        revenue: { value: 400_000_000_000, unit: 'USD', period_end: '2023-09-30' },
-        net_income: { value: 100_000_000_000, unit: 'USD', period_end: '2023-09-30' },
-        eps_diluted: { value: 6.13, unit: 'USD/shares', period_end: '2023-09-30' },
-      },
-      company_details: {
-        name: 'Example Corp',
-        sicDescription: 'Electronic Computers',
-        exchanges: ['Nasdaq'],
-      },
-    },
-    fetched_at: '2026-10-05T00:00:00Z',
-    ...overrides,
-  };
-}
 
 function makeAsset(overrides: Partial<Asset> = {}): Asset {
   return {
@@ -56,7 +32,7 @@ function makeAsset(overrides: Partial<Asset> = {}): Asset {
     is_eligible: false,
     criteria_results: [],
     created_at: '2026-10-05T00:00:00Z',
-    fundamentals: makeFundamentals(),
+    fundamentals: null,
     ...overrides,
   };
 }
@@ -77,6 +53,21 @@ function makeRun(overrides: Partial<RecommendationRun> = {}): RecommendationRun 
   };
 }
 
+/**
+ * Route `apiClient.get` by URL: the watchlist is listed via the shared assets
+ * endpoint; recommendation-run polling hits a separate endpoint.
+ */
+function routeGet(assets: Asset[]) {
+  mockedGet.mockImplementation((url: string) => {
+    if (url.startsWith('/api/v1/recommendations')) {
+      return Promise.resolve({ data: makeRun() });
+    }
+    return Promise.resolve({
+      data: { items: assets, total: assets.length },
+    });
+  });
+}
+
 function renderPage(ui: ReactNode) {
   const client = new QueryClient({
     defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
@@ -93,51 +84,89 @@ beforeEach(() => {
 });
 
 describe('WatchlistPage', () => {
-  it('lists watchlist entries with their fundamentals figures', async () => {
-    mockedGet.mockResolvedValue({ data: { items: [makeAsset()], total: 1 } });
+  it('lists watchlist rows fetched with membership=watchlist and links to detail', async () => {
+    routeGet([makeAsset()]);
 
     renderPage(<WatchlistPage />);
 
-    const heading = await screen.findByText('EMERG');
-    const card = heading.closest('li') as HTMLElement;
-    // The watchlist is fetched with an allowed page size (the backend rejects
-    // any limit outside {20, 50, 100} with a 422), filtered to watchlist members.
+    const link = await screen.findByRole('link', { name: 'EMERG' });
+    // Rows link to the shared asset detail page.
+    expect(link).toHaveAttribute('href', '/assets/EMERG');
+    expect(screen.getByText('Example Corp')).toBeInTheDocument();
+    // An ineligible watchlist member is flagged, not hidden.
+    expect(screen.getByText(/Below universe bar/)).toBeInTheDocument();
+
+    // The list is fetched via the shared assets path, filtered to watchlist
+    // members, with an allowed page size.
     expect(mockedGet).toHaveBeenCalledWith(
       '/api/v1/assets',
       expect.objectContaining({
-        params: expect.objectContaining({ membership: 'watchlist', limit: 100 }),
+        params: expect.objectContaining({
+          membership: 'watchlist',
+          limit: 20,
+        }),
       }),
     );
-    // Revenue is rendered compactly with its margin basis and derived margins.
-    expect(within(card).getByText('Revenue')).toBeInTheDocument();
-    expect(within(card).getByText(/\$400\.0B/)).toBeInTheDocument();
-    // Net income margin = 100B / 400B = 25.0%.
-    expect(within(card).getByText('25.0%')).toBeInTheDocument();
-    // Company details surface.
-    expect(within(card).getByText('Electronic Computers')).toBeInTheDocument();
-    // An ineligible watchlist member is flagged, not hidden.
-    expect(within(card).getByText(/Below universe bar/)).toBeInTheDocument();
   });
 
-  it('indicates when an entry has unavailable fundamentals', async () => {
-    const asset = makeAsset({
-      id: 2,
-      ticker: 'NOFACT',
-      name: null,
-      fundamentals: makeFundamentals({
-        status: 'unavailable',
-        cik: null,
-        document: {},
-      }),
-    });
-    mockedGet.mockResolvedValue({ data: { items: [asset], total: 1 } });
+  it('does not render fundamentals or technical values inline', async () => {
+    routeGet([makeAsset()]);
 
     renderPage(<WatchlistPage />);
 
-    const heading = await screen.findByText('NOFACT');
-    const card = heading.closest('li') as HTMLElement;
+    await screen.findByRole('link', { name: 'EMERG' });
+    // The table is a jump-off point: no inline fundamentals / technicals.
+    expect(screen.queryByText('Revenue')).not.toBeInTheDocument();
+    expect(screen.queryByText('RSI (14)')).not.toBeInTheDocument();
+    // The per-asset technical endpoint is never hit from the list page.
+    expect(mockedGet).not.toHaveBeenCalledWith(
+      expect.stringContaining('/technical-indicators'),
+    );
+  });
+
+  it('exposes search, sort, and filter controls wired to the query', async () => {
+    routeGet([makeAsset()]);
+
+    renderPage(<WatchlistPage />);
+
+    await screen.findByRole('link', { name: 'EMERG' });
+
+    // Filter dropdowns are present.
     expect(
-      within(card).getByText(/Fundamentals unavailable/),
+      screen.getByRole('button', { name: /categories/i }),
+    ).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /sectors/i })).toBeInTheDocument();
+
+    // Sorting by name re-queries with the new sort field.
+    await userEvent.click(screen.getByRole('button', { name: /name/i }));
+    await waitFor(() => {
+      expect(mockedGet).toHaveBeenCalledWith(
+        '/api/v1/assets',
+        expect.objectContaining({
+          params: expect.objectContaining({ sort: 'name' }),
+        }),
+      );
+    });
+
+    // Searching re-queries with the (debounced) search term.
+    await userEvent.type(screen.getByLabelText('Search watchlist'), 'emer');
+    await waitFor(() => {
+      expect(mockedGet).toHaveBeenCalledWith(
+        '/api/v1/assets',
+        expect.objectContaining({
+          params: expect.objectContaining({ search: 'emer' }),
+        }),
+      );
+    });
+  });
+
+  it('shows the empty state when the watchlist has no members', async () => {
+    routeGet([]);
+
+    renderPage(<WatchlistPage />);
+
+    expect(
+      await screen.findByText(/Your watchlist is empty/),
     ).toBeInTheDocument();
   });
 

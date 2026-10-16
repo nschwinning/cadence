@@ -7,14 +7,14 @@ triggered it.
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import UTC, date, datetime
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 from tests.fakes import FakeBroker, FakeFundamentalsProvider, FakeMarketDataProvider
 
 from cadence.assets import service
-from cadence.assets.category import AssetMembership
+from cadence.assets.category import AssetCategory, AssetMembership
 from cadence.assets.fundamentals import (
     SOURCE_SEC_EDGAR,
     Fundamentals,
@@ -194,3 +194,188 @@ def test_record_fundamentals_upserts_single_row(db_session: Session) -> None:
         select(AssetFundamentals).where(AssetFundamentals.asset_id == asset.id)
     ).all()
     assert len(rows) == 1
+
+
+# --- Batch refresh: refresh_stock_fundamentals -----------------------------
+
+
+def _make_asset(
+    db_session: Session,
+    ticker: str,
+    category: AssetCategory = AssetCategory.STOCK,
+) -> Asset:
+    """Insert a bare asset row of ``category`` directly (no provider needed)."""
+    asset = Asset(
+        ticker=ticker,
+        name=f"{ticker} Co",
+        alpaca_symbol=ticker,
+        fractionable=True,
+        category=category.value,
+        sector="technology" if category is AssetCategory.STOCK else None,
+        exchange="NASDAQ",
+        currency="USD",
+        country="United States",
+        is_eligible=True,
+        market_cap_usd=5_000_000_000.0,
+        avg_daily_turnover_usd=10_000_000.0,
+        history_years=10.0,
+        criteria_results=[],
+    )
+    db_session.add(asset)
+    db_session.commit()
+    db_session.refresh(asset)
+    return asset
+
+
+def _available(cik: str) -> Fundamentals:
+    return Fundamentals(
+        status=FundamentalsStatus.AVAILABLE,
+        source=SOURCE_SEC_EDGAR,
+        cik=cik,
+        document={"figures": {"revenue": {"value": 1.0}}},
+    )
+
+
+def test_refresh_excludes_crypto_and_fetches_only_stocks(db_session: Session) -> None:
+    _make_asset(db_session, "AAA", AssetCategory.STOCK)
+    _make_asset(db_session, "BBB", AssetCategory.STOCK)
+    _make_asset(db_session, "DOGE", AssetCategory.CRYPTO)
+    provider = FakeFundamentalsProvider(
+        by_ticker={"AAA": _available("1"), "BBB": _available("2")}
+    )
+
+    summary = service.refresh_stock_fundamentals(db_session, provider)
+
+    # Only the two stocks were fetched, in deterministic ticker order; crypto skipped.
+    assert provider.fetch_calls == ["AAA", "BBB"]
+    assert summary.stocks_considered == 2
+    assert summary.refreshed == 2
+    assert summary.available == 2
+    # No fundamentals row was created for the crypto asset.
+    crypto = db_session.scalars(
+        select(Asset).where(Asset.ticker == "DOGE")
+    ).one()
+    assert (
+        db_session.scalars(
+            select(AssetFundamentals).where(
+                AssetFundamentals.asset_id == crypto.id
+            )
+        ).first()
+        is None
+    )
+
+
+def test_refresh_upserts_each_stock_and_advances_fetched_at(
+    db_session: Session,
+) -> None:
+    asset = _make_asset(db_session, "AAA", AssetCategory.STOCK)
+    # Seed a pre-existing fundamentals row with an old fetched_at.
+    stale = datetime(2000, 1, 1, tzinfo=UTC)
+    db_session.add(
+        AssetFundamentals(
+            asset_id=asset.id,
+            source=SOURCE_SEC_EDGAR,
+            status=FundamentalsStatus.UNAVAILABLE.value,
+            cik=None,
+            document={},
+            fetched_at=stale,
+        )
+    )
+    db_session.commit()
+
+    provider = FakeFundamentalsProvider(by_ticker={"AAA": _available("1")})
+    service.refresh_stock_fundamentals(db_session, provider)
+
+    rows = db_session.scalars(
+        select(AssetFundamentals).where(AssetFundamentals.asset_id == asset.id)
+    ).all()
+    # Still a single row (upsert), now carrying the fresh data and an advanced time.
+    assert len(rows) == 1
+    assert rows[0].status == FundamentalsStatus.AVAILABLE.value
+    assert rows[0].cik == "1"
+    assert rows[0].fetched_at.replace(tzinfo=UTC) > stale
+
+
+def test_refresh_refetches_all_stocks_ignoring_recency(db_session: Session) -> None:
+    # A stock whose fundamentals were "just" fetched is still re-fetched: there is
+    # no staleness skip — every run refreshes all stocks.
+    asset = _make_asset(db_session, "AAA", AssetCategory.STOCK)
+    db_session.add(
+        AssetFundamentals(
+            asset_id=asset.id,
+            source=SOURCE_SEC_EDGAR,
+            status=FundamentalsStatus.AVAILABLE.value,
+            cik="old",
+            document={"figures": {}},
+            fetched_at=datetime.now(UTC),
+        )
+    )
+    db_session.commit()
+
+    provider = FakeFundamentalsProvider(by_ticker={"AAA": _available("new")})
+    summary = service.refresh_stock_fundamentals(db_session, provider)
+
+    assert provider.fetch_calls == ["AAA"]
+    assert summary.refreshed == 1
+    row = db_session.scalars(
+        select(AssetFundamentals).where(AssetFundamentals.asset_id == asset.id)
+    ).one()
+    assert row.cik == "new"
+
+
+def test_refresh_is_best_effort_when_one_asset_fails(db_session: Session) -> None:
+    _make_asset(db_session, "AAA", AssetCategory.STOCK)
+    _make_asset(db_session, "BBB", AssetCategory.STOCK)
+    # BBB's fetch raises; AAA succeeds. record_fundamentals swallows the provider
+    # error for BBB into an unavailable row, and the batch still refreshes AAA.
+    provider = FakeFundamentalsProvider(
+        by_ticker={"AAA": _available("1")},
+        error_by_ticker={"BBB": RuntimeError("edgar boom")},
+    )
+
+    summary = service.refresh_stock_fundamentals(db_session, provider)
+
+    assert provider.fetch_calls == ["AAA", "BBB"]
+    assert summary.stocks_considered == 2
+    assert summary.refreshed == 2
+    assert summary.available == 1
+    assert summary.unavailable == 1
+    bbb = db_session.scalars(select(Asset).where(Asset.ticker == "BBB")).one()
+    bbb_row = db_session.scalars(
+        select(AssetFundamentals).where(AssetFundamentals.asset_id == bbb.id)
+    ).one()
+    assert bbb_row.status == FundamentalsStatus.UNAVAILABLE.value
+
+
+def test_refresh_summary_counts_by_status(db_session: Session) -> None:
+    _make_asset(db_session, "AAA", AssetCategory.STOCK)  # available
+    _make_asset(db_session, "BBB", AssetCategory.STOCK)  # partial
+    _make_asset(db_session, "CCC", AssetCategory.STOCK)  # unavailable (absent)
+    provider = FakeFundamentalsProvider(
+        by_ticker={
+            "AAA": _available("1"),
+            "BBB": Fundamentals(
+                status=FundamentalsStatus.PARTIAL,
+                source=SOURCE_SEC_EDGAR,
+                cik="2",
+                document={"figures": {}},
+            ),
+        }
+    )
+
+    summary = service.refresh_stock_fundamentals(db_session, provider)
+
+    assert summary == service.FundamentalsRefreshSummary(
+        stocks_considered=3,
+        refreshed=3,
+        available=1,
+        partial=1,
+        unavailable=1,
+    )
+
+
+def test_refresh_empty_universe_returns_zero_summary(db_session: Session) -> None:
+    provider = FakeFundamentalsProvider()
+    summary = service.refresh_stock_fundamentals(db_session, provider)
+    assert summary == service.FundamentalsRefreshSummary()
+    assert provider.fetch_calls == []

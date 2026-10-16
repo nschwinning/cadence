@@ -103,12 +103,16 @@ services:
       # indicators over the whole universe before the market-open rebalance so the
       # trend gate reads fresh snapshots.
       INDICATORS_SCHEDULE: ${INDICATORS_SCHEDULE:-0 5 * * 1-5}
+      # Cron expression; default 06:00 on the 1st of Jan/Apr/Jul/Oct — re-fetch SEC
+      # EDGAR fundamentals for every stock quarterly, after quarter-ends when fresh
+      # 10-Q/10-K data is available.
+      FUNDAMENTALS_SCHEDULE: ${FUNDAMENTALS_SCHEDULE:-0 6 1 1,4,7,10 *}
       # Must match the backend's REBALANCE_CRON_TOKEN.
       REBALANCE_CRON_TOKEN: ${REBALANCE_CRON_TOKEN:-}
     depends_on:
       backend:
         condition: service_healthy
-    # Install curl + tzdata, stash the token in a file, then generate the three
+    # Install curl + tzdata, stash the token in a file, then generate the
     # trigger scripts that POST their endpoints with the shared token, and a
     # crontab with one line per script. `$$` keeps expansion in the container
     # shell; `\"` embeds a literal quote (not compose interpolation).
@@ -151,12 +155,20 @@ services:
       'T=$$(cat /tmp/cron.token)'
       'curl -fsS -X POST -H X-Cron-Token:$$T $$B/technical-indicators/runs >/dev/null'
       > /usr/local/bin/indicators.sh &&
-      chmod +x /usr/local/bin/rebalance.sh /usr/local/bin/crypto-rebalance.sh /usr/local/bin/benchmark.sh /usr/local/bin/snapshot.sh /usr/local/bin/indicators.sh &&
+      printf '%s\n'
+      '#!/bin/sh'
+      'set -eu'
+      'B=http://backend:8000/api/v1'
+      'T=$$(cat /tmp/cron.token)'
+      'curl -fsS --max-time 3600 -X POST -H X-Cron-Token:$$T $$B/assets/fundamentals/refresh >/dev/null'
+      > /usr/local/bin/fundamentals.sh &&
+      chmod +x /usr/local/bin/rebalance.sh /usr/local/bin/crypto-rebalance.sh /usr/local/bin/benchmark.sh /usr/local/bin/snapshot.sh /usr/local/bin/indicators.sh /usr/local/bin/fundamentals.sh &&
       echo \"$${REBALANCE_SCHEDULE} /usr/local/bin/rebalance.sh\" > /etc/crontabs/root &&
       echo \"$${CRYPTO_REBALANCE_SCHEDULE} /usr/local/bin/crypto-rebalance.sh\" >> /etc/crontabs/root &&
       echo \"$${BENCHMARK_SCHEDULE} /usr/local/bin/benchmark.sh\" >> /etc/crontabs/root &&
       echo \"$${SNAPSHOT_SCHEDULE} /usr/local/bin/snapshot.sh\" >> /etc/crontabs/root &&
       echo \"$${INDICATORS_SCHEDULE} /usr/local/bin/indicators.sh\" >> /etc/crontabs/root &&
+      echo \"$${FUNDAMENTALS_SCHEDULE} /usr/local/bin/fundamentals.sh\" >> /etc/crontabs/root &&
       crond -f -l 8"
     restart: unless-stopped
 

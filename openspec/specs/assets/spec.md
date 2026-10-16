@@ -81,12 +81,22 @@ unaffected by watchlist assets.
 
 ### Requirement: View asset detail with a daily snapshot
 
-The system SHALL provide detail for a single asset by ticker, including a cached once-per-day snapshot (current price, previous close, short description, volume figures, and a recent close-price history). At most one snapshot SHALL exist per asset per calendar day; concurrent detail requests on the same day SHALL converge on a single snapshot.
+The system SHALL provide detail for a single asset by ticker, including a cached once-per-day snapshot (current price, previous close, short description, volume figures, and a recent close-price history). At most one snapshot SHALL exist per asset per calendar day; concurrent detail requests on the same day SHALL converge on a single snapshot. The detail response SHALL also include the asset's available SEC EDGAR fundamentals when a fundamentals record exists for the asset, and SHALL report fundamentals as absent (null) when none has been fetched. Including fundamentals SHALL NOT trigger a fundamentals fetch and SHALL NOT fail the detail request when fundamentals are absent.
 
 #### Scenario: Fetch detail for a known asset
 
 - **WHEN** a client requests detail for an existing ticker
 - **THEN** the system SHALL return the asset plus its snapshot for the current day, fetching and caching the snapshot if not already present
+
+#### Scenario: Detail includes available fundamentals
+
+- **WHEN** a client requests detail for an asset that has a stored fundamentals record
+- **THEN** the system SHALL include that asset's fundamentals in the detail response
+
+#### Scenario: Detail reports absent fundamentals
+
+- **WHEN** a client requests detail for an asset that has no stored fundamentals record
+- **THEN** the system SHALL return the detail with fundamentals reported as absent, without fetching fundamentals and without failing the request
 
 #### Scenario: Detail for an unknown asset
 
@@ -148,14 +158,17 @@ or deleting a single asset by id/ticker SHALL work regardless of its membership.
 
 ### Requirement: Fetch and persist company fundamentals from SEC EDGAR
 
-When a watchlist (equity) asset is created, the system SHALL fetch its company
-fundamentals from SEC EDGAR — resolving the ticker to a CIK via EDGAR's
-published ticker→CIK mapping, then reading the company's reported facts — and
-SHALL persist them associated with the asset. The stored fundamentals SHALL
+When a stock (equity) asset is created — through any creation path (a manual add
+or an AI recommendation run, for any universe membership) — the system SHALL fetch
+its company fundamentals from SEC EDGAR — resolving the ticker to a CIK via
+EDGAR's published ticker→CIK mapping, then reading the company's reported facts —
+and SHALL persist them associated with the asset. The stored fundamentals SHALL
 capture revenue, margin inputs (for example gross/operating/net figures), cash
 flow, earnings, and company details available from the filing data. Fundamentals
-persistence SHALL be general-purpose per asset (not watchlist-only) so the same
-store can later hold fundamentals for universe assets.
+persistence SHALL be general-purpose per asset, holding at most one fundamentals
+record per asset. Creating a crypto asset SHALL NOT trigger a fundamentals fetch,
+and the absence of a fundamentals record for a crypto asset SHALL be a valid
+state.
 
 Fetching SHALL degrade gracefully: if EDGAR has no CIK for the ticker, returns
 no usable facts, or is unreachable, asset creation SHALL still succeed with the
@@ -170,18 +183,101 @@ single provider seam so it can be faked in tests with no network.
 - **THEN** the system SHALL persist the asset's fundamentals (revenue, margins,
   cash flow, earnings, company details) linked to the asset
 
+#### Scenario: Fundamentals fetched on a non-watchlist stock asset creation
+
+- **WHEN** a stock (equity) asset is created outside the watchlist — a manual add
+  or a universe-targeted recommendation run — and EDGAR has reported facts for its
+  ticker
+- **THEN** the system SHALL persist the asset's fundamentals (revenue, margins,
+  cash flow, earnings, company details) linked to the asset
+
+#### Scenario: Crypto asset creation does not fetch fundamentals
+
+- **WHEN** a crypto asset is created
+- **THEN** the system SHALL NOT fetch fundamentals for it, and the asset SHALL be
+  created with no fundamentals record
+
 #### Scenario: EDGAR has no data for the ticker
 
-- **WHEN** a watchlist asset is created but EDGAR has no CIK or no usable facts
-  for the ticker
+- **WHEN** a stock asset is created but EDGAR has no CIK or no usable facts for
+  the ticker
 - **THEN** the system SHALL still create the asset and SHALL record its
   fundamentals as unavailable rather than failing creation
 
 #### Scenario: EDGAR is unreachable
 
-- **WHEN** the EDGAR provider errors or times out during watchlist asset creation
+- **WHEN** the EDGAR provider errors or times out during stock asset creation
 - **THEN** the system SHALL still create the asset and SHALL record its
   fundamentals as unavailable, leaving the asset otherwise intact
+
+### Requirement: Periodically refresh stock fundamentals on a quarterly schedule
+
+The system SHALL provide a periodic refresh job that re-fetches SEC EDGAR company
+fundamentals for **every stock asset** in the universe and persists the refreshed
+data, keeping fundamentals current with quarterly filings rather than frozen at
+each asset's first fetch. The refresh SHALL cover all assets classified as stock
+regardless of universe membership (universe or watchlist) and regardless of
+eligibility or brokerage tradability; crypto assets SHALL be excluded. On each
+run the refresh SHALL re-fetch **all** in-scope stock assets — it SHALL NOT skip
+assets based on how recently their fundamentals were last fetched — and SHALL
+upsert each asset's single fundamentals record (creating it when absent,
+otherwise overwriting the stored source, status, CIK, and figures) and advance
+its fetched-at timestamp.
+
+The refresh SHALL be **best-effort per asset**: a failure to fetch or persist one
+asset's fundamentals SHALL NOT abort the batch or prevent the remaining assets
+from being refreshed, and — consistent with the existing fetch behavior — an
+asset whose ticker EDGAR cannot resolve, that returns no usable facts, or that is
+unreachable SHALL have its fundamentals recorded as unavailable (or partially
+populated) rather than causing an error. All EDGAR network access SHALL remain
+confined to the existing provider seam so the refresh can be exercised in tests
+with no network.
+
+The refresh SHALL return a summary of the run — at least the number of stock
+assets considered and the number refreshed — so the outcome is observable.
+
+The refresh SHALL be invokable through a dedicated endpoint intended for
+scheduled invocation, guarded by the shared cron-token secret: a request without
+a valid cron token SHALL be rejected and SHALL NOT run the refresh, and the
+scheduled cadence SHALL default to quarterly and SHALL be configurable.
+
+#### Scenario: Refresh re-fetches fundamentals for all stock assets
+
+- **WHEN** the fundamentals refresh runs and the universe contains stock assets
+- **THEN** the system SHALL fetch SEC EDGAR fundamentals for every stock asset and
+  upsert each asset's fundamentals record, advancing its fetched-at timestamp,
+  regardless of when that asset's fundamentals were previously fetched
+
+#### Scenario: Crypto assets are excluded from the refresh
+
+- **WHEN** the fundamentals refresh runs and the universe contains both stock and
+  crypto assets
+- **THEN** the system SHALL refresh fundamentals only for the stock assets and
+  SHALL NOT attempt to fetch fundamentals for the crypto assets
+
+#### Scenario: One asset's failure does not abort the batch
+
+- **WHEN** the fundamentals refresh runs and EDGAR has no data for, or errors on,
+  one or more stock assets
+- **THEN** the system SHALL record those assets' fundamentals as unavailable (or
+  partially populated) and SHALL still refresh the remaining stock assets
+
+#### Scenario: Refresh reports a summary
+
+- **WHEN** the fundamentals refresh completes
+- **THEN** the system SHALL report a summary including at least the number of
+  stock assets considered and the number refreshed
+
+#### Scenario: Refresh endpoint requires the cron token
+
+- **WHEN** the fundamentals refresh endpoint is called without a valid cron token
+- **THEN** the system SHALL reject the request and SHALL NOT run the refresh
+
+#### Scenario: Refresh endpoint runs with a valid cron token
+
+- **WHEN** the fundamentals refresh endpoint is called with a valid cron token
+- **THEN** the system SHALL run the refresh across the stock assets and return the
+  run summary
 
 ### Requirement: Crypto assets are a first-class, tradable universe member
 

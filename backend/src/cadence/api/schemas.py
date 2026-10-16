@@ -71,6 +71,24 @@ class AssetFundamentalsRead(BaseModel):
     fetched_at: datetime
 
 
+class FundamentalsRefreshRead(BaseModel):
+    """Summary of a quarterly stock-fundamentals refresh run.
+
+    ``stocks_considered`` is the number of stock assets seen; ``refreshed`` is how
+    many had their fundamentals upserted without an unexpected error.
+    ``available`` / ``partial`` / ``unavailable`` break the refreshed rows down by
+    their resulting status.
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    stocks_considered: int
+    refreshed: int
+    available: int
+    partial: int
+    unavailable: int
+
+
 class AssetRead(BaseModel):
     """Full snapshot of a stored asset, including its eligibility breakdown."""
 
@@ -93,8 +111,9 @@ class AssetRead(BaseModel):
     is_eligible: bool
     criteria_results: list[CriterionResult]
     created_at: datetime
-    # Company fundamentals (SEC EDGAR), when fetched (watchlist assets today).
-    # ``None`` for assets that have no fundamentals row.
+    # Company fundamentals (SEC EDGAR), fetched on creation for every stock asset
+    # and refreshed quarterly. ``None`` for assets that have no fundamentals row
+    # (e.g. crypto, or a stock not yet reached by a refresh).
     fundamentals: AssetFundamentalsRead | None = None
 
 
@@ -170,6 +189,10 @@ class AssetDetailRead(BaseModel):
     avg_volume: int | None
     price_history: list[AssetDetailHistoryPoint]
     snapshot_date: date
+    # Company fundamentals (SEC EDGAR), when a row exists for the asset
+    # (watchlist assets today). ``None`` when none has been fetched; surfacing
+    # it never triggers a fetch.
+    fundamentals: AssetFundamentalsRead | None = None
 
 
 class RecommendationRunCreate(BaseModel):
@@ -716,6 +739,66 @@ class TechnicalIndicatorConfig(BaseModel):
     indicators: list[IndicatorInfoRead]
     trend_gate: TrendGateConfigRead
     reversal_flags: ReversalFlagsConfigRead
+
+
+class WatchlistIndicatorRead(BaseModel):
+    """A watchlist asset's short-window technical profile.
+
+    Only the momentum / mean-reversion subset is exposed; the long-window
+    indicators and the uptrend trend-gate verdict are omitted because they are
+    not a meaningful trading signal for emerging names. When
+    ``insufficient_history`` is true the asset has too little history (below the
+    minimum-bars floor, or no snapshot yet) and the indicator values are not
+    meaningful.
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    asset_id: int
+    ticker: str
+    trading_date: date | None = None
+    bar_count: int | None = None
+    insufficient_history: bool
+    rsi_14: float | None = None
+    macd_line: float | None = None
+    macd_signal: float | None = None
+    macd_hist: float | None = None
+    ema_20: float | None = None
+    bb_pctb: float | None = None
+    bb_width: float | None = None
+    hvol_20: float | None = None
+    vol_ratio_50: float | None = None
+    obv_change_20d: float | None = None
+    rev_macd_hist_rollover: bool
+    rev_rsi_rollover: bool
+    rev_return_decel: bool
+    rev_obv_price_divergence: bool
+
+
+class WatchlistIndicatorsResponse(BaseModel):
+    """The short-window technical profiles for every watchlist asset.
+
+    ``min_bars`` is the minimum-history floor (so the client can say "needs ≥ N
+    bars"); ``items`` is one entry per watchlist asset, ticker-ordered.
+    """
+
+    min_bars: int
+    items: list[WatchlistIndicatorRead]
+
+
+class AssetIndicatorResponse(BaseModel):
+    """A single asset's short-window technical profile with the history floor.
+
+    ``min_bars`` is the minimum-history floor (so the client can say "needs ≥ N
+    bars"); ``indicator`` is the asset's short-window profile, or ``None`` when
+    the asset has no stored snapshot at all. Serves assets of any membership —
+    universe and watchlist — since the underlying snapshots are computed
+    universe-wide. The long-window indicators and uptrend trend-gate verdict are
+    deliberately not exposed here.
+    """
+
+    min_bars: int
+    indicator: WatchlistIndicatorRead | None = None
 
 
 class BenchmarkCatalogEntry(BaseModel):

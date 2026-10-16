@@ -82,3 +82,13 @@ Configured via the root `.env` (see `.env.example`):
   `/ai-portfolio/snapshot-daily` to record each session's value snapshot and send
   its P&L report. Running on weekends captures weekend crypto moves in the NAV
   series so Saturdays/Sundays are not gaps)
+- Quarterly fundamentals refresh: `FUNDAMENTALS_SCHEDULE` (default
+  `0 6 1 1,4,7,10 *` — 06:00 ET on the 1st of Jan/Apr/Jul/Oct; the sidecar POSTs
+  `/assets/fundamentals/refresh` to re-fetch SEC EDGAR fundamentals for **every
+  stock asset** so stored figures track quarterly filings. New stocks also get
+  fundamentals fetched on creation, so this job keeps existing stocks current).
+  **One-time backfill:** after first deploying this job, invoke the endpoint once
+  to populate stocks that predate it —
+  `curl -fsS -X POST -H "X-Cron-Token: $REBALANCE_CRON_TOKEN" \
+  http://<host>/api/v1/assets/fundamentals/refresh` (the same call the cron makes;
+  re-running is safe — it re-fetches and upserts)

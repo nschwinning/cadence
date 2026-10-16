@@ -8,12 +8,11 @@ guarded by a shared-secret ``X-Cron-Token`` header (empty config rejects all).
 
 from __future__ import annotations
 
-import hmac
 import logging
 import uuid
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
 
 from cadence.ai_portfolio.agent import AIPortfolioAgent, OpenAIAIPortfolioAgent
@@ -32,6 +31,7 @@ from cadence.ai_portfolio.errors import (
     SessionNotEligibleError,
 )
 from cadence.ai_portfolio.service import AIBuildParams
+from cadence.api.cron_auth import require_valid_cron_token
 from cadence.api.routers.assets import get_market_data_provider
 from cadence.api.schemas import (
     AIBenchmarkIngestResponse,
@@ -76,26 +76,6 @@ def get_ai_portfolio_agent() -> AIPortfolioAgent:
 def get_ai_job_runner() -> AIPortfolioJobRunner:
     """Provide the process-wide AI job runner. Overridden in tests."""
     return default_job_runner
-
-
-def require_valid_cron_token(
-    x_cron_token: Annotated[str | None, Header()] = None,
-) -> None:
-    """Reject the request unless ``X-Cron-Token`` matches the configured secret.
-
-    An empty configured token means no valid token exists, so every request is
-    rejected — the daily rebalance must be explicitly enabled by configuring a
-    non-empty ``REBALANCE_CRON_TOKEN``.
-    """
-    expected = settings.REBALANCE_CRON_TOKEN
-    if (
-        not expected
-        or not x_cron_token
-        or not hmac.compare_digest(x_cron_token, expected)
-    ):
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN, detail="Invalid or missing cron token"
-        )
 
 
 DbSession = Annotated[Session, Depends(get_db)]

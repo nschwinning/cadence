@@ -29,7 +29,6 @@ from cadence.assets.service import (
     add_asset,
     delete_asset,
     list_assets,
-    record_fundamentals,
 )
 from cadence.broker.base import Broker
 from cadence.dashboard.service import get_universe_composition
@@ -212,8 +211,9 @@ def _validate_and_add(
     For a **universe** run, an asset that comes back ineligible is deleted again
     so the hard eligibility filter holds. For a **watchlist** run, ineligible
     (emerging) names are kept — that is the point — the candidate is stamped as a
-    ``WATCHLIST`` member and its SEC EDGAR fundamentals are fetched and persisted
-    after adding; the add is additionally scoped to the stock category only.
+    ``WATCHLIST`` member; the add is additionally scoped to the stock category only.
+    SEC EDGAR fundamentals are fetched on creation for every stock candidate
+    (regardless of target) by ``add_asset`` itself, which is passed the provider.
     Adding stops once ``limit`` assets have been added.
     """
     is_watchlist = target == RunTarget.WATCHLIST
@@ -234,6 +234,7 @@ def _validate_and_add(
                 broker,
                 allowed_categories=allowed_categories,
                 membership=membership,
+                fundamentals=fundamentals,
             )
         except DuplicateAssetError:
             outcomes.append(_outcome(ticker, CandidateOutcome.SKIPPED_DUPLICATE))
@@ -253,13 +254,10 @@ def _validate_and_add(
 
         if not is_watchlist and not asset.is_eligible:
             # Hard filter: never keep an ineligible asset in the universe.
+            # Any fundamentals fetched during the add cascade-delete with it.
             delete_asset(session, asset.id)
             outcomes.append(_outcome(ticker, CandidateOutcome.SKIPPED_INELIGIBLE))
             continue
-
-        if is_watchlist:
-            # Best-effort fundamentals fetch — never fails the add.
-            record_fundamentals(session, asset, fundamentals)
 
         added += 1
         outcomes.append(_outcome(ticker, CandidateOutcome.ADDED))

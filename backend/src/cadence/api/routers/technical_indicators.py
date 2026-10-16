@@ -10,20 +10,25 @@ from __future__ import annotations
 import logging
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, status
+from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
-from cadence.api.routers.ai_portfolio import require_valid_cron_token
+from cadence.api.cron_auth import require_valid_cron_token
 from cadence.api.schemas import (
+    AssetIndicatorResponse,
     TechnicalIndicatorConfig,
     TechnicalIndicatorRunResponse,
+    WatchlistIndicatorRead,
+    WatchlistIndicatorsResponse,
 )
+from cadence.assets.errors import AssetNotFoundError
 from cadence.database import get_db
 from cadence.technical_indicators import service
 from cadence.technical_indicators.background import (
     TechnicalIndicatorJobRunner,
     default_job_runner,
 )
+from cadence.technical_indicators.constants import WATCHLIST_MIN_BARS
 
 logger = logging.getLogger(__name__)
 
@@ -51,6 +56,48 @@ def get_indicator_config() -> TechnicalIndicatorConfig:
     configuration. Does not start or alter any computation.
     """
     return TechnicalIndicatorConfig.model_validate(service.get_indicator_config())
+
+
+@router.get("/watchlist", response_model=WatchlistIndicatorsResponse)
+def list_watchlist_indicators(db: DbSession) -> WatchlistIndicatorsResponse:
+    """Return the short-window technical profile for every watchlist asset.
+
+    A plain read (NOT cron-guarded). One batched response for all watchlist
+    assets: the momentum / mean-reversion subset per asset, each flagged
+    ``insufficient_history`` when below the minimum-bars floor. The long-window
+    indicators and the uptrend trend-gate verdict are deliberately not exposed
+    here — they are not a meaningful trading signal for emerging names.
+    """
+    return WatchlistIndicatorsResponse(
+        min_bars=WATCHLIST_MIN_BARS,
+        items=[
+            WatchlistIndicatorRead.model_validate(snap)
+            for snap in service.get_watchlist_indicators(db)
+        ],
+    )
+
+
+@router.get("/assets/{ticker}", response_model=AssetIndicatorResponse)
+def get_asset_indicators(ticker: str, db: DbSession) -> AssetIndicatorResponse:
+    """Return the short-window technical profile for a single asset by ticker.
+
+    A plain read (NOT cron-guarded) that serves an asset of any membership —
+    universe or watchlist — since the underlying snapshots are computed
+    universe-wide. The profile is flagged ``insufficient_history`` when the asset
+    is below the minimum-bars floor or has no snapshot yet. The long-window
+    indicators and the uptrend trend-gate verdict are deliberately not exposed.
+    Responds 404 when the ticker is not in the universe.
+    """
+    try:
+        snapshot = service.get_asset_indicators(db, ticker)
+    except AssetNotFoundError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)
+        ) from exc
+    return AssetIndicatorResponse(
+        min_bars=WATCHLIST_MIN_BARS,
+        indicator=WatchlistIndicatorRead.model_validate(snapshot),
+    )
 
 
 @router.post(

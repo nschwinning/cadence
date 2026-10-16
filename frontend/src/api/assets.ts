@@ -11,6 +11,7 @@ import type {
   AssetCategory,
   AssetCreate,
   AssetDetail,
+  AssetMembership,
   AssetPage,
   AssetSortDirection,
   AssetSortField,
@@ -61,6 +62,12 @@ export interface AssetsListParams {
   direction: AssetSortDirection;
   categories: AssetCategory[];
   sectors: Sector[];
+  /**
+   * Which membership bucket to list. Omitted (undefined) lists the universe
+   * (the backend default), so the Assets page is unaffected; the Watchlist page
+   * passes `'watchlist'` to list watchlist members.
+   */
+  membership?: AssetMembership;
 }
 
 /** Typed query keys for assets-related queries. */
@@ -68,7 +75,6 @@ export const assetKeys = {
   all: ['assets'] as const,
   list: (params: AssetsListParams) => ['assets', 'list', params] as const,
   detail: (ticker: string) => ['assets', 'detail', ticker] as const,
-  watchlist: ['assets', 'watchlist'] as const,
 };
 
 /**
@@ -85,6 +91,7 @@ export async function listAssets(params: {
   direction: AssetSortDirection;
   categories: AssetCategory[];
   sectors: Sector[];
+  membership?: AssetMembership;
 }): Promise<AssetPage> {
   const query: Record<string, string | number | string[]> = {
     limit: params.limit,
@@ -96,37 +103,14 @@ export async function listAssets(params: {
   if (trimmed) query.search = trimmed;
   if (params.categories.length > 0) query.category = params.categories;
   if (params.sectors.length > 0) query.sector = params.sectors;
+  // Only send `membership` when explicitly set, so the universe default holds.
+  if (params.membership) query.membership = params.membership;
   const { data } = await apiClient.get<AssetPage>('/api/v1/assets', {
     params: query,
     // Repeat array keys without brackets: `category=stock&sector=technology`.
     paramsSerializer: { indexes: null },
   });
   return data;
-}
-
-/**
- * Fetch the watchlist: assets whose `membership` is `watchlist`, newest first.
- * Requests a generous single page (the watchlist is small by design) so the page
- * renders every entry with its fundamentals without paging.
- */
-export async function listWatchlist(): Promise<Asset[]> {
-  // 100 is the largest allowed page size; the watchlist is small by design so a
-  // single max-size page covers it without paging.
-  const { data } = await apiClient.get<AssetPage>('/api/v1/assets', {
-    params: { membership: 'watchlist', limit: 100, offset: 0 },
-  });
-  return data.items;
-}
-
-/**
- * React Query hook listing the watchlist (membership=watchlist). Separate key
- * from the universe list so the two never collide in the cache.
- */
-export function useWatchlist() {
-  return useQuery<Asset[]>({
-    queryKey: assetKeys.watchlist,
-    queryFn: listWatchlist,
-  });
 }
 
 /**
@@ -171,6 +155,7 @@ export function useAssets({
   direction,
   categories,
   sectors,
+  membership,
 }: AssetsListParams) {
   return useInfiniteQuery({
     queryKey: assetKeys.list({
@@ -180,6 +165,7 @@ export function useAssets({
       direction,
       categories,
       sectors,
+      membership,
     }),
     queryFn: ({ pageParam }) =>
       listAssets({
@@ -190,6 +176,7 @@ export function useAssets({
         direction,
         categories,
         sectors,
+        membership,
       }),
     initialPageParam: 0,
     getNextPageParam: (lastPage, allPages) => {

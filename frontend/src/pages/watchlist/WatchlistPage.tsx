@@ -1,6 +1,22 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { Link } from 'react-router-dom';
 import { useQueryClient } from '@tanstack/react-query';
-import { assetKeys, useWatchlist } from '../../api/assets';
+import {
+  ASSET_PAGE_SIZES,
+  DEFAULT_ASSET_DIRECTION,
+  DEFAULT_ASSET_SORT,
+  assetKeys,
+  useAssets,
+  type AssetPageSize,
+} from '../../api/assets';
+import {
+  CATEGORY_OPTIONS,
+  MultiSelectDropdown,
+  SECTOR_OPTIONS,
+  SortableHeader,
+} from '../assets/AssetsPage';
+import { CategoryBadge } from '../../components/CategoryBadge';
+import { SectorBadge } from '../../components/SectorBadge';
 import {
   isTerminalPhase,
   useCreateRecommendationRun,
@@ -8,10 +24,12 @@ import {
 } from '../../api/recommendations';
 import type {
   Asset,
-  AssetFundamentals,
-  FundamentalsFigure,
+  AssetCategory,
+  AssetSortDirection,
+  AssetSortField,
   RecommendationCandidateResult,
   RunPhase,
+  Sector,
 } from '../../types/api';
 
 /** Human label per in-flight/terminal phase, for the live status badge. */
@@ -22,204 +40,6 @@ const PHASE_LABELS: Record<RunPhase, string> = {
   completed: 'Completed',
   failed: 'Failed',
 };
-
-/** Order + labels for the known EDGAR figures we render. */
-const FIGURE_ROWS: { key: string; label: string; marginOf?: 'revenue' }[] = [
-  { key: 'revenue', label: 'Revenue' },
-  { key: 'gross_profit', label: 'Gross profit', marginOf: 'revenue' },
-  { key: 'operating_income', label: 'Operating income', marginOf: 'revenue' },
-  { key: 'net_income', label: 'Net income', marginOf: 'revenue' },
-  { key: 'operating_cash_flow', label: 'Operating cash flow' },
-  { key: 'eps_basic', label: 'EPS (basic)' },
-  { key: 'eps_diluted', label: 'EPS (diluted)' },
-];
-
-/** Keys rendered as per-share currency rather than compact large numbers. */
-const PER_SHARE_KEYS = new Set(['eps_basic', 'eps_diluted']);
-
-/** Format a large USD figure compactly (e.g. `$1.2B`, `-$340.0M`). */
-function formatCompactUsd(value: number): string {
-  const sign = value < 0 ? '-' : '';
-  const abs = Math.abs(value);
-  const units: [number, string][] = [
-    [1e12, 'T'],
-    [1e9, 'B'],
-    [1e6, 'M'],
-    [1e3, 'K'],
-  ];
-  for (const [scale, suffix] of units) {
-    if (abs >= scale) return `${sign}$${(abs / scale).toFixed(1)}${suffix}`;
-  }
-  return `${sign}$${abs.toFixed(0)}`;
-}
-
-/** Format a per-share figure (EPS) with two decimals. */
-function formatPerShare(value: number): string {
-  const sign = value < 0 ? '-' : '';
-  return `${sign}$${Math.abs(value).toFixed(2)}`;
-}
-
-/** Format a single figure's value for display, by key. */
-function formatFigureValue(key: string, figure: FundamentalsFigure): string {
-  return PER_SHARE_KEYS.has(key)
-    ? formatPerShare(figure.value)
-    : formatCompactUsd(figure.value);
-}
-
-/** A readable company-details value, flattening arrays/objects to text. */
-function detailText(value: unknown): string | null {
-  if (value === null || value === undefined) return null;
-  if (Array.isArray(value)) {
-    const joined = value.filter((v) => v != null).join(', ');
-    return joined.length > 0 ? joined : null;
-  }
-  if (typeof value === 'object') return null;
-  const text = String(value);
-  return text.length > 0 ? text : null;
-}
-
-/** The company details worth surfacing, in display order (label → doc key). */
-const DETAIL_ROWS: { key: string; label: string }[] = [
-  { key: 'sicDescription', label: 'Industry' },
-  { key: 'exchanges', label: 'Exchanges' },
-  { key: 'sic', label: 'SIC code' },
-];
-
-/** Pick the best available company name from the fundamentals document. */
-function companyName(fundamentals: AssetFundamentals): string | null {
-  const details = fundamentals.document.company_details;
-  if (details && typeof details === 'object') {
-    const name =
-      detailText((details as Record<string, unknown>).name) ??
-      detailText((details as Record<string, unknown>).entity_name);
-    if (name) return name;
-  }
-  return null;
-}
-
-/** The fundamentals detail block for one watchlist entry. */
-function FundamentalsPanel({
-  fundamentals,
-}: {
-  fundamentals: AssetFundamentals;
-}) {
-  if (fundamentals.status === 'unavailable') {
-    return (
-      <p className="rounded border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-600">
-        Fundamentals unavailable — SEC EDGAR had no filings for this ticker or was
-        unreachable when it was added.
-      </p>
-    );
-  }
-
-  const figures = fundamentals.document.figures ?? {};
-  const revenue = figures.revenue?.value;
-  const rows = FIGURE_ROWS.filter((row) => figures[row.key] !== undefined);
-  const details = (fundamentals.document.company_details ?? {}) as Record<
-    string,
-    unknown
-  >;
-  const detailRows = DETAIL_ROWS.map((row) => ({
-    label: row.label,
-    text: detailText(details[row.key]),
-  })).filter((row) => row.text !== null);
-
-  return (
-    <div className="flex flex-col gap-3">
-      {fundamentals.status === 'partial' && (
-        <p className="text-xs font-medium text-amber-700">
-          Partial fundamentals — some figures were missing from EDGAR.
-        </p>
-      )}
-
-      {rows.length > 0 ? (
-        <table className="w-full border-collapse text-sm">
-          <thead>
-            <tr className="text-left text-xs font-semibold uppercase tracking-wide text-slate-500">
-              <th className="py-1 pr-4">Figure</th>
-              <th className="py-1 pr-4 text-right">Latest annual</th>
-              <th className="py-1 text-right">Margin</th>
-            </tr>
-          </thead>
-          <tbody>
-            {rows.map((row) => {
-              const figure = figures[row.key]!;
-              const margin =
-                row.marginOf === 'revenue' &&
-                typeof revenue === 'number' &&
-                revenue !== 0
-                  ? (figure.value / revenue) * 100
-                  : null;
-              return (
-                <tr key={row.key} className="border-t border-slate-100">
-                  <td className="py-1 pr-4 text-slate-700">{row.label}</td>
-                  <td className="py-1 pr-4 text-right font-medium tabular-nums text-slate-900">
-                    {formatFigureValue(row.key, figure)}
-                    {figure.period_end && (
-                      <span className="ml-1 text-xs font-normal text-slate-400">
-                        ({figure.period_end})
-                      </span>
-                    )}
-                  </td>
-                  <td className="py-1 text-right tabular-nums text-slate-600">
-                    {margin !== null ? `${margin.toFixed(1)}%` : '—'}
-                  </td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
-      ) : (
-        <p className="text-sm text-slate-500">
-          No figures were reported for this company.
-        </p>
-      )}
-
-      {detailRows.length > 0 && (
-        <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 text-xs">
-          {detailRows.map((row) => (
-            <div key={row.label} className="contents">
-              <dt className="text-slate-500">{row.label}</dt>
-              <dd className="text-slate-700">{row.text}</dd>
-            </div>
-          ))}
-        </dl>
-      )}
-    </div>
-  );
-}
-
-/** A single watchlist entry card: ticker + name, eligibility, fundamentals. */
-function WatchlistEntry({ asset }: { asset: Asset }) {
-  const name =
-    asset.name ??
-    (asset.fundamentals ? companyName(asset.fundamentals) : null);
-  return (
-    <li className="rounded-lg border border-slate-200 bg-white p-5 shadow-sm">
-      <div className="flex flex-wrap items-baseline gap-2">
-        <span className="text-lg font-bold tabular-nums text-slate-900">
-          {asset.ticker}
-        </span>
-        {name && <span className="text-sm text-slate-500">{name}</span>}
-        {!asset.is_eligible && (
-          <span className="ml-auto inline-flex items-center rounded-full bg-amber-100 px-2.5 py-0.5 text-xs font-medium text-amber-800">
-            Below universe bar
-          </span>
-        )}
-      </div>
-
-      <div className="mt-4">
-        {asset.fundamentals ? (
-          <FundamentalsPanel fundamentals={asset.fundamentals} />
-        ) : (
-          <p className="rounded border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-600">
-            No fundamentals on record for this entry.
-          </p>
-        )}
-      </div>
-    </li>
-  );
-}
 
 /** Derived rollup counts over a run's candidate results. */
 function rollup(results: RecommendationCandidateResult[]) {
@@ -406,14 +226,173 @@ function WatchlistRecommendCard({ onAdded }: { onAdded: () => void }) {
   );
 }
 
+/** A single watchlist table row: ticker (linked to detail), name, badges. */
+function WatchlistRow({ asset }: { asset: Asset }) {
+  return (
+    <tr className="border-b border-slate-100 hover:bg-slate-50">
+      <td className="px-4 py-3 font-semibold">
+        <Link
+          to={`/assets/${asset.ticker}`}
+          className="text-emerald-700 hover:text-emerald-800 hover:underline focus:outline-none focus:ring-1 focus:ring-emerald-500"
+        >
+          {asset.ticker}
+        </Link>
+      </td>
+      <td className="px-4 py-3 text-slate-700">{asset.name ?? '—'}</td>
+      <td className="px-4 py-3">
+        <CategoryBadge category={asset.category} />
+      </td>
+      <td className="px-4 py-3">
+        <SectorBadge sector={asset.sector} />
+      </td>
+      <td className="px-4 py-3">
+        {asset.is_eligible ? (
+          <span className="inline-flex items-center gap-1 rounded-full bg-emerald-100 px-2.5 py-0.5 text-xs font-medium text-emerald-800">
+            <span
+              aria-hidden="true"
+              className="h-1.5 w-1.5 rounded-full bg-emerald-500"
+            />
+            Meets universe bar
+          </span>
+        ) : (
+          <span className="inline-flex items-center gap-1 rounded-full bg-amber-100 px-2.5 py-0.5 text-xs font-medium text-amber-800">
+            <span
+              aria-hidden="true"
+              className="h-1.5 w-1.5 rounded-full bg-amber-500"
+            />
+            Below universe bar
+          </span>
+        )}
+      </td>
+    </tr>
+  );
+}
+
+/** localStorage key holding the user's chosen watchlist-table page size. */
+const PAGE_SIZE_STORAGE_KEY = 'cadence.watchlist.pageSize';
+
+/** Read a valid persisted page size, falling back to the smallest (20). */
+function readStoredPageSize(): AssetPageSize {
+  try {
+    const raw = window.localStorage.getItem(PAGE_SIZE_STORAGE_KEY);
+    const parsed = raw === null ? NaN : Number(raw);
+    if ((ASSET_PAGE_SIZES as readonly number[]).includes(parsed)) {
+      return parsed as AssetPageSize;
+    }
+  } catch {
+    // Ignore storage access errors (private mode, disabled storage).
+  }
+  return ASSET_PAGE_SIZES[0];
+}
+
 export function WatchlistPage() {
   const queryClient = useQueryClient();
-  const { data, isPending, isError } = useWatchlist();
-  const entries = data ?? [];
+
+  const [search, setSearch] = useState('');
+  const [debouncedSearch, setDebouncedSearch] = useState('');
+  const [pageSize, setPageSize] = useState<AssetPageSize>(readStoredPageSize);
+  const [sort, setSort] = useState<AssetSortField>(DEFAULT_ASSET_SORT);
+  const [direction, setDirection] =
+    useState<AssetSortDirection>(DEFAULT_ASSET_DIRECTION);
+  const [categories, setCategories] = useState<AssetCategory[]>([]);
+  const [sectors, setSectors] = useState<Sector[]>([]);
+  const sentinelRef = useRef<HTMLDivElement>(null);
+
+  // Debounce the search box so typing doesn't fire a request per keystroke.
+  useEffect(() => {
+    const id = window.setTimeout(() => setDebouncedSearch(search), 300);
+    return () => window.clearTimeout(id);
+  }, [search]);
+
+  const {
+    data,
+    isPending,
+    isError,
+    fetchNextPage,
+    hasNextPage,
+    isFetchingNextPage,
+  } = useAssets({
+    pageSize,
+    search: debouncedSearch,
+    sort,
+    direction,
+    categories,
+    sectors,
+    membership: 'watchlist',
+  });
+
+  const handleSort = (field: AssetSortField) => {
+    if (sort === field) {
+      setDirection((prev) => (prev === 'asc' ? 'desc' : 'asc'));
+    } else {
+      setSort(field);
+      setDirection('asc');
+    }
+  };
+
+  const handleCategoryToggle = (category: AssetCategory) => {
+    setCategories((prev) =>
+      prev.includes(category)
+        ? prev.filter((c) => c !== category)
+        : [...prev, category],
+    );
+  };
+
+  const handleSectorToggle = (sector: Sector) => {
+    setSectors((prev) =>
+      prev.includes(sector)
+        ? prev.filter((s) => s !== sector)
+        : [...prev, sector],
+    );
+  };
+
+  // Flatten the loaded pages, de-duping by id.
+  const assets = useMemo(() => {
+    const seen = new Set<number>();
+    const rows: Asset[] = [];
+    for (const page of data?.pages ?? []) {
+      for (const asset of page.items) {
+        if (!seen.has(asset.id)) {
+          seen.add(asset.id);
+          rows.push(asset);
+        }
+      }
+    }
+    return rows;
+  }, [data]);
+
+  const total = data?.pages[0]?.total ?? 0;
+  const isSearching = debouncedSearch.trim().length > 0;
+  const isFiltering =
+    isSearching || categories.length > 0 || sectors.length > 0;
 
   const refreshWatchlist = () => {
-    queryClient.invalidateQueries({ queryKey: assetKeys.watchlist });
+    // The watchlist is listed via the shared assets query path, so invalidate
+    // all assets lists to pick up newly added watchlist entries.
+    queryClient.invalidateQueries({ queryKey: assetKeys.all });
   };
+
+  const handlePageSizeChange = (next: AssetPageSize) => {
+    setPageSize(next);
+    try {
+      window.localStorage.setItem(PAGE_SIZE_STORAGE_KEY, String(next));
+    } catch {
+      // Ignore storage write errors; the in-memory choice still applies.
+    }
+  };
+
+  // Infinite scroll: load the next page when the sentinel scrolls into view.
+  useEffect(() => {
+    const node = sentinelRef.current;
+    if (!node || !hasNextPage) return;
+    const observer = new IntersectionObserver((entries) => {
+      if (entries[0]?.isIntersecting && hasNextPage && !isFetchingNextPage) {
+        void fetchNextPage();
+      }
+    });
+    observer.observe(node);
+    return () => observer.disconnect();
+  }, [hasNextPage, isFetchingNextPage, fetchNextPage, assets.length]);
 
   return (
     <section className="flex flex-col gap-6">
@@ -423,18 +402,69 @@ export function WatchlistPage() {
 
       <WatchlistRecommendCard onAdded={refreshWatchlist} />
 
-      <div className="flex flex-col gap-4">
-        <h2 className="text-lg font-semibold text-slate-900">
-          Watched companies
-          {!isPending && !isError && entries.length > 0 && (
-            <span className="ml-2 text-sm font-normal text-slate-500">
-              {entries.length} total
-            </span>
-          )}
-        </h2>
+      {/* List section */}
+      <div className="rounded-lg border border-slate-200 bg-white shadow-sm">
+        <div className="flex flex-col gap-3 border-b border-slate-200 p-4 sm:flex-row sm:items-start sm:justify-between">
+          <div className="flex items-baseline gap-3">
+            <h2 className="text-lg font-semibold text-slate-900">
+              Watched companies
+            </h2>
+            {!isPending && !isError && total > 0 && (
+              <span className="text-sm text-slate-500" aria-live="polite">
+                Showing {assets.length} of {total}
+              </span>
+            )}
+          </div>
+          <div className="flex w-full flex-col gap-3 sm:w-auto sm:flex-row sm:items-center">
+            <div className="flex items-center gap-2">
+              <label htmlFor="page-size" className="text-sm text-slate-500">
+                Per page
+              </label>
+              <select
+                id="page-size"
+                value={pageSize}
+                onChange={(e) =>
+                  handlePageSizeChange(Number(e.target.value) as AssetPageSize)
+                }
+                className="rounded border border-slate-300 px-2 py-2 text-sm text-slate-900 focus:border-emerald-500 focus:outline-none focus:ring-1 focus:ring-emerald-500"
+              >
+                {ASSET_PAGE_SIZES.map((size) => (
+                  <option key={size} value={size}>
+                    {size}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div className="w-full sm:w-72">
+              <label htmlFor="search" className="sr-only">
+                Search watchlist
+              </label>
+              <input
+                id="search"
+                type="search"
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                placeholder="Search by ticker or name…"
+                className="w-full rounded border border-slate-300 px-3 py-2 text-sm text-slate-900 placeholder:text-slate-400 focus:border-emerald-500 focus:outline-none focus:ring-1 focus:ring-emerald-500"
+              />
+            </div>
+            <MultiSelectDropdown
+              label="Categories"
+              options={CATEGORY_OPTIONS}
+              selected={categories}
+              onToggle={handleCategoryToggle}
+            />
+            <MultiSelectDropdown
+              label="Sectors"
+              options={SECTOR_OPTIONS}
+              selected={sectors}
+              onToggle={handleSectorToggle}
+            />
+          </div>
+        </div>
 
         {isPending && (
-          <p role="status" aria-live="polite" className="text-slate-500">
+          <p role="status" aria-live="polite" className="p-6 text-slate-500">
             Loading watchlist…
           </p>
         )}
@@ -442,26 +472,72 @@ export function WatchlistPage() {
         {isError && (
           <div
             role="alert"
-            className="rounded border border-red-300 bg-red-50 p-4 text-red-800"
+            className="m-4 rounded border border-red-300 bg-red-50 p-4 text-red-800"
           >
             <p className="font-semibold">Could not load the watchlist</p>
             <p className="mt-1 text-sm">Please try again later.</p>
           </div>
         )}
 
-        {!isPending && !isError && entries.length === 0 && (
-          <p className="rounded-lg border border-dashed border-slate-300 bg-slate-50 p-6 text-slate-500">
+        {!isPending && !isError && total === 0 && !isFiltering && (
+          <p className="p-6 text-slate-500">
             Your watchlist is empty. Use “Discover emerging companies” above to
             add research candidates.
           </p>
         )}
 
-        {!isPending && !isError && entries.length > 0 && (
-          <ul className="flex flex-col gap-4">
-            {entries.map((asset) => (
-              <WatchlistEntry key={asset.id} asset={asset} />
-            ))}
-          </ul>
+        {!isPending && !isError && total === 0 && isFiltering && (
+          <p className="p-6 text-slate-500">
+            No watchlist companies match your search and filters.
+          </p>
+        )}
+
+        {!isPending && !isError && assets.length > 0 && (
+          <div className="overflow-x-auto">
+            <table className="w-full min-w-[640px] border-collapse text-sm">
+              <thead>
+                <tr className="border-b border-slate-200 bg-slate-50 text-left text-xs font-semibold uppercase tracking-wide text-slate-500">
+                  <SortableHeader
+                    label="Ticker"
+                    field="ticker"
+                    sort={sort}
+                    direction={direction}
+                    onSort={handleSort}
+                    className="px-4 py-3"
+                  />
+                  <SortableHeader
+                    label="Name"
+                    field="name"
+                    sort={sort}
+                    direction={direction}
+                    onSort={handleSort}
+                    className="px-4 py-3"
+                  />
+                  <th className="px-4 py-3">Category</th>
+                  <th className="px-4 py-3">Sector</th>
+                  <th className="px-4 py-3">Universe bar</th>
+                </tr>
+              </thead>
+              <tbody>
+                {assets.map((asset) => (
+                  <WatchlistRow key={asset.id} asset={asset} />
+                ))}
+              </tbody>
+            </table>
+
+            {/* Infinite-scroll sentinel: intersecting triggers the next page. */}
+            <div ref={sentinelRef} aria-hidden="true" className="h-px" />
+
+            {isFetchingNextPage && (
+              <p
+                role="status"
+                aria-live="polite"
+                className="p-4 text-center text-sm text-slate-500"
+              >
+                Loading more…
+              </p>
+            )}
+          </div>
         )}
       </div>
     </section>
