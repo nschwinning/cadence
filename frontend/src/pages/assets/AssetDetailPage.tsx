@@ -1,4 +1,4 @@
-import { Link, useParams } from 'react-router-dom';
+import { Link, useLocation, useParams } from 'react-router-dom';
 import axios from 'axios';
 import { useAssetDetail } from '../../api/assets';
 import { useAssetIndicators } from '../../api/technicalIndicators';
@@ -122,13 +122,27 @@ function PriceSparkline({
   );
 }
 
-function BackToAssetsLink() {
+/**
+ * Where the user navigated to this detail page from. Carried on the router link
+ * `state` so the back link returns to the originating list. Defaults to the
+ * assets page when unknown (direct load, refresh, or any other entry point).
+ */
+type DetailOrigin = 'watchlist' | 'assets';
+
+function backTarget(from: DetailOrigin): { to: string; label: string } {
+  return from === 'watchlist'
+    ? { to: '/watchlist', label: 'Back to watchlist' }
+    : { to: '/assets', label: 'Back to assets' };
+}
+
+function BackLink({ from }: { from: DetailOrigin }) {
+  const { to, label } = backTarget(from);
   return (
     <Link
-      to="/assets"
+      to={to}
       className="inline-flex items-center gap-1 text-sm font-medium text-emerald-700 hover:text-emerald-800 hover:underline"
     >
-      <span aria-hidden="true">←</span> Back to assets
+      <span aria-hidden="true">←</span> {label}
     </Link>
   );
 }
@@ -189,13 +203,19 @@ function TechnicalSection({ ticker }: { ticker: string }) {
   );
 }
 
-function DetailView({ detail }: { detail: AssetDetail }) {
+function DetailView({
+  detail,
+  from,
+}: {
+  detail: AssetDetail;
+  from: DetailOrigin;
+}) {
   const change = computeChange(detail.current_price, detail.previous_close);
   const trend = change?.direction ?? 'flat';
 
   return (
     <section className="flex flex-col gap-6">
-      <BackToAssetsLink />
+      <BackLink from={from} />
 
       {/* Header */}
       <header className="flex flex-col gap-2">
@@ -332,13 +352,16 @@ function DetailView({ detail }: { detail: AssetDetail }) {
 
 export function AssetDetailPage() {
   const { ticker = '' } = useParams<{ ticker: string }>();
+  const location = useLocation();
+  const navState = location.state as { from?: string } | null;
+  const from: DetailOrigin = navState?.from === 'watchlist' ? 'watchlist' : 'assets';
   const { data, isPending, isError, error, refetch, isFetching } =
     useAssetDetail(ticker);
 
   if (isPending) {
     return (
       <section className="flex flex-col gap-6">
-        <BackToAssetsLink />
+        <BackLink from={from} />
         <p role="status" aria-live="polite" className="text-slate-500">
           Loading asset details…
         </p>
@@ -356,7 +379,7 @@ export function AssetDetailPage() {
     if (notFound) {
       return (
         <section className="flex flex-col gap-6">
-          <BackToAssetsLink />
+          <BackLink from={from} />
           <div
             role="alert"
             className="max-w-xl rounded-lg border border-slate-200 bg-white p-6 shadow-sm"
@@ -381,7 +404,7 @@ export function AssetDetailPage() {
 
     return (
       <section className="flex flex-col gap-6">
-        <BackToAssetsLink />
+        <BackLink from={from} />
         <div
           role="alert"
           className="max-w-xl rounded-lg border border-red-300 bg-red-50 p-6 shadow-sm"
@@ -409,7 +432,7 @@ export function AssetDetailPage() {
     );
   }
 
-  return <DetailView detail={data} />;
+  return <DetailView detail={data} from={from} />;
 }
 
 export default AssetDetailPage;

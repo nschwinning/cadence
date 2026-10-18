@@ -19,3 +19,19 @@ export const CATEGORICAL_PALETTE = [
 export function categoricalColor(index: number): string {
   return CATEGORICAL_PALETTE[index % CATEGORICAL_PALETTE.length];
 }
+
+/**
+ * The color for a stable string `key` (for example a session id), derived from a
+ * deterministic hash of the key rather than a render position. The same key always
+ * maps to the same palette slot, so an item keeps its color across renders and
+ * regardless of which other items are present or how they are ordered. Different
+ * keys spread across the palette but may collide once there are more distinct keys
+ * than palette colors — callers that need disambiguation pair the color with a label.
+ */
+export function colorForKey(key: string): string {
+  let hash = 0;
+  for (let i = 0; i < key.length; i += 1) {
+    hash = (hash * 31 + key.charCodeAt(i)) | 0;
+  }
+  return CATEGORICAL_PALETTE[Math.abs(hash) % CATEGORICAL_PALETTE.length];
+}

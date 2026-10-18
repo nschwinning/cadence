@@ -97,13 +97,13 @@ function mockRoutes(
   });
 }
 
-function renderAt(path: string, ui: ReactNode) {
+function renderAt(path: string, ui: ReactNode, state?: unknown) {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false } },
   });
   return render(
     <QueryClientProvider client={queryClient}>
-      <MemoryRouter initialEntries={[path]}>
+      <MemoryRouter initialEntries={[{ pathname: path, state }]}>
         <Routes>
           <Route path="/assets/:ticker" element={ui} />
         </Routes>
@@ -181,6 +181,24 @@ describe('AssetDetailPage', () => {
     expect(
       await screen.findByText(/Insufficient history for technical indicators/),
     ).toBeInTheDocument();
+  });
+
+  it('defaults the back link to the assets page when no origin is given', async () => {
+    mockRoutes(baseDetail, { min_bars: 250, indicator: indicator() });
+
+    renderAt('/assets/AAPL', <AssetDetailPage />);
+
+    const back = await screen.findByRole('link', { name: /Back to assets/ });
+    expect(back).toHaveAttribute('href', '/assets');
+  });
+
+  it('points the back link to the watchlist when navigated from it', async () => {
+    mockRoutes(baseDetail, { min_bars: 250, indicator: indicator() });
+
+    renderAt('/assets/AAPL', <AssetDetailPage />, { from: 'watchlist' });
+
+    const back = await screen.findByRole('link', { name: /Back to watchlist/ });
+    expect(back).toHaveAttribute('href', '/watchlist');
   });
 
   it('shows a not-found state on a 404', async () => {

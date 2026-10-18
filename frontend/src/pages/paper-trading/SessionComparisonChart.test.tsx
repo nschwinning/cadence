@@ -1,9 +1,14 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, fireEvent, within } from '@testing-library/react';
+import { render, screen, fireEvent } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import type { ReactNode } from 'react';
-import { SessionComparisonChart } from './SessionComparisonChart';
+import {
+  SessionComparisonChart,
+  buildComparisonSeries,
+  buildComparisonOption,
+  type Metric,
+} from './SessionComparisonChart';
 import { apiClient } from '../../api/client';
+import { colorForKey } from '../../lib/palette';
 import type { SessionValueComparisonSeries } from '../../types/api';
 
 vi.mock('../../api/client', () => ({
@@ -38,267 +43,199 @@ function renderChart(sessions: SessionValueComparisonSeries[] | null) {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false } },
   });
-  const ui: ReactNode = <SessionComparisonChart />;
   return render(
-    <QueryClientProvider client={queryClient}>{ui}</QueryClientProvider>,
+    <QueryClientProvider client={queryClient}>
+      <SessionComparisonChart />
+    </QueryClientProvider>,
   );
 }
+
+/** Pull the plotted `series` array out of a built ECharts option. */
+function optionSeries(metric: Metric, data: SessionValueComparisonSeries[]) {
+  const built = buildComparisonOption(buildComparisonSeries(data, metric), metric);
+  return (built.series ?? []) as Array<Record<string, unknown>>;
+}
+
+describe('buildComparisonSeries', () => {
+  it('normalises points to return fraction in the return metric', () => {
+    const [s] = buildComparisonSeries(
+      [series('a', 'Alpha', 100000, [['2026-01-04', 100000], ['2026-01-05', 110000]])],
+      'return',
+    );
+    expect(s.points.map((p) => p.value)).toEqual([0, 0.1]);
+  });
+
+  it('uses raw total value in the value metric', () => {
+    const [s] = buildComparisonSeries(
+      [series('a', 'Alpha', 100000, [['2026-01-04', 100000], ['2026-01-05', 110000]])],
+      'value',
+    );
+    expect(s.points.map((p) => p.value)).toEqual([100000, 110000]);
+  });
+
+  it('drops a session to legend-only when capital is non-positive in the return view', () => {
+    const [s] = buildComparisonSeries(
+      [series('a', 'Alpha', 0, [['2026-01-04', 100], ['2026-01-05', 110]])],
+      'return',
+    );
+    expect(s.points).toHaveLength(0);
+  });
+
+  it('keys each session colour to its identity, stable across order and membership', () => {
+    const a = series('a', 'Alpha', 100000, [['2026-01-04', 100000], ['2026-01-05', 101000]]);
+    const b = series('b', 'Beta', 100000, [['2026-01-04', 100000], ['2026-01-05', 102000]]);
+    const forward = buildComparisonSeries([a, b], 'return');
+    const reversed = buildComparisonSeries([b, a], 'return');
+    const colorOf = (list: ReturnType<typeof buildComparisonSeries>, id: string) =>
+      list.find((s) => s.id === id)!.color;
+    // 'a' keeps its colour regardless of position, and it equals the identity hash.
+    expect(colorOf(forward, 'a')).toBe(colorOf(reversed, 'a'));
+    expect(colorOf(forward, 'a')).toBe(colorForKey('a'));
+    // Dropping 'a' from the plotted set does not change 'b'’s colour.
+    expect(colorOf(buildComparisonSeries([b], 'return'), 'b')).toBe(
+      colorOf(forward, 'b'),
+    );
+  });
+
+  it('preserves the input order (which the API returns oldest-created first)', () => {
+    const list = buildComparisonSeries(
+      [
+        series('old', 'Old', 100000, [['2026-01-04', 100000], ['2026-01-05', 101000]]),
+        series('new', 'New', 100000, [['2026-01-04', 100000], ['2026-01-05', 102000]]),
+      ],
+      'return',
+    );
+    expect(list.map((s) => s.id)).toEqual(['old', 'new']);
+  });
+});
+
+describe('buildComparisonOption', () => {
+  it('plots only sessions with at least two points', () => {
+    const plotted = optionSeries('return', [
+      series('a', 'Alpha', 100000, [['2026-01-04', 100000], ['2026-01-05', 101000]]),
+      series('b', 'Beta', 100000, [['2026-01-04', 100000]]),
+    ]);
+    expect(plotted).toHaveLength(1);
+    expect(plotted[0].name).toBe('Alpha');
+  });
+
+  it('adds a 0 baseline mark-line in the return view and omits it in the value view', () => {
+    const data = [
+      series('a', 'Alpha', 100000, [['2026-01-04', 100000], ['2026-01-05', 110000]]),
+    ];
+    expect(optionSeries('return', data)[0].markLine).toBeDefined();
+    expect(optionSeries('value', data)[0].markLine).toBeUndefined();
+  });
+
+  it('formats the y-axis for the active metric', () => {
+    const data = [
+      series('a', 'Alpha', 100000, [['2026-01-04', 100000], ['2026-01-05', 110000]]),
+    ];
+    const returnOpt = buildComparisonOption(
+      buildComparisonSeries(data, 'return'),
+      'return',
+    );
+    const valueOpt = buildComparisonOption(
+      buildComparisonSeries(data, 'value'),
+      'value',
+    );
+    const yFmt = (opt: typeof returnOpt) =>
+      (opt.yAxis as { axisLabel: { formatter: (v: number) => string } }).axisLabel
+        .formatter;
+    expect(yFmt(returnOpt)(0.1)).toBe('10.00%');
+    expect(yFmt(valueOpt)(110000)).toBe('$110,000.00');
+  });
+
+  it('builds a tooltip reporting the date and each series label + formatted value', () => {
+    const data = [
+      series('a', 'Alpha', 100000, [['2026-01-04', 100000], ['2026-01-05', 110000]]),
+    ];
+    const opt = buildComparisonOption(buildComparisonSeries(data, 'return'), 'return');
+    const formatter = (
+      opt.tooltip as { formatter: (p: unknown) => string }
+    ).formatter;
+    const html = formatter([
+      {
+        axisValue: Date.parse('2026-01-05'),
+        seriesName: 'Alpha',
+        value: [Date.parse('2026-01-05'), 0.1],
+        marker: '',
+      },
+    ]);
+    expect(html).toContain('Jan 5, 2026');
+    expect(html).toContain('Alpha');
+    expect(html).toContain('10.00%');
+  });
+
+  it('uses a shared time x-axis with a dated formatter', () => {
+    const opt = buildComparisonOption(
+      buildComparisonSeries(
+        [series('a', 'Alpha', 100000, [['2026-01-04', 100000], ['2026-01-05', 110000]])],
+        'return',
+      ),
+      'return',
+    );
+    const xAxis = opt.xAxis as {
+      type: string;
+      axisLabel: { formatter: (v: number) => string };
+    };
+    expect(xAxis.type).toBe('time');
+    expect(xAxis.axisLabel.formatter(Date.parse('2026-01-04'))).toBe('1/4');
+  });
+});
 
 describe('SessionComparisonChart', () => {
   beforeEach(() => {
     vi.clearAllMocks();
   });
 
-  it('renders one line per plottable session with a legend', async () => {
-    const { container } = renderChart([
-      series('a', 'Alpha', 100000, [
-        ['2026-01-04', 100000],
-        ['2026-01-05', 101000],
-      ]),
-      series('b', 'Beta', 50000, [
-        ['2026-01-04', 50000],
-        ['2026-01-05', 52000],
-      ]),
+  it('renders the chart and a legend for plottable sessions, defaulting to return %', async () => {
+    renderChart([
+      series('a', 'Alpha', 100000, [['2026-01-04', 100000], ['2026-01-05', 110000]]),
+      series('b', 'Beta', 50000, [['2026-01-04', 50000], ['2026-01-05', 52000]]),
     ]);
 
     await screen.findByRole('img', { name: /return percent/i });
-    expect(
-      container.querySelectorAll('[data-testid="comparison-line"]'),
-    ).toHaveLength(2);
     expect(screen.getByText('Alpha')).toBeInTheDocument();
     expect(screen.getByText('Beta')).toBeInTheDocument();
+    // Default is the return metric: +10% shows in Alpha's legend summary.
+    expect(screen.getByText(/· 10\.00%/)).toBeInTheDocument();
   });
 
   it('toggles between the return % and value $ metrics', async () => {
     renderChart([
-      series('a', 'Alpha', 100000, [
-        ['2026-01-04', 100000],
-        ['2026-01-05', 110000],
-      ]),
+      series('a', 'Alpha', 100000, [['2026-01-04', 100000], ['2026-01-05', 110000]]),
     ]);
 
-    // Default is the return metric: +10% shows in the legend summary.
     await screen.findByRole('img', { name: /return percent/i });
     expect(screen.getByText(/· 10\.00%/)).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole('button', { name: 'Value $' }));
 
-    // Value metric: the y-axis rescales and the legend shows the dollar value.
     expect(
       screen.getByRole('img', { name: /portfolio value/i }),
     ).toBeInTheDocument();
     expect(screen.getByText(/· \$110,000\.00/)).toBeInTheDocument();
   });
 
-  it('labels the axes and switches the y-axis units with the metric', async () => {
-    renderChart([
-      series('a', 'Alpha', 100000, [
-        ['2026-01-04', 100000],
-        ['2026-01-06', 110000],
-      ]),
-    ]);
-
-    await screen.findByRole('img', { name: /return percent/i });
-    // Default return view: y-axis top tick is the max return %; x-axis is dated.
-    let yLabels = screen.getAllByTestId('chart-y-label');
-    expect(yLabels[0]).toHaveTextContent('10.00%');
-    const xLabels = screen.getAllByTestId('chart-x-label');
-    expect(xLabels.map((el) => el.textContent)).toEqual(['1/4', '1/6']);
-
-    fireEvent.click(screen.getByRole('button', { name: 'Value $' }));
-
-    // Value view: y-axis top tick becomes the max value in USD.
-    yLabels = screen.getAllByTestId('chart-y-label');
-    expect(yLabels[0]).toHaveTextContent('$110,000.00');
-  });
-
-  it('draws a 0% baseline in the return view and drops it in the value view', async () => {
-    const { container } = renderChart([
-      series('a', 'Alpha', 100000, [
-        ['2026-01-04', 100000],
-        ['2026-01-05', 110000],
-      ]),
-    ]);
-
-    await screen.findByRole('img', { name: /return percent/i });
-    expect(
-      container.querySelectorAll('[data-testid="comparison-baseline"]'),
-    ).toHaveLength(1);
-
-    fireEvent.click(screen.getByRole('button', { name: 'Value $' }));
-
-    // The $ view has no 0% baseline.
-    expect(
-      container.querySelectorAll('[data-testid="comparison-baseline"]'),
-    ).toHaveLength(0);
-  });
-
-  it('keeps 0% in the return-view domain even when every session is up', async () => {
-    // Both points are gains (+5%, +10%), so without forcing 0 the domain would
-    // start at 5%; the baseline expansion pins the bottom tick to 0%.
-    renderChart([
-      series('a', 'Alpha', 100000, [
-        ['2026-01-04', 105000],
-        ['2026-01-05', 110000],
-      ]),
-    ]);
-
-    await screen.findByRole('img', { name: /return percent/i });
-    const yLabels = screen.getAllByTestId('chart-y-label');
-    expect(yLabels[0]).toHaveTextContent('10.00%');
-    expect(yLabels[yLabels.length - 1]).toHaveTextContent('0.00%');
-  });
-
-  // jsdom has no layout; stub the hover wrapper box to a known 800px width so a
-  // pointer clientX maps deterministically to a point on the time axis.
-  function stubWrapper(svg: Element) {
-    const wrapper = svg.parentElement as HTMLElement;
-    wrapper.getBoundingClientRect = () =>
-      ({
-        width: 800,
-        height: 160,
-        left: 0,
-        top: 0,
-        right: 800,
-        bottom: 160,
-        x: 0,
-        y: 0,
-        toJSON: () => {},
-      }) as DOMRect;
-    return wrapper;
-  }
-
-  it('shows a hover tooltip with the nearest series label, value, and date', async () => {
-    renderChart([
-      series('a', 'Alpha', 100000, [
-        ['2026-01-04', 100000],
-        ['2026-01-05', 110000],
-      ]),
-      series('b', 'Beta', 50000, [
-        ['2026-01-04', 50000],
-        ['2026-01-05', 52000],
-      ]),
-    ]);
-
-    const svg = await screen.findByRole('img', { name: /return percent/i });
-    const wrapper = stubWrapper(svg);
-    // Far right maps to the latest date; Alpha's point wins the tie (first series).
-    fireEvent.pointerMove(wrapper, { clientX: 800 });
-
-    const tooltip = screen.getByTestId('chart-tooltip');
-    expect(within(tooltip).getByText('Alpha')).toBeInTheDocument();
-    expect(within(tooltip).getByText('Jan 5, 2026')).toBeInTheDocument();
-    expect(within(tooltip).getByText('10.00%')).toBeInTheDocument();
-  });
-
-  it('resolves to the line the pointer is vertically nearest, not just the first series', async () => {
-    renderChart([
-      // Alpha is the upper line (+10%), Beta the lower line (+4%) at the latest
-      // date. Hovering low on the plot must select Beta, not the first series.
-      series('a', 'Alpha', 100000, [
-        ['2026-01-04', 100000],
-        ['2026-01-05', 110000],
-      ]),
-      series('b', 'Beta', 50000, [
-        ['2026-01-04', 50000],
-        ['2026-01-05', 52000],
-      ]),
-    ]);
-
-    const svg = await screen.findByRole('img', { name: /return percent/i });
-    const wrapper = stubWrapper(svg);
-
-    // Near the bottom of the plot → the lower line (Beta, +4%) wins.
-    fireEvent.pointerMove(wrapper, { clientX: 800, clientY: 160 });
-    let tooltip = screen.getByTestId('chart-tooltip');
-    expect(within(tooltip).getByText('Beta')).toBeInTheDocument();
-    expect(within(tooltip).getByText('4.00%')).toBeInTheDocument();
-
-    // Near the top of the plot → the upper line (Alpha, +10%) wins.
-    fireEvent.pointerMove(wrapper, { clientX: 800, clientY: 0 });
-    tooltip = screen.getByTestId('chart-tooltip');
-    expect(within(tooltip).getByText('Alpha')).toBeInTheDocument();
-    expect(within(tooltip).getByText('10.00%')).toBeInTheDocument();
-  });
-
-  it('formats the hover tooltip value for the active metric', async () => {
-    renderChart([
-      series('a', 'Alpha', 100000, [
-        ['2026-01-04', 100000],
-        ['2026-01-05', 110000],
-      ]),
-    ]);
-
-    let svg = await screen.findByRole('img', { name: /return percent/i });
-    fireEvent.pointerMove(stubWrapper(svg), { clientX: 800 });
-    expect(
-      within(screen.getByTestId('chart-tooltip')).getByText('10.00%'),
-    ).toBeInTheDocument();
-
-    fireEvent.click(screen.getByRole('button', { name: 'Value $' }));
-
-    // Re-hover in the value view: the tooltip now shows the USD value.
-    svg = screen.getByRole('img', { name: /portfolio value/i });
-    fireEvent.pointerMove(stubWrapper(svg), { clientX: 800 });
-    const tooltip = screen.getByTestId('chart-tooltip');
-    expect(within(tooltip).getByText('$110,000.00')).toBeInTheDocument();
-    expect(within(tooltip).queryByText('10.00%')).not.toBeInTheDocument();
-  });
-
-  it('dismisses the hover tooltip when the pointer leaves the plot', async () => {
-    renderChart([
-      series('a', 'Alpha', 100000, [
-        ['2026-01-04', 100000],
-        ['2026-01-05', 110000],
-      ]),
-    ]);
-
-    const svg = await screen.findByRole('img', { name: /return percent/i });
-    const wrapper = stubWrapper(svg);
-    fireEvent.pointerMove(wrapper, { clientX: 800 });
-    expect(screen.getByTestId('chart-tooltip')).toBeInTheDocument();
-
-    fireEvent.pointerLeave(wrapper);
-    expect(screen.queryByTestId('chart-tooltip')).not.toBeInTheDocument();
-  });
-
-  it('shows no axis labels in the placeholder state', async () => {
-    renderChart([series('a', 'Alpha', 100000, [['2026-01-04', 100000]])]);
-
-    await screen.findByTestId('comparison-placeholder');
-    expect(screen.queryByTestId('chart-axes')).not.toBeInTheDocument();
-    expect(screen.queryAllByTestId('chart-y-label')).toHaveLength(0);
-  });
-
   it('legends but does not plot a session with fewer than two points', async () => {
-    const { container } = renderChart([
-      series('a', 'Alpha', 100000, [
-        ['2026-01-04', 100000],
-        ['2026-01-05', 101000],
-      ]),
+    renderChart([
+      series('a', 'Alpha', 100000, [['2026-01-04', 100000], ['2026-01-05', 101000]]),
       series('b', 'Beta', 100000, [['2026-01-04', 100000]]),
     ]);
 
     await screen.findByRole('img', { name: /return percent/i });
-    expect(
-      container.querySelectorAll('[data-testid="comparison-line"]'),
-    ).toHaveLength(1);
-    // Beta is still legended, marked as having no chart data.
     expect(screen.getByText('Beta')).toBeInTheDocument();
     expect(screen.getByText(/no chart data/i)).toBeInTheDocument();
   });
 
   it('shows the placeholder when no session has enough points', async () => {
-    const { container } = renderChart([
-      series('a', 'Alpha', 100000, [['2026-01-04', 100000]]),
-    ]);
+    renderChart([series('a', 'Alpha', 100000, [['2026-01-04', 100000]])]);
 
     expect(
       await screen.findByTestId('comparison-placeholder'),
     ).toHaveTextContent(/not enough history to compare yet/i);
-    expect(
-      container.querySelectorAll('[data-testid="comparison-line"]'),
-    ).toHaveLength(0);
+    expect(screen.queryByRole('img', { name: /return percent/i })).toBeNull();
   });
 
   it('shows a loading state while the comparison is pending', () => {

@@ -1,9 +1,13 @@
+import { useMemo } from 'react';
+import type { EChartsCoreOption } from 'echarts/core';
 import { useSessionValueHistory } from '../../api/paperTrading';
 import type { SessionValueSnapshot } from '../../types/api';
-import { formatAxisDate, formatCurrency, formatTooltipDate } from '../../lib/format';
-import { ChartAxes } from './ChartAxes';
-import { ChartTooltip, type ChartTooltipRow } from './ChartTooltip';
-import { useChartHover } from './useChartHover';
+import {
+  formatAxisTimestamp,
+  formatCurrency,
+  formatTooltipTimestamp,
+} from '../../lib/format';
+import { EChart } from '../../components/charts/EChart';
 import { FreshnessBadge, Panel } from './PaperTradingSessionPage';
 
 /** Stroke colour by the equity curve's overall direction (first → last value). */
@@ -18,7 +22,7 @@ type Trend = keyof typeof TREND_STROKE;
 /** Stroke colour for the benchmark overlay line (neutral amber, distinct from trend). */
 const BENCHMARK_STROKE = '#d97706';
 
-function trendOf(snapshots: SessionValueSnapshot[]): Trend {
+export function trendOf(snapshots: SessionValueSnapshot[]): Trend {
   const first = snapshots[0].total_value;
   const last = snapshots[snapshots.length - 1].total_value;
   if (last > first) return 'up';
@@ -26,180 +30,125 @@ function trendOf(snapshots: SessionValueSnapshot[]): Trend {
   return 'flat';
 }
 
+/** Whether the benchmark overlay has enough non-null points to draw. */
+export function benchmarkDrawnFor(snapshots: SessionValueSnapshot[]): boolean {
+  return (
+    snapshots.filter((s) => s.benchmark_value !== null).length >= 2
+  );
+}
+
 /**
- * A dependency-free inline-SVG line chart of a session's total value over time.
- * Mirrors the asset detail page's `PriceSparkline`: native SVG, utility-only
- * styling, and a dashed placeholder until there are at least two points to plot.
+ * Build the ECharts option for a session's value chart: the portfolio-value line
+ * (coloured by its overall trend) and, when it has enough non-null points, the
+ * benchmark overlay (dashed amber) on the same USD y-scale and shared time x-axis
+ * (with several dated ticks). The tooltip reports each line's value at the hovered
+ * date, skipping the benchmark row where no benchmark value exists.
+ */
+export function buildValueOption(
+  snapshots: SessionValueSnapshot[],
+): EChartsCoreOption {
+  const trendStroke = TREND_STROKE[trendOf(snapshots)];
+  const benchmarkDrawn = benchmarkDrawnFor(snapshots);
+
+  const series: Array<Record<string, unknown>> = [
+    {
+      id: 'portfolio',
+      name: 'Portfolio value',
+      type: 'line',
+      showSymbol: false,
+      lineStyle: { width: 2 },
+      itemStyle: { color: trendStroke },
+      data: snapshots.map((s) => [Date.parse(s.snapshot_date), s.total_value]),
+    },
+  ];
+  if (benchmarkDrawn) {
+    series.push({
+      id: 'benchmark',
+      name: 'Benchmark',
+      type: 'line',
+      showSymbol: false,
+      lineStyle: { width: 1.5, type: 'dashed' },
+      itemStyle: { color: BENCHMARK_STROKE },
+      connectNulls: false,
+      data: snapshots.map((s) => [
+        Date.parse(s.snapshot_date),
+        s.benchmark_value,
+      ]),
+    });
+  }
+
+  return {
+    grid: { left: 64, right: 16, top: 12, bottom: 28 },
+    xAxis: {
+      type: 'time',
+      axisLabel: {
+        hideOverlap: true,
+        formatter: (value: number) => formatAxisTimestamp(value),
+      },
+    },
+    yAxis: {
+      type: 'value',
+      scale: true,
+      axisLabel: { formatter: (value: number) => formatCurrency(value) },
+    },
+    tooltip: {
+      trigger: 'axis',
+      formatter: (params: unknown) => {
+        const rows = Array.isArray(params) ? params : [params];
+        if (rows.length === 0) return '';
+        const first = rows[0] as { axisValue?: number };
+        const header = formatTooltipTimestamp(Number(first.axisValue));
+        const lines = rows
+          .map((p) => {
+            const row = p as {
+              seriesName?: string;
+              value?: [number, number | null];
+              marker?: string;
+            };
+            const raw = Array.isArray(row.value) ? row.value[1] : null;
+            if (raw === null || !Number.isFinite(raw)) return null;
+            return `${row.marker ?? ''}${row.seriesName ?? ''}: ${formatCurrency(
+              raw,
+            )}`;
+          })
+          .filter((line): line is string => line !== null);
+        return [header, ...lines].join('<br/>');
+      },
+    },
+    series,
+  };
+}
+
+/**
+ * A line chart of a session's total value over time. Shows a dashed placeholder
+ * until there are at least two snapshots to plot.
  */
 function ValueCurve({ snapshots }: { snapshots: SessionValueSnapshot[] }) {
-  if (snapshots.length < 2) {
+  // Only build the option once there is something to plot; buildValueOption reads
+  // the first/last snapshot for the trend colour and would throw on an empty list.
+  const option = useMemo(
+    () => (snapshots.length >= 2 ? buildValueOption(snapshots) : null),
+    [snapshots],
+  );
+  if (snapshots.length < 2 || option === null) {
     return (
       <div className="flex h-40 items-center justify-center rounded border border-dashed border-slate-300 bg-slate-50 text-sm text-slate-400">
         Not enough history to chart yet.
       </div>
     );
   }
-  // The plot (and its hover hook) lives in its own component so the hook is only
-  // ever mounted with enough points to chart — the placeholder above returns
-  // before any hook runs.
-  return <ValuePlot snapshots={snapshots} />;
-}
-
-/** The plotted value chart with axes, legend, and hover tooltip. */
-function ValuePlot({ snapshots }: { snapshots: SessionValueSnapshot[] }) {
-  const width = 800;
-  const height = 160;
-  const pad = 8;
-
-  // Benchmark is a second series rebased to the same units as total_value, so both
-  // share one y-scale. Only snapshots with a non-null benchmark value are plotted;
-  // when every value is null the overlay is omitted entirely.
-  const hasBenchmark = snapshots.some((s) => s.benchmark_value !== null);
-  const benchmarkValues = snapshots
-    .map((s) => s.benchmark_value)
-    .filter((v): v is number => v !== null);
-
-  const values = snapshots.map((s) => s.total_value);
-  const min = Math.min(...values, ...benchmarkValues);
-  const max = Math.max(...values, ...benchmarkValues);
-  const span = max - min || 1;
-
-  const x = (i: number) => pad + (i / (snapshots.length - 1)) * (width - 2 * pad);
-  const y = (value: number) =>
-    pad + (1 - (value - min) / span) * (height - 2 * pad);
-
-  const points = snapshots.map(
-    (s, i) => `${x(i).toFixed(2)},${y(s.total_value).toFixed(2)}`,
-  );
-  const benchmarkPoints = snapshots
-    .map((s, i) =>
-      s.benchmark_value !== null
-        ? `${x(i).toFixed(2)},${y(s.benchmark_value).toFixed(2)}`
-        : null,
-    )
-    .filter((p): p is string => p !== null);
-
-  const benchmarkDrawn = hasBenchmark && benchmarkPoints.length >= 2;
-  const trendStroke = TREND_STROKE[trendOf(snapshots)];
-
-  // Three USD y-ticks (top→bottom) from the shared value scale, and the first/last
-  // snapshot dates on the x-axis — rendered as HTML around the SVG by `ChartAxes`.
-  const yLabels = [max, (min + max) / 2, min].map((v) => formatCurrency(v));
-  const xLabels: [string, string] = [
-    formatAxisDate(snapshots[0].snapshot_date),
-    formatAxisDate(snapshots[snapshots.length - 1].snapshot_date),
-  ];
-
-  // Hover: the chart is index-mapped, so the pointer ratio maps straight to the
-  // nearest snapshot index. The resolved point carries its plot-fraction position
-  // for the tooltip overlay and SVG crosshair.
-  const hover = useChartHover<SessionValueSnapshot>((ratio) => {
-    const dataPos = Math.min(
-      1,
-      Math.max(0, (ratio * width - pad) / (width - 2 * pad)),
-    );
-    const i = Math.round(dataPos * (snapshots.length - 1));
-    const snapshot = snapshots[i];
-    return {
-      payload: snapshot,
-      xFraction: x(i) / width,
-      yFraction: y(snapshot.total_value) / height,
-    };
-  });
-
-  const active = hover.active;
-  const tooltipRows: ChartTooltipRow[] = active
-    ? [
-        {
-          label: 'Portfolio value',
-          value: formatCurrency(active.payload.total_value),
-          color: trendStroke,
-        },
-        ...(active.payload.benchmark_value !== null
-          ? [
-              {
-                label: 'Benchmark',
-                value: formatCurrency(active.payload.benchmark_value),
-                color: BENCHMARK_STROKE,
-              },
-            ]
-          : []),
-      ]
-    : [];
-
   return (
     <div>
-      <ChartAxes yLabels={yLabels} xLabels={xLabels}>
-        <div
-          className="relative"
-          onPointerMove={hover.onPointerMove}
-          onPointerLeave={hover.onPointerLeave}
-        >
-          <svg
-            viewBox={`0 0 ${width} ${height}`}
-            preserveAspectRatio="none"
-            className="h-40 w-full"
-            role="img"
-            aria-label={`Portfolio value over the last ${snapshots.length} daily snapshots`}
-          >
-            {benchmarkDrawn && (
-              <polyline
-                points={benchmarkPoints.join(' ')}
-                fill="none"
-                stroke={BENCHMARK_STROKE}
-                strokeWidth={1.5}
-                strokeDasharray="4 3"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                vectorEffect="non-scaling-stroke"
-                aria-label="Benchmark value"
-                data-testid="benchmark-line"
-              />
-            )}
-            <polyline
-              points={points.join(' ')}
-              fill="none"
-              stroke={trendStroke}
-              strokeWidth={2}
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              vectorEffect="non-scaling-stroke"
-            />
-            {active && (
-              <line
-                x1={active.xFraction * width}
-                x2={active.xFraction * width}
-                y1={pad}
-                y2={height - pad}
-                stroke="#94a3b8"
-                strokeWidth={1}
-                strokeDasharray="3 3"
-                vectorEffect="non-scaling-stroke"
-              />
-            )}
-          </svg>
-          {active && (
-            <>
-              <span
-                aria-hidden="true"
-                className="pointer-events-none absolute h-2 w-2 -translate-x-1/2 -translate-y-1/2 rounded-full ring-2 ring-white"
-                style={{
-                  left: `${active.xFraction * 100}%`,
-                  top: `${active.yFraction * 100}%`,
-                  backgroundColor: trendStroke,
-                }}
-              />
-              <ChartTooltip
-                xFraction={active.xFraction}
-                yFraction={active.yFraction}
-                date={formatTooltipDate(active.payload.snapshot_date)}
-                rows={tooltipRows}
-              />
-            </>
-          )}
-        </div>
-      </ChartAxes>
-      <ValueLegend trendStroke={trendStroke} benchmarkDrawn={benchmarkDrawn} />
+      <EChart
+        option={option}
+        height={200}
+        className="w-full"
+        ariaLabel={`Portfolio value over the last ${snapshots.length} daily snapshots`}
+      />
+      <ValueLegend
+        trendStroke={TREND_STROKE[trendOf(snapshots)]}
+        benchmarkDrawn={benchmarkDrawnFor(snapshots)}
+      />
     </div>
   );
 }

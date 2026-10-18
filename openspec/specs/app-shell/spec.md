@@ -236,13 +236,13 @@ a placeholder indicating there is not yet enough history to chart, rather than a
 or empty chart. While the value history is loading or fails to load, the view SHALL show
 a loading or error state consistent with the page's other panels.
 
-When the chart is rendered, it SHALL display a **labelled x-axis** marking calendar
-dates across the plotted history and a **labelled y-axis** marking portfolio value in
-USD, so a user can read what any point on a line represents. Axis tick labels SHALL be
-rendered legibly (not distorted by the chart's scaling). The chart SHALL also show a
-**legend** identifying which line is the session's portfolio value and which line is
-the benchmark; when the benchmark line is not drawn, the legend SHALL not imply a
-benchmark line is present.
+When the chart is rendered, it SHALL display a **labelled x-axis** marking several
+calendar dates spread across the plotted history — more than just the first and last
+points — and a **labelled y-axis** marking portfolio value in USD, so a user can read
+what any point on a line represents. Axis tick labels SHALL be rendered legibly (not
+distorted by the chart's scaling). The chart SHALL also show a **legend** identifying
+which line is the session's portfolio value and which line is the benchmark; when the
+benchmark line is not drawn, the legend SHALL not imply a benchmark line is present.
 
 The value history chart SHALL display an **end-of-day indicator** (for example, an "End
 of day" badge beside the chart heading) communicating that the chart reflects end-of-day
@@ -284,7 +284,7 @@ SHALL NOT appear when the placeholder, loading, or error state is shown.
 #### Scenario: Axes are labelled
 
 - **WHEN** the value chart is rendered with enough history to plot
-- **THEN** the view SHALL show dated x-axis labels and USD y-axis labels around the plot area
+- **THEN** the view SHALL show several dated x-axis labels spread across the history — more than just the endpoints — and USD y-axis labels around the plot area
 
 #### Scenario: Legend identifies each line
 
@@ -565,12 +565,12 @@ The application SHALL display monetary values in US dollars (`$`), consistent wi
 
 ### Requirement: Paper-trading session comparison chart
 
-The paper-trading session list view SHALL display a **performance-comparison chart** that overlays every non-archived session (active, paused, stopped) on a shared time axis, so a user can compare sessions and see which performs best. The chart SHALL plot one line per session that has at least two value points, sharing a single y-scale across all plotted lines, and SHALL show a **legend** mapping each line's color to its session label. Sessions with fewer than two value points SHALL appear in the legend but SHALL NOT be plotted. The chart SHALL offer a **metric toggle** with two views, defaulting to the return view:
+The paper-trading session list view SHALL display a **performance-comparison chart** that overlays every non-archived session (active, paused, stopped) on a shared time axis, so a user can compare sessions and see which performs best. The chart SHALL plot one line per session that has at least two value points, sharing a single y-scale across all plotted lines, and SHALL show a **legend** mapping each line's color to its session label. The chart's lines and its legend SHALL be ordered by session creation date, oldest first, and each session's color SHALL be keyed to the session's stable identity so a given session keeps the same color across renders. Sessions with fewer than two value points SHALL appear in the legend but SHALL NOT be plotted. The chart SHALL offer a **metric toggle** with two views, defaulting to the return view:
 
 - **Return %** (default): each session's line SHALL be its cumulative total-return percentage, computed from the session's total value relative to its allocated capital, so sessions with different allocated capital and start dates are compared fairly and the highest line is the best performer.
 - **Value ($)**: each session's line SHALL be its absolute total portfolio value in USD.
 
-When the chart plots at least one line, it SHALL display a **labelled x-axis** marking calendar dates across the shared time axis and a **labelled y-axis** whose tick labels match the active metric — percentages in the Return % view and USD amounts in the Value $ view — and the y-axis labels SHALL update when the metric toggle switches. Axis tick labels SHALL be rendered legibly (not distorted by the chart's scaling).
+When the chart plots at least one line, it SHALL display a **labelled x-axis** marking several calendar dates spread across the shared time axis — more than just the first and last points — and a **labelled y-axis** whose tick labels match the active metric — percentages in the Return % view and USD amounts in the Value $ view — and the y-axis labels SHALL update when the metric toggle switches. Axis tick labels SHALL be rendered legibly (not distorted by the chart's scaling).
 
 When the chart plots at least one line, it SHALL support **hover inspection**: moving the pointer over the plot area SHALL identify the plotted point nearest the pointer across all plotted session lines and SHALL show a tooltip reporting that point's **session label**, its **date**, and its **value** formatted for the active metric — a percentage in the Return % view and a USD amount in the Value $ view. The tooltip SHALL be rendered legibly (not distorted by the chart's scaling) and SHALL be positioned near the hovered point without being clipped out of the chart area. The chart MAY also mark the hovered point visually. When the pointer leaves the plot area, the tooltip SHALL be dismissed. Hover inspection SHALL NOT change any plotted value and SHALL NOT appear when the insufficient-data placeholder, loading, or error state is shown.
 
@@ -580,6 +580,11 @@ When no non-archived session has enough value points to plot, the chart SHALL sh
 
 - **WHEN** a user opens the paper-trading session list and multiple non-archived sessions each have at least two value points
 - **THEN** the chart SHALL render one line per such session on a shared y-scale with a legend identifying each session by its label
+
+#### Scenario: Lines and legend are ordered oldest-created first
+
+- **WHEN** the comparison chart renders lines for several sessions
+- **THEN** the chart's lines and its legend SHALL be ordered by session creation date, oldest first
 
 #### Scenario: Toggle between return % and absolute value
 
@@ -594,7 +599,7 @@ When no non-archived session has enough value points to plot, the chart SHALL sh
 #### Scenario: Axes are labelled and track the metric
 
 - **WHEN** the comparison chart plots at least one line
-- **THEN** the view SHALL show dated x-axis labels and y-axis labels formatted as percentages in the Return % view and as USD amounts in the Value $ view, and the y-axis labels SHALL change when the metric toggle is switched
+- **THEN** the view SHALL show several dated x-axis labels spread across the time axis — more than just the endpoints — and y-axis labels formatted as percentages in the Return % view and as USD amounts in the Value $ view, and the y-axis labels SHALL change when the metric toggle is switched
 
 #### Scenario: Hover reveals the nearest series point
 
@@ -625,6 +630,36 @@ When no non-archived session has enough value points to plot, the chart SHALL sh
 
 - **WHEN** the comparison data is loading, or the request fails
 - **THEN** the chart SHALL show a loading indicator while pending and an error state on failure, rather than a blank or broken chart
+
+### Requirement: Stable paper-trading session ordering and per-portfolio chart color
+
+Paper-trading sessions SHALL be presented in one stable, predictable order everywhere they are listed or plotted, and each session SHALL keep one stable color in the comparison chart, so a returning user can recognise a given portfolio by its position and its color rather than seeing them reshuffle between visits.
+
+The paper-trading **session list** SHALL order sessions by their creation date, oldest first. This order SHALL NOT depend on when a session was last updated, rebalanced, or otherwise touched, so adding a new session appends it at the end rather than reordering the existing ones.
+
+The **comparison chart's lines and its legend** SHALL be ordered by session creation date, oldest first, consistent with the session list.
+
+Each session's **line color** in the comparison chart SHALL be derived from the session's own stable identity, not from its position in the current render. The same session SHALL therefore be drawn in the same color across page visits and regardless of which other sessions are currently plotted or which sessions are archived.
+
+#### Scenario: Session list is ordered oldest-created first
+
+- **WHEN** a user views the paper-trading session list with multiple sessions
+- **THEN** the sessions SHALL be ordered by creation date, oldest first, independent of when each was last updated
+
+#### Scenario: A new session appends without reordering
+
+- **WHEN** a new session is created and the user reloads the session list
+- **THEN** the new session SHALL appear at the end of the list and the existing sessions SHALL keep their previous relative order
+
+#### Scenario: Comparison chart order matches the list
+
+- **WHEN** the comparison chart renders lines for several sessions
+- **THEN** the chart's lines and its legend SHALL be ordered by session creation date, oldest first, consistent with the session list
+
+#### Scenario: A portfolio keeps its color across visits
+
+- **WHEN** a user views the comparison chart, leaves, and returns — or when the set of plotted sessions changes (for example a session is archived)
+- **THEN** each session that is still plotted SHALL be drawn in the same color as before, because its color is keyed to the session's stable identity rather than its render position
 
 ### Requirement: Session-detail drawdown and trade-effectiveness KPI tiles
 

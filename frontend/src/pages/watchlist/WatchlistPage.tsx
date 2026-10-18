@@ -233,6 +233,7 @@ function WatchlistRow({ asset }: { asset: Asset }) {
       <td className="px-4 py-3 font-semibold">
         <Link
           to={`/assets/${asset.ticker}`}
+          state={{ from: 'watchlist' }}
           className="text-emerald-700 hover:text-emerald-800 hover:underline focus:outline-none focus:ring-1 focus:ring-emerald-500"
         >
           {asset.ticker}

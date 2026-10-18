@@ -53,6 +53,17 @@ export function formatAxisDate(iso: string): string {
   return `${month}/${day}`;
 }
 
+/**
+ * Format an epoch-millisecond timestamp (as handed to an ECharts time-axis label
+ * formatter) as a short `M/D` label. Reads the UTC date parts so a UTC-midnight
+ * snapshot timestamp never shifts a day under a local timezone, then reuses
+ * `formatAxisDate`. Falls back to an empty string for a non-finite input.
+ */
+export function formatAxisTimestamp(ms: number): string {
+  if (!Number.isFinite(ms)) return '';
+  return formatAxisDate(new Date(ms).toISOString().slice(0, 10));
+}
+
 const TOOLTIP_MONTHS = [
   'Jan',
   'Feb',
@@ -87,6 +98,17 @@ export function formatTooltipDate(iso: string): string {
   const name = TOOLTIP_MONTHS[month - 1];
   if (!name) return iso;
   return `${name} ${day}, ${year}`;
+}
+
+/**
+ * Format an epoch-millisecond timestamp (as handed to an ECharts tooltip formatter)
+ * as a fuller `Mon D, YYYY` label. Reads the UTC date parts (via the ISO string) so
+ * a UTC-midnight snapshot timestamp never shifts a day under a local timezone, then
+ * reuses `formatTooltipDate`. Falls back to an empty string for a non-finite input.
+ */
+export function formatTooltipTimestamp(ms: number): string {
+  if (!Number.isFinite(ms)) return '';
+  return formatTooltipDate(new Date(ms).toISOString().slice(0, 10));
 }
 
 /**

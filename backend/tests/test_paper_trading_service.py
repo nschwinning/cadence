@@ -962,6 +962,23 @@ def test_sessions_value_comparison_shapes_series(db_session: Session) -> None:
     assert b.points == []
 
 
+def test_sessions_value_comparison_ordered_oldest_created_first(
+    db_session: Session,
+) -> None:
+    # Three sessions with distinct creation times, created out of chronological
+    # order, so sorting by anything other than created_at would reorder them.
+    first = _ai_session(db_session)
+    second = _ai_session(db_session)
+    third = _ai_session(db_session)
+    first.created_at = datetime(2026, 1, 1, tzinfo=UTC)
+    second.created_at = datetime(2026, 1, 3, tzinfo=UTC)
+    third.created_at = datetime(2026, 1, 2, tzinfo=UTC)
+    db_session.flush()
+
+    series = service.list_sessions_value_comparison(db_session)
+    assert [s.session_id for s in series] == [first.id, third.id, second.id]
+
+
 def test_snapshot_row_validates_into_read_schema(db_session: Session) -> None:
     sess = _ai_session(db_session)
     _buy(db_session, sess.id, "AAPL", 10, 100.0)

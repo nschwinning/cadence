@@ -92,6 +92,35 @@ describe('PaperTradingPage', () => {
     expect(link).toHaveAttribute('href', '/paper-trading/s1');
   });
 
+  it('lists sessions by creation date, oldest first (tie-broken by id)', async () => {
+    const mk = (id: string, name: string, createdAt: string): PaperTradingSession => ({
+      ...session,
+      id,
+      portfolio_name: name,
+      created_at: createdAt,
+    });
+    // Supplied out of order; the page must render them oldest-created first.
+    mockedGet.mockResolvedValue({
+      data: {
+        items: [
+          mk('s-b', 'Beta', '2026-09-10T00:00:00Z'),
+          mk('s-a', 'Alpha', '2026-09-08T00:00:00Z'),
+          mk('s-c', 'Gamma', '2026-09-09T00:00:00Z'),
+        ],
+        total: 3,
+      },
+    });
+
+    renderWithClient(<PaperTradingPage />);
+
+    await screen.findByRole('link', { name: 'Alpha' });
+    const order = screen
+      .getAllByRole('link')
+      .map((el) => el.textContent)
+      .filter((text) => ['Alpha', 'Beta', 'Gamma'].includes(text ?? ''));
+    expect(order).toEqual(['Alpha', 'Gamma', 'Beta']);
+  });
+
   it('shows an empty state with no sessions', async () => {
     mockedGet.mockResolvedValue({ data: { items: [], total: 0 } });
 

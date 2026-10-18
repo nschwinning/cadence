@@ -108,7 +108,13 @@ export function PaperTradingPage() {
     ...DEFAULT_SESSIONS_PARAMS,
     includeArchived: showArchived,
   });
-  const sessions = data?.items ?? [];
+  // One stable order everywhere: oldest-created first. Independent of when a session
+  // was last updated/rebalanced, so a new session appends at the end rather than
+  // reshuffling the list. ISO `created_at` strings compare lexicographically; id
+  // breaks any tie deterministically.
+  const sessions = [...(data?.items ?? [])].sort(
+    (a, b) => a.created_at.localeCompare(b.created_at) || a.id.localeCompare(b.id),
+  );
   const total = data?.total ?? 0;
 
   return (

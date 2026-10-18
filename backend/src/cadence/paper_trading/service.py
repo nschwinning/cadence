@@ -1703,8 +1703,14 @@ def list_sessions_value_comparison(
 
     Reuses the default (non-archived) session listing for membership and each
     session's ordered value snapshots for points, so archived sessions are excluded
-    and a session with no snapshots is returned with an empty points list.
+    and a session with no snapshots is returned with an empty points list. The
+    series are ordered by session creation date, oldest first, so the comparison
+    chart has a stable, predictable order (newly created sessions append at the end).
     """
+    rows = sorted(
+        list_sessions(session, include_archived=False),
+        key=lambda row: (row.created_at, row.id),
+    )
     return [
         SessionComparisonSeries(
             session_id=row.id,
@@ -1718,7 +1724,7 @@ def list_sessions_value_comparison(
                 for snap in list_value_snapshots(session, session_id=row.id)
             ],
         )
-        for row in list_sessions(session, include_archived=False)
+        for row in rows
     ]
 
 

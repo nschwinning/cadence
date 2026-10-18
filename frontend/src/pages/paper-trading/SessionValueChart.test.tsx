@@ -1,8 +1,13 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, within, fireEvent } from '@testing-library/react';
+import { render, screen, within } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import type { ReactNode } from 'react';
-import { SessionValueChart } from './SessionValueChart';
+import {
+  SessionValueChart,
+  buildValueOption,
+  trendOf,
+  benchmarkDrawnFor,
+} from './SessionValueChart';
 import { apiClient } from '../../api/client';
 import type { SessionValueSnapshot } from '../../types/api';
 
@@ -41,76 +46,133 @@ function renderChart(ui: ReactNode) {
   );
 }
 
+/** Pull the plotted `series` array out of a built ECharts option. */
+function optionSeries(snapshots: SessionValueSnapshot[]) {
+  return (buildValueOption(snapshots).series ?? []) as Array<
+    Record<string, unknown>
+  >;
+}
+
+describe('trendOf', () => {
+  it('reads the overall direction from first to last value', () => {
+    expect(
+      trendOf([snapshot('2026-01-04', 100), snapshot('2026-01-05', 110)]),
+    ).toBe('up');
+    expect(
+      trendOf([snapshot('2026-01-04', 110), snapshot('2026-01-05', 100)]),
+    ).toBe('down');
+    expect(
+      trendOf([snapshot('2026-01-04', 100), snapshot('2026-01-05', 100)]),
+    ).toBe('flat');
+  });
+});
+
+describe('benchmarkDrawnFor', () => {
+  it('is true only with at least two non-null benchmark points', () => {
+    expect(
+      benchmarkDrawnFor([
+        snapshot('2026-01-04', 100, 100),
+        snapshot('2026-01-05', 110, 101),
+      ]),
+    ).toBe(true);
+    expect(
+      benchmarkDrawnFor([
+        snapshot('2026-01-04', 100, 100),
+        snapshot('2026-01-05', 110, null),
+      ]),
+    ).toBe(false);
+    expect(
+      benchmarkDrawnFor([
+        snapshot('2026-01-04', 100),
+        snapshot('2026-01-05', 110),
+      ]),
+    ).toBe(false);
+  });
+});
+
+describe('buildValueOption', () => {
+  it('colours the portfolio line by its trend', () => {
+    const up = optionSeries([
+      snapshot('2026-01-04', 100000),
+      snapshot('2026-01-05', 110000),
+    ]);
+    expect((up[0].itemStyle as { color: string }).color).toBe('#059669');
+    const down = optionSeries([
+      snapshot('2026-01-04', 110000),
+      snapshot('2026-01-05', 100000),
+    ]);
+    expect((down[0].itemStyle as { color: string }).color).toBe('#dc2626');
+  });
+
+  it('adds the benchmark overlay only when it has enough points', () => {
+    const withBenchmark = optionSeries([
+      snapshot('2026-01-04', 100000, 100000),
+      snapshot('2026-01-05', 110000, 101000),
+    ]);
+    expect(withBenchmark).toHaveLength(2);
+    expect(withBenchmark[1].id).toBe('benchmark');
+
+    const withoutBenchmark = optionSeries([
+      snapshot('2026-01-04', 100000),
+      snapshot('2026-01-05', 110000),
+    ]);
+    expect(withoutBenchmark).toHaveLength(1);
+    expect(withoutBenchmark[0].id).toBe('portfolio');
+  });
+
+  it('formats the y-axis in USD on a scaled (non-zero) domain', () => {
+    const opt = buildValueOption([
+      snapshot('2026-01-04', 100000),
+      snapshot('2026-01-05', 110000),
+    ]);
+    const yAxis = opt.yAxis as {
+      scale: boolean;
+      axisLabel: { formatter: (v: number) => string };
+    };
+    expect(yAxis.scale).toBe(true);
+    expect(yAxis.axisLabel.formatter(110000)).toBe('$110,000.00');
+  });
+
+  it('uses a shared time x-axis with a dated formatter', () => {
+    const xAxis = buildValueOption([
+      snapshot('2026-01-04', 100000),
+      snapshot('2026-01-05', 110000),
+    ]).xAxis as { type: string; axisLabel: { formatter: (v: number) => string } };
+    expect(xAxis.type).toBe('time');
+    expect(xAxis.axisLabel.formatter(Date.parse('2026-01-04'))).toBe('1/4');
+  });
+
+  it('builds a tooltip reporting each line, skipping a null benchmark row', () => {
+    const opt = buildValueOption([
+      snapshot('2026-01-04', 100000, 100000),
+      snapshot('2026-01-05', 110000, 101000),
+    ]);
+    const formatter = (opt.tooltip as { formatter: (p: unknown) => string })
+      .formatter;
+    const ts = Date.parse('2026-01-05');
+    expect(
+      formatter([
+        { axisValue: ts, seriesName: 'Portfolio value', value: [ts, 110000], marker: '' },
+        { axisValue: ts, seriesName: 'Benchmark', value: [ts, 101000], marker: '' },
+      ]),
+    ).toContain('$101,000.00');
+    // A row whose benchmark value is null is dropped from the tooltip.
+    const withNull = formatter([
+      { axisValue: ts, seriesName: 'Portfolio value', value: [ts, 110000], marker: '' },
+      { axisValue: ts, seriesName: 'Benchmark', value: [ts, null], marker: '' },
+    ]);
+    expect(withNull).toContain('Jan 5, 2026');
+    expect(withNull).toContain('Portfolio value');
+    expect(withNull).not.toContain('Benchmark');
+  });
+});
+
 describe('SessionValueChart', () => {
   beforeEach(() => {
     vi.clearAllMocks();
   });
 
-  it('renders a polyline when there are at least two snapshots', async () => {
-    mockedGet.mockResolvedValue({
-      data: {
-        items: [
-          snapshot('2026-01-04', 100000),
-          snapshot('2026-01-05', 100500),
-          snapshot('2026-01-06', 101200),
-        ],
-        total: 3,
-      },
-    });
-
-    const { container } = renderChart(<SessionValueChart sessionId="s1" />);
-
-    const svg = await screen.findByRole('img', {
-      name: /portfolio value over the last 3 daily snapshots/i,
-    });
-    expect(svg).toBeInTheDocument();
-    const polyline = container.querySelector('polyline');
-    expect(polyline).not.toBeNull();
-    // Three points -> three "x,y" pairs.
-    expect(polyline?.getAttribute('points')?.trim().split(' ')).toHaveLength(3);
-  });
-
-  it('renders the benchmark overlay line when benchmark values are present', async () => {
-    mockedGet.mockResolvedValue({
-      data: {
-        items: [
-          snapshot('2026-01-04', 100000, 100000),
-          snapshot('2026-01-05', 100500, 100200),
-          snapshot('2026-01-06', 101200, 100900),
-        ],
-        total: 3,
-      },
-    });
-
-    const { container } = renderChart(<SessionValueChart sessionId="s1" />);
-
-    await screen.findByRole('img', {
-      name: /portfolio value over the last 3 daily snapshots/i,
-    });
-    expect(container.querySelector('[data-testid="benchmark-line"]')).not.toBeNull();
-  });
-
-  it('omits the benchmark overlay line when all benchmark values are null', async () => {
-    mockedGet.mockResolvedValue({
-      data: {
-        items: [
-          snapshot('2026-01-04', 100000),
-          snapshot('2026-01-05', 100500),
-          snapshot('2026-01-06', 101200),
-        ],
-        total: 3,
-      },
-    });
-
-    const { container } = renderChart(<SessionValueChart sessionId="s1" />);
-
-    await screen.findByRole('img', {
-      name: /portfolio value over the last 3 daily snapshots/i,
-    });
-    expect(container.querySelector('[data-testid="benchmark-line"]')).toBeNull();
-  });
-
-  it('labels the x-axis with dates and the y-axis with USD', async () => {
+  it('renders the chart for at least two snapshots', async () => {
     mockedGet.mockResolvedValue({
       data: {
         items: [
@@ -124,14 +186,11 @@ describe('SessionValueChart', () => {
 
     renderChart(<SessionValueChart sessionId="s1" />);
 
-    await screen.findByRole('img', {
-      name: /portfolio value over the last 3 daily snapshots/i,
-    });
-    // Y-axis shows the max value in USD; x-axis shows the first and last date.
-    const yLabels = screen.getAllByTestId('chart-y-label');
-    expect(yLabels[0]).toHaveTextContent('$101,200.00');
-    const xLabels = screen.getAllByTestId('chart-x-label');
-    expect(xLabels.map((el) => el.textContent)).toEqual(['1/4', '1/6']);
+    expect(
+      await screen.findByRole('img', {
+        name: /portfolio value over the last 3 daily snapshots/i,
+      }),
+    ).toBeInTheDocument();
   });
 
   it('names both lines in the legend when the benchmark is drawn', async () => {
@@ -150,6 +209,7 @@ describe('SessionValueChart', () => {
     const legend = await screen.findByTestId('value-legend');
     expect(within(legend).getByText('Portfolio value')).toBeInTheDocument();
     expect(within(legend).getByText('Benchmark')).toBeInTheDocument();
+    expect(within(legend).getByTestId('benchmark-legend')).toBeInTheDocument();
   });
 
   it('names only the portfolio line when the benchmark is absent', async () => {
@@ -167,111 +227,17 @@ describe('SessionValueChart', () => {
     expect(within(legend).queryByText('Benchmark')).not.toBeInTheDocument();
   });
 
-  // jsdom has no layout, so getBoundingClientRect returns zeros; stub the hover
-  // wrapper's box to a known 800px width so a pointer clientX maps deterministically
-  // to a snapshot index.
-  function stubWrapper(svg: Element) {
-    const wrapper = svg.parentElement as HTMLElement;
-    wrapper.getBoundingClientRect = () =>
-      ({
-        width: 800,
-        height: 160,
-        left: 0,
-        top: 0,
-        right: 800,
-        bottom: 160,
-        x: 0,
-        y: 0,
-        toJSON: () => {},
-      }) as DOMRect;
-    return wrapper;
-  }
-
-  it('shows a hover tooltip with the nearest snapshot value and date', async () => {
-    mockedGet.mockResolvedValue({
-      data: {
-        items: [
-          snapshot('2026-01-04', 100000),
-          snapshot('2026-01-05', 100500),
-          snapshot('2026-01-06', 101200),
-        ],
-        total: 3,
-      },
-    });
-
-    renderChart(<SessionValueChart sessionId="s1" />);
-
-    const svg = await screen.findByRole('img', {
-      name: /portfolio value over the last 3 daily snapshots/i,
-    });
-    const wrapper = stubWrapper(svg);
-    // clientX at the far right selects the last snapshot.
-    fireEvent.pointerMove(wrapper, { clientX: 800 });
-
-    const tooltip = screen.getByTestId('chart-tooltip');
-    expect(within(tooltip).getByText('Jan 6, 2026')).toBeInTheDocument();
-    expect(within(tooltip).getByText('Portfolio value')).toBeInTheDocument();
-    expect(within(tooltip).getByText('$101,200.00')).toBeInTheDocument();
-  });
-
-  it('includes the benchmark value in the tooltip when present', async () => {
-    mockedGet.mockResolvedValue({
-      data: {
-        items: [
-          snapshot('2026-01-04', 100000, 100000),
-          snapshot('2026-01-05', 100500, 100200),
-          snapshot('2026-01-06', 101200, 100900),
-        ],
-        total: 3,
-      },
-    });
-
-    renderChart(<SessionValueChart sessionId="s1" />);
-
-    const svg = await screen.findByRole('img', {
-      name: /portfolio value over the last 3 daily snapshots/i,
-    });
-    const wrapper = stubWrapper(svg);
-    fireEvent.pointerMove(wrapper, { clientX: 800 });
-
-    const tooltip = screen.getByTestId('chart-tooltip');
-    expect(within(tooltip).getByText('Benchmark')).toBeInTheDocument();
-    expect(within(tooltip).getByText('$100,900.00')).toBeInTheDocument();
-  });
-
-  it('dismisses the hover tooltip when the pointer leaves the plot', async () => {
-    mockedGet.mockResolvedValue({
-      data: {
-        items: [snapshot('2026-01-04', 100000), snapshot('2026-01-05', 100500)],
-        total: 2,
-      },
-    });
-
-    renderChart(<SessionValueChart sessionId="s1" />);
-
-    const svg = await screen.findByRole('img', {
-      name: /portfolio value over the last 2 daily snapshots/i,
-    });
-    const wrapper = stubWrapper(svg);
-    fireEvent.pointerMove(wrapper, { clientX: 800 });
-    expect(screen.getByTestId('chart-tooltip')).toBeInTheDocument();
-
-    fireEvent.pointerLeave(wrapper);
-    expect(screen.queryByTestId('chart-tooltip')).not.toBeInTheDocument();
-  });
-
-  it('shows the placeholder without axes or a legend below two snapshots', async () => {
+  it('shows the placeholder without a chart or legend below two snapshots', async () => {
     mockedGet.mockResolvedValue({
       data: { items: [snapshot('2026-01-04', 100000)], total: 1 },
     });
 
-    const { container } = renderChart(<SessionValueChart sessionId="s1" />);
+    renderChart(<SessionValueChart sessionId="s1" />);
 
     expect(
       await screen.findByText(/not enough history to chart yet/i),
     ).toBeInTheDocument();
-    expect(container.querySelector('polyline')).toBeNull();
-    expect(screen.queryByTestId('chart-axes')).not.toBeInTheDocument();
+    expect(screen.queryByRole('img', { name: /portfolio value over/i })).toBeNull();
     expect(screen.queryByTestId('value-legend')).not.toBeInTheDocument();
   });
 
