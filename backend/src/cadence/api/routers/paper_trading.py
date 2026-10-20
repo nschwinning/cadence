@@ -17,6 +17,7 @@ from cadence.api.schemas import (
     BenchmarkCatalogEntry,
     ClosedPositionListResponse,
     ClosedPositionRead,
+    ModelCatalogEntry,
     PaperTradeListResponse,
     PaperTradeRead,
     PaperTradeReconcileRead,
@@ -40,7 +41,9 @@ from cadence.broker.base import Broker
 from cadence.database import get_db
 from cadence.paper_trading import service
 from cadence.paper_trading.constants import (
+    AI_MODEL_DISPLAY_NAMES,
     BENCHMARK_DISPLAY_NAMES,
+    AIModel,
     Benchmark,
     SessionStatus,
 )
@@ -338,6 +341,15 @@ def list_benchmarks() -> list[BenchmarkCatalogEntry]:
     return [
         BenchmarkCatalogEntry(id=member.value, name=BENCHMARK_DISPLAY_NAMES[member])
         for member in Benchmark
+    ]
+
+
+@router.get("/models", response_model=list[ModelCatalogEntry])
+def list_models() -> list[ModelCatalogEntry]:
+    """Return the fixed AI model catalog as ``[{id, name}]``."""
+    return [
+        ModelCatalogEntry(id=member.value, name=AI_MODEL_DISPLAY_NAMES[member])
+        for member in AIModel
     ]
 
 

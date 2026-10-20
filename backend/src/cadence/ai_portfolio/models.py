@@ -101,6 +101,11 @@ class AIPortfolioEvent(Base):
     # realized P&L, an account/valuation snapshot, and trend-gate counts. Null on
     # runs that failed before execution.
     run_stats: Mapped[dict[str, Any] | None] = mapped_column(JSONB, nullable=True)
+    # The AI model that produced this run (a
+    # ``cadence.paper_trading.constants.AIModel`` id), recorded for per-run
+    # performance attribution. Nullable: historical events and runs that failed
+    # before reaching the agent carry null.
+    model: Mapped[str | None] = mapped_column(Text, nullable=True)
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
     duration_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
     created_at: Mapped[datetime] = mapped_column(

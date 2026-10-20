@@ -415,6 +415,99 @@ def test_build_persists_guardrail_opt_in_via_api(
     assert session.max_invested_pct == 0.85
 
 
+def test_build_rejects_out_of_catalog_model(
+    client: TestClient, db_session: Session
+) -> None:
+    # An unknown model id fails request validation (422) before any build runs.
+    _seed_universe(db_session, _provider())
+    _wire(db_session, ManualExecutor())
+
+    resp = client.post(
+        "/api/v1/ai-portfolio/build",
+        json={"allocated_capital": 10000, "model": "gpt-9-imaginary"},
+    )
+    assert resp.status_code == 422
+
+
+def test_build_persists_chosen_model_and_runs_on_it(
+    client: TestClient, db_session: Session
+) -> None:
+    executor = ManualExecutor(run_immediately=True)
+    _seed_universe(db_session, _provider())
+    agent = FakeAIPortfolioAgent(
+        build_result=_build_result(), rebalance_result=_rebalance_result()
+    )
+    _wire(db_session, executor, agent=agent)
+
+    resp = client.post(
+        "/api/v1/ai-portfolio/build",
+        json={"allocated_capital": 100000, "model": "gpt-5.6-luna"},
+    )
+    assert resp.status_code == 202
+    executor.run_pending()
+    event_id = resp.json()["event_id"]
+    session_id = client.get(
+        f"/api/v1/ai-portfolio/build/status/{event_id}"
+    ).json()["session_id"]
+
+    # The chosen model is frozen on the session...
+    session = paper_service.get_session(db_session, uuid.UUID(session_id))
+    assert session.model == "gpt-5.6-luna"
+    # ...and the opening allocation (an initial rebalance) ran on it.
+    assert agent.rebalance_calls
+    assert agent.rebalance_calls[0]["model"] == "gpt-5.6-luna"
+
+
+def test_build_defaults_model_to_configured_default(
+    client: TestClient, db_session: Session
+) -> None:
+    executor = ManualExecutor(run_immediately=True)
+    _seed_universe(db_session, _provider())
+    _wire(db_session, executor)
+
+    resp = client.post(
+        "/api/v1/ai-portfolio/build",
+        json={"allocated_capital": 100000},
+    )
+    assert resp.status_code == 202
+    executor.run_pending()
+    event_id = resp.json()["event_id"]
+    session_id = client.get(
+        f"/api/v1/ai-portfolio/build/status/{event_id}"
+    ).json()["session_id"]
+
+    session = paper_service.get_session(db_session, uuid.UUID(session_id))
+    # Omitting the model freezes the configured default (gpt-6-luna).
+    assert session.model == settings.AI_PORTFOLIO_MODEL == "gpt-6-luna"
+
+
+def test_run_records_the_model_that_produced_it(
+    client: TestClient, db_session: Session
+) -> None:
+    executor = ManualExecutor()
+    _seed_universe(db_session, _provider())
+    _wire(db_session, executor)
+    # Build on a chosen model; the opening allocation records it on the run event.
+    resp = client.post(
+        "/api/v1/ai-portfolio/build",
+        json={"allocated_capital": 100000, "model": "gpt-5.6-luna"},
+    )
+    assert resp.status_code == 202
+    executor.run_pending()
+
+    runs = client.get("/api/v1/ai-portfolio/runs").json()
+    by_type = {item["event_type"]: item for item in runs["items"]}
+    # The initial-rebalance run (which reached the agent) carries the model.
+    rebalance_run = by_type["rebalance"]
+    assert rebalance_run["model"] == "gpt-5.6-luna"
+
+    # And the run detail surfaces it too.
+    detail = client.get(
+        f"/api/v1/ai-portfolio/runs/{rebalance_run['id']}"
+    ).json()
+    assert detail["event"]["model"] == "gpt-5.6-luna"
+
+
 def test_build_persists_stop_loss_opt_in_via_api(
     client: TestClient, db_session: Session
 ) -> None:

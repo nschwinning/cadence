@@ -70,6 +70,7 @@ const detail: AIPortfolioRunDetail = {
     },
     error: null,
     duration_ms: 1200,
+    model: 'gpt-5.6-luna',
     created_at: '2026-09-14T00:00:00Z',
     updated_at: '2026-09-14T00:00:00Z',
   },
@@ -164,6 +165,10 @@ describe('RunDetailPage', () => {
     // The frozen rebalance-prompt version used for this run.
     expect(screen.getByText('Prompt version')).toBeInTheDocument();
     expect(screen.getByText('v3')).toBeInTheDocument();
+
+    // The AI model that produced this run.
+    expect(screen.getByText('Model')).toBeInTheDocument();
+    expect(screen.getByText('gpt-5.6-luna')).toBeInTheDocument();
 
     // Trend-decision context: dropped candidate + reason, and reversal flags.
     expect(screen.getByText('Trend decision')).toBeInTheDocument();

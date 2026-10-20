@@ -142,8 +142,10 @@ class Settings(BaseSettings):
     # (rebalance always uses the session's frozen ``learning_feedback_window``).
     LEARNING_FEEDBACK_DEFAULT_WINDOW: int = 5
 
-    # Model id the AI portfolio manager runs on.
-    AI_PORTFOLIO_MODEL: str = "gpt-5-mini"
+    # Default model id the AI portfolio manager runs on when a session does not
+    # select one (new builds freeze a per-session model from the fixed catalog in
+    # paper_trading.constants.AIModel). Must be a catalog member.
+    AI_PORTFOLIO_MODEL: str = "gpt-6-luna"
 
     # Cost controls bounding the AI portfolio build/rebalance runs. These cap the
     # number of expensive LLM/tool interactions per job so a single run cannot run

@@ -27,6 +27,7 @@ class AIBuildParams:
     asset_types: str = AssetScope.BOTH.value
     daily_rebalancing: bool = False
     benchmark: str = settings.DEFAULT_BENCHMARK
+    model: str = settings.AI_PORTFOLIO_MODEL
     use_technical_indicators: bool = False
     stop_loss_enabled: bool = False
     stop_loss_pct: float | None = None
@@ -46,6 +47,7 @@ class AIBuildParams:
             "asset_types": self.asset_types,
             "daily_rebalancing": self.daily_rebalancing,
             "benchmark": self.benchmark,
+            "model": self.model,
             "use_technical_indicators": self.use_technical_indicators,
             "stop_loss_enabled": self.stop_loss_enabled,
             "stop_loss_pct": self.stop_loss_pct,
@@ -73,6 +75,7 @@ class AIBuildParams:
             asset_types=str(payload.get("asset_types", AssetScope.BOTH.value)),
             daily_rebalancing=bool(payload.get("daily_rebalancing", False)),
             benchmark=str(payload.get("benchmark", settings.DEFAULT_BENCHMARK)),
+            model=str(payload.get("model", settings.AI_PORTFOLIO_MODEL)),
             use_technical_indicators=bool(
                 payload.get("use_technical_indicators", False)
             ),

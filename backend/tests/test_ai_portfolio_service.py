@@ -387,6 +387,20 @@ def test_ai_build_params_fundamentals_round_trip() -> None:
     assert legacy.use_fundamentals is False
 
 
+def test_ai_build_params_model_round_trip() -> None:
+    # The frozen model must survive to_payload -> from_payload; default = config.
+    from cadence.config import settings
+
+    assert AIBuildParams(allocated_capital=1.0).model == settings.AI_PORTFOLIO_MODEL
+    params = AIBuildParams(allocated_capital=50_000.0, model="gpt-5.6-luna")
+    restored = AIBuildParams.from_payload(params.to_payload())
+    assert restored == params
+    assert restored.model == "gpt-5.6-luna"
+    # A legacy payload with no key degrades to the configured default.
+    legacy = AIBuildParams.from_payload({"allocated_capital": 1.0})
+    assert legacy.model == settings.AI_PORTFOLIO_MODEL
+
+
 def test_run_build_event_freezes_guardrails_and_caps_trades(
     db_session: Session,
     monkeypatch: pytest.MonkeyPatch,

@@ -29,6 +29,7 @@ function makeEvent(status: AIEventStatus): AIPortfolioEvent {
     trend_context: null,
     error: null,
     duration_ms: null,
+    model: null,
     created_at: '2026-09-14T00:00:00Z',
     updated_at: '2026-09-14T00:00:00Z',
   };
@@ -39,11 +40,23 @@ const BENCHMARKS = [
   { id: 'DJIA', name: 'Dow Jones Industrial Average' },
 ];
 
-/** Route GETs: the benchmark catalog for its endpoint, the build event otherwise. */
+const MODELS = [
+  { id: 'gpt-5-mini', name: 'GPT-5 Mini' },
+  { id: 'gpt-5.6-luna', name: 'GPT-5.6 Luna' },
+  { id: 'gpt-6-luna', name: 'GPT-6 Luna' },
+];
+
+/**
+ * Route GETs: the benchmark catalog and the model catalog for their endpoints,
+ * the build event otherwise.
+ */
 function routeGet(status: () => AIEventStatus) {
   return (url: string) => {
     if (url.endsWith('/paper-trading/benchmarks')) {
       return Promise.resolve({ data: BENCHMARKS });
+    }
+    if (url.endsWith('/paper-trading/models')) {
+      return Promise.resolve({ data: MODELS });
     }
     return Promise.resolve({ data: makeEvent(status()) });
   };
@@ -99,6 +112,7 @@ describe('BuildAIPortfolioCard', () => {
       asset_types: 'both',
       daily_rebalancing: false,
       benchmark: 'SP500',
+      model: 'gpt-6-luna',
       use_technical_indicators: false,
       use_fundamentals: false,
       stop_loss_enabled: false,
@@ -404,6 +418,29 @@ describe('BuildAIPortfolioCard', () => {
     expect(mockedPost).toHaveBeenCalledWith(
       '/api/v1/ai-portfolio/build',
       expect.objectContaining({ benchmark: 'DJIA' }),
+    );
+  });
+
+  it('defaults the model to the configured default and sends the selected model id', async () => {
+    mockedPost.mockResolvedValue({ data: { event_id: 'evt-1', status: 'queued' } });
+    mockedGet.mockImplementation(routeGet(() => 'running'));
+    const user = userEvent.setup();
+
+    renderWithClient(<BuildAIPortfolioCard />);
+
+    // The model selector defaults to the configured default (GPT-6 Luna).
+    const select = await screen.findByLabelText('Model');
+    expect(select).toHaveValue('gpt-6-luna');
+
+    // Wait for the fetched catalog to render its options, then switch to another
+    // catalog model — it is sent with the build request.
+    await screen.findByRole('option', { name: 'GPT-5.6 Luna' });
+    await user.selectOptions(select, 'gpt-5.6-luna');
+    await user.click(screen.getByRole('button', { name: 'Build portfolio' }));
+
+    expect(mockedPost).toHaveBeenCalledWith(
+      '/api/v1/ai-portfolio/build',
+      expect.objectContaining({ model: 'gpt-5.6-luna' }),
     );
   });
 });

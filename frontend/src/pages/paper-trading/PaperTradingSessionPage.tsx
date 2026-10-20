@@ -10,6 +10,7 @@ import {
   useSessionKpis,
   useSessionSectorPerformance,
   useBenchmarks,
+  useModels,
   useChangeSessionBenchmark,
   useChangeSessionScope,
   useIncreaseSessionCapital,
@@ -583,6 +584,8 @@ function SessionHeader({
   const rebalance = useRebalanceAction(sessionId);
   const close = useCloseAction(sessionId, session?.status);
   const archive = useArchiveAction(sessionId, session);
+  const { data: models } = useModels();
+  const modelCatalog = Array.isArray(models) ? models : [];
 
   const actions = (
     <div className="flex flex-wrap items-center gap-2">
@@ -719,6 +722,15 @@ function SessionHeader({
           </dt>
           <dd className="text-sm text-slate-900">
             {session.use_fundamentals ? 'On' : 'Off'}
+          </dd>
+        </div>
+        <div>
+          <dt className="text-xs font-semibold uppercase tracking-wide text-slate-500">
+            Model
+          </dt>
+          <dd className="text-sm text-slate-900">
+            {modelCatalog.find((m) => m.id === session.model)?.name ??
+              session.model}
           </dd>
         </div>
         <div>

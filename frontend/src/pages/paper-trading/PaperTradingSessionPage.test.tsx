@@ -53,6 +53,7 @@ const session: PaperTradingSession = {
   learning_feedback_enabled: false,
   learning_feedback_window: null,
   use_fundamentals: false,
+  model: 'gpt-5-mini',
 };
 
 function makeEvent(
@@ -72,6 +73,7 @@ function makeEvent(
     trend_context: null,
     error: null,
     duration_ms: null,
+    model: null,
     created_at: '2026-09-14T00:00:00Z',
     updated_at: '2026-09-14T00:00:00Z',
   };
@@ -152,6 +154,15 @@ function installGet(
         data: [
           { id: 'SP500', name: 'S&P 500' },
           { id: 'DJIA', name: 'Dow Jones Industrial Average' },
+        ],
+      });
+    }
+    if (url.endsWith('/paper-trading/models')) {
+      return Promise.resolve({
+        data: [
+          { id: 'gpt-5-mini', name: 'GPT-5 Mini' },
+          { id: 'gpt-5.6-luna', name: 'GPT-5.6 Luna' },
+          { id: 'gpt-6-luna', name: 'GPT-6 Luna' },
         ],
       });
     }
@@ -791,6 +802,17 @@ describe('PaperTradingSessionPage', () => {
     expect(screen.getByText('Company fundamentals')).toBeInTheDocument();
     // Stop-loss, Risk guardrails, Learning feedback, and Company fundamentals read "Off".
     expect(screen.getAllByText('Off')).toHaveLength(4);
+  });
+
+  it("shows the session's frozen model resolved to its catalog display name", async () => {
+    installGet(() => 'running');
+
+    renderPage(<PaperTradingSessionPage />);
+    await screen.findByRole('heading', { name: 'Aggressive Jolly Wozniak' });
+
+    // The Model fact tile resolves the frozen gpt-5-mini id to its display name.
+    expect(screen.getByText('Model')).toBeInTheDocument();
+    expect(await screen.findByText('GPT-5 Mini')).toBeInTheDocument();
   });
 
   it('badges stop-loss trades and runs as stop-loss activity', async () => {

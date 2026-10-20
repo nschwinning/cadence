@@ -98,6 +98,35 @@ def benchmark_symbol(benchmark: Benchmark) -> str:
     return BENCHMARK_SYMBOLS[benchmark]
 
 
+class AIModel(StrEnum):
+    """An AI model a paper-trading session's AI runs can execute on.
+
+    The member *value* is the stable identifier persisted on a session and on each
+    AI-portfolio event, and sent to the OpenAI agent as the model name;
+    :data:`AI_MODEL_DISPLAY_NAMES` maps it to a human-readable name for the UI
+    catalog. A session freezes one model for its lifetime so its results are
+    attributable to a single model. The catalog is a fixed, server-defined list;
+    extend it by adding members here (and a display name below).
+    """
+
+    GPT_5_MINI = "gpt-5-mini"
+    GPT_5_6_LUNA = "gpt-5.6-luna"
+    GPT_6_LUNA = "gpt-6-luna"
+
+
+#: Human-readable display name per AI model, surfaced in the UI catalog.
+AI_MODEL_DISPLAY_NAMES: dict[AIModel, str] = {
+    AIModel.GPT_5_MINI: "GPT-5 Mini",
+    AIModel.GPT_5_6_LUNA: "GPT-5.6 Luna",
+    AIModel.GPT_6_LUNA: "GPT-6 Luna",
+}
+
+
+def ai_model_display_name(model: AIModel) -> str:
+    """Return the human-readable display name for ``model``."""
+    return AI_MODEL_DISPLAY_NAMES[model]
+
+
 #: Default trade side/status come from the broker vocabulary; imported here for
 #: convenience so the paper-trading layer has a single enums module.
 DEFAULT_ORDER_STATUS = "filled"

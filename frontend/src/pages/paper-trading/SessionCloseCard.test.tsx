@@ -52,6 +52,7 @@ const RUN_DETAIL: AIPortfolioRunDetail = {
     trend_context: null,
     error: null,
     duration_ms: 120,
+    model: null,
     created_at: '2026-09-16T00:00:00Z',
     updated_at: '2026-09-16T00:00:00Z',
   },

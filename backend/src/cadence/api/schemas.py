@@ -12,7 +12,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 from cadence.assets.category import AssetMembership, AssetScope
 from cadence.config import settings
 from cadence.dashboard.constants import DashboardRange
-from cadence.paper_trading.constants import Benchmark
+from cadence.paper_trading.constants import AIModel, Benchmark
 from cadence.portfolios.constants import PortfolioSource, RiskProfile
 from cadence.recommendations.constants import RunTarget
 
@@ -334,6 +334,8 @@ class PaperTradingSessionRead(BaseModel):
     crypto_rebalance_prompt_version: int
     # The benchmark index this session is compared against (a catalog id).
     benchmark: str
+    # The AI model this session's runs execute on (a model-catalog id).
+    model: str
     # Which asset categories this session may hold: 'stocks', 'crypto', or 'both'.
     # Lives in ``session_metadata["asset_types"]`` (not an ORM column), so it is
     # populated by ``_populate_asset_types`` below; legacy sessions default to 'both'.
@@ -811,6 +813,13 @@ class BenchmarkCatalogEntry(BaseModel):
     name: str
 
 
+class ModelCatalogEntry(BaseModel):
+    """One selectable AI model: its stable id and display name."""
+
+    id: str
+    name: str
+
+
 class AIBenchmarkIngestResponse(BaseModel):
     """Result of the benchmark price-ingestion cron: rows upserted per benchmark.
 
@@ -889,6 +898,12 @@ class AIPortfolioBuildRequest(BaseModel):
         default=None,
         description="Benchmark index to compare the session against (a catalog "
         "id). Defaults to the configured default benchmark (S&P 500).",
+    )
+    model: AIModel | None = Field(
+        default=None,
+        description="AI model the session's runs execute on (a model-catalog id), "
+        "frozen on the session. Defaults to the configured default model. A value "
+        "outside the catalog is rejected (422).",
     )
     use_technical_indicators: bool = Field(
         default=False,
@@ -1102,6 +1117,9 @@ class AIPortfolioEventRead(BaseModel):
     # Per-run trend-decision context (dropped candidates + indicator annotations
     # handed to the AI); null for runs that performed no gating.
     trend_context: dict[str, Any] | None
+    # The AI model that produced this run (a model-catalog id); null for historical
+    # events and runs that failed before reaching the agent.
+    model: str | None = None
     error: str | None
     duration_ms: int | None
     created_at: datetime

@@ -382,6 +382,8 @@ export interface PaperTradingSession {
   rebalance_prompt_version: number;
   /** The benchmark id this session is compared against (a catalog id, e.g. `SP500`). */
   benchmark: string;
+  /** The AI model this session's runs execute on (a model-catalog id, frozen at build time). */
+  model: string;
   /**
    * The session's current asset scope (mutable). Legacy sessions without a stored
    * scope read as `'both'`. Narrowing this liquidates now-out-of-scope holdings.
@@ -437,6 +439,12 @@ export interface PaperTradingSession {
 
 /** One entry in the fixed benchmark catalog. Mirrors `BenchmarkCatalogEntry`. */
 export interface BenchmarkCatalogEntry {
+  id: string;
+  name: string;
+}
+
+/** One selectable AI model in the fixed catalog. Mirrors `ModelCatalogEntry`. */
+export interface ModelCatalogEntry {
   id: string;
   name: string;
 }
@@ -700,6 +708,12 @@ export interface AIPortfolioBuildRequest {
   /** Benchmark id to compare the session against. Defaults to `SP500`. */
   benchmark?: string;
   /**
+   * AI model id (a model-catalog id) the session's runs execute on, frozen on the
+   * session. Defaults to the configured default model; an out-of-catalog id is
+   * rejected (422).
+   */
+  model?: string;
+  /**
    * Opt this portfolio into the technical-indicator trend strategy (frozen at
    * build time). When enabled, both the build and daily rebalances hard-filter
    * candidates through the trend gate and attach holdings reversal context.
@@ -828,6 +842,11 @@ export interface AIPortfolioEvent {
    * a session frozen to a pre-trend prompt version).
    */
   trend_context: AITrendContext | null;
+  /**
+   * The AI model that produced this run (a model-catalog id). Null for historical
+   * events and runs that failed before reaching the agent.
+   */
+  model: string | null;
   error: string | null;
   duration_ms: number | null;
   created_at: string;

@@ -383,6 +383,7 @@ def rebalance_ai_portfolio(
     input_template: str,
     guardrails: GuardrailInstruction | None = None,
     recent_outcomes: list[dict[str, Any]] | None = None,
+    model: str | None = None,
 ) -> AIRebalanceResult:
     """Run the rebalance agent and return its validated :class:`AIRebalanceResult`.
 
@@ -392,7 +393,8 @@ def rebalance_ai_portfolio(
     values on the input template). ``guardrails`` (when set) appends the advisory
     cap block to the rendered input. ``recent_outcomes`` (when set) appends the
     advisory "Recent run outcomes" section distilled from the session's recent
-    daily-run snapshots.
+    daily-run snapshots. ``model`` (when set) is the session's frozen AI model the
+    run executes on; absent, it falls back to :data:`settings.AI_PORTFOLIO_MODEL`.
     """
     return asyncio.run(
         _run_rebalance(
@@ -404,6 +406,7 @@ def rebalance_ai_portfolio(
             input_template=input_template,
             guardrails=guardrails,
             recent_outcomes=recent_outcomes,
+            model=model,
         )
     )
 
@@ -417,6 +420,7 @@ async def _run_rebalance(
     input_template: str,
     guardrails: GuardrailInstruction | None = None,
     recent_outcomes: list[dict[str, Any]] | None = None,
+    model: str | None = None,
 ) -> AIRebalanceResult:
     agent = build_agent(
         name="AIRebalanceEvaluatorAgent",
@@ -427,7 +431,7 @@ async def _run_rebalance(
         ),
         output_type=AIRebalanceResult,
         tools=[web_search],
-        model=settings.AI_PORTFOLIO_MODEL,
+        model=model or settings.AI_PORTFOLIO_MODEL,
     )
 
     with web_search_budget(settings.AI_PORTFOLIO_MAX_WEB_SEARCHES):
@@ -490,6 +494,7 @@ class AIPortfolioAgent(Protocol):
         input_template: str,
         guardrails: GuardrailInstruction | None = None,
         recent_outcomes: list[dict[str, Any]] | None = None,
+        model: str | None = None,
     ) -> AIRebalanceResult:
         """Return the agent's structured rebalance target weights.
 
@@ -497,7 +502,9 @@ class AIPortfolioAgent(Protocol):
         caller loaded from the database (both may carry ``{name}`` placeholders).
         ``guardrails`` (when set) tells the AI the advisory caps to plan within.
         ``recent_outcomes`` (when set) is the session's recent daily-run snapshots,
-        distilled into the advisory "Recent run outcomes" prompt section.
+        distilled into the advisory "Recent run outcomes" prompt section. ``model``
+        (when set) is the session's frozen AI model the run executes on; absent, it
+        falls back to :data:`settings.AI_PORTFOLIO_MODEL`.
         """
         ...
 
@@ -527,6 +534,7 @@ class OpenAIAIPortfolioAgent:
         input_template: str,
         guardrails: GuardrailInstruction | None = None,
         recent_outcomes: list[dict[str, Any]] | None = None,
+        model: str | None = None,
     ) -> AIRebalanceResult:
         return rebalance_ai_portfolio(
             holdings=holdings,
@@ -537,4 +545,5 @@ class OpenAIAIPortfolioAgent:
             input_template=input_template,
             guardrails=guardrails,
             recent_outcomes=recent_outcomes,
+            model=model,
         )

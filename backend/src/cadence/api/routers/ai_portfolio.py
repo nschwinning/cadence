@@ -110,6 +110,11 @@ def build_ai_portfolio_endpoint(
             if payload.benchmark is not None
             else settings.DEFAULT_BENCHMARK
         ),
+        model=(
+            payload.model.value
+            if payload.model is not None
+            else settings.AI_PORTFOLIO_MODEL
+        ),
         use_technical_indicators=payload.use_technical_indicators,
         stop_loss_enabled=payload.stop_loss_enabled,
         stop_loss_pct=payload.stop_loss_pct,

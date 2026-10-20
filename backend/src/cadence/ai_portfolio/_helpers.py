@@ -657,6 +657,7 @@ def _finish_event(
     research: list[dict[str, Any]] | None = None,
     trend_context: dict[str, Any] | None = None,
     run_stats: dict[str, Any] | None = None,
+    model: str | None = None,
 ) -> None:
     event.status = status.value
     event.result_payload = result_payload
@@ -668,6 +669,8 @@ def _finish_event(
         event.trend_context = trend_context
     if run_stats:
         event.run_stats = run_stats
+    if model:
+        event.model = model
     session.commit()
 
 

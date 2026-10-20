@@ -9,11 +9,15 @@ import { portfolioKeys } from '../../api/portfolios';
 import {
   invalidateSessionDependents,
   useBenchmarks,
+  useModels,
 } from '../../api/paperTrading';
 import type { AIEventStatus } from '../../types/api';
 
 /** Default benchmark id preselected in the build form (S&P 500). */
 const DEFAULT_BENCHMARK = 'SP500';
+
+/** Default AI model id preselected in the build form (the configured default). */
+const DEFAULT_MODEL = 'gpt-6-luna';
 
 /** Risk-profile options accepted by the build endpoint. */
 const RISK_PROFILES = ['conservative', 'balanced', 'aggressive'] as const;
@@ -175,10 +179,13 @@ export function BuildAIPortfolioCard() {
   const [learningFeedbackEnabled, setLearningFeedbackEnabled] = useState(false);
   const [learningWindow, setLearningWindow] = useState('5');
   const [benchmark, setBenchmark] = useState<string>(DEFAULT_BENCHMARK);
+  const [model, setModel] = useState<string>(DEFAULT_MODEL);
   const [eventId, setEventId] = useState<string | null>(null);
 
   const { data: benchmarks } = useBenchmarks();
   const benchmarkCatalog = Array.isArray(benchmarks) ? benchmarks : null;
+  const { data: models } = useModels();
+  const modelCatalog = Array.isArray(models) ? models : null;
 
   const statusQuery = useBuildStatus(eventId);
   const event = statusQuery.data;
@@ -259,6 +266,7 @@ export function BuildAIPortfolioCard() {
         asset_types: assetTypes,
         daily_rebalancing: dailyRebalancing,
         benchmark,
+        model,
         use_technical_indicators: useTechnicalIndicators,
         use_fundamentals: useFundamentals,
         stop_loss_enabled: stopLossEnabled,
@@ -374,6 +382,28 @@ export function BuildAIPortfolioCard() {
                   (b) => (
                     <option key={b.id} value={b.id}>
                       {b.name}
+                    </option>
+                  ),
+                )}
+              </select>
+            </div>
+            <div>
+              <label
+                htmlFor="ai-model"
+                className="block text-sm font-medium text-slate-700"
+              >
+                Model
+              </label>
+              <select
+                id="ai-model"
+                value={model}
+                onChange={(e) => setModel(e.target.value)}
+                className="mt-1 w-full rounded border border-slate-300 px-3 py-2 text-sm text-slate-900 focus:border-emerald-500 focus:outline-none focus:ring-1 focus:ring-emerald-500"
+              >
+                {(modelCatalog ?? [{ id: DEFAULT_MODEL, name: 'GPT-6 Luna' }]).map(
+                  (m) => (
+                    <option key={m.id} value={m.id}>
+                      {m.name}
                     </option>
                   ),
                 )}

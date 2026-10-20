@@ -83,6 +83,7 @@ def create_session(
     rebalance_prompt_version: int,
     crypto_rebalance_prompt_version: int,
     benchmark: Benchmark,
+    model: str = settings.AI_PORTFOLIO_MODEL,
     allocated_capital: float = DEFAULT_ALLOCATED_CAPITAL,
     max_allocation_pct: float = 1.0,
     schedule_mode: ScheduleMode = ScheduleMode.SCHEDULED,
@@ -104,7 +105,9 @@ def create_session(
     ``crypto_rebalance_prompt_version`` likewise freezes the ``crypto_rebalance``-kind
     prompt version used by the weekend crypto-only rebalance.
     ``benchmark`` is the market index the session is compared against (the build
-    passes the chosen/default id). ``use_technical_indicators`` freezes the
+    passes the chosen/default id). ``model`` freezes the AI model (a catalog id)
+    every run for this session executes on; the build passes the chosen id or the
+    configured default. ``use_technical_indicators`` freezes the
     technical-indicator trend-strategy opt-in at build time (default off); every
     later rebalance reads it back rather than re-deciding. ``stop_loss_enabled``
     and ``stop_loss_pct`` likewise freeze the automatic hard stop-loss opt-in and
@@ -136,6 +139,7 @@ def create_session(
         rebalance_prompt_version=rebalance_prompt_version,
         crypto_rebalance_prompt_version=crypto_rebalance_prompt_version,
         benchmark=benchmark.value,
+        model=model,
         use_technical_indicators=use_technical_indicators,
         stop_loss_enabled=stop_loss_enabled,
         stop_loss_pct=stop_loss_pct,

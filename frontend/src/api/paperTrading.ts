@@ -10,6 +10,7 @@ import { dashboardKeys } from './dashboard';
 import type {
   BenchmarkCatalogEntry,
   ClosedPositionListResponse,
+  ModelCatalogEntry,
   PaperTradeListResponse,
   PaperTradeReconcileResult,
   PaperTradingSession,
@@ -71,6 +72,7 @@ export const paperTradingKeys = {
   orderSync: (sessionId: string) =>
     ['paper-trading', 'session', sessionId, 'order-sync'] as const,
   benchmarks: () => ['paper-trading', 'benchmarks'] as const,
+  models: () => ['paper-trading', 'models'] as const,
 };
 
 /**
@@ -223,6 +225,14 @@ export async function listBenchmarks(): Promise<BenchmarkCatalogEntry[]> {
   return data;
 }
 
+/** Fetch the fixed AI model catalog (`[{id, name}]`). */
+export async function listModels(): Promise<ModelCatalogEntry[]> {
+  const { data } = await apiClient.get<ModelCatalogEntry[]>(
+    '/api/v1/paper-trading/models',
+  );
+  return data;
+}
+
 /** Switch a session's benchmark; returns the updated session. */
 export async function changeSessionBenchmark(
   sessionId: string,
@@ -348,6 +358,14 @@ export function useBenchmarks() {
   return useQuery<BenchmarkCatalogEntry[]>({
     queryKey: paperTradingKeys.benchmarks(),
     queryFn: () => listBenchmarks(),
+  });
+}
+
+/** React Query hook fetching the fixed AI model catalog. */
+export function useModels() {
+  return useQuery<ModelCatalogEntry[]>({
+    queryKey: paperTradingKeys.models(),
+    queryFn: () => listModels(),
   });
 }
 

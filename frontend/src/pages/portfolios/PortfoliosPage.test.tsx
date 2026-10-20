@@ -62,6 +62,7 @@ const activeSession: PaperTradingSession = {
   learning_feedback_enabled: false,
   learning_feedback_window: null,
   use_fundamentals: false,
+  model: 'gpt-5-mini',
 };
 
 /**

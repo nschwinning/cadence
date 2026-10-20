@@ -426,6 +426,7 @@ def run_rebalance_event(
                 input_template=prompt.input_template,
                 guardrails=rebalance_guardrails,
                 recent_outcomes=recent_outcomes,
+                model=session_row.model,
             )
         agent_output = result.model_dump(mode="json")
 
@@ -585,6 +586,7 @@ def run_rebalance_event(
                     ),
                 ),
             ),
+            model=session_row.model,
         )
         logger.info("AI rebalance %s completed: %s trades executed", event.id, executed)
 

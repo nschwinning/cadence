@@ -44,6 +44,7 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from cadence.broker.models import OrderSide, OrderStatus
 from cadence.database import Base
 from cadence.paper_trading.constants import (
+    AIModel,
     Benchmark,
     RunStatus,
     ScheduleMode,
@@ -172,6 +173,17 @@ class PaperTradingSession(Base):
         _enum_column(Benchmark),
         nullable=False,
         server_default=Benchmark.SP500.value,
+    )
+    # The AI model this session's runs execute on. Stores a
+    # ``cadence.paper_trading.constants.AIModel`` id (a fixed-catalog member),
+    # chosen at build time (from the chosen/default id) and frozen for the
+    # session's lifetime, so every run for this session executes on the same
+    # model. Non-nullable: set on every build and backfilled to ``gpt-5-mini``
+    # (the model pre-existing sessions actually ran on) by the migration.
+    model: Mapped[str] = mapped_column(
+        _enum_column(AIModel),
+        nullable=False,
+        server_default=AIModel.GPT_5_MINI.value,
     )
     # Whether this session opts into the technical-indicator trend strategy, chosen
     # at build time and frozen for the session's lifetime (like the rebalance-prompt

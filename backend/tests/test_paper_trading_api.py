@@ -23,7 +23,9 @@ from cadence.broker.models import AssetClass, Order, OrderSide, OrderStatus, Quo
 from cadence.broker.stub import StubBroker
 from cadence.paper_trading import service
 from cadence.paper_trading.constants import (
+    AI_MODEL_DISPLAY_NAMES,
     BENCHMARK_DISPLAY_NAMES,
+    AIModel,
     Benchmark,
     SessionStatus,
 )
@@ -87,6 +89,29 @@ def test_list_sessions(client: TestClient, db_session: Session) -> None:
     assert item["crypto_rebalance_prompt_version"] == 1
     # The traded portfolio's name is surfaced so the client can label the session.
     assert item["portfolio_name"] == "P"
+
+
+def test_list_sessions_exposes_model(
+    client: TestClient, db_session: Session
+) -> None:
+    # The frozen AI model is surfaced read-only on the session read.
+    portfolio = portfolios_service.create_portfolio(
+        db_session, name="M", stocks=["AAPL"]
+    )
+    sess = service.create_session(
+        db_session,
+        portfolio_id=portfolio.id,
+        strategy_key="ai_buy_hold",
+        rebalance_prompt_version=1,
+        crypto_rebalance_prompt_version=1,
+        benchmark=Benchmark.SP500,
+        model=AIModel.GPT_5_6_LUNA.value,
+    )
+
+    resp = client.get("/api/v1/paper-trading/sessions")
+    assert resp.status_code == 200
+    item = next(i for i in resp.json()["items"] if i["id"] == str(sess.id))
+    assert item["model"] == "gpt-5.6-luna"
 
 
 def test_list_sessions_exposes_stop_loss_config(
@@ -673,6 +698,20 @@ def test_list_benchmarks_returns_full_catalog(client: TestClient) -> None:
     assert set(by_id) == {b.value for b in Benchmark}
     for member, name in BENCHMARK_DISPLAY_NAMES.items():
         assert by_id[member.value] == name
+
+
+def test_list_models_returns_full_catalog(client: TestClient) -> None:
+    resp = client.get("/api/v1/paper-trading/models")
+    assert resp.status_code == 200
+    body = resp.json()
+    # Every catalog model is listed as {id, name}.
+    assert len(body) == len(AIModel)
+    by_id = {entry["id"]: entry["name"] for entry in body}
+    assert set(by_id) == {m.value for m in AIModel}
+    for member, name in AI_MODEL_DISPLAY_NAMES.items():
+        assert by_id[member.value] == name
+    # The configured default for new builds is one of the listed ids.
+    assert "gpt-6-luna" in by_id
 
 
 def test_change_benchmark_persists_new_selection(

@@ -729,6 +729,12 @@ function RunHeader({
         </div>
         <div>
           <dt className="text-xs font-semibold uppercase tracking-wide text-slate-500">
+            Model
+          </dt>
+          <dd className="text-sm text-slate-900">{event.model ?? '—'}</dd>
+        </div>
+        <div>
+          <dt className="text-xs font-semibold uppercase tracking-wide text-slate-500">
             Error
           </dt>
           <dd className={`text-sm ${event.error ? 'text-red-700' : 'text-slate-900'}`}>

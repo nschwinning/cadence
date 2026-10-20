@@ -121,6 +121,7 @@ def run_build_event(
             max_allocation_pct=portfolio.max_allocation_pct,
             schedule_mode=schedule_mode,
             benchmark=Benchmark(params.benchmark),
+            model=params.model,
             use_technical_indicators=params.use_technical_indicators,
             stop_loss_enabled=params.stop_loss_enabled,
             stop_loss_pct=params.stop_loss_pct,

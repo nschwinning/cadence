@@ -15,6 +15,7 @@
 - Make the Dashboard chart also use Apache ECharts and have the same look as the others and also add benchmark lines there (for all benchmark indexes)
 - Redesign the Recent activity tile in the dashboard so that columns have the same size and move automation plus Recent activity to the bottom of the page
 - Reformat the dates in the charts to use German date dd.MM
+- Make the checkboxes in the portfolio creation mask two columns, let a designer agent do the design.
 
 ## Bugs
 
