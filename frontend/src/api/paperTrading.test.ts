@@ -172,6 +172,7 @@ describe('useChangeSessionBenchmark', () => {
       max_invested_pct: null,
       learning_feedback_enabled: false,
       learning_feedback_window: null,
+      use_fundamentals: false,
     };
   }
 

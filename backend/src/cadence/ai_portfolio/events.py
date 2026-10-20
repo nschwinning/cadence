@@ -181,31 +181,41 @@ def get_inflight_rebalance_event(
 def build_orders_settled(
     session: Session, broker: Broker, session_row: PaperTradingSession
 ) -> bool:
-    """Return whether a session's initial build orders have all settled.
+    """Return whether a session's opening orders have all settled.
 
     A freshly-built session is not ready for daily rebalancing until the broker
-    orders its build placed have all reached a terminal state — filled, or
-    cancelled/rejected (a cancelled/rejected order will never fill, so it does not
-    keep the session waiting). Readiness is judged from the *broker's* fill status,
-    not the optimistic local ledger: the session's non-terminal orders are first
-    reconciled against the broker (reusing
+    orders of its *opening allocation* have all reached a terminal state — filled,
+    or cancelled/rejected (a cancelled/rejected order will never fill, so it does
+    not keep the session waiting). Readiness is judged from the *broker's* fill
+    status, not the optimistic local ledger: the session's non-terminal orders are
+    first reconciled against the broker (reusing
     :func:`paper_service.reconcile_session_orders`) so the recorded status is fresh
     even when the separate reconcile cron has not run first.
 
-    A session whose build placed no orders that need to settle — an all-cash build,
-    a build with no recorded build event, or one whose orders have already settled
-    (for example under an immediate-fill broker) — is ready immediately, so this
-    gate can never permanently strand a session.
+    The opening allocation now runs through an **initial rebalance** (not the build
+    event), so the orders to wait on are that rebalance's. Sessions built after that
+    change record ``initial_rebalance_event_id`` in their metadata; legacy sessions
+    only have ``build_event_id`` and keep reading the build event's orders, so their
+    behaviour is unchanged.
+
+    A session whose opening allocation placed no orders that need to settle — an
+    all-cash allocation, a session with no recorded opening event, or one whose
+    orders have already settled (for example under an immediate-fill broker) — is
+    ready immediately, so this gate can never permanently strand a session.
 
     Fails safe: if reconciliation raises, the session is reported not ready
     (deferred to a later trigger) rather than rebalanced on unverified state.
     """
     metadata = session_row.session_metadata or {}
-    raw_build_event_id = metadata.get("build_event_id")
-    if raw_build_event_id is None:
-        return True  # No build event recorded — nothing to wait on.
+    # Prefer the initial rebalance event (the opening allocation); fall back to the
+    # build event for legacy sessions built before the allocation moved there.
+    raw_opening_event_id = metadata.get("initial_rebalance_event_id") or metadata.get(
+        "build_event_id"
+    )
+    if raw_opening_event_id is None:
+        return True  # No opening event recorded — nothing to wait on.
     try:
-        build_event_id = uuid.UUID(str(raw_build_event_id))
+        opening_event_id = uuid.UUID(str(raw_opening_event_id))
     except (ValueError, TypeError):
         return True
 
@@ -219,7 +229,7 @@ def build_orders_settled(
         )
         return False
 
-    build_trades = paper_service.get_trades_by_event(session, build_event_id)
+    build_trades = paper_service.get_trades_by_event(session, opening_event_id)
     for trade in build_trades:
         if trade.order_id is None:
             continue  # No broker order to track — nothing to wait on.

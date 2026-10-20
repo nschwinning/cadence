@@ -29,6 +29,7 @@ from cadence.ai_portfolio._helpers import (
     _fail_event,
     _finish_event,
     _fractionable_map,
+    _fundamentals_annotation,
     _gate_discovered,
     _guardrail_caps,
     _guardrail_instruction,
@@ -40,6 +41,7 @@ from cadence.ai_portfolio._helpers import (
 )
 from cadence.ai_portfolio.agent import AIPortfolioAgent
 from cadence.ai_portfolio.constants import (
+    FUNDAMENTALS_PROMPT_VERSION,
     TREND_PROMPT_VERSION,
     EventStatus,
     PromptKind,
@@ -271,6 +273,18 @@ def run_rebalance_event(
             and session_row.rebalance_prompt_version >= TREND_PROMPT_VERSION
         )
 
+        # The company-fundamentals block applies only when this session opted into
+        # fundamentals at build time AND is frozen to the fundamentals-aware prompt
+        # version (or later). Crypto-only (weekend) runs use the separate
+        # crypto_rebalance prompt over crypto, which carries no fundamentals, so the
+        # block is never attached there. Opted-out sessions and sessions on an earlier
+        # prompt version receive candidates/holdings with no fundamentals attached.
+        fundamentals_enabled = (
+            bool(session_row.use_fundamentals)
+            and not crypto_only
+            and session_row.rebalance_prompt_version >= FUNDAMENTALS_PROMPT_VERSION
+        )
+
         # A freshly stopped-out position is quarantined for a cooldown window so the
         # agent cannot immediately re-buy it. Exclude quarantined tickers the session
         # does not currently hold (regardless of the trend opt-in); once the
@@ -307,7 +321,10 @@ def run_rebalance_event(
             else {}
         )
         candidates, dropped_candidates = _candidates_from_universe(
-            scoped_universe, candidate_snapshots, apply_gate=gating_enabled
+            scoped_universe,
+            candidate_snapshots,
+            apply_gate=gating_enabled,
+            fundamentals=fundamentals_enabled,
         )
         dropped_candidates.extend(excluded_candidates)
         holding_snapshots = (
@@ -317,8 +334,23 @@ def run_rebalance_event(
             if gating_enabled
             else None
         )
+        # Fundamentals for the holdings are keyed by ticker from the (eager-loaded)
+        # universe; a held ticker absent from the universe falls back to the
+        # unavailable marker inside ``_build_holdings``.
+        holding_fundamentals = (
+            {
+                asset.ticker: _fundamentals_annotation(asset.fundamentals)
+                for asset in universe
+            }
+            if fundamentals_enabled
+            else None
+        )
         holdings = _build_holdings(
-            ledger, broker, asset_classes, holding_snapshots
+            ledger,
+            broker,
+            asset_classes,
+            holding_snapshots,
+            fundamentals_by_ticker=holding_fundamentals,
         )
         if gating_enabled:
             trend_context = {

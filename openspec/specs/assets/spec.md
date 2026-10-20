@@ -340,6 +340,13 @@ generated content, the time it was generated, and a fingerprint of the universe
 captured at generation time. Generating a new evaluation SHALL replace the
 previous record; no history is retained.
 
+The prompt given to the AI SHALL include the universe's current roster of
+holdings grouped by sector, with each holding identified by its ticker and name,
+ineligible holdings flagged, and crypto grouped as its own section, so the AI
+knows exactly which assets are already present. The evaluation's suggestions
+SHALL NOT recommend adding any asset that is already in the universe; suggested
+additions SHALL name only tickers absent from the provided roster.
+
 The evaluation SHALL respect Cadence's supported trading scope: the universe may
 only contain US Alpaca-tradable individual equities and crypto, managed long-only
 with full-universe weight allocation (no shorting, leverage, options, or
@@ -355,9 +362,10 @@ does not support.
 
 - **WHEN** an evaluation is generated for a non-empty universe
 - **THEN** the system summarizes the universe (counts by category and sector,
-  eligibility counts, concentration, and foreign/unpriceable listings), requests
-  an AI narrative with bulleted findings, and stores the content together with the
-  generation time and the universe fingerprint
+  eligibility counts, concentration, foreign/unpriceable listings, and the
+  sector-grouped roster of holdings), requests an AI narrative with bulleted
+  findings, and stores the content together with the generation time and the
+  universe fingerprint
 
 #### Scenario: Only one current evaluation is kept
 
@@ -380,6 +388,15 @@ does not support.
   ETFs, funds, fixed-income, cash-equivalents, or foreign listings, so that the
   evaluation's suggestions propose only in-scope actions and do not recommend
   unsupported instrument classes
+
+#### Scenario: Prompt lists the current holdings so suggestions avoid duplicates
+
+- **WHEN** an evaluation is generated for a universe that already holds a set of
+  assets
+- **THEN** the prompt lists those assets grouped by sector (ticker and name, with
+  ineligible holdings flagged and crypto grouped), and instructs the AI to suggest
+  only additions whose tickers are not already in that roster, so the evaluation
+  does not recommend adding an asset the universe already contains
 
 ### Requirement: Lazy-fill the evaluation on first read
 

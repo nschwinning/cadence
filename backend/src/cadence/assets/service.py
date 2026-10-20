@@ -16,7 +16,7 @@ from typing import Any
 
 from sqlalchemy import func, or_, select
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.orm import InstrumentedAttribute, Session
+from sqlalchemy.orm import InstrumentedAttribute, Session, selectinload
 from sqlalchemy.sql.expression import ColumnElement, UnaryExpression
 
 from cadence.assets.category import (
@@ -525,7 +525,15 @@ def list_assets(
     deterministically (default ``ticker asc``). ``limit``/``offset`` page the
     ordered result; ``limit=None`` returns all matching rows.
     """
-    stmt = select(Asset).order_by(*_order_by(sort, direction))
+    # Eager-load the 1:1 fundamentals relationship so trading/analytics callers
+    # (AI build + rebalance) can read ``asset.fundamentals`` across the returned
+    # assets without an N+1 lazy load. One extra bulk query regardless of the
+    # fundamentals opt-in state.
+    stmt = (
+        select(Asset)
+        .options(selectinload(Asset.fundamentals))
+        .order_by(*_order_by(sort, direction))
+    )
     for condition in _filters(search, categories, sectors, membership):
         stmt = stmt.where(condition)
     if offset:

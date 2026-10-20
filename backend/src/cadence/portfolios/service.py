@@ -64,20 +64,26 @@ def create_portfolio(
     risk_profile: RiskProfile | None = None,
     max_allocation_pct: float = 1.0,
     source_run_id: str | None = None,
+    allow_empty: bool = False,
 ) -> Portfolio:
     """Validate the request and insert a portfolio.
 
     Tickers are normalized (upper-cased, de-duplicated, blanks dropped) and must
-    not be empty. ``max_allocation_pct`` must be in ``(0, 1]``.
+    not be empty, unless ``allow_empty`` is set — an AI build creates a *shell*
+    portfolio with no holdings and lets the inline initial rebalance populate its
+    end-state. ``max_allocation_pct`` must be in ``(0, 1]``.
 
     Raises:
-        PortfolioValidationError: on an empty name, no valid tickers, or an
-            out-of-range allocation.
+        PortfolioValidationError: on an empty name, no valid tickers (unless
+            ``allow_empty``), or an out-of-range allocation.
     """
     if not name or not name.strip():
         raise PortfolioValidationError("portfolio name must not be empty")
     _validate_allocation(max_allocation_pct)
-    normalized = normalize_tickers(stocks)
+    if allow_empty and all(not raw.strip() for raw in stocks):
+        normalized: list[str] = []
+    else:
+        normalized = normalize_tickers(stocks)
 
     portfolio = Portfolio(
         name=name.strip(),

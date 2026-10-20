@@ -37,6 +37,7 @@ class AIBuildParams:
     max_invested_pct: float | None = None
     learning_feedback_enabled: bool = False
     learning_feedback_window: int | None = None
+    use_fundamentals: bool = False
 
     def to_payload(self) -> dict[str, Any]:
         return {
@@ -55,6 +56,7 @@ class AIBuildParams:
             "max_invested_pct": self.max_invested_pct,
             "learning_feedback_enabled": self.learning_feedback_enabled,
             "learning_feedback_window": self.learning_feedback_window,
+            "use_fundamentals": self.use_fundamentals,
         }
 
     @classmethod
@@ -89,4 +91,5 @@ class AIBuildParams:
             learning_feedback_window=(
                 None if learn_window is None else int(learn_window)
             ),
+            use_fundamentals=bool(payload.get("use_fundamentals", False)),
         )

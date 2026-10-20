@@ -44,6 +44,42 @@ logger = logging.getLogger(__name__)
 _SNAPSHOT_TZ = ZoneInfo("America/New_York")
 
 
+def _daily_change_holdings(
+    snapshot: SessionValueSnapshot,
+    prior_snapshot: SessionValueSnapshot | None,
+) -> list[tuple[str, float]]:
+    """Per-held-asset day-over-day price change for the best/worst push line.
+
+    Each holding's figure is ``current price / previous snapshot price - 1`` — the
+    day's price move, not a since-entry return — so the same ticker reads identically
+    in every session's report on a given day. A holding is excluded when there is no
+    prior snapshot, when it was absent from the prior snapshot (e.g. a position opened
+    that day), or when its prior price is missing or not positive. An empty list omits
+    the best/worst line downstream (``_best_worst_line`` returns ``None``).
+    """
+    if prior_snapshot is None:
+        return []
+    prior_prices: dict[str, float] = {}
+    for pos in prior_snapshot.positions:
+        ticker = str(pos.get("ticker", "?"))
+        try:
+            prior_prices[ticker] = float(pos.get("price", 0.0))
+        except (TypeError, ValueError):
+            continue
+    holdings: list[tuple[str, float]] = []
+    for pos in snapshot.positions:
+        ticker = str(pos.get("ticker", "?"))
+        prior_price = prior_prices.get(ticker)
+        if prior_price is None or prior_price <= 0:
+            continue
+        try:
+            today_price = float(pos.get("price", 0.0))
+        except (TypeError, ValueError):
+            continue
+        holdings.append((ticker, today_price / prior_price - 1.0))
+    return holdings
+
+
 def snapshot_all_sessions(
     session: Session,
     *,
@@ -103,10 +139,10 @@ def snapshot_all_sessions(
         kpis = paper_service.session_kpis(
             session, session_id=session_row.id, broker=broker
         )
-        holdings = [
-            (str(pos.get("ticker", "?")), float(pos.get("return_pct", 0.0)))
-            for pos in snapshot.positions
-        ]
+        prior_snapshot = paper_service.get_previous_value_snapshot(
+            session, session_id=session_row.id, before=snapshot.snapshot_date
+        )
+        holdings = _daily_change_holdings(snapshot, prior_snapshot)
         _notify_safely(
             notifier,
             title=f"Cadence: {label} daily P&L",

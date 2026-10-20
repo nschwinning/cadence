@@ -26,8 +26,9 @@ from cadence.ai_portfolio.executor import GuardrailCaps, TradeResult
 from cadence.ai_portfolio.models import AIPortfolioEvent
 from cadence.assets import service as assets_service
 from cadence.assets.category import AssetCategory, AssetScope, scope_categories
+from cadence.assets.fundamentals import FundamentalsStatus
 from cadence.assets.market_data import MarketDataProvider
-from cadence.assets.models import Asset
+from cadence.assets.models import Asset, AssetFundamentals
 from cadence.broker.base import Broker
 from cadence.broker.models import AssetClass, OrderSide, Position
 from cadence.config import settings
@@ -201,11 +202,84 @@ def _gate_failure_reason(snap: TechnicalIndicator) -> str:
     return "trend gate failed"
 
 
+#: The explicit marker handed to the agent for an asset with no usable
+#: fundamentals (crypto, no stored record, or a non-``available`` fetch). A fresh
+#: dict is copied per attach so callers never share one mutable object.
+_FUNDAMENTALS_UNAVAILABLE: dict[str, Any] = {"status": "unavailable"}
+
+
+def _derive_fundamentals_figures(figures: dict[str, Any]) -> dict[str, Any]:
+    """Derive the compact per-ticker fundamentals block from a stored figures map.
+
+    ``figures`` is ``AssetFundamentals.document["figures"]`` — each present entry a
+    ``{"value": ..., ...}`` object keyed as ``revenue``, ``gross_profit``,
+    ``operating_income``, ``net_income``, ``operating_cash_flow``, ``eps_basic``,
+    ``eps_diluted`` (latest-annual FY/10-K values). Returns gross / operating / net
+    margin (income figure ÷ revenue), diluted EPS (falling back to basic when
+    diluted is absent), and the absolute revenue / net income / operating cash flow
+    as scale and profitability signals. A margin whose revenue is zero or missing is
+    omitted rather than reported as a misleading value; any figure the stored data
+    lacks is simply absent. Pure — no DB or network access.
+    """
+
+    def _value(key: str) -> float | None:
+        entry = figures.get(key)
+        if not isinstance(entry, dict):
+            return None
+        val = entry.get("value")
+        return float(val) if isinstance(val, (int, float)) else None
+
+    revenue = _value("revenue")
+    gross_profit = _value("gross_profit")
+    operating_income = _value("operating_income")
+    net_income = _value("net_income")
+    operating_cash_flow = _value("operating_cash_flow")
+    eps = _value("eps_diluted")
+    if eps is None:
+        eps = _value("eps_basic")
+
+    derived: dict[str, Any] = {"status": "available"}
+    # Margins only when revenue is a usable non-zero denominator (avoids div-by-zero
+    # and never emits a misleading ratio).
+    if revenue:
+        if gross_profit is not None:
+            derived["gross_margin"] = gross_profit / revenue
+        if operating_income is not None:
+            derived["operating_margin"] = operating_income / revenue
+        if net_income is not None:
+            derived["net_margin"] = net_income / revenue
+    if eps is not None:
+        derived["eps"] = eps
+    if revenue is not None:
+        derived["revenue"] = revenue
+    if net_income is not None:
+        derived["net_income"] = net_income
+    if operating_cash_flow is not None:
+        derived["operating_cash_flow"] = operating_cash_flow
+    return derived
+
+
+def _fundamentals_annotation(record: AssetFundamentals | None) -> dict[str, Any]:
+    """The per-ticker fundamentals block handed to the agent, or an unavailable marker.
+
+    Returns an explicit ``{"status": "unavailable"}`` marker — never invented
+    figures — when the asset has no stored fundamentals record, or its most recent
+    fetch did not produce usable data (``status`` other than ``available``). Crypto
+    assets carry no fundamentals record, so they also degrade to the marker.
+    Otherwise derives the compact figures object from the stored latest-annual data.
+    """
+    if record is None or record.status != FundamentalsStatus.AVAILABLE.value:
+        return dict(_FUNDAMENTALS_UNAVAILABLE)
+    figures = (record.document or {}).get("figures", {})
+    return _derive_fundamentals_figures(figures if isinstance(figures, dict) else {})
+
+
 def _candidates_from_universe(
     assets: list[Asset],
     snapshots: dict[int, TechnicalIndicator],
     *,
     apply_gate: bool,
+    fundamentals: bool = False,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """Build the candidate records the agent reasons over from the universe.
 
@@ -216,17 +290,25 @@ def _candidates_from_universe(
     (never shown to the AI) and returned in ``dropped`` with the reason. When
     ``apply_gate`` is false (pre-trend prompt version), every asset is a candidate
     with no indicator annotation and nothing is dropped (original behaviour).
+
+    When ``fundamentals`` is true (the session opted into fundamentals and is frozen
+    on a fundamentals-aware prompt), each surviving candidate additionally carries a
+    ``fundamentals`` block derived from its stored fundamentals (or an explicit
+    unavailable marker), attached independently of ``apply_gate`` so the two
+    strategies compose.
     """
     candidates: list[dict[str, Any]] = []
     dropped: list[dict[str, Any]] = []
     for asset in assets:
-        base = {
+        base: dict[str, Any] = {
             "ticker": asset.ticker,
             "company_name": asset.name or asset.ticker,
             "sector": asset.sector or "unknown",
             "category": asset.category,
             "is_eligible": asset.is_eligible,
         }
+        if fundamentals:
+            base["fundamentals"] = _fundamentals_annotation(asset.fundamentals)
         if not apply_gate:
             candidates.append(base)
             continue
@@ -384,6 +466,7 @@ def _build_holdings(
     broker: Broker,
     asset_classes: dict[str, AssetClass],
     snapshots: dict[str, TechnicalIndicator] | None = None,
+    fundamentals_by_ticker: dict[str, dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     """Build the agent's current-holdings context from the session's ledger.
 
@@ -396,6 +479,11 @@ def _build_holdings(
     sell/trim/hold — there is no hard exit. A holding without a stored snapshot
     carries ``None`` for both. When ``snapshots`` is ``None`` (pre-trend prompt
     version) no technical context is attached (original behaviour).
+
+    When ``fundamentals_by_ticker`` is provided (the fundamentals opt-in on a
+    fundamentals-aware prompt), each holding carries its ``fundamentals`` block from
+    that map, falling back to the explicit unavailable marker for a ticker missing
+    from it. When ``None`` no fundamentals are attached (original behaviour).
     """
     holdings: list[dict[str, Any]] = []
     for entry in ledger:
@@ -422,6 +510,10 @@ def _build_holdings(
             snap = snapshots.get(entry.ticker)
             holding["indicators"] = _indicator_annotation(snap) if snap else None
             holding["reversal_flags"] = _reversal_annotation(snap) if snap else None
+        if fundamentals_by_ticker is not None:
+            holding["fundamentals"] = fundamentals_by_ticker.get(
+                entry.ticker, dict(_FUNDAMENTALS_UNAVAILABLE)
+            )
         holdings.append(holding)
     return holdings
 

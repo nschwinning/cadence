@@ -7,8 +7,10 @@ provider for discovery-adds. No network is touched.
 
 from __future__ import annotations
 
+import uuid
 from dataclasses import replace
 from datetime import UTC, date, datetime, timedelta
+from types import SimpleNamespace
 
 import pytest
 from agents.exceptions import MaxTurnsExceeded
@@ -28,6 +30,7 @@ from cadence.ai_portfolio.agent import (
     AITargetAllocation,
 )
 from cadence.ai_portfolio.constants import (
+    FUNDAMENTALS_PROMPT_VERSION,
     TREND_PROMPT_VERSION,
     EventStatus,
     EventType,
@@ -43,8 +46,9 @@ from cadence.ai_portfolio.models import AIPortfolioEvent, RebalancePrompt
 from cadence.ai_portfolio.service import AIBuildParams
 from cadence.assets import service as assets_service
 from cadence.assets.category import AssetCategory
+from cadence.assets.fundamentals import FundamentalsStatus
 from cadence.assets.market_data import AssetInfo, HistoryBar
-from cadence.assets.models import Asset
+from cadence.assets.models import Asset, AssetFundamentals
 from cadence.broker.models import (
     AssetClass,
     OrderSide,
@@ -223,6 +227,20 @@ def _params(**kw: object) -> AIBuildParams:
     return AIBuildParams(**base)  # type: ignore[arg-type]
 
 
+def _initial_rebalance_event(
+    db_session: Session, build_event: AIPortfolioEvent
+) -> AIPortfolioEvent:
+    """Fetch the initial-rebalance event a build triggered (its opening allocation).
+
+    The opening allocation now runs as an inline initial rebalance; the build event
+    records that rebalance's id in its result payload. The opening trades, run_stats,
+    trend context and research all live on the returned rebalance event, not the
+    build event.
+    """
+    rb_id = uuid.UUID(str(build_event.result_payload["initial_rebalance_event_id"]))
+    return service.get_event(db_session, rb_id)
+
+
 # --------------------------------------------------------------------------- #
 # Configured-scope helper
 # --------------------------------------------------------------------------- #
@@ -272,9 +290,10 @@ def test_run_build_event_success_creates_portfolio_and_session(
     assert refreshed.session_id is not None
     assert refreshed.portfolio_id is not None
 
-    # The agent received the full enriched universe as candidates.
-    assert agent.build_calls
-    candidate_tickers = {c["ticker"] for c in agent.build_calls[0]["candidates"]}
+    # The opening allocation runs as the initial rebalance; the agent received the
+    # full enriched universe as candidates there.
+    assert agent.rebalance_calls
+    candidate_tickers = {c["ticker"] for c in agent.rebalance_calls[0]["candidates"]}
     assert candidate_tickers == {"AAPL", "MSFT"}
 
     portfolio = portfolios_service.get_portfolio(db_session, refreshed.portfolio_id)
@@ -289,10 +308,52 @@ def test_run_build_event_success_creates_portfolio_and_session(
     trades = paper_service.get_session_trades(db_session, refreshed.session_id, limit=100)
     assert {t.ticker for t in trades} == {"AAPL", "MSFT"}
 
+    # The opening trades belong to the initial rebalance run, not the build event.
+    rebalance_event = _initial_rebalance_event(db_session, refreshed)
     runs = paper_service.get_session_runs(db_session, refreshed.session_id, limit=10)
     assert len(runs) == 1
-    # The build run references the AI event that produced it, so the UI can link it.
-    assert runs[0].ai_portfolio_event_id == event.id
+    # The opening run references the AI rebalance event that produced it.
+    assert runs[0].ai_portfolio_event_id == rebalance_event.id
+
+
+def test_initial_rebalance_sizes_from_allocated_capital_buy_only(
+    db_session: Session,
+) -> None:
+    # Task 3.1: the opening allocation runs as the initial rebalance on a fresh,
+    # empty ledger. It sizes against current value = allocated capital (no prior
+    # positions, so session value == cash == allocated capital), the agent is shown
+    # no holdings yet, and every opening trade is a buy — there is nothing to sell on
+    # an empty book. This is exactly how ``execute_rebalance`` already handles an
+    # empty ledger; no special-casing of the first allocation.
+    provider = _seed_universe(db_session, "AAPL", "MSFT")
+    agent = FakeAIPortfolioAgent(build_result=_build_result("AAPL", "MSFT"))
+    broker = StubBroker()  # market open by default
+    event = service.create_build_event(
+        db_session, _params(allocated_capital=100_000.0)
+    )
+
+    service.run_build_event(db_session, event.id, agent, broker, provider)
+
+    # The initial rebalance saw an empty ledger and sized against the full capital.
+    assert agent.rebalance_calls
+    assert agent.rebalance_calls[0]["holdings"] == []
+    summary = agent.rebalance_calls[0]["account_summary"]
+    assert summary["portfolio_value"] == pytest.approx(100_000.0)
+    assert summary["cash_available"] == pytest.approx(100_000.0)
+
+    refreshed = service.get_event(db_session, event.id)
+    trades = paper_service.get_session_trades(
+        db_session, refreshed.session_id, limit=100
+    )
+    assert trades
+    # Buy-only: every opening trade is a buy and nothing is sold/closed.
+    assert all(t.side == OrderSide.BUY.value for t in trades)
+    assert (
+        paper_service.get_closed_positions(
+            db_session, refreshed.session_id, limit=100
+        )
+        == []
+    )
 
 
 def test_ai_build_params_guardrails_round_trip() -> None:
@@ -312,6 +373,18 @@ def test_ai_build_params_guardrails_round_trip() -> None:
     assert restored.max_asset_class_pct == 0.6
     assert restored.min_positions == 5
     assert restored.max_invested_pct == 0.9
+
+
+def test_ai_build_params_fundamentals_round_trip() -> None:
+    # The fundamentals opt-in must survive to_payload -> from_payload, and default off.
+    assert AIBuildParams(allocated_capital=1.0).use_fundamentals is False
+    params = AIBuildParams(allocated_capital=50_000.0, use_fundamentals=True)
+    restored = AIBuildParams.from_payload(params.to_payload())
+    assert restored == params
+    assert restored.use_fundamentals is True
+    # A legacy payload with no key degrades to opted out.
+    legacy = AIBuildParams.from_payload({"allocated_capital": 1.0})
+    assert legacy.use_fundamentals is False
 
 
 def test_run_build_event_freezes_guardrails_and_caps_trades(
@@ -345,8 +418,8 @@ def test_run_build_event_freezes_guardrails_and_caps_trades(
     refreshed = service.get_event(db_session, event.id)
     assert refreshed.status == EventStatus.SUCCEEDED.value
 
-    # The advisory caps were handed to the AI.
-    assert agent.build_calls[0]["guardrails"] is not None
+    # The advisory caps were handed to the AI on the opening allocation.
+    assert agent.rebalance_calls[0]["guardrails"] is not None
 
     # The frozen guardrail config is persisted on the session and portfolio.
     session_row = paper_service.get_session(db_session, refreshed.session_id)
@@ -394,7 +467,9 @@ def test_run_build_event_records_min_positions_observation(
 
     refreshed = service.get_event(db_session, event.id)
     assert refreshed.status == EventStatus.SUCCEEDED.value
-    observation = refreshed.run_stats["guardrails"]["min_positions"]
+    # The min-positions observation is recorded on the initial rebalance run_stats.
+    rebalance_event = _initial_rebalance_event(db_session, refreshed)
+    observation = rebalance_event.run_stats["guardrails"]["min_positions"]
     assert observation == {"required": 5, "returned": 2, "shortfall": 3}
 
 
@@ -416,8 +491,9 @@ def test_run_build_event_guardrails_off_keeps_no_op_config(
     assert session_row.max_asset_class_pct is None
     assert session_row.min_positions is None
     assert session_row.max_invested_pct is None
-    assert agent.build_calls[0]["guardrails"] is None
-    assert (refreshed.run_stats or {}).get("guardrails") is None
+    assert agent.rebalance_calls[0]["guardrails"] is None
+    rebalance_event = _initial_rebalance_event(db_session, refreshed)
+    assert (rebalance_event.run_stats or {}).get("guardrails") is None
 
 
 def test_run_build_event_freezes_learning_feedback(db_session: Session) -> None:
@@ -481,8 +557,10 @@ def test_run_build_event_persists_run_stats(db_session: Session) -> None:
 
     service.run_build_event(db_session, event.id, agent, StubBroker(), provider)
 
+    # The opening allocation's run_stats live on the initial rebalance event.
     refreshed = service.get_event(db_session, event.id)
-    stats = refreshed.run_stats
+    rebalance_event = _initial_rebalance_event(db_session, refreshed)
+    stats = rebalance_event.run_stats
     assert stats is not None
     assert stats["orders"]["executed"] == 2
     assert stats["orders"]["skipped"] == 0
@@ -492,7 +570,7 @@ def test_run_build_event_persists_run_stats(db_session: Session) -> None:
     assert {t["ticker"] for t in trades} == {"AAPL", "MSFT"}
     # filled_price is present in run_stats but omitted from the UI-facing payload.
     assert all("filled_price" in t for t in trades)
-    assert all("filled_price" not in a for a in refreshed.actions_taken)
+    assert all("filled_price" not in a for a in rebalance_event.actions_taken)
 
 
 def test_run_rebalance_event_run_stats_includes_pnl_and_account(
@@ -692,8 +770,9 @@ def test_run_build_event_generates_distinct_portfolio_name(
     # Not the AI-provided name, and carries the risk-profile prefix.
     assert portfolio.name != "AI Growth"
     assert portfolio.name.startswith("Aggressive ")
-    # The AI's thesis is still preserved as the description.
-    assert portfolio.description == "tech"
+    # The build creates a shell portfolio with no thesis of its own; the allocation
+    # reasoning now lives on the initial rebalance event, not the portfolio.
+    assert portfolio.description is None
 
 
 def test_run_build_event_name_is_unique_against_existing(
@@ -752,8 +831,8 @@ def test_run_build_event_scope_restricts_candidates_and_persists_scope(
 
     service.run_build_event(db_session, event.id, agent, StubBroker(), _provider())
 
-    assert agent.build_calls
-    candidate_tickers = {c["ticker"] for c in agent.build_calls[0]["candidates"]}
+    assert agent.rebalance_calls
+    candidate_tickers = {c["ticker"] for c in agent.rebalance_calls[0]["candidates"]}
     assert candidate_tickers == {"AAPL"}  # BTC-USD (crypto) excluded
 
     refreshed = service.get_event(db_session, event.id)
@@ -790,32 +869,96 @@ def test_run_build_event_manual_schedule_when_not_enrolled(
     assert session_row.schedule_mode == ScheduleMode.MANUAL.value
 
 
-def test_run_build_event_failure_marks_event_failed(db_session: Session) -> None:
+def test_run_build_event_manual_session_allocated_at_creation(
+    db_session: Session,
+) -> None:
+    # Task 3.3: a manual (non-daily) session is allocated by the initial rebalance at
+    # creation while the market is open — it does not sit empty waiting for a
+    # scheduled run that manual sessions never receive.
     provider = _seed_universe(db_session, "AAPL", "MSFT")
-    agent = FakeAIPortfolioAgent(build_error=RuntimeError("agent boom"))
+    agent = FakeAIPortfolioAgent(build_result=_build_result("AAPL", "MSFT"))
+    broker = StubBroker()  # market open by default
+    event = service.create_build_event(db_session, _params(daily_rebalancing=False))
+
+    service.run_build_event(db_session, event.id, agent, broker, provider)
+
+    refreshed = service.get_event(db_session, event.id)
+    session_row = paper_service.get_session(db_session, refreshed.session_id)
+    assert session_row.schedule_mode == ScheduleMode.MANUAL.value
+    # Allocated at creation: the manual session already holds its opening positions.
+    positions = {
+        p.ticker
+        for p in paper_service.list_open_positions(db_session, refreshed.session_id)
+    }
+    assert positions == {"AAPL", "MSFT"}
+
+
+def test_run_build_event_market_closed_equity_opening_allocation_skipped(
+    db_session: Session,
+) -> None:
+    # Task 3.3: an all-equity opening allocation while the equity market is closed
+    # records a skipped run with no orders. The opening allocation reuses the
+    # rebalance market-closed guard (a fresh shell has no crypto sleeve), so there is
+    # no special-casing of the first allocation.
+    provider = _seed_universe(db_session, "AAPL", "MSFT")
+    agent = FakeAIPortfolioAgent(build_result=_build_result("AAPL", "MSFT"))
+    broker = _StopLossBroker(market_open=False)
+    event = service.create_build_event(db_session, _params())
+
+    service.run_build_event(db_session, event.id, agent, broker, provider)
+
+    refreshed = service.get_event(db_session, event.id)
+    # The build shell still succeeds; the opening allocation (initial rebalance) is
+    # the step that skips, carrying its own SKIPPED status.
+    assert refreshed.status == EventStatus.SUCCEEDED.value
+    rebalance_event = _initial_rebalance_event(db_session, refreshed)
+    assert rebalance_event.status == EventStatus.SKIPPED.value
+    # Agent is never consulted and no orders/positions result.
+    assert agent.rebalance_calls == []
+    assert (
+        paper_service.get_session_trades(db_session, refreshed.session_id, limit=100)
+        == []
+    )
+    assert paper_service.list_open_positions(db_session, refreshed.session_id) == []
+    # The skip is recorded as a run that references the initial rebalance event.
+    runs = paper_service.get_session_runs(db_session, refreshed.session_id, limit=100)
+    skipped = next(r for r in runs if r.details and r.details[0].get("skipped"))
+    assert skipped.ai_portfolio_event_id == rebalance_event.id
+
+
+def test_run_build_event_failure_marks_event_failed(db_session: Session) -> None:
+    # The opening allocation runs as the initial rebalance; when its agent fails, the
+    # failure is carried on that rebalance event. The build shell itself still
+    # succeeds (it created the portfolio/session and triggered the allocation).
+    provider = _seed_universe(db_session, "AAPL", "MSFT")
+    agent = FakeAIPortfolioAgent(rebalance_error=RuntimeError("agent boom"))
     event = service.create_build_event(db_session, _params())
 
     service.run_build_event(db_session, event.id, agent, StubBroker(), provider)
 
     refreshed = service.get_event(db_session, event.id)
-    assert refreshed.status == EventStatus.FAILED.value
-    assert "boom" in (refreshed.error or "")
+    assert refreshed.status == EventStatus.SUCCEEDED.value
+    rebalance_event = _initial_rebalance_event(db_session, refreshed)
+    assert rebalance_event.status == EventStatus.FAILED.value
+    assert "boom" in (rebalance_event.error or "")
 
 
 def test_run_build_event_humanizes_max_turns_error(db_session: Session) -> None:
     # The agents SDK raises a terse "Max turns (N) exceeded"; the service persists
-    # an actionable message instead of the raw string.
+    # an actionable message instead of the raw string on the initial rebalance event.
     provider = _seed_universe(db_session, "AAPL", "MSFT")
     agent = FakeAIPortfolioAgent(
-        build_error=MaxTurnsExceeded("Max turns (12) exceeded")
+        rebalance_error=MaxTurnsExceeded("Max turns (12) exceeded")
     )
     event = service.create_build_event(db_session, _params())
 
     service.run_build_event(db_session, event.id, agent, StubBroker(), provider)
 
     refreshed = service.get_event(db_session, event.id)
-    assert refreshed.status == EventStatus.FAILED.value
-    error = refreshed.error or ""
+    assert refreshed.status == EventStatus.SUCCEEDED.value
+    rebalance_event = _initial_rebalance_event(db_session, refreshed)
+    assert rebalance_event.status == EventStatus.FAILED.value
+    error = rebalance_event.error or ""
     assert "step limit" in error
     assert "Max turns (12) exceeded" not in error
 
@@ -847,8 +990,11 @@ def _seed_session(
 
 def test_run_rebalance_event_market_closed_is_skipped(db_session: Session) -> None:
     provider = _seed_universe(db_session, "AAPL", "MSFT")
-    broker = _ClosedBroker()
+    # Seed the opening allocation with the market open, then close it so only the
+    # rebalance under test skips (an all-equity opening allocation would also skip).
+    broker = _StopLossBroker(market_open=True)
     session_id, _ = _seed_session(db_session, broker, provider)
+    broker.set_market_open(False)
 
     rebalance = FakeAIPortfolioAgent(
         rebalance_result=AIRebalanceResult(
@@ -1740,8 +1886,11 @@ def test_close_session_liquidates_equities_when_market_closed(
 ) -> None:
     # A close ignores market hours: equities are sold even when closed.
     provider = _seed_universe(db_session, "AAPL", "MSFT")
-    broker = _ClosedBroker()
+    # Seed the opening allocation while the market is open (the initial rebalance
+    # would otherwise defer an all-equity allocation), then close with it shut.
+    broker = _StopLossBroker(market_open=True)
     session_id, _ = _seed_session(db_session, broker, provider)
+    broker.set_market_open(False)
 
     event = service.close_session(db_session, session_id, broker)
 
@@ -1865,10 +2014,15 @@ def test_close_empties_ledger(db_session: Session) -> None:
     assert paper_service.list_open_positions(db_session, session_id) == []
 
 
-def test_rebalance_deltas_isolated_per_session_ledger(db_session: Session) -> None:
+def test_rebalance_deltas_isolated_per_session_ledger(
+    db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
     # Two sessions hold AAPL in the same account-wide broker. A rebalance of one
     # must compute its delta from that session's own ledger, not the combined
     # broker position.
+    # Pin the cash buffer off so the opening allocation deploys 100% into AAPL and
+    # re-targeting to 100% AAPL at the same value is an exact no-op (delta 0).
+    monkeypatch.setattr(settings, "REBALANCE_CASH_BUFFER_PCT", 0.0)
     provider = _seed_universe(db_session, "AAPL")
     broker = StubBroker()
 
@@ -1913,10 +2067,12 @@ def test_rebalance_deltas_isolated_per_session_ledger(db_session: Session) -> No
     rb_event = service.create_rebalance_event(db_session, session_a)
     service.run_rebalance_event(db_session, rb_event.id, rebalance, broker, provider)
 
+    # Scope to this rebalance event: the opening allocation also bought AAPL as an
+    # initial rebalance, so its trade must not be mistaken for a re-target trade.
     rebalance_aapl = [
         t
-        for t in paper_service.get_session_trades(db_session, session_a, limit=100)
-        if t.ticker == "AAPL" and t.signal_type.startswith("ai_rebalance")
+        for t in paper_service.get_trades_by_event(db_session, rb_event.id)
+        if t.ticker == "AAPL"
     ]
     assert rebalance_aapl == []  # no delta -> no cross-contamination trade
     after = paper_service.get_open_position(db_session, session_a, "AAPL")
@@ -1950,14 +2106,17 @@ def test_run_rebalance_event_closed_market_trades_crypto(db_session: Session) ->
     eq_provider = _seed_universe(db_session, "AAPL")
     assets_service.add_asset(db_session, "BTC-USD", _crypto_provider(), StubBroker())
 
-    broker = _ClosedBroker()
-    # Build a session holding AAPL + BTC-USD (build has no market guard).
+    # Seed a session holding AAPL + BTC-USD with the market open (the opening
+    # allocation is itself a rebalance, so an all-equity leg needs the market open),
+    # then close the equities market before the rebalance under test.
+    broker = _StopLossBroker(market_open=True)
     agent = FakeAIPortfolioAgent(build_result=_build_result("AAPL", "BTC-USD"))
     build_event = service.create_build_event(
         db_session, _params(allocated_capital=50_000.0, daily_rebalancing=True)
     )
     service.run_build_event(db_session, build_event.id, agent, broker, eq_provider)
     session_id = service.get_event(db_session, build_event.id).session_id
+    broker.set_market_open(False)
 
     # Rebalance while the equities market is closed: target only crypto (AAPL is
     # untargeted -> would exit, but is skipped as an equity while closed).
@@ -1987,21 +2146,16 @@ def test_run_rebalance_event_closed_market_trades_crypto(db_session: Session) ->
         EventStatus.PARTIAL.value,
     )
 
-    trades = paper_service.get_session_trades(db_session, session_id, limit=100)
-    rebalance_btc = [
-        t
-        for t in trades
-        if t.ticker == "BTC-USD" and t.signal_type.startswith("ai_rebalance")
-    ]
+    # Scope to this rebalance event's trades: the opening allocation also traded
+    # AAPL + BTC as an initial rebalance, so filtering by signal type alone would
+    # pick those up too.
+    trades = paper_service.get_trades_by_event(db_session, rb_event.id)
+    rebalance_btc = [t for t in trades if t.ticker == "BTC-USD"]
     assert rebalance_btc  # crypto traded while the equities market was closed
 
     # The equity was recorded as skipped (equity market closed), never traded in
     # this rebalance.
-    rebalance_aapl = [
-        t
-        for t in trades
-        if t.ticker == "AAPL" and t.signal_type.startswith("ai_rebalance")
-    ]
+    rebalance_aapl = [t for t in trades if t.ticker == "AAPL"]
     assert rebalance_aapl == []
 
 
@@ -2534,27 +2688,30 @@ def test_run_build_event_stamps_event_id_and_persists_research(
 
     refreshed = service.get_event(db_session, event.id)
     assert refreshed.status == EventStatus.SUCCEEDED.value
-    # The research transcript is persisted on the event.
-    assert refreshed.research is not None
-    assert [r["query"] for r in refreshed.research] == [
+    # The research transcript is persisted on the initial rebalance event (the
+    # opening allocation does the researching, not the build shell).
+    rebalance_event = _initial_rebalance_event(db_session, refreshed)
+    assert rebalance_event.research is not None
+    assert [r["query"] for r in rebalance_event.research] == [
         "AAPL outlook",
         "MSFT outlook",
     ]
 
-    # Every opening trade references the run that produced it.
-    trades = paper_service.get_trades_by_event(db_session, event.id)
+    # Every opening trade references the rebalance run that produced it.
+    trades = paper_service.get_trades_by_event(db_session, rebalance_event.id)
     assert {t.ticker for t in trades} == {"AAPL", "MSFT"}
-    assert all(t.ai_portfolio_event_id == event.id for t in trades)
+    assert all(t.ai_portfolio_event_id == rebalance_event.id for t in trades)
 
 
 def test_run_build_event_persists_partial_research_on_failure(
     db_session: Session,
 ) -> None:
-    # The agent researches, then fails: the research captured before the failure
-    # must still be persisted on the (failed) event.
+    # The agent researches, then fails on the opening allocation: the research
+    # captured before the failure must still be persisted on the (failed) initial
+    # rebalance event.
     provider = _seed_universe(db_session, "AAPL", "MSFT")
     agent = FakeAIPortfolioAgent(
-        build_error=RuntimeError("agent boom"),
+        rebalance_error=RuntimeError("agent boom"),
         research_queries=["searched before crash"],
     )
     event = service.create_build_event(db_session, _params())
@@ -2562,9 +2719,11 @@ def test_run_build_event_persists_partial_research_on_failure(
     service.run_build_event(db_session, event.id, agent, StubBroker(), provider)
 
     refreshed = service.get_event(db_session, event.id)
-    assert refreshed.status == EventStatus.FAILED.value
-    assert refreshed.research is not None
-    assert [r["query"] for r in refreshed.research] == ["searched before crash"]
+    assert refreshed.status == EventStatus.SUCCEEDED.value
+    rebalance_event = _initial_rebalance_event(db_session, refreshed)
+    assert rebalance_event.status == EventStatus.FAILED.value
+    assert rebalance_event.research is not None
+    assert [r["query"] for r in rebalance_event.research] == ["searched before crash"]
 
 
 def test_run_rebalance_event_stamps_event_id_on_trades_and_closed_positions(
@@ -2619,26 +2778,27 @@ def test_skipped_rebalance_records_no_research(db_session: Session) -> None:
 def test_list_and_count_ai_runs_across_sessions(db_session: Session) -> None:
     provider = _seed_universe(db_session, "AAPL", "MSFT")
     broker = StubBroker()
-    session_id, _ = _seed_session(db_session, broker, provider)  # one build event
+    # _seed_session records a build event AND its initial rebalance event.
+    session_id, _ = _seed_session(db_session, broker, provider)
     rb_event = service.create_rebalance_event(db_session, session_id)
     service.run_rebalance_event(
         db_session, rb_event.id, _rebalance_to_aapl_msft(), broker, provider
     )
 
-    # Both the build and the rebalance are listed, newest first.
+    # The build, its initial rebalance, and the explicit rebalance are all listed.
     runs = service.list_ai_runs(db_session)
-    assert len(runs) == 2
+    assert len(runs) == 3
     assert runs[0].created_at >= runs[1].created_at
-    assert service.count_ai_runs(db_session) == 2
+    assert service.count_ai_runs(db_session) == 3
 
-    # Filter by event type.
+    # Filter by event type: one build, two rebalances (initial + explicit).
     builds = service.list_ai_runs(db_session, event_type=EventType.BUILD)
     assert [e.event_type for e in builds] == [EventType.BUILD.value]
-    assert service.count_ai_runs(db_session, event_type=EventType.REBALANCE) == 1
+    assert service.count_ai_runs(db_session, event_type=EventType.REBALANCE) == 2
 
-    # Filter by status.
+    # Filter by status: all three succeeded (market open, all orders filled).
     succeeded = service.count_ai_runs(db_session, status=EventStatus.SUCCEEDED)
-    assert succeeded == 2
+    assert succeeded == 3
 
 
 # --------------------------------------------------------------------------- #
@@ -2690,14 +2850,20 @@ def test_snapshot_all_sessions_targets_only_active_ai(db_session: Session) -> No
         db_session, stopped.id, SessionStatus.STOPPED
     )
 
+    # An earlier snapshot gives the best/worst line a prior price to compare the
+    # day's move against (the line is omitted on a session's very first report).
+    paper_service.record_value_snapshot(
+        db_session, session_id=ai_active.id, as_of=date(2026, 1, 2), broker=broker
+    )
+
     ids = service.snapshot_all_sessions(
         db_session, broker=broker, notifier=notifier, as_of=date(2026, 1, 5)
     )
 
     assert ids == [ai_active.id]
-    # Exactly one snapshot persisted, for the active AI session.
+    # Snapshots persisted only for the active AI session: the seeded prior plus today.
     snaps = paper_service.list_value_snapshots(db_session, session_id=ai_active.id)
-    assert len(snaps) == 1
+    assert len(snaps) == 2
     # One per-session report was sent: the portfolio name titles it and the body
     # carries the headline KPIs plus that session's best/worst holding.
     assert len(notifier.sent) == 1
@@ -2787,6 +2953,126 @@ def test_snapshot_all_sessions_weekday_snapshots_all_scopes(
         paper_service.list_value_snapshots(db_session, session_id=stocks_only.id)
     ) == 1
     assert len(notifier.sent) == 2
+
+
+def _snap(positions: list[dict[str, object]]) -> SimpleNamespace:
+    """A lightweight value-snapshot stand-in exposing only ``.positions``."""
+    return SimpleNamespace(positions=positions)
+
+
+def test_daily_change_holdings_uses_price_move_not_cost_basis() -> None:
+    # Two sessions hold MSFT at a different avg cost (different return_pct), but the
+    # same today/prior price. The daily change must be identical and driven only by
+    # price — not by cost basis.
+    prior = _snap([{"ticker": "MSFT", "price": 100.0}])
+    session_a = _snap([{"ticker": "MSFT", "price": 102.0, "return_pct": -0.0109}])
+    session_b = _snap([{"ticker": "MSFT", "price": 102.0, "return_pct": 0.0208}])
+
+    holdings_a = snapshots._daily_change_holdings(session_a, prior)
+    holdings_b = snapshots._daily_change_holdings(session_b, prior)
+
+    assert holdings_a == [("MSFT", pytest.approx(0.02))]
+    assert holdings_b == [("MSFT", pytest.approx(0.02))]
+    assert holdings_a == holdings_b
+
+
+def test_daily_change_holdings_no_prior_snapshot_is_empty() -> None:
+    today = _snap([{"ticker": "AAPL", "price": 110.0}])
+    assert snapshots._daily_change_holdings(today, None) == []
+
+
+def test_daily_change_holdings_excludes_assets_without_a_comparable_prior() -> None:
+    prior = _snap(
+        [
+            {"ticker": "AAPL", "price": 100.0},
+            {"ticker": "KO", "price": 0.0},  # non-positive prior price -> excluded
+        ]
+    )
+    today = _snap(
+        [
+            {"ticker": "AAPL", "price": 103.0},  # comparable
+            {"ticker": "NVDA", "price": 500.0},  # opened today, absent from prior
+            {"ticker": "KO", "price": 60.0},  # prior price not positive
+        ]
+    )
+
+    holdings = snapshots._daily_change_holdings(today, prior)
+
+    assert holdings == [("AAPL", pytest.approx(0.03))]
+
+
+def test_daily_change_holdings_all_excluded_is_empty() -> None:
+    prior = _snap([{"ticker": "AAPL", "price": 100.0}])
+    today = _snap([{"ticker": "NVDA", "price": 500.0}])  # none comparable
+    assert snapshots._daily_change_holdings(today, prior) == []
+
+
+def test_snapshot_report_omits_best_worst_on_first_report(
+    db_session: Session,
+) -> None:
+    broker = StubBroker()
+    notifier = RecordingNotifier()
+    _held_ai_session(db_session, "AI Growth", "AAPL")
+
+    # No prior snapshot exists: the session's first report carries no best/worst line.
+    service.snapshot_all_sessions(
+        db_session, broker=broker, notifier=notifier, as_of=date(2026, 1, 5)
+    )
+
+    message, _ = notifier.sent[0]
+    assert "Best:" not in message and "Worst:" not in message
+
+
+def test_snapshot_report_same_ticker_same_change_across_sessions(
+    db_session: Session,
+) -> None:
+    broker = StubBroker()
+    notifier = RecordingNotifier()
+    # Two sessions hold the same ticker bought at different prices (different cost
+    # basis), each with a prior snapshot to compare against.
+    sess_a = _held_ai_session(db_session, "AI One", "MSFT")
+    portfolio_b = portfolios_service.create_portfolio(
+        db_session, name="AI Two", stocks=["MSFT"]
+    )
+    sess_b = paper_service.create_session(
+        db_session,
+        portfolio_id=portfolio_b.id,
+        strategy_key="ai_buy_hold",
+        allocated_capital=100_000.0,
+        rebalance_prompt_version=1,
+        crypto_rebalance_prompt_version=1,
+        benchmark=Benchmark.SP500,
+    )
+    paper_service.apply_fill_to_ledger(
+        db_session,
+        session_id=sess_b.id,
+        ticker="MSFT",
+        side=OrderSide.BUY,
+        shares=5,
+        price=250.0,  # different cost basis than sess_a's 100.0
+    )
+    for sess in (sess_a, sess_b):
+        paper_service.record_value_snapshot(
+            db_session, session_id=sess.id, as_of=date(2026, 1, 2), broker=broker
+        )
+
+    service.snapshot_all_sessions(
+        db_session, broker=broker, notifier=notifier, as_of=date(2026, 1, 5)
+    )
+
+    # Both pushes report the same MSFT daily change (StubBroker prices by symbol, so
+    # the move is identical) — not each session's since-entry return.
+    by_title = {title: message for message, title in notifier.sent}
+
+    def _best_line(message: str) -> str:
+        return next(
+            ln for ln in message.splitlines() if ln.startswith("Best:")
+        )
+
+    line_a = _best_line(by_title["Cadence: AI One daily P&L"])
+    line_b = _best_line(by_title["Cadence: AI Two daily P&L"])
+    assert "MSFT" in line_a and "MSFT" in line_b
+    assert line_a == line_b
 
 
 # --------------------------------------------------------------------------- #
@@ -3194,21 +3480,23 @@ def test_run_build_event_gates_candidates_and_records_trend_context(
     )
     service.run_build_event(db_session, event.id, agent, StubBroker(), provider)
 
-    # Only the gate-passing AAPL is shown to the AI, and it carries indicators.
-    assert agent.build_calls
-    candidates = agent.build_calls[0]["candidates"]
+    # Only the gate-passing AAPL is shown to the AI, and it carries indicators. The
+    # gating happens on the opening allocation (the initial rebalance).
+    assert agent.rebalance_calls
+    candidates = agent.rebalance_calls[0]["candidates"]
     assert {c["ticker"] for c in candidates} == {"AAPL"}
     assert "indicators" in candidates[0]
 
     refreshed = service.get_event(db_session, event.id)
-    ctx = refreshed.trend_context
+    rebalance_event = _initial_rebalance_event(db_session, refreshed)
+    ctx = rebalance_event.trend_context
     assert ctx is not None
     dropped = {d["ticker"]: d["reason"] for d in ctx["dropped_candidates"]}
     assert set(dropped) == {"MSFT", "GOOG"}
     assert dropped["GOOG"] == "no snapshot"
     assert "regime" in dropped["MSFT"]
     assert {c["ticker"] for c in ctx["candidates"]} == {"AAPL"}
-    assert ctx["holdings"] == []  # builds record no holdings
+    assert ctx["holdings"] == []  # a fresh opening allocation holds nothing yet
 
 
 def test_run_build_event_pre_v3_records_no_trend_context(
@@ -3222,13 +3510,14 @@ def test_run_build_event_pre_v3_records_no_trend_context(
 
     service.run_build_event(db_session, event.id, agent, StubBroker(), provider)
 
-    assert agent.build_calls
-    candidates = agent.build_calls[0]["candidates"]
+    assert agent.rebalance_calls
+    candidates = agent.rebalance_calls[0]["candidates"]
     assert {c["ticker"] for c in candidates} == {"AAPL", "MSFT"}
     assert all("indicators" not in c for c in candidates)
 
     refreshed = service.get_event(db_session, event.id)
-    assert refreshed.trend_context is None
+    rebalance_event = _initial_rebalance_event(db_session, refreshed)
+    assert rebalance_event.trend_context is None
 
 
 def _seed_gated_session(
@@ -3361,13 +3650,14 @@ def test_run_build_event_opted_out_ignores_trend_gate(
     event = service.create_build_event(db_session, _params())
     service.run_build_event(db_session, event.id, agent, StubBroker(), provider)
 
-    assert agent.build_calls
-    candidates = agent.build_calls[0]["candidates"]
+    assert agent.rebalance_calls
+    candidates = agent.rebalance_calls[0]["candidates"]
     assert {c["ticker"] for c in candidates} == {"AAPL", "MSFT", "GOOG"}
     assert all("indicators" not in c for c in candidates)
 
     refreshed = service.get_event(db_session, event.id)
-    assert refreshed.trend_context is None
+    rebalance_event = _initial_rebalance_event(db_session, refreshed)
+    assert rebalance_event.trend_context is None
     # The opt-out is frozen on the session.
     session_row = paper_service.get_session(db_session, refreshed.session_id)
     assert session_row.use_technical_indicators is False
@@ -3443,6 +3733,242 @@ def test_run_build_event_persists_opt_in_flag(db_session: Session) -> None:
     assert session_row.use_technical_indicators is True
     read = PaperTradingSessionRead.model_validate(session_row)
     assert read.use_technical_indicators is True
+
+
+# --------------------------------------------------------------------------- #
+# Company-fundamentals opt-in: off by default; the per-ticker fundamentals block
+# attaches to candidates/holdings only for a session that opted in AND is frozen
+# on the fundamentals-aware (v4) rebalance prompt.
+# --------------------------------------------------------------------------- #
+
+
+def _seed_fundamentals_prompt(db_session: Session) -> None:
+    """Seed the fundamentals-aware (v4) rebalance prompt so builds freeze to it."""
+    db_session.add(
+        RebalancePrompt(
+            version=FUNDAMENTALS_PROMPT_VERSION,
+            instructions="v4 fundamentals instructions {max_new_assets}",
+            input_template=(
+                "v4 {risk_profile} {candidates_json} {holdings_json} "
+                "{account_summary_json}"
+            ),
+        )
+    )
+    db_session.flush()
+
+
+def _seed_fundamentals(
+    db_session: Session,
+    ticker: str,
+    *,
+    status: FundamentalsStatus = FundamentalsStatus.AVAILABLE,
+    figures: dict[str, object] | None = None,
+) -> None:
+    """Attach an AssetFundamentals row to an existing universe asset."""
+    asset = db_session.execute(
+        select(Asset).where(Asset.ticker == ticker)
+    ).scalar_one()
+    db_session.add(
+        AssetFundamentals(
+            asset_id=asset.id,
+            source="sec_edgar",
+            status=status.value,
+            cik="1",
+            document={"figures": figures or {}},
+        )
+    )
+    db_session.flush()
+
+
+def test_run_build_event_persists_fundamentals_opt_in(db_session: Session) -> None:
+    # The fundamentals opt-in is frozen on the session at build and surfaced on the
+    # read schema; a default build persists it as False.
+    from cadence.api.schemas import PaperTradingSessionRead
+
+    provider = _seed_universe(db_session, "AAPL", "MSFT")
+    agent = FakeAIPortfolioAgent(build_result=_build_result("AAPL", "MSFT"))
+    event = service.create_build_event(db_session, _params(use_fundamentals=True))
+    service.run_build_event(db_session, event.id, agent, StubBroker(), provider)
+
+    session_row = paper_service.get_session(
+        db_session, service.get_event(db_session, event.id).session_id
+    )
+    assert session_row.use_fundamentals is True
+    read = PaperTradingSessionRead.model_validate(session_row)
+    assert read.use_fundamentals is True
+
+
+def test_run_build_event_fundamentals_off_by_default(db_session: Session) -> None:
+    provider = _seed_universe(db_session, "AAPL", "MSFT")
+    agent = FakeAIPortfolioAgent(build_result=_build_result("AAPL", "MSFT"))
+    event = service.create_build_event(db_session, _params())
+    service.run_build_event(db_session, event.id, agent, StubBroker(), provider)
+
+    session_row = paper_service.get_session(
+        db_session, service.get_event(db_session, event.id).session_id
+    )
+    assert session_row.use_fundamentals is False
+
+
+def test_run_build_event_freezes_fundamentals_prompt_version(
+    db_session: Session,
+) -> None:
+    # With v4 active, a build freezes rebalance_prompt_version = 4 (task 6.2).
+    _seed_fundamentals_prompt(db_session)
+    provider = _seed_universe(db_session, "AAPL", "MSFT")
+    assert (
+        service.get_active_rebalance_prompt(db_session).version
+        == FUNDAMENTALS_PROMPT_VERSION
+    )
+    broker = StubBroker()
+    session_id, _ = _seed_session(db_session, broker, provider, use_fundamentals=True)
+    assert (
+        paper_service.get_session(db_session, session_id).rebalance_prompt_version
+        == FUNDAMENTALS_PROMPT_VERSION
+    )
+
+
+def _seed_fundamentals_session(
+    db_session: Session,
+    broker: StubBroker,
+    provider: FakeMarketDataProvider,
+    *,
+    use_fundamentals: bool,
+) -> object:
+    """Build a v4-frozen 3-holding session with per-asset fundamentals seeded."""
+    _seed_universe(db_session, "AAPL", "MSFT", "NVDA")
+    _seed_fundamentals_prompt(db_session)
+    _seed_fundamentals(
+        db_session,
+        "AAPL",
+        figures={"revenue": {"value": 100.0}, "net_income": {"value": 10.0}},
+    )
+    _seed_fundamentals(db_session, "MSFT", status=FundamentalsStatus.UNAVAILABLE)
+    # NVDA intentionally has no fundamentals record -> unavailable marker.
+    agent = FakeAIPortfolioAgent(build_result=_build_result("AAPL", "MSFT", "NVDA"))
+    build_event = service.create_build_event(
+        db_session,
+        _params(
+            allocated_capital=50_000.0,
+            daily_rebalancing=True,
+            use_fundamentals=use_fundamentals,
+        ),
+    )
+    service.run_build_event(db_session, build_event.id, agent, broker, provider)
+    return service.get_event(db_session, build_event.id).session_id
+
+
+def test_run_rebalance_event_attaches_fundamentals_when_opted_in(
+    db_session: Session,
+) -> None:
+    # An opted-in session frozen on v4 gets a per-ticker fundamentals block on both
+    # the candidates and the holdings; available -> figures, no/unusable -> marker.
+    provider = _provider()
+    broker = StubBroker()
+    session_id = _seed_fundamentals_session(
+        db_session, broker, provider, use_fundamentals=True
+    )
+    assert (
+        paper_service.get_session(db_session, session_id).rebalance_prompt_version
+        == FUNDAMENTALS_PROMPT_VERSION
+    )
+
+    rebalance = _noop_rebalance()
+    rb_event = service.create_rebalance_event(db_session, session_id)
+    service.run_rebalance_event(db_session, rb_event.id, rebalance, broker, provider)
+
+    assert rebalance.rebalance_calls
+    call = rebalance.rebalance_calls[0]
+    candidates = {c["ticker"]: c for c in call["candidates"]}
+    assert candidates["AAPL"]["fundamentals"]["status"] == "available"
+    assert candidates["AAPL"]["fundamentals"]["net_margin"] == 0.1
+    assert candidates["MSFT"]["fundamentals"] == {"status": "unavailable"}
+    assert candidates["NVDA"]["fundamentals"] == {"status": "unavailable"}
+    holdings = {h["ticker"]: h for h in call["holdings"]}
+    assert holdings["AAPL"]["fundamentals"]["status"] == "available"
+    assert holdings["NVDA"]["fundamentals"] == {"status": "unavailable"}
+
+
+def test_initial_rebalance_attaches_fundamentals_opening_allocation(
+    db_session: Session,
+) -> None:
+    # Task 3.2: a rebalance-only enhancement reaches the opening allocation. An
+    # opted-in, v4-frozen session attaches the per-ticker fundamentals block on the
+    # INITIAL rebalance (the build's opening allocation), not only later rebalances.
+    provider = _provider()
+    broker = StubBroker()
+    _seed_universe(db_session, "AAPL", "MSFT", "NVDA")
+    _seed_fundamentals_prompt(db_session)
+    _seed_fundamentals(
+        db_session,
+        "AAPL",
+        figures={"revenue": {"value": 100.0}, "net_income": {"value": 10.0}},
+    )
+    _seed_fundamentals(db_session, "MSFT", status=FundamentalsStatus.UNAVAILABLE)
+    # NVDA intentionally has no fundamentals record -> unavailable marker.
+    agent = FakeAIPortfolioAgent(build_result=_build_result("AAPL", "MSFT", "NVDA"))
+    event = service.create_build_event(
+        db_session,
+        _params(allocated_capital=50_000.0, use_fundamentals=True),
+    )
+
+    service.run_build_event(db_session, event.id, agent, broker, provider)
+
+    # The opening allocation is the first rebalance call; its candidates already
+    # carry the fundamentals block (available -> figures, missing -> marker).
+    assert agent.rebalance_calls
+    candidates = {c["ticker"]: c for c in agent.rebalance_calls[0]["candidates"]}
+    assert candidates["AAPL"]["fundamentals"]["status"] == "available"
+    assert candidates["AAPL"]["fundamentals"]["net_margin"] == 0.1
+    assert candidates["MSFT"]["fundamentals"] == {"status": "unavailable"}
+    assert candidates["NVDA"]["fundamentals"] == {"status": "unavailable"}
+
+
+def test_run_rebalance_event_no_fundamentals_when_opted_out_on_v4(
+    db_session: Session,
+) -> None:
+    # A session frozen on v4 that did NOT opt in receives no fundamentals block.
+    provider = _provider()
+    broker = StubBroker()
+    session_id = _seed_fundamentals_session(
+        db_session, broker, provider, use_fundamentals=False
+    )
+    assert (
+        paper_service.get_session(db_session, session_id).rebalance_prompt_version
+        == FUNDAMENTALS_PROMPT_VERSION
+    )
+
+    rebalance = _noop_rebalance()
+    rb_event = service.create_rebalance_event(db_session, session_id)
+    service.run_rebalance_event(db_session, rb_event.id, rebalance, broker, provider)
+
+    call = rebalance.rebalance_calls[0]
+    assert all("fundamentals" not in c for c in call["candidates"])
+    assert all("fundamentals" not in h for h in call["holdings"])
+
+
+def test_run_rebalance_event_no_fundamentals_on_pre_v4_prompt(
+    db_session: Session,
+) -> None:
+    # A session frozen on the conftest v1 prompt never attaches fundamentals, even
+    # with the opt-in set and fundamentals rows present.
+    provider = _seed_universe(db_session, "AAPL", "MSFT")
+    _seed_fundamentals(
+        db_session,
+        "AAPL",
+        figures={"revenue": {"value": 100.0}, "net_income": {"value": 10.0}},
+    )
+    broker = StubBroker()
+    session_id, _ = _seed_session(db_session, broker, provider, use_fundamentals=True)
+    assert paper_service.get_session(db_session, session_id).rebalance_prompt_version == 1
+
+    rebalance = _noop_rebalance()
+    rb_event = service.create_rebalance_event(db_session, session_id)
+    service.run_rebalance_event(db_session, rb_event.id, rebalance, broker, provider)
+
+    call = rebalance.rebalance_calls[0]
+    assert all("fundamentals" not in c for c in call["candidates"])
+    assert all("fundamentals" not in h for h in call["holdings"])
 
 
 # --------------------------------------------------------------------------- #

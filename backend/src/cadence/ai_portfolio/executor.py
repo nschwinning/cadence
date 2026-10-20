@@ -370,6 +370,13 @@ class AIPortfolioExecutor:
     ) -> list[TradeResult]:
         """Open each stock long, sizing from its normalized allocation and quote.
 
+        DEAD CODE (unreferenced): the opening allocation no longer runs through a
+        dedicated build-executor path. A build now creates a session shell and
+        triggers an **initial rebalance** (see ``flows/build.py``), so every opening
+        allocation is sized by :meth:`execute_rebalance` against the session's live
+        value. This method (and its sole helper :meth:`_open_long`) are retained for
+        a follow-up removal; nothing in ``src/cadence`` calls them.
+
         ``asset_classes`` maps a ticker to its :class:`AssetClass`; tickers absent
         from the map default to :attr:`AssetClass.EQUITY`. ``fractionable`` maps a
         ticker to whether the brokerage lists it as fractionable; a ticker mapping to

@@ -362,6 +362,9 @@ class PaperTradingSessionRead(BaseModel):
     # The frozen learning window (number of recent days) shown to the rebalance
     # agent; null when learning feedback is disabled.
     learning_feedback_window: int | None
+    # Whether the session opted into the company-fundamentals strategy (frozen at
+    # build time). False for sessions built before this option existed.
+    use_fundamentals: bool
 
     @model_validator(mode="after")
     def _populate_asset_types(self) -> PaperTradingSessionRead:
@@ -964,6 +967,13 @@ class AIPortfolioBuildRequest(BaseModel):
         description="Number of recent daily-run snapshots the rebalance agent is "
         "shown. Applies only when learning_feedback_enabled is true; defaults to the "
         "configured default window when enabled without an explicit value.",
+    )
+    use_fundamentals: bool = Field(
+        default=False,
+        description="Opt this portfolio into the company-fundamentals strategy "
+        "(frozen at build time). When enabled, each rebalance attaches a per-ticker "
+        "company-fundamentals block to the agent's candidates and holdings. Defaults "
+        "to off (opt-in).",
     )
 
     @field_validator("asset_types")

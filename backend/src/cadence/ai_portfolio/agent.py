@@ -138,6 +138,10 @@ def _guardrails_block(guardrails: GuardrailInstruction) -> str:
 
 
 def _builder_instructions() -> str:
+    # DEAD CODE (unreferenced): the build prompt for the builder agent. A build no
+    # longer runs a builder agent (the opening allocation is an initial rebalance,
+    # see ``flows/build.py``), so this prompt is retained for a follow-up removal
+    # only; nothing in ``src/cadence`` builds a portfolio through it.
     return f"""
 You are a seasoned investment portfolio manager building a long-term buy-and-hold portfolio.
 Select stocks from the provided candidate universe for a diversified, LONG-ONLY portfolio.
@@ -330,7 +334,13 @@ def build_ai_portfolio(
     risk_profile: str = "balanced",
     guardrails: GuardrailInstruction | None = None,
 ) -> AIPortfolioBuildResult:
-    """Run the builder agent and return its validated :class:`AIPortfolioBuildResult`."""
+    """Run the builder agent and return its validated :class:`AIPortfolioBuildResult`.
+
+    DEAD CODE (unreferenced): a build no longer calls a builder agent — the opening
+    allocation is produced by an initial rebalance (see ``flows/build.py``), so
+    :meth:`OpenAIAIPortfolioAgent.build` and this helper are no longer invoked.
+    Retained for a follow-up removal; nothing in ``src/cadence`` calls them.
+    """
     return asyncio.run(
         _run_build(
             candidates=candidates, risk_profile=risk_profile, guardrails=guardrails
@@ -463,6 +473,9 @@ class AIPortfolioAgent(Protocol):
     ) -> AIPortfolioBuildResult:
         """Return a structured portfolio the agent built from the candidates.
 
+        DEAD CODE (unreferenced): the build flow no longer calls ``build`` — the
+        opening allocation runs as an initial rebalance (see ``flows/build.py``), so
+        this method is retained on the protocol for a follow-up removal only.
         ``guardrails`` (when set) tells the AI the advisory caps to plan within.
         """
         ...
@@ -498,6 +511,8 @@ class OpenAIAIPortfolioAgent:
         risk_profile: str,
         guardrails: GuardrailInstruction | None = None,
     ) -> AIPortfolioBuildResult:
+        # DEAD CODE (unreferenced): see the protocol ``build`` docstring — the build
+        # flow now triggers an initial rebalance instead of calling ``build``.
         return build_ai_portfolio(
             candidates=candidates, risk_profile=risk_profile, guardrails=guardrails
         )

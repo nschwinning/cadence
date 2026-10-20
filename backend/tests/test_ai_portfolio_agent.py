@@ -163,19 +163,19 @@ def test_build_portfolio_input_omits_guardrails_when_absent() -> None:
     assert "Risk guardrails" not in prompt
 
 
-def _load_seed_migration() -> ModuleType:
-    """Load the seed migration module by path to read its embedded seed text."""
-    path = (
-        Path(__file__).resolve().parents[1]
-        / "migrations"
-        / "versions"
-        / "a1d4e7c2b9f8_add_rebalance_prompt_table.py"
-    )
-    spec = importlib.util.spec_from_file_location("_rebalance_seed_migration", path)
+def _load_migration(filename: str) -> ModuleType:
+    """Load a migration module by filename to read its embedded seed text."""
+    path = Path(__file__).resolve().parents[1] / "migrations" / "versions" / filename
+    spec = importlib.util.spec_from_file_location(filename.rsplit(".", 1)[0], path)
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+def _load_seed_migration() -> ModuleType:
+    """Load the v1 seed migration module (embeds the original hardcoded prompt)."""
+    return _load_migration("a1d4e7c2b9f8_add_rebalance_prompt_table.py")
 
 
 def test_render_fills_placeholders_and_is_brace_safe() -> None:
@@ -397,6 +397,59 @@ Candidate universe (JSON):
 {candidates_json}
 """
     assert rebalance_input == expected_input
+
+
+# The company-fundamentals block the v4 seed inserts verbatim before "Requirements:"
+# (pinned here so a wording change to the seed must update this test deliberately).
+_V4_FUNDAMENTALS_BLOCK = """Company fundamentals (optional context):
+- When present, each candidate and holding ALSO carries a ``fundamentals`` object
+  with the company's latest-annual financials. It has a ``status`` field; when
+  ``status`` is ``available`` it may include ``gross_margin``, ``operating_margin``,
+  and ``net_margin`` (profitability ratios, e.g. 0.42 = 42%), ``eps`` (diluted
+  earnings per share, falling back to basic), and the absolute ``revenue``,
+  ``net_income``, and ``operating_cash_flow`` (scale signals).
+- This object is OPTIONAL. It is ABSENT entirely for sessions that did not opt into
+  fundamentals, and marked ``{"status": "unavailable"}`` for any asset without
+  usable data (for example a crypto asset or a company whose filings could not be
+  read). Tolerate both cases: never assume a figure that is not shown.
+- When a ``fundamentals`` object is present and available, weigh it alongside the
+  technical picture: favour durable profitability and healthy cash generation, and
+  be more cautious with deteriorating or loss-making fundamentals. Do NOT penalise
+  an asset merely for lacking fundamentals, and never let fundamentals override a
+  clear trend breakdown on a holding."""
+
+
+def test_v4_seed_is_v3_verbatim_plus_fundamentals_block() -> None:
+    """The v4 seed is the v3 prompt with only the fundamentals block added."""
+    v3 = _load_migration("a7b8c9d0e1f2_seed_rebalance_prompt_v3.py")
+    v4 = _load_migration("e8f3a1c5d2b4_seed_rebalance_prompt_v4.py")
+
+    # The input template is the v3 template, byte-for-byte.
+    assert v4._V4_INPUT_TEMPLATE == v3._V3_INPUT_TEMPLATE
+
+    # The instructions are v3 verbatim with the fundamentals block inserted before
+    # the Requirements section — nothing else changes.
+    expected_instructions = v3._V3_INSTRUCTIONS.replace(
+        "\n\nRequirements:\n",
+        "\n\n" + _V4_FUNDAMENTALS_BLOCK + "\n\nRequirements:\n",
+        1,
+    )
+    assert v4._V4_INSTRUCTIONS == expected_instructions
+
+
+def test_v4_seed_renders_brace_safe() -> None:
+    """``_render`` fills the cost placeholders and leaves the literal unavailable
+    marker's braces untouched (brace-safety regression guard)."""
+    v4 = _load_migration("e8f3a1c5d2b4_seed_rebalance_prompt_v4.py")
+    rendered = agent_module._render(
+        v4._V4_INSTRUCTIONS,
+        max_new_assets=str(settings.AI_PORTFOLIO_MAX_NEW_ASSETS),
+        max_web_searches=str(settings.AI_PORTFOLIO_MAX_WEB_SEARCHES),
+    )
+    assert '{"status": "unavailable"}' in rendered
+    assert "{max_new_assets}" not in rendered
+    assert "{max_web_searches}" not in rendered
+    assert f"at most {settings.AI_PORTFOLIO_MAX_NEW_ASSETS} assets" in rendered
 
 
 # --------------------------------------------------------------------------- #

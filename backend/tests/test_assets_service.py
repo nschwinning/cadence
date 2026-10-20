@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import date
 
 import pytest
+from sqlalchemy import event
 from sqlalchemy.orm import Session
 from tests.fakes import FakeBroker, FakeMarketDataProvider
 
@@ -18,8 +19,9 @@ from cadence.assets.errors import (
     UnsupportedCategoryError,
     UntradeableTickerError,
 )
+from cadence.assets.fundamentals import FundamentalsStatus
 from cadence.assets.market_data import AssetDetailData, AssetInfo, HistoryBar
-from cadence.assets.models import Asset, AssetDailySnapshot
+from cadence.assets.models import Asset, AssetDailySnapshot, AssetFundamentals
 
 
 def _detail_provider(
@@ -98,6 +100,44 @@ def test_add_asset_success_persists_and_normalizes(db_session: Session) -> None:
     }
 
     assert [a.ticker for a in service.list_assets(db_session)] == ["TSCO"]
+
+
+def test_list_assets_eager_loads_fundamentals(db_session: Session) -> None:
+    # The universe query eager-loads the 1:1 fundamentals so trading/analytics
+    # callers can read ``asset.fundamentals`` across the result without an N+1.
+    for ticker in ("AAA", "BBB"):
+        asset = service.add_asset(db_session, ticker, _eligible_provider(), _broker())
+        db_session.add(
+            AssetFundamentals(
+                asset_id=asset.id,
+                source="sec_edgar",
+                status=FundamentalsStatus.AVAILABLE.value,
+                cik="1",
+                document={"figures": {}},
+            )
+        )
+    db_session.flush()
+    db_session.expire_all()  # force list_assets to reload from the DB
+
+    assets = service.list_assets(db_session)
+    assert len(assets) == 2
+
+    # After the (eager) load, touching .fundamentals on every asset must issue no
+    # further SQL — a lazy load would emit one query per asset here.
+    queries: list[str] = []
+
+    def _record(conn, cursor, statement, params, context, executemany):
+        queries.append(statement)
+
+    engine = db_session.get_bind()
+    event.listen(engine, "after_cursor_execute", _record)
+    try:
+        for asset in assets:
+            assert asset.fundamentals is not None
+    finally:
+        event.remove(engine, "after_cursor_execute", _record)
+
+    assert queries == []
 
 
 def _price_history_count(db_session: Session, asset_id: int) -> int:

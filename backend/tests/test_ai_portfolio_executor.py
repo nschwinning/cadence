@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from cadence.ai_portfolio.agent import AIPortfolioStock, AITargetAllocation
+from cadence.ai_portfolio.agent import AITargetAllocation
 from cadence.ai_portfolio.executor import (
     AIPortfolioExecutor,
     GuardrailCaps,
@@ -40,16 +40,6 @@ def _no_cash_buffer(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(settings, "CRYPTO_FEE_PCT", 0.0)
 
 
-def _stock(ticker: str, alloc: float) -> AIPortfolioStock:
-    return AIPortfolioStock(
-        ticker=ticker,
-        company_name=ticker,
-        allocation_pct=alloc,
-        investment_thesis="thesis",
-        confidence=0.7,
-    )
-
-
 def _target(ticker: str, alloc: float) -> AITargetAllocation:
     return AITargetAllocation(
         ticker=ticker,
@@ -58,72 +48,6 @@ def _target(ticker: str, alloc: float) -> AITargetAllocation:
         investment_thesis="thesis",
         confidence=0.7,
     )
-
-
-class _FailingBroker(StubBroker):
-    """StubBroker that raises on buying a specific ticker (to test isolation)."""
-
-    def __init__(self, fail_ticker: str) -> None:
-        super().__init__()
-        self._fail_ticker = fail_ticker
-
-    def buy(
-        self,
-        symbol: str,
-        quantity: float,
-        order_type: OrderType = OrderType.MARKET,
-        limit_price: float | None = None,
-        time_in_force: TimeInForce = TimeInForce.DAY,
-        asset_class: AssetClass = AssetClass.EQUITY,
-    ):  # type: ignore[override]
-        if symbol == self._fail_ticker:
-            raise OrderError(f"forced failure for {symbol}")
-        return super().buy(
-            symbol, quantity, order_type, limit_price, time_in_force, asset_class
-        )
-
-
-# --------------------------------------------------------------------------- #
-# Build sizing (long-only)
-# --------------------------------------------------------------------------- #
-
-
-def test_execute_build_sizes_positions_from_capital() -> None:
-    broker = StubBroker()
-    executor = AIPortfolioExecutor(broker, allocated_capital=100_000)
-
-    results = executor.execute_build([_stock("AAPL", 0.5), _stock("MSFT", 0.5)])
-
-    assert len(results) == 2
-    assert all(r.executed for r in results)
-    for r in results:
-        assert r.side == "long"
-        assert r.shares >= 1
-        assert r.order_id is not None
-
-
-def test_execute_build_skips_sub_one_share_positions() -> None:
-    broker = StubBroker()
-    # Tiny capital: each 0.5 allocation buys < 1 share at any stub price.
-    executor = AIPortfolioExecutor(broker, allocated_capital=10)
-
-    results = executor.execute_build([_stock("AAPL", 0.5), _stock("MSFT", 0.5)])
-
-    assert all(not r.executed for r in results)
-    assert all(r.shares == 0 for r in results)
-
-
-def test_execute_build_isolates_per_ticker_failures() -> None:
-    broker = _FailingBroker(fail_ticker="AAPL")
-    executor = AIPortfolioExecutor(broker, allocated_capital=100_000)
-
-    results = executor.execute_build([_stock("AAPL", 0.5), _stock("MSFT", 0.5)])
-
-    by_ticker = {r.ticker: r for r in results}
-    assert by_ticker["AAPL"].executed is False
-    assert "failed" in by_ticker["AAPL"].reason.lower()
-    # The other ticker still executes.
-    assert by_ticker["MSFT"].executed is True
 
 
 # --------------------------------------------------------------------------- #
@@ -247,35 +171,6 @@ def test_execute_rebalance_zero_total_weight_exits_all() -> None:
 _CRYPTO = {"BTC-USD": AssetClass.CRYPTO}
 
 
-def test_execute_build_crypto_places_fractional_units() -> None:
-    broker = StubBroker()
-    price = broker.get_quote("BTC-USD").last
-    # A single crypto pick normalizes to weight 1.0; allocate 0.25 units' worth.
-    executor = AIPortfolioExecutor(broker, allocated_capital=price * 0.25)
-
-    results = executor.execute_build(
-        [_stock("BTC-USD", 1.0)], asset_classes=_CRYPTO
-    )
-
-    assert len(results) == 1
-    assert results[0].executed is True
-    assert 0 < results[0].shares < 1  # fractional unit placed, not skipped
-
-
-def test_execute_build_crypto_skips_below_min_notional() -> None:
-    broker = StubBroker()
-    # $0.50 allocation is below the ~$1 crypto minimum notional -> skipped.
-    executor = AIPortfolioExecutor(broker, allocated_capital=0.5)
-
-    results = executor.execute_build(
-        [_stock("BTC-USD", 1.0)], asset_classes=_CRYPTO
-    )
-
-    assert results[0].executed is False
-    assert results[0].shares == 0
-    assert "notional" in results[0].reason.lower()
-
-
 def test_execute_rebalance_crypto_buys_fractional_delta() -> None:
     broker = StubBroker()
     broker.buy("BTC-USD", 1.0)
@@ -318,44 +213,6 @@ def test_execute_rebalance_crypto_exit_sells_full_float_qty() -> None:
 # --------------------------------------------------------------------------- #
 
 _FRAC = {"AAPL": True}
-
-
-def test_execute_build_fractionable_equity_sizes_to_target_weight() -> None:
-    broker = StubBroker()
-    price = broker.get_quote("AAPL").last
-    # 1.5 shares' worth of capital does not divide evenly into whole shares.
-    executor = AIPortfolioExecutor(broker, allocated_capital=price * 1.5)
-
-    results = executor.execute_build([_stock("AAPL", 1.0)], fractionable=_FRAC)
-
-    assert len(results) == 1
-    assert results[0].executed is True
-    assert results[0].shares == pytest.approx(1.5)
-
-
-def test_execute_build_non_fractionable_equity_truncates_to_whole_shares() -> None:
-    broker = StubBroker()
-    price = broker.get_quote("AAPL").last
-    executor = AIPortfolioExecutor(broker, allocated_capital=price * 1.5)
-
-    # Flag absent (unknown) -> whole-share truncation, as before this capability.
-    results = executor.execute_build([_stock("AAPL", 1.0)])
-
-    assert results[0].executed is True
-    assert results[0].shares == pytest.approx(1.0)
-
-
-def test_execute_build_fractionable_equity_skips_below_min_notional() -> None:
-    broker = StubBroker()
-    # $0.50 allocation is below the ~$1 equity minimum notional -> skipped,
-    # rather than being skipped for being under one share.
-    executor = AIPortfolioExecutor(broker, allocated_capital=0.5)
-
-    results = executor.execute_build([_stock("AAPL", 1.0)], fractionable=_FRAC)
-
-    assert results[0].executed is False
-    assert results[0].shares == 0
-    assert "notional" in results[0].reason.lower()
 
 
 def test_execute_rebalance_fractionable_equity_buys_fractional_delta() -> None:
@@ -651,25 +508,6 @@ def test_enforce_guardrails_empty_when_no_positive_weights() -> None:
                               _no_class_caps(0.5)) == {"A": 0.0}
 
 
-def test_execute_build_with_caps_bounds_per_asset_notional() -> None:
-    # AAA wants 90%; a 40% per-asset cap bounds its notional to 40% of capital.
-    broker = StubBroker()
-    price = broker.get_quote("AAA", AssetClass.EQUITY).last
-    ex = AIPortfolioExecutor(broker, allocated_capital=10_000)
-    results = ex.execute_build(
-        [_stock("AAA", 0.9), _stock("BBB", 0.05), _stock("CCC", 0.05)],
-        asset_classes={
-            "AAA": AssetClass.EQUITY,
-            "BBB": AssetClass.EQUITY,
-            "CCC": AssetClass.EQUITY,
-        },
-        caps=_no_class_caps(0.4),
-    )
-    by = {r.ticker: r for r in results}
-    assert by["AAA"].shares == pytest.approx(int(0.4 * 10_000 / price))
-    assert by["AAA"].executed
-
-
 def test_execute_rebalance_with_caps_bounds_target_shares() -> None:
     broker = StubBroker()
     price = broker.get_quote("AAA", AssetClass.EQUITY).last
@@ -682,19 +520,6 @@ def test_execute_rebalance_with_caps_bounds_target_shares() -> None:
     )
     by = {r.ticker: r for r in results}
     assert by["AAA"].shares == pytest.approx(int(0.4 * 10_000 / price))
-
-
-def test_execute_build_without_caps_unchanged() -> None:
-    # No caps: AAA keeps its full 90% weight (36 shares of ~$245 from $10k).
-    broker = StubBroker()
-    price = broker.get_quote("AAA", AssetClass.EQUITY).last
-    ex = AIPortfolioExecutor(broker, allocated_capital=10_000)
-    results = ex.execute_build(
-        [_stock("AAA", 0.9), _stock("BBB", 0.1)],
-        asset_classes={"AAA": AssetClass.EQUITY, "BBB": AssetClass.EQUITY},
-    )
-    by = {r.ticker: r for r in results}
-    assert by["AAA"].shares == pytest.approx(int(0.9 * 10_000 / price))
 
 
 # --------------------------------------------------------------------------- #
@@ -1114,26 +939,6 @@ def test_reserve_cash_buffer_never_negative(monkeypatch) -> None:
     assert executor._reserve_cash_buffer(10.0, True) == pytest.approx(0.0)
 
 
-def test_execute_build_reserves_buffer(monkeypatch) -> None:
-    _enable_buffer(monkeypatch, pct=0.015, crypto_pct=0.0025)
-    broker = StubBroker()
-    executor = AIPortfolioExecutor(broker, allocated_capital=100_000.0)
-    stocks = [_stock("AAPL", 0.5), _stock("MSFT", 0.5)]
-
-    results = executor.execute_build(stocks)
-
-    # Equity-only build: pct (1_500) is the whole reserve -> net base 98_500.
-    # Whole-share flooring only reduces deployment further, so the build never
-    # spends more than the net base and leaves at least the reserve as cash.
-    net_base = executor._reserve_cash_buffer(100_000.0, False)
-    assert net_base == pytest.approx(98_500.0)
-    assert _deployed(results) <= net_base + 1e-6
-    # And it sized against the net base, not the full capital: deployment is within
-    # one whole share (per ticker) of the net base.
-    max_price = max(broker.get_quote(s.ticker).last for s in stocks)
-    assert _deployed(results) > net_base - 2 * max_price
-
-
 def test_execute_rebalance_reserves_buffer_from_flat(monkeypatch) -> None:
     _enable_buffer(monkeypatch, pct=0.015, crypto_pct=0.0025)
     broker = StubBroker()
@@ -1154,24 +959,6 @@ def test_execute_rebalance_reserves_buffer_from_flat(monkeypatch) -> None:
     # cash reserve instead of overdrawing into negative unallocated cash.
     net_base = executor._reserve_cash_buffer(grown_value, False)
     assert net_base == pytest.approx(118_200.0)
-    assert _deployed(results) <= net_base + 1e-6
-
-
-def test_execute_build_reserves_crypto_fee_when_pct_zeroed(monkeypatch) -> None:
-    # With the percentage buffer off, only a crypto-present run reserves anything:
-    # the executor detects crypto among the built tickers and reserves the fee term.
-    _enable_buffer(monkeypatch, pct=0.0, crypto_pct=0.0025)
-    broker = StubBroker()
-    executor = AIPortfolioExecutor(broker, allocated_capital=100_000.0)
-    stocks = [_stock("AAPL", 0.5), _stock("BTC-USD", 0.5)]
-
-    results = executor.execute_build(
-        stocks, asset_classes=_MIXED
-    )
-
-    # has_crypto=True -> net base = 100_000 - 0.25% = 99_750; deployment stays within.
-    net_base = executor._reserve_cash_buffer(100_000.0, True)
-    assert net_base == pytest.approx(99_750.0)
     assert _deployed(results) <= net_base + 1e-6
 
 

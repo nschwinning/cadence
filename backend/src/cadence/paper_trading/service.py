@@ -95,6 +95,7 @@ def create_session(
     max_invested_pct: float | None = None,
     learning_feedback_enabled: bool = False,
     learning_feedback_window: int | None = None,
+    use_fundamentals: bool = False,
 ) -> PaperTradingSession:
     """Create a paper-trading session for a ``(portfolio, strategy)`` pair.
 
@@ -116,7 +117,10 @@ def create_session(
     than re-deciding. ``learning_feedback_enabled`` and ``learning_feedback_window``
     freeze the learning-feedback opt-in and its window at build time (default off /
     no window); when enabled, the rebalance agent is shown an advisory summary of the
-    session's own recent daily-run outcomes.
+    session's own recent daily-run outcomes. ``use_fundamentals`` freezes the
+    company-fundamentals opt-in at build time (default off); when enabled and the
+    session is frozen on a fundamentals-aware rebalance prompt, each rebalance attaches
+    a per-ticker company-fundamentals block to the agent's candidates and holdings.
 
     Raises:
         DuplicateSessionError: if a session already exists for the same
@@ -141,6 +145,7 @@ def create_session(
         max_invested_pct=max_invested_pct,
         learning_feedback_enabled=learning_feedback_enabled,
         learning_feedback_window=learning_feedback_window,
+        use_fundamentals=use_fundamentals,
     )
     session.add(row)
     try:
@@ -1425,6 +1430,20 @@ def get_value_snapshot(
 ) -> SessionValueSnapshot | None:
     """Return the session's value snapshot for ``snapshot_date`` or ``None``."""
     return _get_snapshot(session, session_id, snapshot_date)
+
+
+def get_previous_value_snapshot(
+    session: Session, *, session_id: uuid.UUID, before: date
+) -> SessionValueSnapshot | None:
+    """Return the session's most recent value snapshot strictly before ``before``.
+
+    "Previous available snapshot" — not literally yesterday — since the equity
+    market closes on weekends/holidays and a stocks-only session is not
+    snapshotted on weekends. Returns ``None`` when the session has no earlier
+    snapshot. Thin read-only wrapper over the same lookup that backs the daily
+    P&L baseline.
+    """
+    return _prior_snapshot(session, session_id, before)
 
 
 def get_daily_run_snapshot(

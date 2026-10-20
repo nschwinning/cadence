@@ -919,6 +919,35 @@ def test_list_value_snapshots_ascending(db_session: Session) -> None:
     assert dates == [date(2026, 1, 4), date(2026, 1, 5), date(2026, 1, 6)]
 
 
+def test_get_previous_value_snapshot(db_session: Session) -> None:
+    sess = _ai_session(db_session)
+    broker = _QuoteBroker({})
+    # Snapshots on non-consecutive days (a gap, as on weekends/holidays).
+    for day in (date(2026, 1, 2), date(2026, 1, 5)):
+        service.record_value_snapshot(
+            db_session, session_id=sess.id, as_of=day, broker=broker
+        )
+
+    # Most recent snapshot strictly before the given date (skips the gap).
+    prev = service.get_previous_value_snapshot(
+        db_session, session_id=sess.id, before=date(2026, 1, 8)
+    )
+    assert prev is not None and prev.snapshot_date == date(2026, 1, 5)
+
+    prev_mid = service.get_previous_value_snapshot(
+        db_session, session_id=sess.id, before=date(2026, 1, 5)
+    )
+    assert prev_mid is not None and prev_mid.snapshot_date == date(2026, 1, 2)
+
+    # No snapshot earlier than the first -> None.
+    assert (
+        service.get_previous_value_snapshot(
+            db_session, session_id=sess.id, before=date(2026, 1, 2)
+        )
+        is None
+    )
+
+
 def test_sessions_value_comparison_shapes_series(db_session: Session) -> None:
     broker = _QuoteBroker({})
 

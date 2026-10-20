@@ -8,7 +8,11 @@ from datetime import date, timedelta
 from typing import Any
 
 from cadence.agents.tools import note_web_search
-from cadence.ai_portfolio.agent import AIPortfolioBuildResult, AIRebalanceResult
+from cadence.ai_portfolio.agent import (
+    AIPortfolioBuildResult,
+    AIRebalanceResult,
+    AITargetAllocation,
+)
 from cadence.assets.fundamentals import (
     SOURCE_SEC_EDGAR,
     Fundamentals,
@@ -384,10 +388,39 @@ class FakeAIPortfolioAgent:
         self._emit_research()
         if self._rebalance_error is not None:
             raise self._rebalance_error
+        # The opening allocation now runs as an initial rebalance inside the build
+        # flow, so the FIRST rebalance call represents that opening allocation. When
+        # a ``build_result`` is configured, derive the opening targets from the build
+        # picks so a build-then-rebalance test seeds the build's holdings on the
+        # opening allocation and applies the explicit ``rebalance_result`` on the
+        # next call — mirroring the old "build allocates, rebalance re-targets" flow.
+        is_opening_allocation = len(self.rebalance_calls) == 1
+        if is_opening_allocation and self._build_result is not None:
+            return self._opening_allocation_from_build(self._build_result)
         assert (
             self._rebalance_result is not None
         ), "FakeAIPortfolioAgent has no rebalance_result"
         return self._rebalance_result
+
+    @staticmethod
+    def _opening_allocation_from_build(
+        build: AIPortfolioBuildResult,
+    ) -> AIRebalanceResult:
+        """Convert a build result's picks into the opening-allocation targets."""
+        return AIRebalanceResult(
+            evaluation_summary=build.overall_thesis,
+            target_allocations=[
+                AITargetAllocation(
+                    ticker=stock.ticker,
+                    company_name=stock.company_name,
+                    allocation_pct=stock.allocation_pct,
+                    investment_thesis=stock.investment_thesis,
+                    confidence=stock.confidence,
+                )
+                for stock in build.stocks
+            ],
+            portfolio_health="healthy",
+        )
 
 
 class FakeBroker(StubBroker):

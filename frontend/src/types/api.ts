@@ -426,6 +426,13 @@ export interface PaperTradingSession {
    * rebalance agent), or `null` when learning feedback is disabled.
    */
   learning_feedback_window: number | null;
+  /**
+   * Whether this session opted into the company-fundamentals strategy (frozen at
+   * build time): each rebalance attaches a per-ticker company-fundamentals block to
+   * the agent's candidates and holdings. False for sessions built before this
+   * option existed.
+   */
+  use_fundamentals: boolean;
 }
 
 /** One entry in the fixed benchmark catalog. Mirrors `BenchmarkCatalogEntry`. */
@@ -699,6 +706,12 @@ export interface AIPortfolioBuildRequest {
    * Defaults to off (opt-in).
    */
   use_technical_indicators?: boolean;
+  /**
+   * Opt this portfolio into the company-fundamentals strategy (frozen at build
+   * time). When enabled, each rebalance attaches a per-ticker company-fundamentals
+   * block to the agent's candidates and holdings. Defaults to off (opt-in).
+   */
+  use_fundamentals?: boolean;
   /**
    * Opt this portfolio into a hard stop-loss (frozen at build time). When
    * enabled, each open position is sold in whole when its market price falls to

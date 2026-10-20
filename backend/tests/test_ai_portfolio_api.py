@@ -605,37 +605,48 @@ def test_list_runs_and_detail(client: TestClient, db_session: Session) -> None:
     _wire(db_session, executor, agent=agent)
     _build_session(client, executor)
 
-    # The runs list returns the build event with its research count.
+    # A build now records two runs: the build shell and the initial rebalance that
+    # places the opening allocation (which carries the research and the trades).
     listing = client.get("/api/v1/ai-portfolio/runs")
     assert listing.status_code == 200
     body = listing.json()
-    assert body["total"] == 1
-    run = body["items"][0]
-    assert run["event_type"] == "build"
-    assert run["research"] == [
+    assert body["total"] == 2
+    by_type = {item["event_type"]: item for item in body["items"]}
+    assert set(by_type) == {"build", "rebalance"}
+
+    # The opening allocation's research transcript is on the initial rebalance run.
+    rebalance_run = by_type["rebalance"]
+    assert rebalance_run["research"] == [
         {
             "query": "AAPL earnings",
             "results": {"organic_results": [{"title": "result for AAPL earnings"}]},
             "error": None,
         }
     ]
+    # The build shell itself ran no research of its own.
+    assert not by_type["build"]["research"]
 
-    # The detail endpoint returns the run with the trades it opened.
-    detail = client.get(f"/api/v1/ai-portfolio/runs/{run['id']}")
+    # The detail endpoint returns the rebalance run with the trades it opened.
+    detail = client.get(f"/api/v1/ai-portfolio/runs/{rebalance_run['id']}")
     assert detail.status_code == 200
     detail_body = detail.json()
-    assert detail_body["event"]["id"] == run["id"]
+    assert detail_body["event"]["id"] == rebalance_run["id"]
     opened = {t["ticker"] for t in detail_body["trades"]}
     assert opened == {"AAPL", "MSFT"}
-    assert all(t["ai_portfolio_event_id"] == run["id"] for t in detail_body["trades"])
+    assert all(
+        t["ai_portfolio_event_id"] == rebalance_run["id"]
+        for t in detail_body["trades"]
+    )
     assert detail_body["closed_positions"] == []
     # The run detail surfaces the prompt version frozen on its session.
     assert detail_body["rebalance_prompt_version"] == 1
 
-    # Filtering by a non-matching type yields an empty page.
-    rebalances = client.get("/api/v1/ai-portfolio/runs", params={"event_type": "rebalance"})
+    # Filtering by rebalance now yields exactly the opening-allocation run.
+    rebalances = client.get(
+        "/api/v1/ai-portfolio/runs", params={"event_type": "rebalance"}
+    )
     assert rebalances.status_code == 200
-    assert rebalances.json()["total"] == 0
+    assert rebalances.json()["total"] == 1
 
 
 def test_run_detail_unknown_event_404(client: TestClient, db_session: Session) -> None:

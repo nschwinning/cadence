@@ -100,6 +100,7 @@ describe('BuildAIPortfolioCard', () => {
       daily_rebalancing: false,
       benchmark: 'SP500',
       use_technical_indicators: false,
+      use_fundamentals: false,
       stop_loss_enabled: false,
       stop_loss_pct: null,
       risk_guardrails_enabled: false,
@@ -159,6 +160,43 @@ describe('BuildAIPortfolioCard', () => {
     expect(mockedPost).toHaveBeenCalledWith(
       '/api/v1/ai-portfolio/build',
       expect.objectContaining({ use_technical_indicators: true }),
+    );
+  });
+
+  it('opts into the company-fundamentals strategy when the toggle is checked', async () => {
+    mockedPost.mockResolvedValue({ data: { event_id: 'evt-1', status: 'queued' } });
+    mockedGet.mockImplementation(routeGet(() => 'running'));
+    const user = userEvent.setup();
+
+    renderWithClient(<BuildAIPortfolioCard />);
+
+    // Defaults off: the toggle starts unchecked.
+    const toggle = screen.getByRole('checkbox', {
+      name: /Use company fundamentals/i,
+    });
+    expect(toggle).not.toBeChecked();
+
+    await user.click(toggle);
+    await user.click(screen.getByRole('button', { name: 'Build portfolio' }));
+
+    expect(mockedPost).toHaveBeenCalledWith(
+      '/api/v1/ai-portfolio/build',
+      expect.objectContaining({ use_fundamentals: true }),
+    );
+  });
+
+  it('sends company fundamentals disabled when the toggle is left off', async () => {
+    mockedPost.mockResolvedValue({ data: { event_id: 'evt-1', status: 'queued' } });
+    mockedGet.mockImplementation(routeGet(() => 'running'));
+    const user = userEvent.setup();
+
+    renderWithClient(<BuildAIPortfolioCard />);
+
+    await user.click(screen.getByRole('button', { name: 'Build portfolio' }));
+
+    expect(mockedPost).toHaveBeenCalledWith(
+      '/api/v1/ai-portfolio/build',
+      expect.objectContaining({ use_fundamentals: false }),
     );
   });
 

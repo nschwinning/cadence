@@ -715,6 +715,14 @@ function SessionHeader({
         </div>
         <div>
           <dt className="text-xs font-semibold uppercase tracking-wide text-slate-500">
+            Company fundamentals
+          </dt>
+          <dd className="text-sm text-slate-900">
+            {session.use_fundamentals ? 'On' : 'Off'}
+          </dd>
+        </div>
+        <div>
+          <dt className="text-xs font-semibold uppercase tracking-wide text-slate-500">
             Scope
           </dt>
           <dd className="text-sm text-slate-900">

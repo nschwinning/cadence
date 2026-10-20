@@ -235,6 +235,15 @@ class PaperTradingSession(Base):
     # session has no explicit window, the build fills it from
     # ``settings.LEARNING_FEEDBACK_DEFAULT_WINDOW``.
     learning_feedback_window: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # Whether this session opts into the company-fundamentals strategy, chosen at build
+    # time and frozen for the session's lifetime (like the other opt-ins). When true and
+    # the session is frozen on a fundamentals-aware rebalance prompt, each rebalance
+    # attaches a per-ticker company-fundamentals block to the agent's candidates and
+    # holdings. Non-nullable and defaults to false (opt-in); backfilled to false for
+    # pre-existing sessions by the migration, so already-built sessions are unchanged.
+    use_fundamentals: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="false"
+    )
 
     trades: Mapped[list[PaperTrade]] = relationship(
         back_populates="session",

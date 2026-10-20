@@ -67,3 +67,10 @@ AI_STRATEGY_KEY = "ai_buy_hold"
 #: trend-decision context; sessions frozen to an earlier (pre-trend) version keep
 #: their original ungated behaviour and record no trend context.
 TREND_PROMPT_VERSION = 3
+
+#: First rebalance-prompt version that drives the company-fundamentals strategy
+#: (seeded by the v4 migration). A session whose frozen prompt version is at least
+#: this AND that opted into fundamentals attaches a per-ticker company-fundamentals
+#: block to the agent's candidates and holdings; sessions frozen to an earlier
+#: version, or that opted out, keep their original behaviour and receive no block.
+FUNDAMENTALS_PROMPT_VERSION = 4
