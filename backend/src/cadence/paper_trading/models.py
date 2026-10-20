@@ -256,6 +256,17 @@ class PaperTradingSession(Base):
     use_fundamentals: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False, server_default="false"
     )
+    # Whether this session opts into including the user's watchlist-membership assets
+    # in the candidate universe the AI picks from, chosen at build time and frozen for
+    # the session's lifetime (like the other opt-ins). When true, each rebalance (and
+    # the opening allocation, which runs through the rebalance flow) assembles the
+    # candidate universe from the union of universe- and watchlist-membership assets;
+    # when false, from universe-membership assets only. Non-nullable and defaults to
+    # false (opt-in); backfilled to false for pre-existing sessions by the migration,
+    # so already-built sessions keep their universe-only candidate universe.
+    include_watchlist: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="false"
+    )
 
     trades: Mapped[list[PaperTrade]] = relationship(
         back_populates="session",

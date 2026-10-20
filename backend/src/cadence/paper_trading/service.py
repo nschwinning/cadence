@@ -97,6 +97,7 @@ def create_session(
     learning_feedback_enabled: bool = False,
     learning_feedback_window: int | None = None,
     use_fundamentals: bool = False,
+    include_watchlist: bool = False,
 ) -> PaperTradingSession:
     """Create a paper-trading session for a ``(portfolio, strategy)`` pair.
 
@@ -124,6 +125,9 @@ def create_session(
     company-fundamentals opt-in at build time (default off); when enabled and the
     session is frozen on a fundamentals-aware rebalance prompt, each rebalance attaches
     a per-ticker company-fundamentals block to the agent's candidates and holdings.
+    ``include_watchlist`` freezes the watchlist-inclusion opt-in at build time (default
+    off); when enabled, each rebalance assembles its candidate universe from the union
+    of universe- and watchlist-membership assets instead of universe-membership only.
 
     Raises:
         DuplicateSessionError: if a session already exists for the same
@@ -150,6 +154,7 @@ def create_session(
         learning_feedback_enabled=learning_feedback_enabled,
         learning_feedback_window=learning_feedback_window,
         use_fundamentals=use_fundamentals,
+        include_watchlist=include_watchlist,
     )
     session.add(row)
     try:

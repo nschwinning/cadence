@@ -39,6 +39,7 @@ class AIBuildParams:
     learning_feedback_enabled: bool = False
     learning_feedback_window: int | None = None
     use_fundamentals: bool = False
+    include_watchlist: bool = False
 
     def to_payload(self) -> dict[str, Any]:
         return {
@@ -59,6 +60,7 @@ class AIBuildParams:
             "learning_feedback_enabled": self.learning_feedback_enabled,
             "learning_feedback_window": self.learning_feedback_window,
             "use_fundamentals": self.use_fundamentals,
+            "include_watchlist": self.include_watchlist,
         }
 
     @classmethod
@@ -95,4 +97,5 @@ class AIBuildParams:
                 None if learn_window is None else int(learn_window)
             ),
             use_fundamentals=bool(payload.get("use_fundamentals", False)),
+            include_watchlist=bool(payload.get("include_watchlist", False)),
         )

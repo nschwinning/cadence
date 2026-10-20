@@ -1,15 +1,12 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, waitFor } from '@testing-library/react';
+import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { MemoryRouter } from 'react-router-dom';
 import type { ReactNode } from 'react';
 import { PaperTradingPage } from './PaperTradingPage';
 import { apiClient } from '../../api/client';
-import type {
-  PaperTradingSession,
-  PaperTradingSessionListResponse,
-} from '../../types/api';
+import type { PaperTradingSession, Portfolio } from '../../types/api';
 
 vi.mock('../../api/client', () => ({
   apiClient: { get: vi.fn(), post: vi.fn() },
@@ -48,8 +45,32 @@ const session: PaperTradingSession = {
   learning_feedback_enabled: false,
   learning_feedback_window: null,
   use_fundamentals: false,
+  include_watchlist: false,
   model: 'gpt-5-mini',
 };
+
+const portfolio: Portfolio = {
+  id: 'p1',
+  name: 'Aggressive Jolly Wozniak',
+  description: null,
+  stocks: ['AAPL', 'MSFT', 'NVDA'],
+  max_allocation_pct: 0.25,
+  source: 'ai_generated',
+  risk_profile: 'balanced',
+  source_run_id: null,
+  created_at: '2026-09-10T00:00:00Z',
+  archived_at: null,
+};
+
+/** Route a mocked GET by URL: portfolios list vs. the sessions list (default). */
+function routeGet(sessions: PaperTradingSession[]) {
+  return (url: string) => {
+    if (url.endsWith('/api/v1/portfolios')) {
+      return Promise.resolve({ data: { items: [portfolio], total: 1 } });
+    }
+    return Promise.resolve({ data: { items: sessions, total: sessions.length } });
+  };
+}
 
 function renderWithClient(ui: ReactNode) {
   const queryClient = new QueryClient({
@@ -68,20 +89,40 @@ describe('PaperTradingPage', () => {
   });
 
   it('renders a session row linking to its detail page', async () => {
-    const body: PaperTradingSessionListResponse = {
-      items: [session],
-      total: 1,
-    };
-    mockedGet.mockResolvedValue({ data: body });
+    mockedGet.mockImplementation(routeGet([session]));
 
     renderWithClient(<PaperTradingPage />);
 
     const link = await screen.findByRole('link', { name: 'Aggressive Jolly Wozniak' });
-    expect(link).toHaveAttribute('href', '/paper-trading/s1');
+    expect(link).toHaveAttribute('href', '/portfolios/s1');
     // The strategy is shown as secondary context, not the primary label.
     expect(screen.getByText('ai-momentum')).toBeInTheDocument();
     expect(screen.getByText('active')).toBeInTheDocument();
     expect(screen.getByText('12')).toBeInTheDocument();
+  });
+
+  it('folds the portfolio risk profile and holdings count into the row', async () => {
+    mockedGet.mockImplementation(routeGet([session]));
+
+    renderWithClient(<PaperTradingPage />);
+
+    const link = await screen.findByRole('link', {
+      name: 'Aggressive Jolly Wozniak',
+    });
+    const row = link.closest('tr') as HTMLElement;
+    // Risk profile (humanized) and holdings count come from the portfolio.
+    expect(within(row).getByText('Balanced')).toBeInTheDocument();
+    expect(within(row).getByText('3')).toBeInTheDocument();
+  });
+
+  it('renders the AI build form above the list', async () => {
+    mockedGet.mockImplementation(routeGet([session]));
+
+    renderWithClient(<PaperTradingPage />);
+
+    expect(
+      await screen.findByRole('heading', { name: 'Build an AI portfolio' }),
+    ).toBeInTheDocument();
   });
 
   it('falls back to the strategy label when the portfolio name is missing', async () => {
@@ -91,7 +132,7 @@ describe('PaperTradingPage', () => {
     renderWithClient(<PaperTradingPage />);
 
     const link = await screen.findByRole('link', { name: 'ai-momentum' });
-    expect(link).toHaveAttribute('href', '/paper-trading/s1');
+    expect(link).toHaveAttribute('href', '/portfolios/s1');
   });
 
   it('lists sessions by creation date, oldest first (tie-broken by id)', async () => {
@@ -129,7 +170,7 @@ describe('PaperTradingPage', () => {
     renderWithClient(<PaperTradingPage />);
 
     expect(
-      await screen.findByText(/No paper-trading sessions yet/i),
+      await screen.findByText(/No portfolios yet/i),
     ).toBeInTheDocument();
   });
 

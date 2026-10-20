@@ -45,7 +45,7 @@ from cadence.ai_portfolio.flows import rebalance
 from cadence.ai_portfolio.models import AIPortfolioEvent, RebalancePrompt
 from cadence.ai_portfolio.service import AIBuildParams
 from cadence.assets import service as assets_service
-from cadence.assets.category import AssetCategory
+from cadence.assets.category import AssetCategory, AssetMembership
 from cadence.assets.fundamentals import FundamentalsStatus
 from cadence.assets.market_data import AssetInfo, HistoryBar
 from cadence.assets.models import Asset, AssetFundamentals
@@ -385,6 +385,18 @@ def test_ai_build_params_fundamentals_round_trip() -> None:
     # A legacy payload with no key degrades to opted out.
     legacy = AIBuildParams.from_payload({"allocated_capital": 1.0})
     assert legacy.use_fundamentals is False
+
+
+def test_ai_build_params_watchlist_round_trip() -> None:
+    # The watchlist-inclusion opt-in must survive to_payload -> from_payload, default off.
+    assert AIBuildParams(allocated_capital=1.0).include_watchlist is False
+    params = AIBuildParams(allocated_capital=50_000.0, include_watchlist=True)
+    restored = AIBuildParams.from_payload(params.to_payload())
+    assert restored == params
+    assert restored.include_watchlist is True
+    # A legacy payload with no key degrades to opted out.
+    legacy = AIBuildParams.from_payload({"allocated_capital": 1.0})
+    assert legacy.include_watchlist is False
 
 
 def test_ai_build_params_model_round_trip() -> None:
@@ -1859,6 +1871,76 @@ def test_run_rebalance_event_scope_restricts_candidates(
     assert rebalance.rebalance_calls
     candidate_tickers = {c["ticker"] for c in rebalance.rebalance_calls[0]["candidates"]}
     assert candidate_tickers == {"BTC-USD"}  # AAPL (stock) excluded from scope
+
+
+def test_run_build_event_includes_watchlist_when_opted_in(
+    db_session: Session,
+) -> None:
+    # With watchlist inclusion on, a watchlist-membership asset joins the candidate
+    # universe alongside the tradable universe, and the flag is frozen on the session.
+    assets_service.add_asset(db_session, "AAPL", _provider(), StubBroker())
+    assets_service.add_asset(
+        db_session, "WATCH", _provider(), StubBroker(),
+        membership=AssetMembership.WATCHLIST,
+    )
+    agent = FakeAIPortfolioAgent(build_result=_build_result("AAPL"))
+    event = service.create_build_event(db_session, _params(include_watchlist=True))
+
+    service.run_build_event(db_session, event.id, agent, StubBroker(), _provider())
+
+    assert agent.rebalance_calls
+    candidate_tickers = {c["ticker"] for c in agent.rebalance_calls[0]["candidates"]}
+    assert {"AAPL", "WATCH"} <= candidate_tickers
+    session_row = paper_service.get_session(
+        db_session, service.get_event(db_session, event.id).session_id
+    )
+    assert session_row.include_watchlist is True
+
+
+def test_run_build_event_excludes_watchlist_when_not_opted_in(
+    db_session: Session,
+) -> None:
+    # The default (opted out) keeps today's behavior: watchlist assets never appear
+    # as candidates even though they share the assets table.
+    assets_service.add_asset(db_session, "AAPL", _provider(), StubBroker())
+    assets_service.add_asset(
+        db_session, "WATCH", _provider(), StubBroker(),
+        membership=AssetMembership.WATCHLIST,
+    )
+    agent = FakeAIPortfolioAgent(build_result=_build_result("AAPL"))
+    event = service.create_build_event(db_session, _params())  # include_watchlist off
+
+    service.run_build_event(db_session, event.id, agent, StubBroker(), _provider())
+
+    assert agent.rebalance_calls
+    candidate_tickers = {c["ticker"] for c in agent.rebalance_calls[0]["candidates"]}
+    assert candidate_tickers == {"AAPL"}  # WATCH (watchlist) excluded
+    session_row = paper_service.get_session(
+        db_session, service.get_event(db_session, event.id).session_id
+    )
+    assert session_row.include_watchlist is False
+
+
+def test_watchlist_candidates_still_honour_asset_scope(
+    db_session: Session,
+) -> None:
+    # Watchlist inclusion never relaxes the asset scope: a stock watchlist asset is
+    # still excluded from a crypto-only session's candidates.
+    assets_service.add_asset(db_session, "BTC-USD", _crypto_provider(), StubBroker())
+    assets_service.add_asset(
+        db_session, "WATCH", _provider(), StubBroker(),
+        membership=AssetMembership.WATCHLIST,
+    )
+    agent = FakeAIPortfolioAgent(build_result=_build_result("BTC-USD"))
+    event = service.create_build_event(
+        db_session, _params(asset_types="crypto", include_watchlist=True)
+    )
+
+    service.run_build_event(db_session, event.id, agent, StubBroker(), _crypto_provider())
+
+    assert agent.rebalance_calls
+    candidate_tickers = {c["ticker"] for c in agent.rebalance_calls[0]["candidates"]}
+    assert candidate_tickers == {"BTC-USD"}  # the stock watchlist asset is out of scope
 
 
 # --------------------------------------------------------------------------- #
@@ -3822,6 +3904,40 @@ def test_run_build_event_fundamentals_off_by_default(db_session: Session) -> Non
         db_session, service.get_event(db_session, event.id).session_id
     )
     assert session_row.use_fundamentals is False
+
+
+def test_run_build_event_persists_watchlist_opt_in(db_session: Session) -> None:
+    # The watchlist-inclusion opt-in is frozen on the session at build and surfaced on
+    # the read schema; a default build persists it as False.
+    from cadence.api.schemas import PaperTradingSessionRead
+
+    provider = _seed_universe(db_session, "AAPL", "MSFT")
+    agent = FakeAIPortfolioAgent(build_result=_build_result("AAPL", "MSFT"))
+    event = service.create_build_event(db_session, _params(include_watchlist=True))
+    service.run_build_event(db_session, event.id, agent, StubBroker(), provider)
+
+    session_row = paper_service.get_session(
+        db_session, service.get_event(db_session, event.id).session_id
+    )
+    assert session_row.include_watchlist is True
+    read = PaperTradingSessionRead.model_validate(session_row)
+    assert read.include_watchlist is True
+
+
+def test_run_build_event_watchlist_off_by_default(db_session: Session) -> None:
+    from cadence.api.schemas import PaperTradingSessionRead
+
+    provider = _seed_universe(db_session, "AAPL", "MSFT")
+    agent = FakeAIPortfolioAgent(build_result=_build_result("AAPL", "MSFT"))
+    event = service.create_build_event(db_session, _params())
+    service.run_build_event(db_session, event.id, agent, StubBroker(), provider)
+
+    session_row = paper_service.get_session(
+        db_session, service.get_event(db_session, event.id).session_id
+    )
+    assert session_row.include_watchlist is False
+    read = PaperTradingSessionRead.model_validate(session_row)
+    assert read.include_watchlist is False
 
 
 def test_run_build_event_freezes_fundamentals_prompt_version(

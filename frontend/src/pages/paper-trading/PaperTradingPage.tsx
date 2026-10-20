@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import {
   DEFAULT_SESSIONS_PARAMS,
@@ -6,9 +6,17 @@ import {
   useSessions,
   useUnarchiveSession,
 } from '../../api/paperTrading';
-import type { PaperTradingSession } from '../../types/api';
+import { DEFAULT_PORTFOLIOS_PARAMS, usePortfolios } from '../../api/portfolios';
+import type { PaperTradingSession, Portfolio } from '../../types/api';
 import { formatCurrency } from '../../lib/format';
 import { SessionComparisonChart } from './SessionComparisonChart';
+import { BuildAIPortfolioCard } from '../portfolios/BuildAIPortfolioCard';
+
+/** Turn a raw risk slug into a display label. */
+function humanize(value: string | null | undefined): string {
+  if (!value) return '—';
+  return value.replace(/[-_]/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
+}
 
 /** Status pill colors per session status. */
 const STATUS_STYLES: Record<string, string> = {
@@ -28,7 +36,14 @@ function StatusBadge({ status }: { status: string }) {
   );
 }
 
-function SessionRow({ session }: { session: PaperTradingSession }) {
+function SessionRow({
+  session,
+  portfolio,
+}: {
+  session: PaperTradingSession;
+  /** The session's portfolio definition, resolved by `portfolio_id` (may be absent). */
+  portfolio: Portfolio | undefined;
+}) {
   const archive = useArchiveSession();
   const unarchive = useUnarchiveSession();
   const isArchived = session.archived_at !== null;
@@ -43,7 +58,7 @@ function SessionRow({ session }: { session: PaperTradingSession }) {
     <tr className="border-b border-slate-100 hover:bg-slate-50">
       <td className="px-4 py-3 font-semibold">
         <Link
-          to={`/paper-trading/${session.id}`}
+          to={`/portfolios/${session.id}`}
           className="text-emerald-700 hover:text-emerald-800 hover:underline focus:outline-none focus:ring-1 focus:ring-emerald-500"
         >
           {session.portfolio_name || session.strategy_key}
@@ -59,6 +74,12 @@ function SessionRow({ session }: { session: PaperTradingSession }) {
       </td>
       <td className="px-4 py-3">
         <StatusBadge status={session.status} />
+      </td>
+      <td className="px-4 py-3 text-slate-700">
+        {humanize(portfolio?.risk_profile)}
+      </td>
+      <td className="px-4 py-3 text-right tabular-nums text-slate-700">
+        {portfolio ? portfolio.stocks.length : '—'}
       </td>
       <td className="px-4 py-3 text-slate-700">{session.schedule_mode}</td>
       <td className="px-4 py-3 text-right tabular-nums text-slate-700">
@@ -108,6 +129,18 @@ export function PaperTradingPage() {
     ...DEFAULT_SESSIONS_PARAMS,
     includeArchived: showArchived,
   });
+  // Resolve each session's portfolio definition (risk profile, holdings count).
+  // Include archived portfolios so an archived session's definition still
+  // resolves; a session whose portfolio cannot be resolved renders em dashes.
+  const { data: portfoliosData } = usePortfolios({
+    ...DEFAULT_PORTFOLIOS_PARAMS,
+    includeArchived: true,
+  });
+  const portfoliosById = useMemo(() => {
+    const map = new Map<string, Portfolio>();
+    for (const p of portfoliosData?.items ?? []) map.set(p.id, p);
+    return map;
+  }, [portfoliosData]);
   // One stable order everywhere: oldest-created first. Independent of when a session
   // was last updated/rebalanced, so a new session appends at the end rather than
   // reshuffling the list. ISO `created_at` strings compare lexicographically; id
@@ -120,14 +153,16 @@ export function PaperTradingPage() {
   return (
     <section className="flex flex-col gap-6">
       <h1 className="text-2xl font-bold tracking-tight text-slate-900">
-        Paper Trading
+        Portfolios
       </h1>
+
+      <BuildAIPortfolioCard />
 
       <SessionComparisonChart />
 
       <div className="rounded-lg border border-slate-200 bg-white shadow-sm">
         <div className="flex items-center gap-3 border-b border-slate-200 p-4">
-          <h2 className="text-lg font-semibold text-slate-900">Sessions</h2>
+          <h2 className="text-lg font-semibold text-slate-900">Portfolios</h2>
           {!isPending && !isError && total > 0 && (
             <span className="text-sm text-slate-500">{total} total</span>
           )}
@@ -160,17 +195,19 @@ export function PaperTradingPage() {
 
         {!isPending && !isError && sessions.length === 0 && (
           <p className="p-6 text-slate-500">
-            No paper-trading sessions yet. Build an AI portfolio to start one.
+            No portfolios yet. Build an AI portfolio above to get started.
           </p>
         )}
 
         {!isPending && !isError && sessions.length > 0 && (
           <div className="overflow-x-auto">
-            <table className="w-full min-w-[820px] border-collapse text-sm">
+            <table className="w-full min-w-[960px] border-collapse text-sm">
               <thead>
                 <tr className="border-b border-slate-200 bg-slate-50 text-left text-xs font-semibold uppercase tracking-wide text-slate-500">
                   <th className="px-4 py-3">Portfolio</th>
                   <th className="px-4 py-3">Status</th>
+                  <th className="px-4 py-3">Risk</th>
+                  <th className="px-4 py-3 text-right">Holdings</th>
                   <th className="px-4 py-3">Schedule</th>
                   <th className="px-4 py-3 text-right">Capital</th>
                   <th className="px-4 py-3 text-right">Trades</th>
@@ -181,7 +218,11 @@ export function PaperTradingPage() {
               </thead>
               <tbody>
                 {sessions.map((session) => (
-                  <SessionRow key={session.id} session={session} />
+                  <SessionRow
+                    key={session.id}
+                    session={session}
+                    portfolio={portfoliosById.get(session.portfolio_id)}
+                  />
                 ))}
               </tbody>
             </table>

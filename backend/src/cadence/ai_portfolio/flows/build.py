@@ -141,6 +141,7 @@ def run_build_event(
                 else None
             ),
             use_fundamentals=params.use_fundamentals,
+            include_watchlist=params.include_watchlist,
         )
         session_row.session_metadata = {
             "session_type": "ai_managed",

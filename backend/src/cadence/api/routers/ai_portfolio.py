@@ -126,6 +126,7 @@ def build_ai_portfolio_endpoint(
         learning_feedback_enabled=payload.learning_feedback_enabled,
         learning_feedback_window=payload.learning_feedback_window,
         use_fundamentals=payload.use_fundamentals,
+        include_watchlist=payload.include_watchlist,
     )
     try:
         event = job_runner.start_build(db, params, agent, broker, provider)

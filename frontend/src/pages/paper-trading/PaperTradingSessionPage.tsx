@@ -15,6 +15,7 @@ import {
   useChangeSessionScope,
   useIncreaseSessionCapital,
 } from '../../api/paperTrading';
+import { usePortfolio } from '../../api/portfolios';
 import { useSessionEvents } from '../../api/aiPortfolio';
 import {
   useRebalanceAction,
@@ -173,10 +174,10 @@ function EventStatusBadge({ status }: { status: string }) {
 function BackLink() {
   return (
     <Link
-      to="/paper-trading"
+      to="/portfolios"
       className="inline-flex items-center gap-1 text-sm font-medium text-emerald-700 hover:text-emerald-800 hover:underline"
     >
-      <span aria-hidden="true">←</span> Back to paper trading
+      <span aria-hidden="true">←</span> Back to portfolios
     </Link>
   );
 }
@@ -726,6 +727,14 @@ function SessionHeader({
         </div>
         <div>
           <dt className="text-xs font-semibold uppercase tracking-wide text-slate-500">
+            Watchlist assets
+          </dt>
+          <dd className="text-sm text-slate-900">
+            {session.include_watchlist ? 'On' : 'Off'}
+          </dd>
+        </div>
+        <div>
+          <dt className="text-xs font-semibold uppercase tracking-wide text-slate-500">
             Model
           </dt>
           <dd className="text-sm text-slate-900">
@@ -1221,6 +1230,84 @@ function CapitalIncreaser({ sessionId }: { sessionId: string }) {
   );
 }
 
+/** Turn a raw source/risk slug into a display label. */
+function humanizeSlug(value: string | null | undefined): string {
+  if (!value) return '—';
+  return value.replace(/[-_]/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
+function PortfolioFact({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="flex flex-col gap-0.5">
+      <dt className="text-xs font-semibold uppercase tracking-wide text-slate-500">
+        {label}
+      </dt>
+      <dd className="text-sm text-slate-900">{value}</dd>
+    </div>
+  );
+}
+
+/**
+ * Folded-in portfolio definition for the session detail view. Resolves the
+ * session's portfolio by its `portfolio_id` and renders the portfolio's
+ * overview facts plus a holdings list. Fail-soft: when the portfolio cannot be
+ * resolved (no id, still loading, 404, or a non-portfolio shape), it renders
+ * nothing so the rest of the session content still shows.
+ */
+function PortfolioDefinition({ portfolioId }: { portfolioId: string | undefined }) {
+  const { data: portfolio } = usePortfolio(portfolioId ?? '');
+  if (!portfolio || !Array.isArray(portfolio.stocks)) return null;
+  return (
+    <>
+      <div className="rounded-lg border border-slate-200 bg-white p-6 shadow-sm">
+        <h2 className="text-lg font-semibold text-slate-900">
+          Portfolio overview
+        </h2>
+        <dl className="mt-4 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
+          <PortfolioFact label="Source" value={humanizeSlug(portfolio.source)} />
+          <PortfolioFact
+            label="Risk profile"
+            value={humanizeSlug(portfolio.risk_profile)}
+          />
+          <PortfolioFact
+            label="Max allocation"
+            value={`${(portfolio.max_allocation_pct * 100).toFixed(0)}%`}
+          />
+          <PortfolioFact label="Holdings" value={String(portfolio.stocks.length)} />
+          <PortfolioFact
+            label="Created"
+            value={new Date(portfolio.created_at).toLocaleString()}
+          />
+          <PortfolioFact
+            label="Source run"
+            value={portfolio.source_run_id ?? '—'}
+          />
+        </dl>
+      </div>
+
+      <div className="rounded-lg border border-slate-200 bg-white p-6 shadow-sm">
+        <h2 className="text-lg font-semibold text-slate-900">Holdings</h2>
+        {portfolio.stocks.length === 0 ? (
+          <p className="mt-3 text-sm text-slate-400">No holdings.</p>
+        ) : (
+          <ul className="mt-4 flex flex-wrap gap-2">
+            {portfolio.stocks.map((ticker) => (
+              <li key={ticker}>
+                <Link
+                  to={`/assets/${ticker}`}
+                  className="inline-flex items-center rounded-full bg-slate-100 px-3 py-1 text-sm font-medium text-slate-700 hover:bg-slate-200"
+                >
+                  {ticker}
+                </Link>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+    </>
+  );
+}
+
 export function PaperTradingSessionPage() {
   const { id = '' } = useParams<{ id: string }>();
   // The list endpoint is the source of session summary data; find this session.
@@ -1241,6 +1328,7 @@ export function PaperTradingSessionPage() {
       <KpiRow sessionId={id} />
       <SessionValueChart sessionId={id} />
       <SessionSectorPerformanceCard sessionId={id} />
+      <PortfolioDefinition portfolioId={session?.portfolio_id} />
       <EventsPanel sessionId={id} />
       <TradesPanel sessionId={id} />
       <PositionsPanel sessionId={id} />

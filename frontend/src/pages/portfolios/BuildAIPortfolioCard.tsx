@@ -169,6 +169,7 @@ export function BuildAIPortfolioCard() {
   const [dailyRebalancing, setDailyRebalancing] = useState(false);
   const [useTechnicalIndicators, setUseTechnicalIndicators] = useState(false);
   const [useFundamentals, setUseFundamentals] = useState(false);
+  const [includeWatchlist, setIncludeWatchlist] = useState(false);
   const [stopLossEnabled, setStopLossEnabled] = useState(false);
   const [stopLossPct, setStopLossPct] = useState('15');
   const [guardrailsEnabled, setGuardrailsEnabled] = useState(false);
@@ -269,6 +270,7 @@ export function BuildAIPortfolioCard() {
         model,
         use_technical_indicators: useTechnicalIndicators,
         use_fundamentals: useFundamentals,
+        include_watchlist: includeWatchlist,
         stop_loss_enabled: stopLossEnabled,
         stop_loss_pct: stopLossEnabled ? stopLossFraction : null,
         risk_guardrails_enabled: guardrailsEnabled,
@@ -477,6 +479,23 @@ export function BuildAIPortfolioCard() {
                 <p className="text-xs text-slate-500">
                   When enabled, every rebalance shows the agent each candidate and
                   holding&apos;s company financials (margins, EPS, revenue, cash flow).
+                </p>
+              </div>
+
+              {/* Include watchlist assets. */}
+              <div className="flex flex-col gap-1 rounded-lg border border-slate-200 p-4">
+                <label className="flex items-center gap-2 text-sm font-medium text-slate-800">
+                  <input
+                    type="checkbox"
+                    checked={includeWatchlist}
+                    onChange={(e) => setIncludeWatchlist(e.target.checked)}
+                    className="h-4 w-4 rounded border-slate-300 text-emerald-600 focus:ring-emerald-500"
+                  />
+                  Include watchlist assets
+                </label>
+                <p className="text-xs text-slate-500">
+                  When enabled, the build and every rebalance also consider your
+                  watchlist assets as candidates, not just the tradable universe.
                 </p>
               </div>
 

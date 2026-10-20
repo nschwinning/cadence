@@ -115,6 +115,7 @@ describe('BuildAIPortfolioCard', () => {
       model: 'gpt-6-luna',
       use_technical_indicators: false,
       use_fundamentals: false,
+      include_watchlist: false,
       stop_loss_enabled: false,
       stop_loss_pct: null,
       risk_guardrails_enabled: false,
@@ -211,6 +212,43 @@ describe('BuildAIPortfolioCard', () => {
     expect(mockedPost).toHaveBeenCalledWith(
       '/api/v1/ai-portfolio/build',
       expect.objectContaining({ use_fundamentals: false }),
+    );
+  });
+
+  it('opts into including watchlist assets when the toggle is checked', async () => {
+    mockedPost.mockResolvedValue({ data: { event_id: 'evt-1', status: 'queued' } });
+    mockedGet.mockImplementation(routeGet(() => 'running'));
+    const user = userEvent.setup();
+
+    renderWithClient(<BuildAIPortfolioCard />);
+
+    // Defaults off: the toggle starts unchecked.
+    const toggle = screen.getByRole('checkbox', {
+      name: /Include watchlist assets/i,
+    });
+    expect(toggle).not.toBeChecked();
+
+    await user.click(toggle);
+    await user.click(screen.getByRole('button', { name: 'Build portfolio' }));
+
+    expect(mockedPost).toHaveBeenCalledWith(
+      '/api/v1/ai-portfolio/build',
+      expect.objectContaining({ include_watchlist: true }),
+    );
+  });
+
+  it('leaves watchlist assets excluded when the toggle is left off', async () => {
+    mockedPost.mockResolvedValue({ data: { event_id: 'evt-1', status: 'queued' } });
+    mockedGet.mockImplementation(routeGet(() => 'running'));
+    const user = userEvent.setup();
+
+    renderWithClient(<BuildAIPortfolioCard />);
+
+    await user.click(screen.getByRole('button', { name: 'Build portfolio' }));
+
+    expect(mockedPost).toHaveBeenCalledWith(
+      '/api/v1/ai-portfolio/build',
+      expect.objectContaining({ include_watchlist: false }),
     );
   });
 

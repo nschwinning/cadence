@@ -13,6 +13,7 @@ import type {
   PaperTrade,
   PaperTradingSession,
   PaperTradingSessionKpis,
+  Portfolio,
 } from '../../types/api';
 
 vi.mock('../../api/client', () => ({
@@ -53,6 +54,7 @@ const session: PaperTradingSession = {
   learning_feedback_enabled: false,
   learning_feedback_window: null,
   use_fundamentals: false,
+  include_watchlist: false,
   model: 'gpt-5-mini',
 };
 
@@ -189,9 +191,9 @@ function renderPage(ui: ReactNode) {
   });
   const utils = render(
     <QueryClientProvider client={queryClient}>
-      <MemoryRouter initialEntries={['/paper-trading/s1']}>
+      <MemoryRouter initialEntries={['/portfolios/s1']}>
         <Routes>
-          <Route path="/paper-trading/:id" element={ui} />
+          <Route path="/portfolios/:id" element={ui} />
         </Routes>
       </MemoryRouter>
     </QueryClientProvider>,
@@ -672,9 +674,9 @@ describe('PaperTradingSessionPage', () => {
     await screen.findByRole('heading', { name: 'Aggressive Jolly Wozniak' });
 
     expect(screen.getByText('Stop-loss')).toBeInTheDocument();
-    // Stop-loss, Risk guardrails, Learning feedback, and Company fundamentals
-    // all read "Off" by default.
-    expect(screen.getAllByText('Off')).toHaveLength(4);
+    // Stop-loss, Risk guardrails, Learning feedback, Company fundamentals, and
+    // Watchlist assets all read "Off" by default.
+    expect(screen.getAllByText('Off')).toHaveLength(5);
   });
 
   it('shows the risk-guardrail configuration when the session opted in', async () => {
@@ -719,9 +721,9 @@ describe('PaperTradingSessionPage', () => {
     await screen.findByRole('heading', { name: 'Aggressive Jolly Wozniak' });
 
     expect(screen.getByText('Risk guardrails')).toBeInTheDocument();
-    // Stop-loss, Risk guardrails, Learning feedback, and Company fundamentals
-    // read "Off" by default.
-    expect(screen.getAllByText('Off')).toHaveLength(4);
+    // Stop-loss, Risk guardrails, Learning feedback, Company fundamentals, and
+    // Watchlist assets read "Off" by default.
+    expect(screen.getAllByText('Off')).toHaveLength(5);
   });
 
   it('shows the learning-feedback configuration when the session opted in', async () => {
@@ -760,9 +762,9 @@ describe('PaperTradingSessionPage', () => {
     await screen.findByRole('heading', { name: 'Aggressive Jolly Wozniak' });
 
     expect(screen.getByText('Learning feedback')).toBeInTheDocument();
-    // Stop-loss, Risk guardrails, Learning feedback, and Company fundamentals
-    // all read "Off".
-    expect(screen.getAllByText('Off')).toHaveLength(4);
+    // Stop-loss, Risk guardrails, Learning feedback, Company fundamentals, and
+    // Watchlist assets all read "Off".
+    expect(screen.getAllByText('Off')).toHaveLength(5);
   });
 
   it('shows the company-fundamentals fact tile as On when the session opted in', async () => {
@@ -800,8 +802,37 @@ describe('PaperTradingSessionPage', () => {
     await screen.findByRole('heading', { name: 'Aggressive Jolly Wozniak' });
 
     expect(screen.getByText('Company fundamentals')).toBeInTheDocument();
-    // Stop-loss, Risk guardrails, Learning feedback, and Company fundamentals read "Off".
-    expect(screen.getAllByText('Off')).toHaveLength(4);
+    // Stop-loss, Risk guardrails, Learning feedback, Company fundamentals, and
+    // Watchlist assets all read "Off".
+    expect(screen.getAllByText('Off')).toHaveLength(5);
+  });
+
+  it('shows the watchlist-assets fact tile as On when the session opted in', async () => {
+    const withWatchlist: PaperTradingSession = {
+      ...session,
+      include_watchlist: true,
+    };
+    mockedGet.mockImplementation((url: string) => {
+      if (url.endsWith('/paper-trading/sessions')) {
+        return Promise.resolve({ data: { items: [withWatchlist], total: 1 } });
+      }
+      if (url.endsWith('/kpis')) {
+        return Promise.resolve({ data: KPIS });
+      }
+      if (url.endsWith('/sector-performance')) {
+        return Promise.resolve({ data: { by_sector: [], by_category: [] } });
+      }
+      if (url.includes('/ai-portfolio/sessions/') && url.endsWith('/events')) {
+        return Promise.resolve({ data: { items: [], total: 0 } });
+      }
+      return Promise.resolve({ data: { items: [], total: 0 } });
+    });
+
+    renderPage(<PaperTradingSessionPage />);
+    await screen.findByRole('heading', { name: 'Aggressive Jolly Wozniak' });
+
+    expect(screen.getByText('Watchlist assets')).toBeInTheDocument();
+    expect(screen.getByText('On')).toBeInTheDocument();
   });
 
   it("shows the session's frozen model resolved to its catalog display name", async () => {
@@ -1208,5 +1239,69 @@ describe('PaperTradingSessionPage', () => {
       '/api/v1/paper-trading/sessions/s1/scope',
       { asset_types: 'stocks' },
     );
+  });
+
+  it('folds in the portfolio definition when the session has a resolvable portfolio', async () => {
+    const portfolio: Portfolio = {
+      id: 'p1',
+      name: 'Aggressive Jolly Wozniak',
+      description: null,
+      stocks: ['AAPL', 'MSFT', 'NVDA'],
+      max_allocation_pct: 0.25,
+      source: 'ai_generated',
+      risk_profile: 'balanced',
+      source_run_id: 'run-7',
+      created_at: '2026-09-10T00:00:00Z',
+      archived_at: null,
+    };
+    mockedGet.mockImplementation((url: string) => {
+      if (url.endsWith('/portfolios/p1')) {
+        return Promise.resolve({ data: portfolio });
+      }
+      if (url.endsWith('/paper-trading/sessions')) {
+        return Promise.resolve({ data: { items: [session], total: 1 } });
+      }
+      if (url.endsWith('/kpis')) {
+        return Promise.resolve({ data: KPIS });
+      }
+      if (url.endsWith('/sector-performance')) {
+        return Promise.resolve({ data: { by_sector: [], by_category: [] } });
+      }
+      if (url.includes('/ai-portfolio/sessions/') && url.endsWith('/events')) {
+        return Promise.resolve({ data: { items: [], total: 0 } });
+      }
+      return Promise.resolve({ data: { items: [], total: 0 } });
+    });
+
+    renderPage(<PaperTradingSessionPage />);
+    await screen.findByRole('heading', { name: 'Aggressive Jolly Wozniak' });
+
+    // The folded-in portfolio overview and holdings render.
+    expect(
+      await screen.findByRole('heading', { name: 'Portfolio overview' }),
+    ).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Holdings' })).toBeInTheDocument();
+    // Each holding links to the asset detail page.
+    const aapl = screen.getByRole('link', { name: 'AAPL' });
+    expect(aapl).toHaveAttribute('href', '/assets/AAPL');
+    expect(screen.getByRole('link', { name: 'NVDA' })).toHaveAttribute(
+      'href',
+      '/assets/NVDA',
+    );
+  });
+
+  it('omits the portfolio-definition block when no portfolio resolves', async () => {
+    // Every GET (including /portfolios/p1) falls through to the non-portfolio
+    // default, so the fail-soft guard drops the block.
+    installGet(() => 'running');
+
+    renderPage(<PaperTradingSessionPage />);
+    await screen.findByRole('heading', { name: 'Aggressive Jolly Wozniak' });
+
+    // Session content still renders, but the portfolio-definition block does not.
+    expect(screen.getByRole('heading', { name: 'AI events' })).toBeInTheDocument();
+    expect(
+      screen.queryByRole('heading', { name: 'Portfolio overview' }),
+    ).not.toBeInTheDocument();
   });
 });

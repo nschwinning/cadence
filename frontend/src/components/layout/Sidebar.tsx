@@ -1,10 +1,9 @@
 import type { ReactNode } from 'react';
-import { NavLink } from 'react-router-dom';
+import { NavLink, useLocation } from 'react-router-dom';
 import { DashboardIcon } from '../icons/DashboardIcon';
 import { AssetsIcon } from '../icons/AssetsIcon';
 import { WatchlistIcon } from '../icons/WatchlistIcon';
 import { PortfoliosIcon } from '../icons/PortfoliosIcon';
-import { PaperTradingIcon } from '../icons/PaperTradingIcon';
 import { RunsIcon } from '../icons/RunsIcon';
 import { TechnicalIndicatorsIcon } from '../icons/TechnicalIndicatorsIcon';
 import { SystemIcon } from '../icons/SystemIcon';
@@ -33,11 +32,6 @@ const NAV_ITEMS: NavItem[] = [
     icon: <WatchlistIcon className="h-5 w-5" />,
   },
   { to: '/portfolios', label: 'Portfolios', icon: <PortfoliosIcon className="h-5 w-5" /> },
-  {
-    to: '/paper-trading',
-    label: 'Paper Trading',
-    icon: <PaperTradingIcon className="h-5 w-5" />,
-  },
   { to: '/runs', label: 'Runs', icon: <RunsIcon className="h-5 w-5" /> },
   {
     to: '/technical-indicators',
@@ -52,6 +46,15 @@ const NAV_ITEMS: NavItem[] = [
  * `xl`, opened from the header and dismissed via the dimmed overlay.
  */
 export function Sidebar({ isOpen, onClose }: SidebarProps) {
+  const location = useLocation();
+  const navState = location.state as { from?: string } | null;
+  // An asset detail page (`/assets/:ticker`) opened from the watchlist belongs to
+  // the Watchlist view, not the Assets list. The URL alone can't express that, so
+  // we read the router link state the watchlist sets when navigating. On a direct
+  // load or refresh (no state) this falls back to the URL-based Assets highlight.
+  const inWatchlistAssetContext =
+    /^\/assets\/[^/]+$/.test(location.pathname) && navState?.from === 'watchlist';
+
   return (
     <>
       {isOpen && (
@@ -75,13 +78,20 @@ export function Sidebar({ isOpen, onClose }: SidebarProps) {
                   to={item.to}
                   end={item.end}
                   onClick={onClose}
-                  className={({ isActive }) =>
-                    `flex items-center gap-2 rounded px-3 py-2 no-underline ${
-                      isActive
+                  className={({ isActive }) => {
+                    let active = isActive;
+                    if (inWatchlistAssetContext) {
+                      // Shift the highlight off Assets and onto Watchlist for a
+                      // watchlist-originated asset detail page.
+                      if (item.to === '/assets') active = false;
+                      else if (item.to === '/watchlist') active = true;
+                    }
+                    return `flex items-center gap-2 rounded px-3 py-2 no-underline ${
+                      active
                         ? 'bg-emerald-500 text-white'
                         : 'text-slate-700 hover:bg-[#f5f7fa]'
-                    }`
-                  }
+                    }`;
+                  }}
                 >
                   {item.icon}
                   <span>{item.label}</span>

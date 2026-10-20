@@ -55,7 +55,12 @@ from cadence.ai_portfolio.notifications import (
 )
 from cadence.ai_portfolio.prompts import get_rebalance_prompt_by_version
 from cadence.assets import service as assets_service
-from cadence.assets.category import AssetCategory, AssetScope, scope_categories
+from cadence.assets.category import (
+    AssetCategory,
+    AssetMembership,
+    AssetScope,
+    scope_categories,
+)
 from cadence.assets.market_data import MarketDataProvider
 from cadence.broker.base import Broker
 from cadence.broker.models import AssetClass, Position
@@ -138,7 +143,16 @@ def run_rebalance_event(
         # (the source of truth) and the class map first, to decide whether anything
         # is tradable while the equities market is closed.
         market_open = broker.is_market_open()
-        universe = assets_service.list_assets(session)
+        # When the session opted into watchlist inclusion (frozen at build time), the
+        # candidate universe is the union of universe- and watchlist-membership assets;
+        # otherwise it stays universe-only (today's default). ``membership=None`` drops
+        # the membership filter so all buckets are returned; the downstream scope,
+        # quarantine, trend, eligibility, and unexecutable gates then apply equally to
+        # watchlist assets, so inclusion never relaxes any of them.
+        candidate_membership = (
+            None if session_row.include_watchlist else AssetMembership.UNIVERSE
+        )
+        universe = assets_service.list_assets(session, membership=candidate_membership)
         asset_classes = _asset_class_map(universe)
 
         full_ledger = paper_service.list_open_positions(session, session_id)
@@ -452,8 +466,10 @@ def run_rebalance_event(
         )
 
         # Rebuild the class and fractionability maps so any discovered crypto
-        # target is classified and each equity's fractionability is known.
-        universe = assets_service.list_assets(session)
+        # target is classified and each equity's fractionability is known. Use the
+        # same membership scope as the initial candidate query so watchlist assets stay
+        # classified for opted-in sessions.
+        universe = assets_service.list_assets(session, membership=candidate_membership)
         asset_classes = _asset_class_map(universe)
         fractionable = _fractionable_map(universe)
 

@@ -435,6 +435,11 @@ export interface PaperTradingSession {
    * option existed.
    */
   use_fundamentals: boolean;
+  /**
+   * Whether this session's candidate universe includes the user's watchlist-membership
+   * assets (frozen at build time). False for sessions built before this option existed.
+   */
+  include_watchlist: boolean;
 }
 
 /** One entry in the fixed benchmark catalog. Mirrors `BenchmarkCatalogEntry`. */
@@ -726,6 +731,13 @@ export interface AIPortfolioBuildRequest {
    * block to the agent's candidates and holdings. Defaults to off (opt-in).
    */
   use_fundamentals?: boolean;
+  /**
+   * Opt this portfolio into including the user's watchlist-membership assets in the
+   * candidate universe the AI picks from (frozen at build time). When enabled, each
+   * rebalance assembles candidates from the union of universe- and watchlist-membership
+   * assets. Defaults to off (opt-in).
+   */
+  include_watchlist?: boolean;
   /**
    * Opt this portfolio into a hard stop-loss (frozen at build time). When
    * enabled, each open position is sold in whole when its market price falls to

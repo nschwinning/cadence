@@ -367,6 +367,9 @@ class PaperTradingSessionRead(BaseModel):
     # Whether the session opted into the company-fundamentals strategy (frozen at
     # build time). False for sessions built before this option existed.
     use_fundamentals: bool
+    # Whether the session's candidate universe includes watchlist-membership assets
+    # (frozen at build time). False for sessions built before this option existed.
+    include_watchlist: bool
 
     @model_validator(mode="after")
     def _populate_asset_types(self) -> PaperTradingSessionRead:
@@ -989,6 +992,13 @@ class AIPortfolioBuildRequest(BaseModel):
         "(frozen at build time). When enabled, each rebalance attaches a per-ticker "
         "company-fundamentals block to the agent's candidates and holdings. Defaults "
         "to off (opt-in).",
+    )
+    include_watchlist: bool = Field(
+        default=False,
+        description="Opt this portfolio into including the user's watchlist-membership "
+        "assets in the candidate universe the AI picks from (frozen at build time). "
+        "When enabled, each rebalance assembles candidates from the union of universe- "
+        "and watchlist-membership assets. Defaults to off (opt-in).",
     )
 
     @field_validator("asset_types")
