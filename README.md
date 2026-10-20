@@ -5,9 +5,21 @@ universe (managed asset list with metadata), an AI asset recommender, and an AI
 portfolio manager that runs paper trades through **Alpaca** with a **daily
 rebalance**.
 
-This repository is the project skeleton: it boots, serves a health endpoint, and
-carries the shared infrastructure. The trading features are layered on in later
-phases.
+## What it does
+
+- **Asset universe** — a managed list of stocks and crypto with metadata, market
+  data, and SEC EDGAR fundamentals; an AI recommender proposes additions and a
+  periodic AI evaluation reviews the universe.
+- **AI paper-trading sessions** — build a portfolio and the AI runs it as paper
+  trades on Alpaca with a daily rebalance (plus a weekend crypto-only rebalance).
+  A build creates an empty shell; the opening allocation runs as the session's
+  first rebalance, so every rebalance enhancement applies to it too.
+- **Per-session configuration frozen at build time** — benchmark, asset scope,
+  AI model (from a fixed catalog, for comparing models), company fundamentals,
+  stop-loss, risk guardrails, and learning feedback.
+- **Analytics** — value snapshots, time-weighted return, Sharpe, per-session and
+  multi-session comparison charts, benchmark overlays, and daily P&L reports via
+  Pushover. Each AI run is recorded for per-run performance attribution.
 
 ## Tech stack
 
@@ -69,8 +81,9 @@ Configured via the root `.env` (see `.env.example`):
 - AI recommender: `OPENAI_API_KEY`, `WEB_SEARCH_PROVIDER` (`serpapi` default |
   `serper`), `SERP_API_KEY`, `SERPER_API_KEY`, `RECOMMENDER_MODEL`,
   `RECOMMENDER_STUB`
-- AI portfolio / Alpaca: `AI_PORTFOLIO_MODEL`, `ALPACA_API_KEY`,
-  `ALPACA_SECRET_KEY`, `ALPACA_PAPER`, `ALPACA_STUB`
+- AI portfolio / Alpaca: `AI_PORTFOLIO_MODEL` (the default model for new
+  sessions; each session freezes a model chosen from the fixed catalog at build
+  time), `ALPACA_API_KEY`, `ALPACA_SECRET_KEY`, `ALPACA_PAPER`, `ALPACA_STUB`
 - Daily rebalance trigger: `REBALANCE_CRON_TOKEN` (plus `CRON_TZ` /
   `REBALANCE_SCHEDULE` for the cron sidecar)
 - Weekend crypto-only rebalance: `CRYPTO_REBALANCE_SCHEDULE` (default

@@ -1314,6 +1314,31 @@ class DashboardUniversePerformers(BaseModel):
     worst: list[DashboardPerformerEntry]
 
 
+class DashboardBenchmarkPricePoint(BaseModel):
+    """One (date, price) point of a benchmark index's closing-price series."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    date: date
+    price: float
+
+
+class DashboardBenchmarkSeries(BaseModel):
+    """One catalog benchmark's price series for the combined-equity overlay.
+
+    ``points`` are raw index closes over the plotted era (not pre-rebased); the
+    client rebases each line to the visible combined curve's start. An index with
+    no stored prices in range has an empty ``points`` list rather than being
+    omitted.
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    benchmark_id: str
+    name: str
+    points: list[DashboardBenchmarkPricePoint]
+
+
 class DashboardOverview(BaseModel):
     """The full range-scoped dashboard overview payload."""
 
@@ -1325,6 +1350,7 @@ class DashboardOverview(BaseModel):
     recent_activity: list[DashboardActivityEntry]
     universe_balance: DashboardUniverseBalance
     universe_performers: DashboardUniversePerformers
+    benchmark_series: list[DashboardBenchmarkSeries]
 
 
 # --- System status -----------------------------------------------------------

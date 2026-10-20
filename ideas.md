@@ -1,8 +1,5 @@
 ## Features
 
-- Make a new prompt version that uses fundamentals
-- Make enroll in daily rebalancing obligatory (Cadence name is selected because of that) Do not make any trading decisions at build time. Let build portfolio just create the empty shell and then the first rebalancing job picks it up and makes the trading decision. Therefore newly built portfolios must be included in the first rebalancing job again.
-- Make the ai model a parameter to select at portfolio build time to compare different models
 - Use LiteLLM plus Dashboard to show token usage and costs
 - Make watchlist assets opt in option at portfolio creation
 - Show Portfolio Age on Paper Trading Page
@@ -19,4 +16,4 @@
 
 ## Bugs
 
-- On the same day (17.10.2026) I get pushover notifications for different portfolios that MSFT is the worst performer in one portfolio with -1.09% and the best performer with +2.08% on the other. How can that be?
+_None open._

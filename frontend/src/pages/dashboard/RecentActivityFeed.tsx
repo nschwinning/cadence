@@ -38,24 +38,29 @@ export function RecentActivityFeed({
       ) : (
         <ul className="divide-y divide-slate-100">
           {entries.map((e) => (
+            // Fixed-width status/kind columns keep every row's cells aligned into
+            // the same columns regardless of pill text length; the label flexes
+            // (truncating) and the time pins to the right.
             <li
               key={e.id}
-              className="flex flex-wrap items-center gap-x-3 gap-y-1 px-4 py-3 text-sm"
+              className="grid grid-cols-[6rem_6rem_1fr_auto] items-center gap-x-3 px-4 py-3 text-sm"
             >
               <span
-                className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium capitalize ${statusPillClass(
+                className={`inline-flex w-fit items-center rounded-full px-2.5 py-0.5 text-xs font-medium capitalize ${statusPillClass(
                   e.status,
                 )}`}
               >
                 {e.status.toLowerCase()}
               </span>
-              <span className="font-medium capitalize text-slate-700">
+              <span className="truncate font-medium capitalize text-slate-700">
                 {e.kind.toLowerCase()}
               </span>
-              <span className="text-slate-500">{e.session_label ?? '—'}</span>
+              <span className="truncate text-slate-500">
+                {e.session_label ?? '—'}
+              </span>
               <Link
                 to={`/runs/${e.id}`}
-                className="ml-auto text-emerald-700 hover:text-emerald-800 hover:underline focus:outline-none focus:ring-1 focus:ring-emerald-500"
+                className="justify-self-end whitespace-nowrap text-emerald-700 hover:text-emerald-800 hover:underline focus:outline-none focus:ring-1 focus:ring-emerald-500"
               >
                 {formatRelativeTime(e.created_at)}
               </Link>

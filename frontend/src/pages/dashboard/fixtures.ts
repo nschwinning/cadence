@@ -72,6 +72,7 @@ export function makeOverview(
         { asset_id: 2, ticker: 'FIN', name: 'Fin Co', return_pct: -0.1 },
       ],
     },
+    benchmark_series: [],
     ...overrides,
   };
 }

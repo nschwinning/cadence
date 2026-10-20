@@ -28,6 +28,7 @@ from cadence.dashboard.constants import RECENT_ACTIVITY_LIMIT, DashboardRange
 from cadence.paper_trading import service as paper_trading_service
 from cadence.paper_trading.constants import Benchmark, SessionStatus
 from cadence.paper_trading.models import (
+    BenchmarkPrice,
     PaperTrade,
     PaperTradingSession,
     SessionValueSnapshot,
@@ -130,6 +131,19 @@ def _add_trade(
             signal_type="entry",
             executed_at=executed_at,
         )
+    )
+    db_session.flush()
+
+
+def _add_benchmark_price(
+    db_session: Session,
+    *,
+    benchmark: Benchmark,
+    on: date,
+    close: float,
+) -> None:
+    db_session.add(
+        BenchmarkPrice(benchmark=benchmark.value, price_date=on, close=close)
     )
     db_session.flush()
 
@@ -495,6 +509,94 @@ def test_performers_ranked_and_exclude_insufficient_history(
     assert abs(performers.best[0].return_pct - 0.2) < 1e-9
 
 
+# --- benchmark overlay series -----------------------------------------------
+
+
+def test_benchmark_series_windowed_with_anchor_and_names(
+    db_session: Session,
+) -> None:
+    session_row = _make_session(db_session, name="Alpha", strategy_key="s1")
+    # Plotted session era (1M window start = 2026-05-16): one snapshot inside.
+    _add_snapshot(db_session, session_row.id, on=date(2026, 6, 5), total_value=10_000.0)
+    # S&P 500 closes: one strictly before the floor (anchor), two on/after it.
+    _add_benchmark_price(
+        db_session, benchmark=Benchmark.SP500, on=date(2026, 6, 1), close=100.0
+    )
+    _add_benchmark_price(
+        db_session, benchmark=Benchmark.SP500, on=date(2026, 6, 5), close=110.0
+    )
+    _add_benchmark_price(
+        db_session, benchmark=Benchmark.SP500, on=date(2026, 6, 10), close=121.0
+    )
+
+    overview = service.get_dashboard_overview(
+        db_session,
+        range_=DashboardRange.MONTH,
+        broker=StubBroker(),
+        today=_TODAY,
+        now=_NOW,
+    )
+
+    # One entry per catalog benchmark, in catalog order, each carrying its name.
+    assert [s.benchmark_id for s in overview.benchmark_series] == [
+        b.value for b in Benchmark
+    ]
+    sp500 = next(
+        s for s in overview.benchmark_series if s.benchmark_id == Benchmark.SP500.value
+    )
+    assert sp500.name == "S&P 500"
+    # Floor is the earliest plotted session date (2026-06-05): the pre-floor close
+    # is prepended as the rebasing anchor, then every close on/after the floor.
+    assert [(p.date, p.price) for p in sp500.points] == [
+        (date(2026, 6, 1), 100.0),
+        (date(2026, 6, 5), 110.0),
+        (date(2026, 6, 10), 121.0),
+    ]
+
+
+def test_benchmark_without_prices_is_present_but_empty(
+    db_session: Session,
+) -> None:
+    session_row = _make_session(db_session, name="Alpha", strategy_key="s1")
+    _add_snapshot(db_session, session_row.id, on=date(2026, 6, 5), total_value=10_000.0)
+    _add_benchmark_price(
+        db_session, benchmark=Benchmark.SP500, on=date(2026, 6, 5), close=100.0
+    )
+
+    overview = service.get_dashboard_overview(
+        db_session,
+        range_=DashboardRange.MONTH,
+        broker=StubBroker(),
+        today=_TODAY,
+        now=_NOW,
+    )
+
+    # Every catalog benchmark is represented; those with no stored prices have an
+    # empty points list rather than being omitted or raising.
+    assert len(overview.benchmark_series) == len(list(Benchmark))
+    djia = next(
+        s for s in overview.benchmark_series if s.benchmark_id == Benchmark.DJIA.value
+    )
+    assert djia.points == []
+
+
+def test_benchmark_series_empty_system_lists_catalog_with_empty_points(
+    db_session: Session,
+) -> None:
+    overview = service.get_dashboard_overview(
+        db_session,
+        range_=DashboardRange.MONTH,
+        broker=StubBroker(),
+        today=_TODAY,
+        now=_NOW,
+    )
+
+    assert [s.benchmark_id for s in overview.benchmark_series] == [
+        b.value for b in Benchmark
+    ]
+    assert all(s.points == [] for s in overview.benchmark_series)
+
+
 # --- HTTP layer -------------------------------------------------------------
 
 
@@ -512,6 +614,9 @@ def test_overview_endpoint_returns_payload(
     assert "automation" in body
     assert "universe_balance" in body
     assert "universe_performers" in body
+    # Every catalog benchmark is present for the combined-equity overlay.
+    assert isinstance(body["benchmark_series"], list)
+    assert len(body["benchmark_series"]) == len(list(Benchmark))
 
 
 def test_overview_endpoint_rejects_unsupported_range(client: TestClient) -> None:

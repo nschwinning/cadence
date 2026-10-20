@@ -162,7 +162,7 @@ describe('buildComparisonOption', () => {
         marker: '',
       },
     ]);
-    expect(html).toContain('Jan 5, 2026');
+    expect(html).toContain('05.01.2026');
     expect(html).toContain('Alpha');
     expect(html).toContain('10.00%');
   });
@@ -180,7 +180,7 @@ describe('buildComparisonOption', () => {
       axisLabel: { formatter: (v: number) => string };
     };
     expect(xAxis.type).toBe('time');
-    expect(xAxis.axisLabel.formatter(Date.parse('2026-01-04'))).toBe('1/4');
+    expect(xAxis.axisLabel.formatter(Date.parse('2026-01-04'))).toBe('04.01');
   });
 });
 

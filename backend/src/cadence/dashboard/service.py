@@ -39,7 +39,12 @@ from cadence.dashboard.constants import (
     resolve_range_start,
 )
 from cadence.paper_trading import service as paper_trading_service
-from cadence.paper_trading.constants import SessionStatus
+from cadence.paper_trading.benchmark import load_benchmark_series
+from cadence.paper_trading.constants import (
+    Benchmark,
+    SessionStatus,
+    benchmark_display_name,
+)
 from cadence.paper_trading.models import PaperTrade, PaperTradingSession
 from cadence.portfolios import service as portfolios_service
 from cadence.price_history import service as price_history_service
@@ -332,6 +337,30 @@ class UniversePerformers:
 
 
 @dataclass(frozen=True)
+class BenchmarkPricePoint:
+    """One (date, price) point of a benchmark index's closing-price series."""
+
+    date: date
+    price: float
+
+
+@dataclass(frozen=True)
+class BenchmarkOverlaySeries:
+    """One catalog benchmark's price series for the combined-equity overlay.
+
+    ``points`` carries the index's stored closes over the plotted era as raw
+    (date, price) pairs — *not* pre-rebased to any portfolio value, because the
+    client rebases each line to the currently-visible combined curve's start. An
+    index with no stored prices in range has an empty ``points`` list rather than
+    being omitted.
+    """
+
+    benchmark_id: str
+    name: str
+    points: list[BenchmarkPricePoint]
+
+
+@dataclass(frozen=True)
 class DashboardOverview:
     """The full range-scoped dashboard overview payload."""
 
@@ -341,6 +370,7 @@ class DashboardOverview:
     recent_activity: list[ActivityEntry]
     universe_balance: UniverseBalance
     universe_performers: UniversePerformers
+    benchmark_series: list[BenchmarkOverlaySeries]
 
 
 def _range_start_datetime(start_date: date | None) -> datetime | None:
@@ -574,6 +604,47 @@ def _universe_performers(
     return UniversePerformers(best=best, worst=worst)
 
 
+def _benchmark_overlays(
+    session: Session, *, floor: date | None
+) -> list[BenchmarkOverlaySeries]:
+    """Per-index price series for the combined-equity benchmark overlay.
+
+    Returns one entry per catalog benchmark, in catalog order, each carrying the
+    index's stored closes over the plotted era as raw (date, price) points. The
+    series is windowed to ``floor`` — the earliest date present across the
+    sessions' range-windowed value series — so it spans exactly where the sessions
+    do (and the ``Max`` range does not ship decades of pre-session history). The
+    last close strictly *before* ``floor`` is prepended as a rebasing anchor so the
+    client can resolve the benchmark price on or before the combined curve's start
+    even when that start falls on a non-trading day. A benchmark with no stored
+    prices in range yields an empty ``points`` list rather than being omitted;
+    ``floor`` is ``None`` only when no session has any plotted point, in which case
+    every series is empty.
+    """
+    overlays: list[BenchmarkOverlaySeries] = []
+    for benchmark in Benchmark:
+        points: list[BenchmarkPricePoint] = []
+        if floor is not None:
+            series = load_benchmark_series(session, benchmark.value)
+            anchor: BenchmarkPricePoint | None = None
+            for point_date, close in zip(series.dates, series.closes, strict=True):
+                if point_date < floor:
+                    # Keep only the latest pre-floor close as the rebasing anchor.
+                    anchor = BenchmarkPricePoint(date=point_date, price=close)
+                else:
+                    points.append(BenchmarkPricePoint(date=point_date, price=close))
+            if anchor is not None:
+                points.insert(0, anchor)
+        overlays.append(
+            BenchmarkOverlaySeries(
+                benchmark_id=benchmark.value,
+                name=benchmark_display_name(benchmark),
+                points=points,
+            )
+        )
+    return overlays
+
+
 def get_dashboard_overview(
     session: Session,
     *,
@@ -615,6 +686,12 @@ def get_dashboard_overview(
         )
     }
 
+    # Benchmark overlay spans exactly the plotted session era: the earliest date
+    # present across the sessions' windowed value series (``None`` when nothing is
+    # plotted, which yields empty series).
+    session_point_dates = [point.date for perf in sessions for point in perf.points]
+    overlay_floor = min(session_point_dates) if session_point_dates else None
+
     return DashboardOverview(
         range=range_,
         sessions=sessions,
@@ -631,4 +708,5 @@ def get_dashboard_overview(
         universe_performers=_universe_performers(
             session, range_=range_, today=today
         ),
+        benchmark_series=_benchmark_overlays(session, floor=overlay_floor),
     )

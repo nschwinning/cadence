@@ -1,33 +1,176 @@
-import type { DashboardSessionPerformance } from '../../types/api';
-import { formatAxisDate, formatCurrency, formatTooltipDate } from '../../lib/format';
+import { useMemo, useState } from 'react';
+import type { EChartsCoreOption } from 'echarts/core';
+import type {
+  DashboardBenchmarkSeries,
+  DashboardSessionPerformance,
+} from '../../types/api';
+import {
+  formatAxisTimestamp,
+  formatCurrency,
+  formatTooltipTimestamp,
+} from '../../lib/format';
 import { categoricalColor } from '../../lib/palette';
-import { ChartAxes } from '../paper-trading/ChartAxes';
-import { ChartTooltip } from '../paper-trading/ChartTooltip';
-import { useChartHover } from '../paper-trading/useChartHover';
-import { combinedSeries } from './aggregate';
+import { EChart } from '../../components/charts/EChart';
+import {
+  combinedSeries,
+  rebaseBenchmarkLine,
+  type CombinedPoint,
+} from './aggregate';
 
 const CARD_CLASS = 'rounded-lg border border-slate-200 bg-white shadow-sm';
 const LINE_COLOR = '#059669'; // emerald-600 — the single summed-value line
 
+// The benchmark id drawn by default; the rest are opt-in via the legend.
+const DEFAULT_BENCHMARK_ID = 'SP500';
+
+// Muted palette for the benchmark overlay lines, distinct from the emerald
+// portfolio line. Assigned by a benchmark's position in the (stable) catalog so
+// each index keeps its color regardless of which others are selected.
+const BENCHMARK_COLORS = [
+  '#64748b', // slate-500
+  '#2563eb', // blue-600
+  '#7c3aed', // violet-600
+  '#0891b2', // cyan-600
+  '#db2777', // pink-600
+  '#ca8a04', // yellow-600
+  '#9333ea', // purple-600
+  '#0d9488', // teal-600
+] as const;
+
+/** One rebased benchmark line ready to plot alongside the combined curve. */
+interface BenchmarkLine {
+  id: string;
+  name: string;
+  color: string;
+  points: CombinedPoint[];
+}
+
 /**
- * The combined equity curve: a single dependency-free inline-SVG line summing
- * the checked sessions' values on a shared, carry-forward date axis windowed to
- * the selected range. Mirrors the native-SVG, non-scaling-stroke approach of the
- * paper-trading charts. The checkbox legend toggles the page-level selection
- * (which also re-derives the hero tiles and leaderboard), so this chart renders
- * from already-fetched per-session data and never refetches on a toggle.
+ * Build the ECharts option for the combined equity curve: a single emerald line
+ * summing the selected sessions' values, plus any selected benchmark index lines
+ * (dashed, thinner, muted) rebased to the combined curve's start — all on a shared
+ * time x-axis and USD y-axis. The axis tooltip reports the summed value and each
+ * drawn benchmark's value at the hovered date. Mirrors the paper-trading charts'
+ * EChart option shape so the dashboard chart looks and behaves like them.
+ */
+export function buildCombinedOption(
+  points: CombinedPoint[],
+  benchmarkLines: BenchmarkLine[] = [],
+): EChartsCoreOption {
+  return {
+    grid: { left: 64, right: 16, top: 12, bottom: 28 },
+    xAxis: {
+      type: 'time',
+      axisLabel: {
+        hideOverlap: true,
+        formatter: (value: number) => formatAxisTimestamp(value),
+      },
+    },
+    yAxis: {
+      type: 'value',
+      scale: true,
+      axisLabel: { formatter: (value: number) => formatCurrency(value) },
+    },
+    tooltip: {
+      trigger: 'axis',
+      formatter: (params: unknown) => {
+        const rows = Array.isArray(params) ? params : [params];
+        if (rows.length === 0) return '';
+        const first = rows[0] as { axisValue?: number };
+        const ts = Number(first.axisValue);
+        const header = formatTooltipTimestamp(ts);
+        const lines: string[] = [header];
+        for (const row of rows as Array<{
+          seriesName?: string;
+          value?: [number, number | null];
+          marker?: string;
+        }>) {
+          const raw = Array.isArray(row.value) ? row.value[1] : null;
+          if (raw === null || !Number.isFinite(raw)) continue;
+          lines.push(
+            `${row.marker ?? ''}${row.seriesName}: ${formatCurrency(raw)}`,
+          );
+        }
+        return lines.length > 1 ? lines.join('<br/>') : header;
+      },
+    },
+    series: [
+      {
+        id: 'combined',
+        name: 'Combined value',
+        type: 'line',
+        showSymbol: false,
+        lineStyle: { width: 2 },
+        itemStyle: { color: LINE_COLOR },
+        data: points.map((p) => [Date.parse(p.date), p.value]),
+      },
+      ...benchmarkLines.map((line) => ({
+        id: `benchmark:${line.id}`,
+        name: line.name,
+        type: 'line' as const,
+        showSymbol: false,
+        lineStyle: { width: 1.5, type: 'dashed' as const },
+        itemStyle: { color: line.color },
+        data: line.points.map((p) => [Date.parse(p.date), p.value]),
+      })),
+    ],
+  };
+}
+
+/**
+ * The combined equity curve: a single line summing the checked sessions' values
+ * on a shared, carry-forward date axis windowed to the selected range, with
+ * selectable benchmark index lines rebased to the combined curve's start. The
+ * portfolio checkbox legend toggles the page-level selection (which also re-derives
+ * the hero tiles and leaderboard); the benchmark checkbox legend toggles local
+ * overlay state. Both render from already-fetched data and never refetch on a toggle.
  */
 export function CombinedEquityChart({
   sessions,
   selectedIds,
   onToggle,
+  benchmarkSeries,
 }: {
   sessions: DashboardSessionPerformance[];
   selectedIds: Set<string>;
   onToggle: (id: string) => void;
+  benchmarkSeries: DashboardBenchmarkSeries[];
 }) {
   const selected = sessions.filter((s) => selectedIds.has(s.id));
   const series = combinedSeries(selected);
+
+  // Local overlay selection: S&P 500 on by default, the rest opt-in.
+  const [selectedBenchmarks, setSelectedBenchmarks] = useState<Set<string>>(
+    () => new Set([DEFAULT_BENCHMARK_ID]),
+  );
+  const toggleBenchmark = (id: string) =>
+    setSelectedBenchmarks((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+
+  // Rebase each selected, non-empty benchmark to the combined curve's first point.
+  // Re-runs when the selection (hence the combined start) or the overlay set
+  // changes — no refetch. Colors are keyed to catalog position for stability.
+  const start = series[0];
+  const benchmarkLines = useMemo<BenchmarkLine[]>(() => {
+    if (!start) return [];
+    const lines: BenchmarkLine[] = [];
+    benchmarkSeries.forEach((bench, i) => {
+      if (!selectedBenchmarks.has(bench.benchmark_id)) return;
+      const points = rebaseBenchmarkLine(bench.points, start);
+      if (points.length === 0) return;
+      lines.push({
+        id: bench.benchmark_id,
+        name: bench.name,
+        color: BENCHMARK_COLORS[i % BENCHMARK_COLORS.length],
+        points,
+      });
+    });
+    return lines;
+  }, [benchmarkSeries, selectedBenchmarks, start]);
 
   return (
     <div className={CARD_CLASS}>
@@ -37,25 +180,43 @@ export function CombinedEquityChart({
         </h2>
       </div>
       <div className="p-4">
-        <SummedCurve points={series} hasSelection={selected.length > 0} />
+        <SummedCurve
+          points={series}
+          benchmarkLines={benchmarkLines}
+          hasSelection={selected.length > 0}
+        />
         <Legend
           sessions={sessions}
           selectedIds={selectedIds}
           onToggle={onToggle}
+        />
+        <BenchmarkLegend
+          benchmarkSeries={benchmarkSeries}
+          selectedBenchmarks={selectedBenchmarks}
+          onToggle={toggleBenchmark}
         />
       </div>
     </div>
   );
 }
 
-/** The summed-value SVG line, with empty / insufficient-history placeholders. */
+/** The summed-value chart, with empty / insufficient-history placeholders. */
 function SummedCurve({
   points,
+  benchmarkLines,
   hasSelection,
 }: {
-  points: { date: string; value: number }[];
+  points: CombinedPoint[];
+  benchmarkLines: BenchmarkLine[];
   hasSelection: boolean;
 }) {
+  // Only build the option once there is something to plot; the empty/placeholder
+  // states return first so the chart never mounts on a degenerate series.
+  const option = useMemo(
+    () => (points.length >= 2 ? buildCombinedOption(points, benchmarkLines) : null),
+    [points, benchmarkLines],
+  );
+
   if (!hasSelection) {
     return (
       <div
@@ -66,7 +227,7 @@ function SummedCurve({
       </div>
     );
   }
-  if (points.length < 2) {
+  if (points.length < 2 || option === null) {
     return (
       <div
         className="flex h-40 items-center justify-center rounded border border-dashed border-slate-300 bg-slate-50 text-sm text-slate-400"
@@ -76,131 +237,13 @@ function SummedCurve({
       </div>
     );
   }
-  // The plot (and its hover hook) is its own component so the hook only mounts
-  // when there is a line to draw; the empty/placeholder states return first.
-  return <EquityPlot points={points} />;
-}
-
-/** The plotted summed-value line with axes and a hover tooltip. */
-function EquityPlot({ points }: { points: { date: string; value: number }[] }) {
-  const width = 800;
-  const height = 160;
-  const pad = 8;
-
-  const times = points.map((p) => Date.parse(p.date));
-  const values = points.map((p) => p.value);
-  const minT = Math.min(...times);
-  const maxT = Math.max(...times);
-  const tSpan = maxT - minT || 1;
-  const minV = Math.min(...values);
-  const maxV = Math.max(...values);
-  const vSpan = maxV - minV || 1;
-
-  const x = (t: number) => pad + ((t - minT) / tSpan) * (width - 2 * pad);
-  const y = (value: number) =>
-    pad + (1 - (value - minV) / vSpan) * (height - 2 * pad);
-
-  const yLabels = [maxV, (minV + maxV) / 2, minV].map((v) => formatCurrency(v));
-  const xLabels: [string, string] = [
-    formatAxisDate(points[0].date),
-    formatAxisDate(points[points.length - 1].date),
-  ];
-
-  // Hover: map the pointer ratio to a target calendar time, then pick the point
-  // nearest it by time distance.
-  const hover = useChartHover<{ date: string; value: number }>((ratio) => {
-    const dataPos = Math.min(
-      1,
-      Math.max(0, (ratio * width - pad) / (width - 2 * pad)),
-    );
-    const target = minT + dataPos * tSpan;
-    let best = points[0];
-    let bestDist = Infinity;
-    for (const p of points) {
-      const dist = Math.abs(Date.parse(p.date) - target);
-      if (dist < bestDist) {
-        bestDist = dist;
-        best = p;
-      }
-    }
-    return {
-      payload: best,
-      xFraction: x(Date.parse(best.date)) / width,
-      yFraction: y(best.value) / height,
-    };
-  });
-
-  const active = hover.active;
-
   return (
-    <ChartAxes yLabels={yLabels} xLabels={xLabels}>
-      <div
-        className="relative"
-        onPointerMove={hover.onPointerMove}
-        onPointerLeave={hover.onPointerLeave}
-      >
-        <svg
-          viewBox={`0 0 ${width} ${height}`}
-          preserveAspectRatio="none"
-          className="h-40 w-full"
-          role="img"
-          aria-label="Combined portfolio value"
-        >
-          <polyline
-            points={points
-              .map(
-                (p) =>
-                  `${x(Date.parse(p.date)).toFixed(2)},${y(p.value).toFixed(2)}`,
-              )
-              .join(' ')}
-            fill="none"
-            stroke={LINE_COLOR}
-            strokeWidth={2}
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            vectorEffect="non-scaling-stroke"
-            data-testid="equity-line"
-          />
-          {active && (
-            <line
-              x1={active.xFraction * width}
-              x2={active.xFraction * width}
-              y1={pad}
-              y2={height - pad}
-              stroke="#94a3b8"
-              strokeWidth={1}
-              strokeDasharray="3 3"
-              vectorEffect="non-scaling-stroke"
-            />
-          )}
-        </svg>
-        {active && (
-          <>
-            <span
-              aria-hidden="true"
-              className="pointer-events-none absolute h-2 w-2 -translate-x-1/2 -translate-y-1/2 rounded-full ring-2 ring-white"
-              style={{
-                left: `${active.xFraction * 100}%`,
-                top: `${active.yFraction * 100}%`,
-                backgroundColor: LINE_COLOR,
-              }}
-            />
-            <ChartTooltip
-              xFraction={active.xFraction}
-              yFraction={active.yFraction}
-              date={formatTooltipDate(active.payload.date)}
-              rows={[
-                {
-                  label: 'Combined value',
-                  value: formatCurrency(active.payload.value),
-                  color: LINE_COLOR,
-                },
-              ]}
-            />
-          </>
-        )}
-      </div>
-    </ChartAxes>
+    <EChart
+      option={option}
+      height={200}
+      className="w-full"
+      ariaLabel="Combined portfolio value"
+    />
   );
 }
 
@@ -237,6 +280,61 @@ function Legend({
                 style={{ backgroundColor: categoricalColor(i) }}
               />
               <span className="font-medium">{s.label}</span>
+            </label>
+          </li>
+        );
+      })}
+    </ul>
+  );
+}
+
+/**
+ * Checkbox legend of every catalog benchmark. A benchmark with no price data over
+ * the range is disabled (its checkbox is inert) rather than erroring. Toggling an
+ * enabled benchmark adds or removes its rebased overlay line without a refetch.
+ */
+function BenchmarkLegend({
+  benchmarkSeries,
+  selectedBenchmarks,
+  onToggle,
+}: {
+  benchmarkSeries: DashboardBenchmarkSeries[];
+  selectedBenchmarks: Set<string>;
+  onToggle: (id: string) => void;
+}) {
+  if (benchmarkSeries.length === 0) return null;
+  return (
+    <ul
+      className="mt-3 flex flex-wrap gap-x-4 gap-y-2 border-t border-slate-100 pt-3 text-sm"
+      aria-label="Benchmark indexes"
+    >
+      {benchmarkSeries.map((bench, i) => {
+        const checked = selectedBenchmarks.has(bench.benchmark_id);
+        const hasData = bench.points.length > 0;
+        return (
+          <li key={bench.benchmark_id}>
+            <label
+              className={`flex items-center gap-2 ${
+                !hasData
+                  ? 'cursor-not-allowed text-slate-300'
+                  : checked
+                    ? 'cursor-pointer text-slate-700'
+                    : 'cursor-pointer text-slate-400'
+              }`}
+            >
+              <input
+                type="checkbox"
+                checked={checked && hasData}
+                disabled={!hasData}
+                onChange={() => onToggle(bench.benchmark_id)}
+                className="h-3.5 w-3.5 rounded border-slate-300 text-emerald-600 focus:ring-emerald-500 disabled:opacity-50"
+              />
+              <span
+                aria-hidden="true"
+                className="inline-block h-0 w-3 border-t-2 border-dashed"
+                style={{ borderColor: BENCHMARK_COLORS[i % BENCHMARK_COLORS.length] }}
+              />
+              <span className="font-medium">{bench.name}</span>
             </label>
           </li>
         );

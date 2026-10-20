@@ -1043,6 +1043,24 @@ export interface DashboardUniversePerformers {
   worst: DashboardPerformerEntry[];
 }
 
+/** One (date, price) point of a benchmark index's closing-price series. */
+export interface DashboardBenchmarkPricePoint {
+  date: string; // ISO YYYY-MM-DD
+  price: number;
+}
+
+/**
+ * One catalog benchmark's price series for the combined-equity overlay. `points`
+ * are raw index closes (not pre-rebased); the client rebases each line to the
+ * visible combined curve's start. An index with no stored prices in range has an
+ * empty `points` list. Mirrors `DashboardBenchmarkSeries`.
+ */
+export interface DashboardBenchmarkSeries {
+  benchmark_id: string;
+  name: string;
+  points: DashboardBenchmarkPricePoint[];
+}
+
 /** The full range-scoped overview from `GET /api/v1/dashboard/overview`. */
 export interface DashboardOverview {
   range: DashboardRange;
@@ -1051,6 +1069,7 @@ export interface DashboardOverview {
   recent_activity: DashboardActivityEntry[];
   universe_balance: DashboardUniverseBalance;
   universe_performers: DashboardUniversePerformers;
+  benchmark_series: DashboardBenchmarkSeries[];
 }
 
 // --- Technical-indicator configuration (read-only) -------------------------

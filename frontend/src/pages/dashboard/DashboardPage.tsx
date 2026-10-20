@@ -138,19 +138,20 @@ export function DashboardPage() {
             sessions={sessions}
             selectedIds={selectedIds}
             onToggle={toggle}
+            benchmarkSeries={data.benchmark_series}
           />
 
           <PortfolioLeaderboard sessions={selectedSessions} />
-
-          <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
-            <AutomationPanel automation={data.automation} />
-            <RecentActivityFeed entries={data.recent_activity} />
-          </div>
 
           <UniverseSection
             balance={data.universe_balance}
             performers={data.universe_performers}
           />
+
+          <div className="grid grid-cols-1 items-start gap-6 lg:grid-cols-2">
+            <AutomationPanel automation={data.automation} />
+            <RecentActivityFeed entries={data.recent_activity} />
+          </div>
         </div>
       )}
     </section>

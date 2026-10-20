@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
   aggregateTotals,
   combinedSeries,
+  rebaseBenchmarkLine,
   sessionReturnPct,
   sessionValueStart,
 } from './aggregate';
@@ -82,5 +83,64 @@ describe('combinedSeries (carry-forward summed line)', () => {
 
   it('is empty when there are no sessions or points', () => {
     expect(combinedSeries([])).toEqual([]);
+  });
+});
+
+describe('rebaseBenchmarkLine', () => {
+  const start = { date: '2026-06-05', value: 10000 };
+
+  it('rebases to the combined start using the on/before anchor and seeds the origin', () => {
+    // Anchor (100) is on/before the start date; later closes scale off it.
+    const line = rebaseBenchmarkLine(
+      [
+        { date: '2026-06-01', price: 100 }, // pre-start anchor (not plotted)
+        { date: '2026-06-05', price: 110 }, // on the start date → deduped by origin
+        { date: '2026-06-10', price: 121 },
+      ],
+      start,
+    );
+    expect(line).toEqual([
+      { date: '2026-06-05', value: 10000 }, // origin shares the portfolio start
+      { date: '2026-06-10', value: 11000 }, // 10000 × 121 / 110
+    ]);
+  });
+
+  it('anchors to the earliest close when every close is after the start', () => {
+    // No close on/before the start: the first available close anchors the line,
+    // so it begins at that later date (no synthetic origin at the start).
+    const line = rebaseBenchmarkLine(
+      [
+        { date: '2026-06-08', price: 200 },
+        { date: '2026-06-12', price: 220 },
+      ],
+      start,
+    );
+    expect(line).toEqual([
+      { date: '2026-06-08', value: 10000 }, // 10000 × 200 / 200
+      { date: '2026-06-12', value: 11000 }, // 10000 × 220 / 200
+    ]);
+  });
+
+  it('returns an empty line when there are no points', () => {
+    expect(rebaseBenchmarkLine([], start)).toEqual([]);
+  });
+
+  it('re-rebases to a different combined start (selection change)', () => {
+    // When the session selection changes, the combined curve's first point moves,
+    // so the same benchmark series must re-rebase onto the new origin.
+    const points = [
+      { date: '2026-06-05', price: 100 },
+      { date: '2026-06-10', price: 120 },
+    ];
+    const atTen = rebaseBenchmarkLine(points, { date: '2026-06-05', value: 10000 });
+    const atTwenty = rebaseBenchmarkLine(points, { date: '2026-06-05', value: 20000 });
+    expect(atTen).toEqual([
+      { date: '2026-06-05', value: 10000 },
+      { date: '2026-06-10', value: 12000 },
+    ]);
+    expect(atTwenty).toEqual([
+      { date: '2026-06-05', value: 20000 },
+      { date: '2026-06-10', value: 24000 },
+    ]);
   });
 });

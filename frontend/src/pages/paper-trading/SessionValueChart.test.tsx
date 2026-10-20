@@ -139,7 +139,7 @@ describe('buildValueOption', () => {
       snapshot('2026-01-05', 110000),
     ]).xAxis as { type: string; axisLabel: { formatter: (v: number) => string } };
     expect(xAxis.type).toBe('time');
-    expect(xAxis.axisLabel.formatter(Date.parse('2026-01-04'))).toBe('1/4');
+    expect(xAxis.axisLabel.formatter(Date.parse('2026-01-04'))).toBe('04.01');
   });
 
   it('builds a tooltip reporting each line, skipping a null benchmark row', () => {
@@ -161,7 +161,7 @@ describe('buildValueOption', () => {
       { axisValue: ts, seriesName: 'Portfolio value', value: [ts, 110000], marker: '' },
       { axisValue: ts, seriesName: 'Benchmark', value: [ts, null], marker: '' },
     ]);
-    expect(withNull).toContain('Jan 5, 2026');
+    expect(withNull).toContain('05.01.2026');
     expect(withNull).toContain('Portfolio value');
     expect(withNull).not.toContain('Benchmark');
   });

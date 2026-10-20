@@ -39,10 +39,10 @@ export function formatPercent(value: number, fractionDigits = 2): string {
 }
 
 /**
- * Format an ISO `YYYY-MM-DD` date as a short `M/D` axis label. Parses the date
- * parts directly rather than via `new Date(iso)` so the label never shifts a day
- * from local-timezone interpretation of a UTC-midnight date. Falls back to the
- * raw string if it is not in the expected shape.
+ * Format an ISO `YYYY-MM-DD` date as a short German `dd.MM` axis label (e.g.
+ * `04.01`). Parses the date parts directly rather than via `new Date(iso)` so the
+ * label never shifts a day from local-timezone interpretation of a UTC-midnight
+ * date. Falls back to the raw string if it is not in the expected shape.
  */
 export function formatAxisDate(iso: string): string {
   const parts = iso.split('-');
@@ -50,40 +50,27 @@ export function formatAxisDate(iso: string): string {
   const month = Number(parts[1]);
   const day = Number(parts[2]);
   if (!Number.isFinite(month) || !Number.isFinite(day)) return iso;
-  return `${month}/${day}`;
+  const dd = String(day).padStart(2, '0');
+  const mm = String(month).padStart(2, '0');
+  return `${dd}.${mm}`;
 }
 
 /**
  * Format an epoch-millisecond timestamp (as handed to an ECharts time-axis label
- * formatter) as a short `M/D` label. Reads the UTC date parts so a UTC-midnight
- * snapshot timestamp never shifts a day under a local timezone, then reuses
- * `formatAxisDate`. Falls back to an empty string for a non-finite input.
+ * formatter) as a short German `dd.MM` label. Reads the UTC date parts so a
+ * UTC-midnight snapshot timestamp never shifts a day under a local timezone, then
+ * reuses `formatAxisDate`. Falls back to an empty string for a non-finite input.
  */
 export function formatAxisTimestamp(ms: number): string {
   if (!Number.isFinite(ms)) return '';
   return formatAxisDate(new Date(ms).toISOString().slice(0, 10));
 }
 
-const TOOLTIP_MONTHS = [
-  'Jan',
-  'Feb',
-  'Mar',
-  'Apr',
-  'May',
-  'Jun',
-  'Jul',
-  'Aug',
-  'Sep',
-  'Oct',
-  'Nov',
-  'Dec',
-] as const;
-
 /**
- * Format an ISO `YYYY-MM-DD` date as a fuller `Mon D, YYYY` label for chart hover
- * tooltips (e.g. `Jan 4, 2026`). Like `formatAxisDate`, it parses the date parts
- * directly rather than via `new Date(iso)` so the label never shifts a day from
- * local-timezone interpretation of a UTC-midnight date. Falls back to the raw
+ * Format an ISO `YYYY-MM-DD` date as a fuller German `dd.MM.yyyy` label for chart
+ * hover tooltips (e.g. `04.01.2026`). Like `formatAxisDate`, it parses the date
+ * parts directly rather than via `new Date(iso)` so the label never shifts a day
+ * from local-timezone interpretation of a UTC-midnight date. Falls back to the raw
  * string if it is not in the expected shape.
  */
 export function formatTooltipDate(iso: string): string {
@@ -95,16 +82,17 @@ export function formatTooltipDate(iso: string): string {
   if (!Number.isFinite(year) || !Number.isFinite(month) || !Number.isFinite(day)) {
     return iso;
   }
-  const name = TOOLTIP_MONTHS[month - 1];
-  if (!name) return iso;
-  return `${name} ${day}, ${year}`;
+  const dd = String(day).padStart(2, '0');
+  const mm = String(month).padStart(2, '0');
+  return `${dd}.${mm}.${year}`;
 }
 
 /**
  * Format an epoch-millisecond timestamp (as handed to an ECharts tooltip formatter)
- * as a fuller `Mon D, YYYY` label. Reads the UTC date parts (via the ISO string) so
- * a UTC-midnight snapshot timestamp never shifts a day under a local timezone, then
- * reuses `formatTooltipDate`. Falls back to an empty string for a non-finite input.
+ * as a fuller German `dd.MM.yyyy` label. Reads the UTC date parts (via the ISO
+ * string) so a UTC-midnight snapshot timestamp never shifts a day under a local
+ * timezone, then reuses `formatTooltipDate`. Falls back to an empty string for a
+ * non-finite input.
  */
 export function formatTooltipTimestamp(ms: number): string {
   if (!Number.isFinite(ms)) return '';

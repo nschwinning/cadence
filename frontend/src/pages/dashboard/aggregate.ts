@@ -8,7 +8,10 @@
  * definitions so the aggregate tiles agree with the per-session numbers.
  */
 
-import type { DashboardSessionPerformance } from '../../types/api';
+import type {
+  DashboardBenchmarkPricePoint,
+  DashboardSessionPerformance,
+} from '../../types/api';
 
 /** A session's value at the range start, derived as `current_value - pnl`. */
 export function sessionValueStart(session: DashboardSessionPerformance): number {
@@ -94,4 +97,48 @@ export function combinedSeries(
     }
     return { date, value };
   });
+}
+
+/**
+ * Rebase a benchmark's raw price series onto the combined equity curve, so the
+ * line answers "what the combined curve's starting capital would be worth
+ * invested in that index". `points` are ascending by date and may include a
+ * single pre-start anchor close (as the backend sends). `start` is the combined
+ * curve's first point `{date, value}`.
+ *
+ * The anchor price is the index's last close on/before the combined start date;
+ * the line then tracks `start.value × price(t) / anchor` for every close on/after
+ * the start. When the anchor is on/before the start, the line is seeded with the
+ * start point itself so it shares the portfolio line's origin. When every stored
+ * close is *after* the start (no on/before anchor), the earliest close anchors the
+ * line instead, so it begins at the first available date. Returns an empty line
+ * when there are no points or the anchor price is non-positive.
+ */
+export function rebaseBenchmarkLine(
+  points: DashboardBenchmarkPricePoint[],
+  start: CombinedPoint,
+): CombinedPoint[] {
+  if (points.length === 0) return [];
+
+  // Anchor: the last close on/before the start date (carry-forward), falling back
+  // to the earliest close when every stored close is after the start.
+  let anchor: number | null = null;
+  for (const p of points) {
+    if (p.date <= start.date) anchor = p.price;
+    else break;
+  }
+  const anchoredOnOrBeforeStart = anchor !== null;
+  if (anchor === null) anchor = points[0].price;
+  if (anchor <= 0) return [];
+
+  const line: CombinedPoint[] = [];
+  // Seed the origin at the combined start so both lines share a left edge; valid
+  // because the anchor is the close on/before the start (value there is start.value).
+  if (anchoredOnOrBeforeStart) line.push({ date: start.date, value: start.value });
+  for (const p of points) {
+    if (p.date < start.date) continue; // the pre-start anchor is not plotted
+    if (anchoredOnOrBeforeStart && p.date === start.date) continue; // dedupe origin
+    line.push({ date: p.date, value: (start.value * p.price) / anchor });
+  }
+  return line;
 }

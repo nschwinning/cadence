@@ -35,15 +35,15 @@ describe('formatPercent', () => {
 });
 
 describe('formatAxisDate', () => {
-  it('formats an ISO date as a short M/D label', () => {
-    expect(formatAxisDate('2026-01-04')).toBe('1/4');
-    expect(formatAxisDate('2026-12-31')).toBe('12/31');
+  it('formats an ISO date as a short German dd.MM label', () => {
+    expect(formatAxisDate('2026-01-04')).toBe('04.01');
+    expect(formatAxisDate('2026-12-31')).toBe('31.12');
   });
 
   it('does not shift the day from timezone interpretation', () => {
     // A UTC-midnight date can render as the previous day under local time; the
-    // part-based parse keeps 2026-01-01 as 1/1 regardless of the runner's zone.
-    expect(formatAxisDate('2026-01-01')).toBe('1/1');
+    // part-based parse keeps 2026-01-01 as 01.01 regardless of the runner's zone.
+    expect(formatAxisDate('2026-01-01')).toBe('01.01');
   });
 
   it('falls back to the raw string when the shape is unexpected', () => {
@@ -52,15 +52,15 @@ describe('formatAxisDate', () => {
 });
 
 describe('formatTooltipDate', () => {
-  it('formats an ISO date as a fuller Mon D, YYYY label', () => {
-    expect(formatTooltipDate('2026-01-04')).toBe('Jan 4, 2026');
-    expect(formatTooltipDate('2026-12-31')).toBe('Dec 31, 2026');
+  it('formats an ISO date as a fuller German dd.MM.yyyy label', () => {
+    expect(formatTooltipDate('2026-01-04')).toBe('04.01.2026');
+    expect(formatTooltipDate('2026-12-31')).toBe('31.12.2026');
   });
 
   it('does not shift the day from timezone interpretation', () => {
     // Part-based parsing keeps a UTC-midnight date on its own calendar day
     // regardless of the runner's local zone.
-    expect(formatTooltipDate('2026-01-01')).toBe('Jan 1, 2026');
+    expect(formatTooltipDate('2026-01-01')).toBe('01.01.2026');
   });
 
   it('falls back to the raw string when the shape is unexpected', () => {

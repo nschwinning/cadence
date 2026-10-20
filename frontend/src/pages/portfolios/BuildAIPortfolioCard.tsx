@@ -437,196 +437,206 @@ export function BuildAIPortfolioCard() {
               These settings are frozen for the session&apos;s lifetime.
             </p>
 
-            {/* Technical-indicator strategy. */}
-            <div className="flex flex-col gap-1">
-              <label className="flex items-center gap-2 text-sm font-medium text-slate-800">
-                <input
-                  type="checkbox"
-                  checked={useTechnicalIndicators}
-                  onChange={(e) => setUseTechnicalIndicators(e.target.checked)}
-                  className="h-4 w-4 rounded border-slate-300 text-emerald-600 focus:ring-emerald-500"
-                />
-                Use technical-indicator trend strategy
-              </label>
-              <p className="text-xs text-slate-500">
-                When enabled, the build and every rebalance only enter assets in
-                a confirmed uptrend and attach trend context to holdings.
-              </p>
-            </div>
+            {/*
+              Opt-in toggles laid out as a responsive two-column grid of equal
+              cards (single column on small screens). `items-start` keeps each
+              card top-aligned so a control that expands its sub-inputs grows
+              downward without stretching its row neighbour. The guardrails
+              control carries four sub-inputs, so it spans both columns to keep
+              its expanded params visually grouped and aligned.
+            */}
+            <div className="grid grid-cols-1 items-start gap-4 sm:grid-cols-2">
+              {/* Technical-indicator strategy. */}
+              <div className="flex flex-col gap-1 rounded-lg border border-slate-200 p-4">
+                <label className="flex items-center gap-2 text-sm font-medium text-slate-800">
+                  <input
+                    type="checkbox"
+                    checked={useTechnicalIndicators}
+                    onChange={(e) => setUseTechnicalIndicators(e.target.checked)}
+                    className="h-4 w-4 rounded border-slate-300 text-emerald-600 focus:ring-emerald-500"
+                  />
+                  Use technical-indicator trend strategy
+                </label>
+                <p className="text-xs text-slate-500">
+                  When enabled, the build and every rebalance only enter assets in
+                  a confirmed uptrend and attach trend context to holdings.
+                </p>
+              </div>
 
-            {/* Company fundamentals. */}
-            <div className="flex flex-col gap-1">
-              <label className="flex items-center gap-2 text-sm font-medium text-slate-800">
-                <input
-                  type="checkbox"
-                  checked={useFundamentals}
-                  onChange={(e) => setUseFundamentals(e.target.checked)}
-                  className="h-4 w-4 rounded border-slate-300 text-emerald-600 focus:ring-emerald-500"
-                />
-                Use company fundamentals
-              </label>
-              <p className="text-xs text-slate-500">
-                When enabled, every rebalance shows the agent each candidate and
-                holding&apos;s company financials (margins, EPS, revenue, cash flow).
-              </p>
-            </div>
+              {/* Company fundamentals. */}
+              <div className="flex flex-col gap-1 rounded-lg border border-slate-200 p-4">
+                <label className="flex items-center gap-2 text-sm font-medium text-slate-800">
+                  <input
+                    type="checkbox"
+                    checked={useFundamentals}
+                    onChange={(e) => setUseFundamentals(e.target.checked)}
+                    className="h-4 w-4 rounded border-slate-300 text-emerald-600 focus:ring-emerald-500"
+                  />
+                  Use company fundamentals
+                </label>
+                <p className="text-xs text-slate-500">
+                  When enabled, every rebalance shows the agent each candidate and
+                  holding&apos;s company financials (margins, EPS, revenue, cash flow).
+                </p>
+              </div>
 
-            {/* Hard stop-loss. */}
-            <div className="flex flex-col gap-1">
-              <label className="flex items-center gap-2 text-sm font-medium text-slate-800">
-                <input
-                  type="checkbox"
-                  checked={stopLossEnabled}
-                  onChange={(e) => setStopLossEnabled(e.target.checked)}
-                  aria-expanded={stopLossEnabled}
-                  aria-controls="ai-stop-loss-panel"
-                  className="h-4 w-4 rounded border-slate-300 text-emerald-600 focus:ring-emerald-500"
-                />
-                Enable hard stop-loss
-              </label>
-              <p className="text-xs text-slate-500">
-                When enabled, each open position is sold in whole once its market
-                price falls to or below its average cost minus this percentage.
-              </p>
-              {stopLossEnabled && (
-                <div
-                  id="ai-stop-loss-panel"
-                  className="ml-6 mt-1 border-l-2 border-slate-100 pl-4"
-                >
-                  <div className="sm:w-48">
-                    <NumberField
-                      id="ai-stop-loss-pct"
-                      label="Stop-loss threshold (%)"
-                      unit="%"
-                      min={1}
-                      max={99}
-                      step={1}
-                      value={stopLossPct}
-                      onChange={setStopLossPct}
-                      hint="Between 1% and 99% below average cost."
-                      invalid={stopLossInvalid}
-                    />
+              {/* Hard stop-loss. */}
+              <div className="flex flex-col gap-1 rounded-lg border border-slate-200 p-4">
+                <label className="flex items-center gap-2 text-sm font-medium text-slate-800">
+                  <input
+                    type="checkbox"
+                    checked={stopLossEnabled}
+                    onChange={(e) => setStopLossEnabled(e.target.checked)}
+                    aria-expanded={stopLossEnabled}
+                    aria-controls="ai-stop-loss-panel"
+                    className="h-4 w-4 rounded border-slate-300 text-emerald-600 focus:ring-emerald-500"
+                  />
+                  Enable hard stop-loss
+                </label>
+                <p className="text-xs text-slate-500">
+                  When enabled, each open position is sold in whole once its market
+                  price falls to or below its average cost minus this percentage.
+                </p>
+                {stopLossEnabled && (
+                  <div
+                    id="ai-stop-loss-panel"
+                    className="ml-6 mt-1 border-l-2 border-slate-100 pl-4"
+                  >
+                    <div className="sm:w-48">
+                      <NumberField
+                        id="ai-stop-loss-pct"
+                        label="Stop-loss threshold (%)"
+                        unit="%"
+                        min={1}
+                        max={99}
+                        step={1}
+                        value={stopLossPct}
+                        onChange={setStopLossPct}
+                        hint="Between 1% and 99% below average cost."
+                        invalid={stopLossInvalid}
+                      />
+                    </div>
                   </div>
-                </div>
-              )}
-            </div>
+                )}
+              </div>
 
-            {/* Deterministic risk guardrails. */}
-            <div className="flex flex-col gap-1">
-              <label className="flex items-center gap-2 text-sm font-medium text-slate-800">
-                <input
-                  type="checkbox"
-                  checked={guardrailsEnabled}
-                  onChange={(e) => setGuardrailsEnabled(e.target.checked)}
-                  aria-expanded={guardrailsEnabled}
-                  aria-controls="ai-guardrails-panel"
-                  className="h-4 w-4 rounded border-slate-300 text-emerald-600 focus:ring-emerald-500"
-                />
-                Enable risk guardrails
-              </label>
-              <p className="text-xs text-slate-500">
-                When enabled, the target weights are deterministically clamped so
-                no single asset or asset class exceeds its cap and the invested
-                share stays within the ceiling (the rest held as cash). The
-                minimum-positions target is given to the AI as guidance.
-              </p>
-              {guardrailsEnabled && (
-                <div
-                  id="ai-guardrails-panel"
-                  className="ml-6 mt-1 border-l-2 border-slate-100 pl-4"
-                >
-                  <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-                    <NumberField
-                      id="ai-max-asset-pct"
-                      label="Max per asset (%)"
-                      unit="%"
-                      min={1}
-                      max={100}
-                      step={1}
-                      value={maxAssetPct}
-                      onChange={setMaxAssetPct}
-                      hint="Cap on any single position (one ticker)."
-                      invalid={maxAssetInvalid}
-                    />
-                    <NumberField
-                      id="ai-max-asset-class-pct"
-                      label="Max per asset class (%)"
-                      unit="%"
-                      min={1}
-                      max={100}
-                      step={1}
-                      value={maxAssetClassPct}
-                      onChange={setMaxAssetClassPct}
-                      hint="Cap on the stocks or crypto bucket."
-                      invalid={maxAssetClassInvalid}
-                    />
-                    <NumberField
-                      id="ai-min-positions"
-                      label="Min positions"
-                      min={1}
-                      max={50}
-                      step={1}
-                      value={minPositions}
-                      onChange={setMinPositions}
-                      hint="Target number of holdings (count)."
-                      invalid={minPositionsInvalid}
-                    />
-                    <NumberField
-                      id="ai-max-invested-pct"
-                      label="Max invested (%)"
-                      unit="%"
-                      min={1}
-                      max={100}
-                      step={1}
-                      value={maxInvestedPct}
-                      onChange={setMaxInvestedPct}
-                      hint="Remainder is held as cash."
-                      invalid={maxInvestedInvalid}
-                    />
+              {/* Learning feedback (prior-run outcomes into the rebalance prompt). */}
+              <div className="flex flex-col gap-1 rounded-lg border border-slate-200 p-4">
+                <label className="flex items-center gap-2 text-sm font-medium text-slate-800">
+                  <input
+                    type="checkbox"
+                    checked={learningFeedbackEnabled}
+                    onChange={(e) => setLearningFeedbackEnabled(e.target.checked)}
+                    aria-expanded={learningFeedbackEnabled}
+                    aria-controls="ai-learning-feedback-panel"
+                    className="h-4 w-4 rounded border-slate-300 text-emerald-600 focus:ring-emerald-500"
+                  />
+                  Enable learning feedback
+                </label>
+                <p className="text-xs text-slate-500">
+                  When enabled, each rebalance is shown a compact, cost-forward
+                  summary of this session's own recent daily outcomes so the AI can
+                  learn from what its prior decisions produced. Advisory only — it
+                  adds no hard constraints.
+                </p>
+                {learningFeedbackEnabled && (
+                  <div
+                    id="ai-learning-feedback-panel"
+                    className="ml-6 mt-1 border-l-2 border-slate-100 pl-4"
+                  >
+                    <div className="sm:w-48">
+                      <NumberField
+                        id="ai-learning-window"
+                        label="Learning window (days)"
+                        min={1}
+                        max={60}
+                        step={1}
+                        value={learningWindow}
+                        onChange={setLearningWindow}
+                        hint="Number of recent daily runs to summarize."
+                        invalid={learningWindowInvalid}
+                      />
+                    </div>
                   </div>
-                </div>
-              )}
-            </div>
+                )}
+              </div>
 
-            {/* Learning feedback (prior-run outcomes into the rebalance prompt). */}
-            <div className="flex flex-col gap-1">
-              <label className="flex items-center gap-2 text-sm font-medium text-slate-800">
-                <input
-                  type="checkbox"
-                  checked={learningFeedbackEnabled}
-                  onChange={(e) => setLearningFeedbackEnabled(e.target.checked)}
-                  aria-expanded={learningFeedbackEnabled}
-                  aria-controls="ai-learning-feedback-panel"
-                  className="h-4 w-4 rounded border-slate-300 text-emerald-600 focus:ring-emerald-500"
-                />
-                Enable learning feedback
-              </label>
-              <p className="text-xs text-slate-500">
-                When enabled, each rebalance is shown a compact, cost-forward
-                summary of this session's own recent daily outcomes so the AI can
-                learn from what its prior decisions produced. Advisory only — it
-                adds no hard constraints.
-              </p>
-              {learningFeedbackEnabled && (
-                <div
-                  id="ai-learning-feedback-panel"
-                  className="ml-6 mt-1 border-l-2 border-slate-100 pl-4"
-                >
-                  <div className="sm:w-48">
-                    <NumberField
-                      id="ai-learning-window"
-                      label="Learning window (days)"
-                      min={1}
-                      max={60}
-                      step={1}
-                      value={learningWindow}
-                      onChange={setLearningWindow}
-                      hint="Number of recent daily runs to summarize."
-                      invalid={learningWindowInvalid}
-                    />
+              {/* Deterministic risk guardrails — spans both columns (4 params). */}
+              <div className="flex flex-col gap-1 rounded-lg border border-slate-200 p-4 sm:col-span-2">
+                <label className="flex items-center gap-2 text-sm font-medium text-slate-800">
+                  <input
+                    type="checkbox"
+                    checked={guardrailsEnabled}
+                    onChange={(e) => setGuardrailsEnabled(e.target.checked)}
+                    aria-expanded={guardrailsEnabled}
+                    aria-controls="ai-guardrails-panel"
+                    className="h-4 w-4 rounded border-slate-300 text-emerald-600 focus:ring-emerald-500"
+                  />
+                  Enable risk guardrails
+                </label>
+                <p className="text-xs text-slate-500">
+                  When enabled, the target weights are deterministically clamped so
+                  no single asset or asset class exceeds its cap and the invested
+                  share stays within the ceiling (the rest held as cash). The
+                  minimum-positions target is given to the AI as guidance.
+                </p>
+                {guardrailsEnabled && (
+                  <div
+                    id="ai-guardrails-panel"
+                    className="ml-6 mt-1 border-l-2 border-slate-100 pl-4"
+                  >
+                    <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                      <NumberField
+                        id="ai-max-asset-pct"
+                        label="Max per asset (%)"
+                        unit="%"
+                        min={1}
+                        max={100}
+                        step={1}
+                        value={maxAssetPct}
+                        onChange={setMaxAssetPct}
+                        hint="Cap on any single position (one ticker)."
+                        invalid={maxAssetInvalid}
+                      />
+                      <NumberField
+                        id="ai-max-asset-class-pct"
+                        label="Max per asset class (%)"
+                        unit="%"
+                        min={1}
+                        max={100}
+                        step={1}
+                        value={maxAssetClassPct}
+                        onChange={setMaxAssetClassPct}
+                        hint="Cap on the stocks or crypto bucket."
+                        invalid={maxAssetClassInvalid}
+                      />
+                      <NumberField
+                        id="ai-min-positions"
+                        label="Min positions"
+                        min={1}
+                        max={50}
+                        step={1}
+                        value={minPositions}
+                        onChange={setMinPositions}
+                        hint="Target number of holdings (count)."
+                        invalid={minPositionsInvalid}
+                      />
+                      <NumberField
+                        id="ai-max-invested-pct"
+                        label="Max invested (%)"
+                        unit="%"
+                        min={1}
+                        max={100}
+                        step={1}
+                        value={maxInvestedPct}
+                        onChange={setMaxInvestedPct}
+                        hint="Remainder is held as cash."
+                        invalid={maxInvestedInvalid}
+                      />
+                    </div>
                   </div>
-                </div>
-              )}
+                )}
+              </div>
             </div>
           </fieldset>
 
