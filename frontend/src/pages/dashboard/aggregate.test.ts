@@ -4,6 +4,7 @@ import {
   benchmarkDollarSeries,
   closeOnOrBefore,
   combinedSeries,
+  lifetimeTotals,
   sessionReturnPct,
   sessionValueStart,
 } from './aggregate';
@@ -61,6 +62,76 @@ describe('aggregateTotals (money-weighted)', () => {
       fees: 0,
       returnPct: 0,
     });
+  });
+});
+
+describe('lifetimeTotals (since-inception value band)', () => {
+  it('money-weights total return and lifetime P&L over contributed capital', () => {
+    const a = makeSession({
+      id: 'a',
+      current_value: 12000,
+      contributions: [{ effective_date: '2026-06-01', amount: 10000 }],
+      benchmark_value: 11000,
+    });
+    const b = makeSession({
+      id: 'b',
+      current_value: 21000,
+      contributions: [
+        { effective_date: '2026-06-01', amount: 15000 },
+        { effective_date: '2026-06-10', amount: 5000 },
+      ],
+      benchmark_value: 20000,
+    });
+    const t = lifetimeTotals([a, b]);
+    expect(t.totalValue).toBe(33000);
+    expect(t.contributed).toBe(30000); // 10000 + 15000 + 5000
+    expect(t.lifetimePnl).toBe(3000); // 33000 − 30000
+    expect(t.totalReturn).toBeCloseTo(3000 / 30000, 10);
+    expect(t.benchmarkValue).toBe(31000); // 11000 + 20000
+    // excess = portfolio return − benchmark return = 0.1 − (31000−30000)/30000
+    expect(t.excessReturn).toBeCloseTo(3000 / 30000 - 1000 / 30000, 10);
+  });
+
+  it('returns a null total return (and excess) when contributed capital is zero', () => {
+    const s = makeSession({
+      current_value: 5000,
+      contributions: [],
+      benchmark_value: 4000,
+    });
+    const t = lifetimeTotals([s]);
+    expect(t.contributed).toBe(0);
+    expect(t.lifetimePnl).toBe(5000); // still current_value − 0
+    expect(t.totalReturn).toBeNull();
+    expect(t.excessReturn).toBeNull();
+  });
+
+  it('propagates null benchmark/excess when any selected session is unpriceable', () => {
+    const a = makeSession({
+      id: 'a',
+      current_value: 12000,
+      contributions: [{ effective_date: '2026-06-01', amount: 10000 }],
+      benchmark_value: 11000,
+    });
+    const b = makeSession({
+      id: 'b',
+      current_value: 9000,
+      contributions: [{ effective_date: '2026-06-01', amount: 10000 }],
+      benchmark_value: null, // unpriceable
+    });
+    const t = lifetimeTotals([a, b]);
+    expect(t.totalReturn).toBeCloseTo((21000 - 20000) / 20000, 10);
+    expect(t.benchmarkValue).toBeNull();
+    expect(t.excessReturn).toBeNull();
+  });
+
+  it('is zeroed with no sessions and yields null return/excess', () => {
+    const t = lifetimeTotals([]);
+    expect(t.totalValue).toBe(0);
+    expect(t.contributed).toBe(0);
+    expect(t.lifetimePnl).toBe(0);
+    expect(t.totalReturn).toBeNull();
+    expect(t.benchmarkValue).toBe(0);
+    expect(t.excessReturn).toBeNull();
   });
 });
 

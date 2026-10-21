@@ -39,7 +39,11 @@ from cadence.dashboard.constants import (
     resolve_range_start,
 )
 from cadence.paper_trading import service as paper_trading_service
-from cadence.paper_trading.benchmark import load_benchmark_series
+from cadence.paper_trading.benchmark import (
+    Contribution,
+    load_benchmark_series,
+    rebased_benchmark_value,
+)
 from cadence.paper_trading.constants import (
     Benchmark,
     SessionStatus,
@@ -278,6 +282,10 @@ class SessionPerformance:
     changes without re-fetching. ``contributions`` is the session's opening capital
     plus later capital increases, which the client aggregates into the benchmark
     comparison line (not windowed — the full set is needed to value the buy-and-hold).
+    ``benchmark_value`` is the since-inception, range-independent current USD value of
+    a contribution-aware buy-and-hold of ``contributions`` in the session's own
+    benchmark (``None`` when unpriceable), which the client aggregates into the live
+    excess-return tile.
     """
 
     id: uuid.UUID
@@ -290,6 +298,7 @@ class SessionPerformance:
     fees: float
     points: list[SessionValuePoint]
     contributions: list[SessionContribution]
+    benchmark_value: float | None
 
 
 @dataclass(frozen=True)
@@ -443,6 +452,7 @@ def _session_performance(
     broker: Broker,
     start_date: date | None,
     start_dt: datetime | None,
+    today: date,
 ) -> SessionPerformance:
     """Build one active session's range-scoped performance data."""
     history = paper_trading_service.list_value_history(
@@ -510,6 +520,24 @@ def _session_performance(
         current_unrealised=kpis.unrealised_pnl,
     )
 
+    # Since-inception, range-independent current value of a contribution-aware
+    # buy-and-hold of the session's contributions in its own benchmark, for the live
+    # excess-return tile. This is the money-weighted basis the combined-equity overlay
+    # uses (rebased_benchmark_value) — deliberately NOT the time-weighted basis of the
+    # session-detail excess KPI (benchmark_return_fraction) — so it matches the
+    # money-weighted total return the client derives. None when unpriceable or there
+    # are no contributions yet.
+    benchmark_value: float | None = None
+    if contributions:
+        benchmark_value = rebased_benchmark_value(
+            load_benchmark_series(session, session_row.benchmark),
+            contributions=[
+                Contribution(effective_date=c.effective_date, amount=c.amount)
+                for c in contributions
+            ],
+            as_of=today,
+        )
+
     return SessionPerformance(
         id=session_row.id,
         label=session_row.portfolio_name or session_row.strategy_key,
@@ -521,6 +549,7 @@ def _session_performance(
         fees=_range_fees(session, session_row.id, start_dt),
         points=points,
         contributions=contributions,
+        benchmark_value=benchmark_value,
     )
 
 
@@ -743,6 +772,7 @@ def get_dashboard_overview(
             broker=broker,
             start_date=start_date,
             start_dt=start_dt,
+            today=today,
         )
         for row in active_sessions
     ]

@@ -691,9 +691,9 @@ describe('PaperTradingSessionPage', () => {
     await screen.findByRole('heading', { name: 'Aggressive Jolly Wozniak' });
 
     expect(screen.getByText('Stop-loss')).toBeInTheDocument();
-    // Stop-loss, Risk guardrails, Learning feedback, Company fundamentals, and
-    // Watchlist assets all read "Off" by default.
-    expect(screen.getAllByText('Off')).toHaveLength(5);
+    // Stop-loss, Risk guardrails, Learning feedback, Company fundamentals,
+    // Watchlist assets, and Technical indicators all read "Off" by default.
+    expect(screen.getAllByText('Off')).toHaveLength(6);
   });
 
   it('shows the risk-guardrail configuration when the session opted in', async () => {
@@ -738,9 +738,9 @@ describe('PaperTradingSessionPage', () => {
     await screen.findByRole('heading', { name: 'Aggressive Jolly Wozniak' });
 
     expect(screen.getByText('Risk guardrails')).toBeInTheDocument();
-    // Stop-loss, Risk guardrails, Learning feedback, Company fundamentals, and
-    // Watchlist assets read "Off" by default.
-    expect(screen.getAllByText('Off')).toHaveLength(5);
+    // Stop-loss, Risk guardrails, Learning feedback, Company fundamentals,
+    // Watchlist assets, and Technical indicators read "Off" by default.
+    expect(screen.getAllByText('Off')).toHaveLength(6);
   });
 
   it('shows the learning-feedback configuration when the session opted in', async () => {
@@ -779,9 +779,9 @@ describe('PaperTradingSessionPage', () => {
     await screen.findByRole('heading', { name: 'Aggressive Jolly Wozniak' });
 
     expect(screen.getByText('Learning feedback')).toBeInTheDocument();
-    // Stop-loss, Risk guardrails, Learning feedback, Company fundamentals, and
-    // Watchlist assets all read "Off".
-    expect(screen.getAllByText('Off')).toHaveLength(5);
+    // Stop-loss, Risk guardrails, Learning feedback, Company fundamentals,
+    // Watchlist assets, and Technical indicators all read "Off".
+    expect(screen.getAllByText('Off')).toHaveLength(6);
   });
 
   it('shows the company-fundamentals fact tile as On when the session opted in', async () => {
@@ -819,9 +819,9 @@ describe('PaperTradingSessionPage', () => {
     await screen.findByRole('heading', { name: 'Aggressive Jolly Wozniak' });
 
     expect(screen.getByText('Company fundamentals')).toBeInTheDocument();
-    // Stop-loss, Risk guardrails, Learning feedback, Company fundamentals, and
-    // Watchlist assets all read "Off".
-    expect(screen.getAllByText('Off')).toHaveLength(5);
+    // Stop-loss, Risk guardrails, Learning feedback, Company fundamentals,
+    // Watchlist assets, and Technical indicators all read "Off".
+    expect(screen.getAllByText('Off')).toHaveLength(6);
   });
 
   it('shows the watchlist-assets fact tile as On when the session opted in', async () => {
@@ -850,6 +850,46 @@ describe('PaperTradingSessionPage', () => {
 
     expect(screen.getByText('Watchlist assets')).toBeInTheDocument();
     expect(screen.getByText('On')).toBeInTheDocument();
+  });
+
+  it('shows the technical-indicators fact tile as On when the session opted in', async () => {
+    const withIndicators: PaperTradingSession = {
+      ...session,
+      use_technical_indicators: true,
+    };
+    mockedGet.mockImplementation((url: string) => {
+      if (url.endsWith('/paper-trading/sessions')) {
+        return Promise.resolve({ data: { items: [withIndicators], total: 1 } });
+      }
+      if (url.endsWith('/kpis')) {
+        return Promise.resolve({ data: KPIS });
+      }
+      if (url.endsWith('/sector-performance')) {
+        return Promise.resolve({ data: { by_sector: [], by_category: [] } });
+      }
+      if (url.includes('/ai-portfolio/sessions/') && url.endsWith('/events')) {
+        return Promise.resolve({ data: { items: [], total: 0 } });
+      }
+      return Promise.resolve({ data: { items: [], total: 0 } });
+    });
+
+    renderPage(<PaperTradingSessionPage />);
+    await screen.findByRole('heading', { name: 'Aggressive Jolly Wozniak' });
+
+    expect(screen.getByText('Technical indicators')).toBeInTheDocument();
+    expect(screen.getByText('On')).toBeInTheDocument();
+  });
+
+  it('shows the technical-indicators fact tile as Off when the session did not opt in', async () => {
+    installGet(() => 'running');
+
+    renderPage(<PaperTradingSessionPage />);
+    await screen.findByRole('heading', { name: 'Aggressive Jolly Wozniak' });
+
+    expect(screen.getByText('Technical indicators')).toBeInTheDocument();
+    // Stop-loss, Risk guardrails, Learning feedback, Company fundamentals,
+    // Watchlist assets, and Technical indicators all read "Off" by default.
+    expect(screen.getAllByText('Off')).toHaveLength(6);
   });
 
   it("shows the session's frozen model resolved to its catalog display name", async () => {

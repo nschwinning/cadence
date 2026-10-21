@@ -23,6 +23,7 @@ export function makeSession(
       { date: '2026-06-15', value: 11000 },
     ],
     contributions: [{ effective_date: '2026-06-01', amount: 10000 }],
+    benchmark_value: 10500,
     ...overrides,
   };
 }

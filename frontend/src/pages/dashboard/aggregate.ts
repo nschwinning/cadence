@@ -78,6 +78,67 @@ export function aggregateTotals(
   };
 }
 
+/**
+ * The since-inception (range-independent) live value-band figures aggregated over
+ * the selected sessions. All are money-weighted against total contributed capital.
+ *
+ * `contributed` is Σ of every session's contributions (opening capital + later
+ * increases). `lifetimePnl` is `Σ current_value − contributed`. `totalReturn` is
+ * `lifetimePnl ÷ contributed`, or `null` when there is no positive basis. The
+ * benchmark leg sums each session's `benchmark_value` (a contribution-aware
+ * buy-and-hold in its own benchmark); it is `null` when ANY selected session is
+ * unpriceable, so `excessReturn` (portfolio return − benchmark return) is likewise
+ * `null` and the vs-benchmark tile reads "not yet available" rather than reporting a
+ * misleading excess over a smaller benchmark base.
+ */
+export interface LifetimeTotals {
+  totalValue: number;
+  contributed: number;
+  lifetimePnl: number;
+  totalReturn: number | null;
+  /** Σ benchmark_value, or `null` when any selected session is unpriceable. */
+  benchmarkValue: number | null;
+  /** Portfolio total return − benchmark total return, or `null` when unavailable. */
+  excessReturn: number | null;
+}
+
+/**
+ * Aggregate the since-inception live value-band figures over the selected sessions.
+ * Empty selection yields zeroed value/contributed/P&L, a `null` total return (no
+ * basis), and a `null` benchmark/excess (nothing to compare).
+ */
+export function lifetimeTotals(
+  sessions: DashboardSessionPerformance[],
+): LifetimeTotals {
+  let totalValue = 0;
+  let contributed = 0;
+  let benchmarkValue: number | null = 0;
+  for (const s of sessions) {
+    totalValue += s.current_value;
+    for (const c of s.contributions) contributed += c.amount;
+    if (s.benchmark_value === null) benchmarkValue = null;
+    else if (benchmarkValue !== null) benchmarkValue += s.benchmark_value;
+  }
+  const lifetimePnl = totalValue - contributed;
+  const totalReturn = contributed > 0 ? lifetimePnl / contributed : null;
+  const benchmarkReturn =
+    benchmarkValue !== null && contributed > 0
+      ? (benchmarkValue - contributed) / contributed
+      : null;
+  const excessReturn =
+    totalReturn !== null && benchmarkReturn !== null
+      ? totalReturn - benchmarkReturn
+      : null;
+  return {
+    totalValue,
+    contributed,
+    lifetimePnl,
+    totalReturn,
+    benchmarkValue,
+    excessReturn,
+  };
+}
+
 /** One point of the combined equity curve: a date and the summed value. */
 export interface CombinedPoint {
   date: string;

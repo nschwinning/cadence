@@ -1,7 +1,7 @@
 import type { DashboardRange, DashboardSessionPerformance } from '../../types/api';
 import { formatCurrency, formatPercent } from '../../lib/format';
 import { StatTile } from '../../components/dashboard/StatTile';
-import { aggregateTotals } from './aggregate';
+import { aggregateTotals, lifetimeTotals } from './aggregate';
 
 /** Muted colour for a signed figure: emerald up, red down, slate flat. */
 function signClass(value: number): string {
@@ -20,25 +20,67 @@ const RANGE_LABEL: Record<DashboardRange, string> = {
 };
 
 /**
- * The point-in-time value tile for the Portfolio value band: the live net-asset
- * value summed across the selected sessions. Not range-scoped — it reads the same
- * regardless of the selected range — so it lives in its own band, visually split
- * from the range-scoped performance figures.
+ * The point-in-time value band: four live figures summed across the selected
+ * sessions — total value, since-inception total return, lifetime P&L, and return
+ * versus each session's own benchmark. None is range-scoped — they read the same
+ * regardless of the selected range — so they live in their own band, visually split
+ * from the range-scoped performance figures, and span the full page width.
+ *
+ * Total return and lifetime P&L are money-weighted against contributed capital;
+ * total return reads a neutral em dash when there is no contributed basis yet. The
+ * vs-benchmark figure reads "Not yet available" when any selected session's
+ * benchmark is unpriceable (its excess cannot be computed honestly).
  */
 export function ValueTiles({
   sessions,
 }: {
   sessions: DashboardSessionPerformance[];
 }) {
-  const totals = aggregateTotals(sessions);
+  const totals = lifetimeTotals(sessions);
+  const hint = `${sessions.length} selected ${
+    sessions.length === 1 ? 'portfolio' : 'portfolios'
+  } · point-in-time`;
   return (
     <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
       <StatTile
         label="Total value"
         value={formatCurrency(totals.totalValue)}
-        hint={`${sessions.length} selected ${
-          sessions.length === 1 ? 'portfolio' : 'portfolios'
-        } · point-in-time`}
+        hint={hint}
+      />
+      <StatTile
+        label="Total return"
+        value={
+          totals.totalReturn === null ? (
+            <span className="text-slate-400">—</span>
+          ) : (
+            <span className={signClass(totals.totalReturn)}>
+              {formatPercent(totals.totalReturn)}
+            </span>
+          )
+        }
+        hint={`since inception · ${hint}`}
+      />
+      <StatTile
+        label="Lifetime P&L"
+        value={
+          <span className={signClass(totals.lifetimePnl)}>
+            {formatCurrency(totals.lifetimePnl)}
+          </span>
+        }
+        hint={`since inception · ${hint}`}
+      />
+      <StatTile
+        label="Return vs benchmark"
+        value={
+          totals.excessReturn === null ? (
+            <span className="text-slate-400">Not yet available</span>
+          ) : (
+            <span className={signClass(totals.excessReturn)}>
+              {formatPercent(totals.excessReturn)}
+            </span>
+          )
+        }
+        hint={`excess vs benchmark · since inception`}
       />
     </div>
   );

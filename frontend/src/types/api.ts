@@ -1023,6 +1023,12 @@ export interface DashboardSessionPerformance {
   fees: number;
   points: DashboardSessionValuePoint[];
   contributions: DashboardSessionContribution[];
+  /**
+   * Since-inception current USD value of a contribution-aware buy-and-hold of this
+   * session's contributions in its own benchmark; `null` when unpriceable. Range-
+   * independent. The client aggregates it into the live excess-return tile.
+   */
+  benchmark_value: number | null;
 }
 
 /** A reference to a single AI run for the automation summary. */

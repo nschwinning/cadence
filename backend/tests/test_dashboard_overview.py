@@ -741,6 +741,111 @@ def test_benchmark_series_empty_system_lists_catalog_with_empty_points(
     assert all(s.points == [] for s in overview.benchmark_series)
 
 
+# --- per-session since-inception benchmark value ----------------------------
+
+
+def test_session_benchmark_value_is_contribution_buy_and_hold(
+    db_session: Session,
+) -> None:
+    # One session opening at 10,000 on 2026-06-05; its own benchmark (S&P 500) runs
+    # 100 at the opening date to a latest close of 121. The since-inception value is
+    # the contribution-aware buy-and-hold at today's as_of: 10,000 * 121/100 = 12,100.
+    session_row = _make_session(db_session, name="Alpha", strategy_key="s1")
+    _add_snapshot(db_session, session_row.id, on=date(2026, 6, 5), total_value=10_000.0)
+    _add_benchmark_price(
+        db_session, benchmark=Benchmark.SP500, on=date(2026, 6, 5), close=100.0
+    )
+    _add_benchmark_price(
+        db_session, benchmark=Benchmark.SP500, on=date(2026, 6, 10), close=121.0
+    )
+
+    overview = service.get_dashboard_overview(
+        db_session,
+        range_=DashboardRange.MONTH,
+        broker=StubBroker(),
+        today=_TODAY,
+        now=_NOW,
+    )
+
+    perf = overview.sessions[0]
+    assert perf.benchmark_value == pytest.approx(12_100.0)
+
+
+def test_session_benchmark_value_sums_contributions(db_session: Session) -> None:
+    # Opening 10,000 at 2026-05-20 (S&P 500 = 100) plus a 5,000 increase effective
+    # 2026-06-01 (S&P 500 = 110). Latest close is 121 at 2026-06-10. The buy-and-hold
+    # value is 10,000*121/100 + 5,000*121/110 = 12,100 + 5,500 = 17,600.
+    session_row = _make_session(
+        db_session, name="Gamma", strategy_key="s3", allocated=15_000.0
+    )
+    _add_snapshot(db_session, session_row.id, on=date(2026, 5, 20), total_value=10_000.0)
+    _add_snapshot(db_session, session_row.id, on=date(2026, 6, 5), total_value=16_000.0)
+    db_session.add(
+        SessionCapitalEvent(
+            session_id=session_row.id,
+            amount=5_000.0,
+            effective_date=date(2026, 6, 1),
+        )
+    )
+    db_session.flush()
+    for on, close in [
+        (date(2026, 5, 20), 100.0),
+        (date(2026, 6, 1), 110.0),
+        (date(2026, 6, 10), 121.0),
+    ]:
+        _add_benchmark_price(db_session, benchmark=Benchmark.SP500, on=on, close=close)
+
+    overview = service.get_dashboard_overview(
+        db_session,
+        range_=DashboardRange.MONTH,
+        broker=StubBroker(),
+        today=_TODAY,
+        now=_NOW,
+    )
+
+    perf = overview.sessions[0]
+    assert perf.benchmark_value == pytest.approx(17_600.0)
+
+
+def test_session_benchmark_value_is_none_when_unpriceable(
+    db_session: Session,
+) -> None:
+    # The session has a contribution but no stored benchmark closes, so the
+    # buy-and-hold cannot be priced and the value degrades to None.
+    session_row = _make_session(db_session, name="Alpha", strategy_key="s1")
+    _add_snapshot(db_session, session_row.id, on=date(2026, 6, 5), total_value=10_000.0)
+
+    overview = service.get_dashboard_overview(
+        db_session,
+        range_=DashboardRange.MONTH,
+        broker=StubBroker(),
+        today=_TODAY,
+        now=_NOW,
+    )
+
+    perf = overview.sessions[0]
+    assert perf.benchmark_value is None
+
+
+def test_session_benchmark_value_is_none_without_contributions(
+    db_session: Session,
+) -> None:
+    # No snapshots → no contributions → nothing to value.
+    _make_session(db_session, name="Delta", strategy_key="s4")
+
+    overview = service.get_dashboard_overview(
+        db_session,
+        range_=DashboardRange.MONTH,
+        broker=StubBroker(),
+        today=_TODAY,
+        now=_NOW,
+    )
+
+    perf = overview.sessions[0]
+    assert perf.contributions == []
+    assert perf.benchmark_value is None
+
+
 # --- HTTP layer -------------------------------------------------------------
 
 
@@ -755,6 +860,8 @@ def test_overview_endpoint_returns_payload(
     body = response.json()
     assert body["range"] == "1M"
     assert isinstance(body["sessions"], list)
+    # The since-inception benchmark value is serialised per session (nullable).
+    assert all("benchmark_value" in s for s in body["sessions"])
     assert "automation" in body
     assert "universe_balance" in body
     assert "universe_performers" in body

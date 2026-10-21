@@ -1264,7 +1264,10 @@ class DashboardSessionPerformance(BaseModel):
     windowed to the range (oldest first) for the client to sum and re-aggregate on
     selection changes without re-fetching. ``contributions`` is the session's opening
     capital plus later capital increases, which the client aggregates into the
-    benchmark comparison line.
+    benchmark comparison line. ``benchmark_value`` is the since-inception current USD
+    value of a contribution-aware buy-and-hold of those contributions in the session's
+    own benchmark (``None`` when unpriceable), which the client aggregates into the
+    live excess-return tile.
     """
 
     model_config = ConfigDict(from_attributes=True)
@@ -1279,6 +1282,7 @@ class DashboardSessionPerformance(BaseModel):
     fees: float
     points: list[DashboardSessionValuePoint]
     contributions: list[DashboardSessionContribution]
+    benchmark_value: float | None = None
 
 
 class DashboardAutomationRun(BaseModel):
