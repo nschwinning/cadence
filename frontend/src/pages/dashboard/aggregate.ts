@@ -34,6 +34,10 @@ export function sessionReturnPct(
 export interface AggregateTotals {
   totalValue: number;
   pnl: number;
+  /** Range realised P&L summed across the selected sessions (simple dollar sum). */
+  realisedPnl: number;
+  /** Range unrealised P&L summed across the selected sessions (simple dollar sum). */
+  unrealisedPnl: number;
   /** Money-weighted return fraction: `Σ pnl ÷ Σ value_start` (0 when no basis). */
   returnPct: number;
   fees: number;
@@ -42,18 +46,24 @@ export interface AggregateTotals {
 /**
  * Money-weighted aggregation over the given sessions. `returnPct` is the summed
  * P&L over the summed starting value, so larger portfolios carry proportionally
- * more weight; it falls back to 0 when no session has a positive basis.
+ * more weight; it falls back to 0 when no session has a positive basis. The
+ * range `realisedPnl`/`unrealisedPnl` partners of the value are simple dollar
+ * sums (each is already range-relative per session).
  */
 export function aggregateTotals(
   sessions: DashboardSessionPerformance[],
 ): AggregateTotals {
   let totalValue = 0;
   let pnl = 0;
+  let realisedPnl = 0;
+  let unrealisedPnl = 0;
   let fees = 0;
   let basis = 0;
   for (const s of sessions) {
     totalValue += s.current_value;
     pnl += s.pnl;
+    realisedPnl += s.realised_pnl;
+    unrealisedPnl += s.unrealised_pnl;
     fees += s.fees;
     const start = sessionValueStart(s);
     if (start > 0) basis += start;
@@ -61,6 +71,8 @@ export function aggregateTotals(
   return {
     totalValue,
     pnl,
+    realisedPnl,
+    unrealisedPnl,
     fees,
     returnPct: basis > 0 ? pnl / basis : 0,
   };
@@ -100,45 +112,67 @@ export function combinedSeries(
 }
 
 /**
- * Rebase a benchmark's raw price series onto the combined equity curve, so the
- * line answers "what the combined curve's starting capital would be worth
- * invested in that index". `points` are ascending by date and may include a
- * single pre-start anchor close (as the backend sends). `start` is the combined
- * curve's first point `{date, value}`.
- *
- * The anchor price is the index's last close on/before the combined start date;
- * the line then tracks `start.value × price(t) / anchor` for every close on/after
- * the start. When the anchor is on/before the start, the line is seeded with the
- * start point itself so it shares the portfolio line's origin. When every stored
- * close is *after* the start (no on/before anchor), the earliest close anchors the
- * line instead, so it begins at the first available date. Returns an empty line
- * when there are no points or the anchor price is non-positive.
+ * The index's last close on/before `date` (carry-forward over non-trading days),
+ * or `null` when `date` precedes every stored close. `points` are ascending by
+ * date.
  */
-export function rebaseBenchmarkLine(
+export function closeOnOrBefore(
   points: DashboardBenchmarkPricePoint[],
-  start: CombinedPoint,
-): CombinedPoint[] {
-  if (points.length === 0) return [];
-
-  // Anchor: the last close on/before the start date (carry-forward), falling back
-  // to the earliest close when every stored close is after the start.
-  let anchor: number | null = null;
+  date: string,
+): number | null {
+  let close: number | null = null;
   for (const p of points) {
-    if (p.date <= start.date) anchor = p.price;
+    if (p.date <= date) close = p.price;
     else break;
   }
-  const anchoredOnOrBeforeStart = anchor !== null;
-  if (anchor === null) anchor = points[0].price;
-  if (anchor <= 0) return [];
+  return close;
+}
 
-  const line: CombinedPoint[] = [];
-  // Seed the origin at the combined start so both lines share a left edge; valid
-  // because the anchor is the close on/before the start (value there is start.value).
-  if (anchoredOnOrBeforeStart) line.push({ date: start.date, value: start.value });
-  for (const p of points) {
-    if (p.date < start.date) continue; // the pre-start anchor is not plotted
-    if (anchoredOnOrBeforeStart && p.date === start.date) continue; // dedupe origin
-    line.push({ date: p.date, value: (start.value * p.price) / anchor });
+/**
+ * Build one benchmark index's dollar comparison line by aggregating a buy-and-hold
+ * of the selected sessions' contributed capital in that index.
+ *
+ * Each contribution (a session's opening capital on its start date, or a later
+ * capital increase) buys `amount / close(effective_date)` units of the index at
+ * its effective date and holds. The line's value on date `t` is
+ * `close(t) × Σ units bought on/before t` across all selected sessions — which is
+ * exactly the sum of the per-session contribution-aware overlays. It therefore sits
+ * at zero before the first selected session opens and steps up as each session
+ * opens (and on each later capital increase), mirroring `combinedSeries` so the two
+ * lines are directly comparable in USD.
+ *
+ * `points` are the index's raw closes (ascending). `dateAxis` is the shared axis
+ * of the combined equity curve (the selected sessions' union of dates). A
+ * contribution whose effective date precedes the index's first stored close buys
+ * no units (it cannot be priced); when no contribution can be priced the line is
+ * empty so the chart draws nothing.
+ */
+export function benchmarkDollarSeries(
+  sessions: DashboardSessionPerformance[],
+  points: DashboardBenchmarkPricePoint[],
+  dateAxis: string[],
+): CombinedPoint[] {
+  if (points.length === 0 || dateAxis.length === 0) return [];
+
+  // Units purchased per contribution at its effective date's close. A contribution
+  // with no priceable close (before the index's first stored close) buys nothing.
+  const purchases: { date: string; units: number }[] = [];
+  for (const s of sessions) {
+    for (const c of s.contributions) {
+      const close = closeOnOrBefore(points, c.effective_date);
+      if (close === null || close <= 0) continue;
+      purchases.push({ date: c.effective_date, units: c.amount / close });
+    }
   }
-  return line;
+  if (purchases.length === 0) return [];
+
+  return dateAxis.map((date) => {
+    const close = closeOnOrBefore(points, date);
+    if (close === null) return { date, value: 0 };
+    let units = 0;
+    for (const p of purchases) {
+      if (p.date <= date) units += p.units;
+    }
+    return { date, value: close * units };
+  });
 }

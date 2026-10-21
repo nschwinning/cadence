@@ -370,6 +370,16 @@ class PaperTradingSessionRead(BaseModel):
     # Whether the session's candidate universe includes watchlist-membership assets
     # (frozen at build time). False for sessions built before this option existed.
     include_watchlist: bool
+    # The live money triple, marked to market at request time (all-time / ``Max``
+    # basis). Not ORM columns — the router computes them from current quotes via
+    # ``session_pnl_triple`` and assigns them after validation, so they default to 0
+    # here. ``current_value`` is the net asset value (cash plus open positions at
+    # current quotes, net of cumulative fees); ``realised_pnl`` the cumulative gross
+    # closed-lot realised P&L (equal to ``total_pnl``); ``unrealised_pnl`` the live
+    # mark-to-market gain/loss on open positions.
+    current_value: float = 0.0
+    realised_pnl: float = 0.0
+    unrealised_pnl: float = 0.0
 
     @model_validator(mode="after")
     def _populate_asset_types(self) -> PaperTradingSessionRead:
@@ -1233,12 +1243,32 @@ class DashboardSessionValuePoint(BaseModel):
     value: float
 
 
+class DashboardSessionContribution(BaseModel):
+    """One capital contribution to a session: its amount and effective date.
+
+    The session's opening capital plus any later capital increases; the client
+    combines these with each benchmark index's prices to build the buy-and-hold
+    benchmark comparison line.
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    effective_date: date
+    amount: float
+
+
 class DashboardSessionPerformance(BaseModel):
     """A single active session's range-scoped performance data.
 
-    ``pnl``/``fees`` are relative to the selected range; ``points`` is the value
-    series windowed to the range (oldest first) for the client to sum and
-    re-aggregate on selection changes without re-fetching.
+    ``pnl``/``fees`` are relative to the selected range; ``realised_pnl`` and
+    ``unrealised_pnl`` are the range-relative realised and unrealised partners of
+    ``current_value`` (summed closed-lot realised P&L within the range, and the live
+    unrealised P&L minus the range-start snapshot baseline), two independent figures
+    rather than an additive decomposition of ``pnl``. ``points`` is the value series
+    windowed to the range (oldest first) for the client to sum and re-aggregate on
+    selection changes without re-fetching. ``contributions`` is the session's opening
+    capital plus later capital increases, which the client aggregates into the
+    benchmark comparison line.
     """
 
     model_config = ConfigDict(from_attributes=True)
@@ -1248,8 +1278,11 @@ class DashboardSessionPerformance(BaseModel):
     allocated_capital: float
     current_value: float
     pnl: float
+    realised_pnl: float
+    unrealised_pnl: float
     fees: float
     points: list[DashboardSessionValuePoint]
+    contributions: list[DashboardSessionContribution]
 
 
 class DashboardAutomationRun(BaseModel):
@@ -1336,10 +1369,10 @@ class DashboardBenchmarkPricePoint(BaseModel):
 class DashboardBenchmarkSeries(BaseModel):
     """One catalog benchmark's price series for the combined-equity overlay.
 
-    ``points`` are raw index closes over the plotted era (not pre-rebased); the
-    client rebases each line to the visible combined curve's start. An index with
-    no stored prices in range has an empty ``points`` list rather than being
-    omitted.
+    ``points`` are raw index closes over the plotted era (not pre-converted to
+    dollars); the client combines them with the selected sessions' contributions to
+    build a buy-and-hold dollar line summed over those sessions. An index with no
+    stored prices in range has an empty ``points`` list rather than being omitted.
     """
 
     model_config = ConfigDict(from_attributes=True)

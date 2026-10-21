@@ -440,6 +440,15 @@ export interface PaperTradingSession {
    * assets (frozen at build time). False for sessions built before this option existed.
    */
   include_watchlist: boolean;
+  /**
+   * Live net-asset value (cash plus open positions marked to current quotes, net of
+   * fees), computed at request time. Point-in-time, not range-scoped.
+   */
+  current_value: number;
+  /** Cumulative (all-time) gross closed-lot realised P&L. Equal to `total_pnl`. */
+  realised_pnl: number;
+  /** Live mark-to-market unrealised P&L on open positions (all-time basis). */
+  unrealised_pnl: number;
 }
 
 /** One entry in the fixed benchmark catalog. Mirrors `BenchmarkCatalogEntry`. */
@@ -990,6 +999,17 @@ export interface DashboardSessionValuePoint {
   value: number;
 }
 
+/**
+ * One capital contribution to a session: the opening capital (effective at its
+ * start date) or a later capital increase. The client combines these with each
+ * benchmark index's prices to build the buy-and-hold benchmark comparison line.
+ * Mirrors `DashboardSessionContribution`.
+ */
+export interface DashboardSessionContribution {
+  effective_date: string; // ISO YYYY-MM-DD
+  amount: number;
+}
+
 /** A single active session's range-scoped performance. Mirrors `DashboardSessionPerformance`. */
 export interface DashboardSessionPerformance {
   id: string;
@@ -997,8 +1017,13 @@ export interface DashboardSessionPerformance {
   allocated_capital: number;
   current_value: number;
   pnl: number;
+  /** Range-relative realised P&L: summed closed-lot realised P&L within the range (cumulative for `Max`). */
+  realised_pnl: number;
+  /** Range-relative unrealised P&L: current live unrealised minus the range-start snapshot baseline. */
+  unrealised_pnl: number;
   fees: number;
   points: DashboardSessionValuePoint[];
+  contributions: DashboardSessionContribution[];
 }
 
 /** A reference to a single AI run for the automation summary. */
@@ -1063,9 +1088,10 @@ export interface DashboardBenchmarkPricePoint {
 
 /**
  * One catalog benchmark's price series for the combined-equity overlay. `points`
- * are raw index closes (not pre-rebased); the client rebases each line to the
- * visible combined curve's start. An index with no stored prices in range has an
- * empty `points` list. Mirrors `DashboardBenchmarkSeries`.
+ * are raw index closes (not pre-converted to dollars); the client combines them
+ * with the selected sessions' contributions to build a buy-and-hold dollar line
+ * summed over those sessions. An index with no stored prices in range has an empty
+ * `points` list. Mirrors `DashboardBenchmarkSeries`.
  */
 export interface DashboardBenchmarkSeries {
   benchmark_id: string;

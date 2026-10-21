@@ -1,32 +1,51 @@
 import { Link } from 'react-router-dom';
 import type {
   DashboardPerformerEntry,
+  DashboardRange,
   DashboardUniverseBalance,
   DashboardUniversePerformers,
 } from '../../types/api';
 import { formatPercent } from '../../lib/format';
 import { StatTile } from '../../components/dashboard/StatTile';
+import { RANGE_PHRASE } from './rangeLabel';
 
 const CARD_CLASS = 'rounded-lg border border-slate-200 bg-white shadow-sm';
 
 /**
  * The universe section: a range-independent balance summary (current composition)
  * and the range-driven best/worst market performers. The balance tiles stay put
- * as the range changes while the performer lists re-rank.
+ * as the range changes while the performer lists re-rank. The performers carry
+ * their own range chip so they read as range-scoped even though they sit beside the
+ * range-independent balance summary.
  */
 export function UniverseSection({
   balance,
   performers,
+  range,
 }: {
   balance: DashboardUniverseBalance;
   performers: DashboardUniversePerformers;
+  range: DashboardRange;
 }) {
   return (
     <div className="flex flex-col gap-6">
       <BalanceSummary balance={balance} />
-      <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
-        <PerformerList title="Top performers" entries={performers.best} />
-        <PerformerList title="Worst performers" entries={performers.worst} />
+      <div className="flex flex-col gap-3">
+        <div className="flex items-baseline gap-2">
+          <h3 className="text-sm font-semibold uppercase tracking-wide text-slate-500">
+            Market performers
+          </h3>
+          <span
+            data-testid="performers-range-chip"
+            className="inline-flex items-center rounded-full bg-slate-100 px-2 py-0.5 text-xs font-medium text-slate-600"
+          >
+            {RANGE_PHRASE[range]}
+          </span>
+        </div>
+        <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
+          <PerformerList title="Top performers" entries={performers.best} />
+          <PerformerList title="Worst performers" entries={performers.worst} />
+        </div>
       </div>
     </div>
   );
@@ -35,7 +54,14 @@ export function UniverseSection({
 /** Current composition tiles — stable across range changes. */
 function BalanceSummary({ balance }: { balance: DashboardUniverseBalance }) {
   return (
-    <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
+    <div className="flex flex-col gap-3">
+      <h3 className="text-sm font-semibold uppercase tracking-wide text-slate-500">
+        Composition{' '}
+        <span className="font-normal normal-case text-slate-400">
+            · as it stands now
+        </span>
+      </h3>
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
       <StatTile
         label="Eligible assets"
         value={balance.eligible.toLocaleString()}
@@ -63,6 +89,7 @@ function BalanceSummary({ balance }: { balance: DashboardUniverseBalance }) {
             : 'no category data'
         }
       />
+      </div>
     </div>
   );
 }

@@ -1,7 +1,8 @@
 import { Link } from 'react-router-dom';
-import type { DashboardSessionPerformance } from '../../types/api';
+import type { DashboardRange, DashboardSessionPerformance } from '../../types/api';
 import { formatCurrency, formatPercent } from '../../lib/format';
 import { sessionReturnPct } from './aggregate';
+import { spanLabel } from './rangeLabel';
 
 const CARD_CLASS = 'rounded-lg border border-slate-200 bg-white shadow-sm';
 
@@ -17,11 +18,17 @@ function signClass(value: number): string {
  * (best at top; sessions without a normalisable return sink to the bottom). A
  * pure presentation of the per-session data already fetched for the tiles and
  * curve — honours the global range and the equity-curve selection.
+ *
+ * The Value column is point-in-time (live) and carries a live `●` marker; the
+ * realised/unrealised/return/fees columns are range-scoped and sit under a
+ * spanning sub-header ("Over the past month"), so the two scopes read distinctly.
  */
 export function PortfolioLeaderboard({
   sessions,
+  range,
 }: {
   sessions: DashboardSessionPerformance[];
+  range: DashboardRange;
 }) {
   const ranked = [...sessions].sort((a, b) => {
     const ra = sessionReturnPct(a);
@@ -32,6 +39,8 @@ export function PortfolioLeaderboard({
     if (rb === null) return -1;
     return rb - ra;
   });
+
+  const rangeSpanLabel = spanLabel(range);
 
   return (
     <div className={CARD_CLASS}>
@@ -49,12 +58,30 @@ export function PortfolioLeaderboard({
         </p>
       ) : (
         <div className="overflow-x-auto">
-          <table className="w-full min-w-[640px] border-collapse text-sm">
+          <table className="w-full min-w-[720px] border-collapse text-sm">
             <thead>
+              <tr className="border-b border-slate-100 text-left text-[0.65rem] font-semibold uppercase tracking-wide text-slate-400">
+                {/* Portfolio + Value are point-in-time; the rest are range-scoped. */}
+                <th className="px-4 pt-3" />
+                <th className="px-4 pt-3 text-right">Now</th>
+                <th className="px-4 pt-3 text-right" colSpan={4}>
+                  {rangeSpanLabel}
+                </th>
+              </tr>
               <tr className="border-b border-slate-200 bg-slate-50 text-left text-xs font-semibold uppercase tracking-wide text-slate-500">
                 <th className="px-4 py-3">Portfolio</th>
-                <th className="px-4 py-3 text-right">Value</th>
-                <th className="px-4 py-3 text-right">P&L</th>
+                <th className="px-4 py-3 text-right">
+                  <span className="inline-flex items-center justify-end gap-1">
+                    <span
+                      aria-hidden="true"
+                      title="Live — marked to market against current quotes"
+                      className="inline-block h-1.5 w-1.5 rounded-full bg-emerald-500"
+                    />
+                    Value
+                  </span>
+                </th>
+                <th className="px-4 py-3 text-right">Realised P&L</th>
+                <th className="px-4 py-3 text-right">Unrealised P&L</th>
                 <th className="px-4 py-3 text-right">Return</th>
                 <th className="px-4 py-3 text-right">Fees</th>
               </tr>
@@ -79,9 +106,14 @@ export function PortfolioLeaderboard({
                       {formatCurrency(s.current_value)}
                     </td>
                     <td
-                      className={`px-4 py-3 text-right tabular-nums ${signClass(s.pnl)}`}
+                      className={`px-4 py-3 text-right tabular-nums ${signClass(s.realised_pnl)}`}
                     >
-                      {formatCurrency(s.pnl)}
+                      {formatCurrency(s.realised_pnl)}
+                    </td>
+                    <td
+                      className={`px-4 py-3 text-right tabular-nums ${signClass(s.unrealised_pnl)}`}
+                    >
+                      {formatCurrency(s.unrealised_pnl)}
                     </td>
                     <td
                       className={`px-4 py-3 text-right tabular-nums ${

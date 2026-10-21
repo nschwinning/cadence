@@ -25,6 +25,13 @@ const STATUS_STYLES: Record<string, string> = {
   stopped: 'bg-slate-100 text-slate-700',
 };
 
+/** Muted gain/loss colour for a signed numeric cell. */
+function signClass(value: number): string {
+  if (value > 0) return 'text-emerald-700';
+  if (value < 0) return 'text-red-700';
+  return 'text-slate-700';
+}
+
 function StatusBadge({ status }: { status: string }) {
   const className = STATUS_STYLES[status] ?? 'bg-slate-100 text-slate-700';
   return (
@@ -48,12 +55,6 @@ function SessionRow({
   const unarchive = useUnarchiveSession();
   const isArchived = session.archived_at !== null;
   const busy = archive.isPending || unarchive.isPending;
-  const pnlClass =
-    session.total_pnl > 0
-      ? 'text-emerald-700'
-      : session.total_pnl < 0
-        ? 'text-red-700'
-        : 'text-slate-700';
   return (
     <tr className="border-b border-slate-100 hover:bg-slate-50">
       <td className="px-4 py-3 font-semibold">
@@ -88,8 +89,18 @@ function SessionRow({
       <td className="px-4 py-3 text-right tabular-nums text-slate-700">
         {session.total_trades}
       </td>
-      <td className={`px-4 py-3 text-right tabular-nums font-medium ${pnlClass}`}>
-        {formatCurrency(session.total_pnl)}
+      <td className="px-4 py-3 text-right tabular-nums text-slate-700">
+        {formatCurrency(session.current_value)}
+      </td>
+      <td
+        className={`px-4 py-3 text-right tabular-nums font-medium ${signClass(session.realised_pnl)}`}
+      >
+        {formatCurrency(session.realised_pnl)}
+      </td>
+      <td
+        className={`px-4 py-3 text-right tabular-nums font-medium ${signClass(session.unrealised_pnl)}`}
+      >
+        {formatCurrency(session.unrealised_pnl)}
       </td>
       <td className="px-4 py-3 text-slate-500">
         {session.last_run_at
@@ -201,7 +212,7 @@ export function PaperTradingPage() {
 
         {!isPending && !isError && sessions.length > 0 && (
           <div className="overflow-x-auto">
-            <table className="w-full min-w-[960px] border-collapse text-sm">
+            <table className="w-full min-w-[1120px] border-collapse text-sm">
               <thead>
                 <tr className="border-b border-slate-200 bg-slate-50 text-left text-xs font-semibold uppercase tracking-wide text-slate-500">
                   <th className="px-4 py-3">Portfolio</th>
@@ -211,7 +222,9 @@ export function PaperTradingPage() {
                   <th className="px-4 py-3">Schedule</th>
                   <th className="px-4 py-3 text-right">Capital</th>
                   <th className="px-4 py-3 text-right">Trades</th>
-                  <th className="px-4 py-3 text-right">P&amp;L</th>
+                  <th className="px-4 py-3 text-right">Value</th>
+                  <th className="px-4 py-3 text-right">Realised P&amp;L</th>
+                  <th className="px-4 py-3 text-right">Unrealised P&amp;L</th>
                   <th className="px-4 py-3">Last Run</th>
                   <th className="px-4 py-3 text-right">Actions</th>
                 </tr>

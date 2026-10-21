@@ -245,6 +245,20 @@ class SessionValuePoint:
 
 
 @dataclass(frozen=True)
+class SessionContribution:
+    """One capital contribution to a session: its amount and effective date.
+
+    The session's opening capital (effective at its start date) plus any later
+    capital-increase events. The client combines these with each benchmark index's
+    prices to build a buy-and-hold benchmark line that invests each contribution in
+    the index on its effective date and holds, summed across the selected sessions.
+    """
+
+    effective_date: date
+    amount: float
+
+
+@dataclass(frozen=True)
 class SessionPerformance:
     """A single active session's range-scoped performance data.
 
@@ -252,9 +266,18 @@ class SessionPerformance:
     the value at the range start (the latest snapshot on/before the start, or the
     allocated capital when the session began within the range or for ``Max``);
     ``fees`` are the per-trade transaction costs incurred within the range.
+    ``realised_pnl`` and ``unrealised_pnl`` are the range-relative money triple
+    partners of ``current_value``: ``realised_pnl`` is the summed closed-lot
+    realised P&L for lots closed within the range (equal to the cumulative realised
+    P&L for ``Max``), and ``unrealised_pnl`` is the current live unrealised P&L
+    minus the unrealised P&L captured in the range-start snapshot (equal to the live
+    unrealised P&L for ``Max`` or when no range-start snapshot exists). They are two
+    independent figures, not an additive decomposition of ``pnl``.
     ``points`` is the value series windowed to the range (oldest first), which the
     client sums across the selected sessions and re-aggregates on selection
-    changes without re-fetching.
+    changes without re-fetching. ``contributions`` is the session's opening capital
+    plus later capital increases, which the client aggregates into the benchmark
+    comparison line (not windowed — the full set is needed to value the buy-and-hold).
     """
 
     id: uuid.UUID
@@ -262,8 +285,11 @@ class SessionPerformance:
     allocated_capital: float
     current_value: float
     pnl: float
+    realised_pnl: float
+    unrealised_pnl: float
     fees: float
     points: list[SessionValuePoint]
+    contributions: list[SessionContribution]
 
 
 @dataclass(frozen=True)
@@ -349,10 +375,12 @@ class BenchmarkOverlaySeries:
     """One catalog benchmark's price series for the combined-equity overlay.
 
     ``points`` carries the index's stored closes over the plotted era as raw
-    (date, price) pairs — *not* pre-rebased to any portfolio value, because the
-    client rebases each line to the currently-visible combined curve's start. An
-    index with no stored prices in range has an empty ``points`` list rather than
-    being omitted.
+    (date, price) pairs — *not* pre-converted to any portfolio-relative dollars.
+    The client combines these prices with the selected sessions' contributions to
+    build a buy-and-hold dollar line (each session's contributed capital invested in
+    the index at each contribution's effective date, held, summed over the selected
+    sessions), so the line depends on the current session selection. An index with
+    no stored prices in range has an empty ``points`` list rather than being omitted.
     """
 
     benchmark_id: str
@@ -430,6 +458,25 @@ def _session_performance(
         if start_date is None or point.snapshot.snapshot_date >= start_date
     ]
 
+    # Contributions drive the client-side benchmark overlay: opening capital at the
+    # session's first snapshot date plus any later capital increases. Derived on the
+    # same basis as the session detail chart (first snapshot date as the baseline),
+    # and NOT windowed to the range — earlier contributions are still held within it.
+    # A session with no snapshots yet has no plottable points and no contributions.
+    if history:
+        contrib_start = history[0].snapshot.snapshot_date
+        events = paper_trading_service.list_capital_events(
+            session, session_id=session_row.id
+        )
+        contributions = [
+            SessionContribution(effective_date=c.effective_date, amount=c.amount)
+            for c in paper_trading_service.session_contributions(
+                session_row, events, start_date=contrib_start
+            )
+        ]
+    else:
+        contributions = []
+
     kpis = paper_trading_service.session_kpis(
         session, session_id=session_row.id, broker=broker
     )
@@ -449,14 +496,31 @@ def _session_performance(
         value_start = prior[-1] if prior else allocated
     pnl = current_value - value_start
 
+    # Range-relative money triple partners of current_value: realised from the
+    # closed lots whose exit falls in the range (cumulative total_pnl for Max), and
+    # unrealised as the live mark-to-market minus the range-start snapshot baseline
+    # (live unrealised for Max or when no range-start snapshot exists).
+    realised_pnl = paper_trading_service.range_realised_pnl(
+        session, session_row.id, start=start_dt
+    )
+    unrealised_pnl = paper_trading_service.range_unrealised_pnl(
+        session,
+        session_row.id,
+        start_date=start_date,
+        current_unrealised=kpis.unrealised_pnl,
+    )
+
     return SessionPerformance(
         id=session_row.id,
         label=session_row.portfolio_name or session_row.strategy_key,
         allocated_capital=allocated,
         current_value=current_value,
         pnl=pnl,
+        realised_pnl=realised_pnl,
+        unrealised_pnl=unrealised_pnl,
         fees=_range_fees(session, session_row.id, start_dt),
         points=points,
+        contributions=contributions,
     )
 
 

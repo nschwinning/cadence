@@ -1180,6 +1180,100 @@ def compute_session_value(
     )
 
 
+@dataclass(frozen=True)
+class SessionPnlTriple:
+    """A session's live money triple on an all-time (``Max``) basis.
+
+    ``current_value`` is the live net-asset value (cash plus open positions marked
+    to current quotes, net of cumulative fees); ``realised_pnl`` the session's
+    cumulative gross closed-lot realised P&L; ``unrealised_pnl`` the live
+    mark-to-market gain/loss on open positions. These are the same three numbers
+    the detail KPI row and the Portfolios list render — derived here from one place
+    so the surfaces cannot drift.
+    """
+
+    current_value: float
+    realised_pnl: float
+    unrealised_pnl: float
+
+
+def session_pnl_triple(
+    session: Session,
+    *,
+    session_id: uuid.UUID,
+    broker: Broker,
+) -> SessionPnlTriple:
+    """Return a session's live ``(current_value, realised, unrealised)`` triple.
+
+    Marks the session's open positions to market via ``broker`` (reusing
+    :func:`compute_session_value`) and reads cumulative realised P&L from the
+    session row. Deliberately lighter than :func:`session_kpis` — it does no
+    Sharpe, benchmark, or time-weighted work — so the list read can mark every row
+    to market cheaply. Raises :class:`SessionNotFoundError` for an unknown session.
+    """
+    session_row = get_session(session, session_id)
+    valuation = compute_session_value(session, session_id=session_id, broker=broker)
+    return SessionPnlTriple(
+        current_value=valuation.total_value,
+        realised_pnl=session_row.total_pnl,
+        unrealised_pnl=valuation.unrealized_pnl,
+    )
+
+
+def range_realised_pnl(
+    session: Session,
+    session_id: uuid.UUID,
+    *,
+    start: datetime | None,
+    end: datetime | None = None,
+) -> float:
+    """Σ closed-lot realised P&L for lots closed within ``(start, end]``.
+
+    ``start`` is the inclusive-exclusive lower bound (a lot with ``exit_date`` equal
+    to ``start`` is excluded) and ``end`` the inclusive upper bound (``None`` = up to
+    now). An unbounded window (``start is None``, the ``Max`` range) returns the
+    session's cumulative realised P&L (``total_pnl``) so the ``Max`` value matches the
+    list/detail all-time figure exactly. Realised P&L is gross of fees. Uses the
+    ``(session_id, exit_date)`` index.
+    """
+    if start is None:
+        return get_session(session, session_id).total_pnl
+    stmt = select(func.coalesce(func.sum(ClosedPosition.realized_pnl), 0.0)).where(
+        ClosedPosition.session_id == session_id,
+        ClosedPosition.exit_date > start,
+    )
+    if end is not None:
+        stmt = stmt.where(ClosedPosition.exit_date <= end)
+    return session.execute(stmt).scalar_one()
+
+
+def range_unrealised_pnl(
+    session: Session,
+    session_id: uuid.UUID,
+    *,
+    start_date: date | None,
+    current_unrealised: float,
+) -> float:
+    """Range-relative unrealised P&L: ``current_unrealised − range-start baseline``.
+
+    The baseline is the summed per-position ``unrealized_pnl`` recorded in the
+    session's most recent value snapshot on or before ``start_date``. When the
+    session has no snapshot at or before the range start — a new session, or the
+    ``Max`` range (``start_date is None``) — the baseline is ``0``, so the figure
+    equals the current live unrealised P&L. Returned as an independent figure, not
+    an additive decomposition of the range profit/loss.
+    """
+    baseline = 0.0
+    if start_date is not None:
+        snapshot = _snapshot_on_or_before(session, session_id, start_date)
+        if snapshot is not None:
+            baseline = sum(
+                float(position.get("unrealized_pnl", 0.0) or 0.0)
+                for position in snapshot.positions
+            )
+    return current_unrealised - baseline
+
+
 # --------------------------------------------------------------------------- #
 # Sector / category performance attribution
 # --------------------------------------------------------------------------- #
@@ -1415,6 +1509,22 @@ def _prior_snapshot(
         .where(
             SessionValueSnapshot.session_id == session_id,
             SessionValueSnapshot.snapshot_date < before,
+        )
+        .order_by(SessionValueSnapshot.snapshot_date.desc())
+        .limit(1)
+    )
+    return session.execute(stmt).scalars().first()
+
+
+def _snapshot_on_or_before(
+    session: Session, session_id: uuid.UUID, on_or_before: date
+) -> SessionValueSnapshot | None:
+    """Return the session's most recent snapshot on or before ``on_or_before``."""
+    stmt = (
+        select(SessionValueSnapshot)
+        .where(
+            SessionValueSnapshot.session_id == session_id,
+            SessionValueSnapshot.snapshot_date <= on_or_before,
         )
         .order_by(SessionValueSnapshot.snapshot_date.desc())
         .limit(1)

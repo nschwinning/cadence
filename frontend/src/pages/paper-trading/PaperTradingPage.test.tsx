@@ -47,6 +47,9 @@ const session: PaperTradingSession = {
   use_fundamentals: false,
   include_watchlist: false,
   model: 'gpt-5-mini',
+  current_value: 101500,
+  realised_pnl: 1500,
+  unrealised_pnl: 300,
 };
 
 const portfolio: Portfolio = {
@@ -113,6 +116,20 @@ describe('PaperTradingPage', () => {
     // Risk profile (humanized) and holdings count come from the portfolio.
     expect(within(row).getByText('Balanced')).toBeInTheDocument();
     expect(within(row).getByText('3')).toBeInTheDocument();
+  });
+
+  it('renders the live value + realised + unrealised triple in the row', async () => {
+    mockedGet.mockImplementation(routeGet([session]));
+
+    renderWithClient(<PaperTradingPage />);
+
+    const link = await screen.findByRole('link', {
+      name: 'Aggressive Jolly Wozniak',
+    });
+    const row = link.closest('tr') as HTMLElement;
+    expect(within(row).getByText('$101,500.00')).toBeInTheDocument(); // value
+    expect(within(row).getByText('$1,500.00')).toBeInTheDocument(); // realised
+    expect(within(row).getByText('$300.00')).toBeInTheDocument(); // unrealised
   });
 
   it('renders the AI build form above the list', async () => {

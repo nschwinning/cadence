@@ -102,6 +102,57 @@ describe('DashboardPage', () => {
     ).toBe(true);
   });
 
+  it('docks the range selector in the Performance band with an active-range phrase', async () => {
+    renderWithClient(<DashboardPage />);
+    const perfHeading = await screen.findByText(/^Performance ·/);
+    expect(perfHeading).toHaveTextContent('over the past month');
+
+    const band = perfHeading.closest('section') as HTMLElement;
+    // the selector lives inside the Performance band, not beside the page title
+    expect(
+      within(band).getByRole('button', { name: '1M' }),
+    ).toBeInTheDocument();
+    const titleRow = screen.getByText('Dashboard').closest('div') as HTMLElement;
+    expect(
+      within(titleRow).queryByRole('button', { name: '1M' }),
+    ).not.toBeInTheDocument();
+
+    await userEvent.click(within(band).getByRole('button', { name: 'YTD' }));
+    await waitFor(() =>
+      expect(screen.getByText(/^Performance ·/)).toHaveTextContent(
+        'year to date',
+      ),
+    );
+  });
+
+  it('marks the value band live and keeps the current value stable across ranges', async () => {
+    renderWithClient(<DashboardPage />);
+    await screen.findByText('$31,000.00');
+    // the point-in-time value band carries the live freshness chip
+    expect(screen.getByTestId('freshness-live')).toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole('button', { name: 'YTD' }));
+    await screen.findByText('GOLD'); // range changed (performers re-ranked)
+    // total value is point-in-time — unchanged by the range
+    expect(screen.getByText('$31,000.00')).toBeInTheDocument();
+  });
+
+  it('shows a universe performers range chip while the balance stays range-independent', async () => {
+    renderWithClient(<DashboardPage />);
+    await screen.findByText('TECH');
+    expect(screen.getByTestId('performers-range-chip')).toHaveTextContent(
+      'the past month',
+    );
+    expect(screen.getByText('90')).toBeInTheDocument(); // eligible count
+
+    await userEvent.click(screen.getByRole('button', { name: 'YTD' }));
+    await screen.findByText('GOLD');
+    expect(screen.getByTestId('performers-range-chip')).toHaveTextContent(
+      'year to date',
+    );
+    expect(screen.getByText('90')).toBeInTheDocument(); // balance unchanged
+  });
+
   it('deselecting a portfolio re-aggregates tiles and drops its leaderboard row without refetching', async () => {
     renderWithClient(<DashboardPage />);
     await screen.findByText('$31,000.00');

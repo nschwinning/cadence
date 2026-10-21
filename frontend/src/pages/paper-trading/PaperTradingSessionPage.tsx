@@ -653,14 +653,6 @@ function SessionHeader({
         </div>
         <div>
           <dt className="text-xs font-semibold uppercase tracking-wide text-slate-500">
-            Total P&amp;L
-          </dt>
-          <dd className={`text-sm font-medium ${pnlClass(session.total_pnl)}`}>
-            {formatCurrency(session.total_pnl)}
-          </dd>
-        </div>
-        <div>
-          <dt className="text-xs font-semibold uppercase tracking-wide text-slate-500">
             Last run
           </dt>
           <dd className="text-sm text-slate-900">{ts(session.last_run_at)}</dd>

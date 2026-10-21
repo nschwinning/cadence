@@ -276,6 +276,10 @@ export function useSessions(
   return useQuery<PaperTradingSessionListResponse>({
     queryKey: paperTradingKeys.sessions(params),
     queryFn: () => listSessions(params),
+    // Live-refresh the marked-to-market triple (current value / realised /
+    // unrealised) ~every 30s. Pauses in the background (TanStack default
+    // refetchIntervalInBackground: false).
+    refetchInterval: 30_000,
   });
 }
 
@@ -341,6 +345,9 @@ export function useSessionKpis(sessionId: string) {
     queryKey: paperTradingKeys.kpis(sessionId),
     queryFn: () => getSessionKpis(sessionId),
     enabled: sessionId.length > 0,
+    // Live-refresh the detail KPI triple ~every 30s. Pauses in the background
+    // (TanStack default refetchIntervalInBackground: false).
+    refetchInterval: 30_000,
   });
 }
 

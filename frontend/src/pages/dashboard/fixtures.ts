@@ -15,11 +15,14 @@ export function makeSession(
     allocated_capital: 10000,
     current_value: 11000,
     pnl: 1000,
+    realised_pnl: 600,
+    unrealised_pnl: 400,
     fees: 2,
     points: [
       { date: '2026-06-01', value: 10000 },
       { date: '2026-06-15', value: 11000 },
     ],
+    contributions: [{ effective_date: '2026-06-01', amount: 10000 }],
     ...overrides,
   };
 }

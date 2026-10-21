@@ -20,11 +20,38 @@ const RANGE_LABEL: Record<DashboardRange, string> = {
 };
 
 /**
- * The hero performance tiles: total value, range P&L, money-weighted range
- * return, and range fees — all re-derived client-side from the selected
- * sessions, so toggling the equity-curve legend updates them without a refetch.
+ * The point-in-time value tile for the Portfolio value band: the live net-asset
+ * value summed across the selected sessions. Not range-scoped — it reads the same
+ * regardless of the selected range — so it lives in its own band, visually split
+ * from the range-scoped performance figures.
  */
-export function HeroTiles({
+export function ValueTiles({
+  sessions,
+}: {
+  sessions: DashboardSessionPerformance[];
+}) {
+  const totals = aggregateTotals(sessions);
+  return (
+    <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
+      <StatTile
+        label="Total value"
+        value={formatCurrency(totals.totalValue)}
+        hint={`${sessions.length} selected ${
+          sessions.length === 1 ? 'portfolio' : 'portfolios'
+        } · point-in-time`}
+      />
+    </div>
+  );
+}
+
+/**
+ * The range-scoped performance tiles for the Performance band: realised P&L,
+ * unrealised P&L, money-weighted return, and fees — all relative to the selected
+ * range and re-derived client-side from the selected sessions, so toggling the
+ * equity-curve legend updates them without a refetch. Realised and unrealised are
+ * sign-distinguished and replace the single range ΔNAV P&L tile.
+ */
+export function PerformanceTiles({
   sessions,
   range,
 }: {
@@ -37,17 +64,19 @@ export function HeroTiles({
   return (
     <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
       <StatTile
-        label="Total value"
-        value={formatCurrency(totals.totalValue)}
-        hint={`${sessions.length} selected ${
-          sessions.length === 1 ? 'portfolio' : 'portfolios'
-        }`}
+        label="Realised P&L"
+        value={
+          <span className={signClass(totals.realisedPnl)}>
+            {formatCurrency(totals.realisedPnl)}
+          </span>
+        }
+        hint={hint}
       />
       <StatTile
-        label="P&L"
+        label="Unrealised P&L"
         value={
-          <span className={signClass(totals.pnl)}>
-            {formatCurrency(totals.pnl)}
+          <span className={signClass(totals.unrealisedPnl)}>
+            {formatCurrency(totals.unrealisedPnl)}
           </span>
         }
         hint={hint}
@@ -61,13 +90,7 @@ export function HeroTiles({
         }
         hint={`money-weighted · ${hint}`}
       />
-      <StatTile
-        label="Fees"
-        value={formatCurrency(totals.fees)}
-        hint={hint}
-      />
+      <StatTile label="Fees" value={formatCurrency(totals.fees)} hint={hint} />
     </div>
   );
 }
-
-export default HeroTiles;

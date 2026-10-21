@@ -12,6 +12,7 @@ describe('UniverseSection', () => {
         <UniverseSection
           balance={o.universe_balance}
           performers={o.universe_performers}
+          range="1M"
         />
       </MemoryRouter>,
     );
@@ -35,11 +36,42 @@ describe('UniverseSection', () => {
         <UniverseSection
           balance={o.universe_balance}
           performers={o.universe_performers}
+          range="1M"
         />
       </MemoryRouter>,
     );
     expect(
       screen.getAllByText(/No price history in this range yet/),
     ).toHaveLength(2);
+  });
+
+  it('attaches a range chip to the performers that tracks the range', () => {
+    const o = makeOverview();
+    const { rerender } = render(
+      <MemoryRouter>
+        <UniverseSection
+          balance={o.universe_balance}
+          performers={o.universe_performers}
+          range="1M"
+        />
+      </MemoryRouter>,
+    );
+    const chip = screen.getByTestId('performers-range-chip');
+    expect(chip).toHaveTextContent('the past month');
+    // The composition summary carries its own current-composition marker.
+    expect(screen.getByText(/as it stands now/)).toBeInTheDocument();
+
+    rerender(
+      <MemoryRouter>
+        <UniverseSection
+          balance={o.universe_balance}
+          performers={o.universe_performers}
+          range="YTD"
+        />
+      </MemoryRouter>,
+    );
+    expect(screen.getByTestId('performers-range-chip')).toHaveTextContent(
+      'year to date',
+    );
   });
 });

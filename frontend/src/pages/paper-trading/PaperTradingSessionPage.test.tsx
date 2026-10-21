@@ -56,6 +56,9 @@ const session: PaperTradingSession = {
   use_fundamentals: false,
   include_watchlist: false,
   model: 'gpt-5-mini',
+  current_value: 100500,
+  realised_pnl: 500,
+  unrealised_pnl: 0,
 };
 
 function makeEvent(
@@ -229,6 +232,20 @@ describe('PaperTradingSessionPage', () => {
       screen.getByRole('heading', { name: 'Closed positions' }),
     ).toBeInTheDocument();
     expect(screen.getByRole('heading', { name: 'Runs' })).toBeInTheDocument();
+  });
+
+  it('drops the redundant header Total P&L stat (the KPI row carries the triple)', async () => {
+    installGet(() => 'running');
+
+    renderPage(<PaperTradingSessionPage />);
+
+    await screen.findByRole('heading', { name: 'Aggressive Jolly Wozniak' });
+    // Capital stays in the header; the realised-only "Total P&L" header stat is gone.
+    expect(screen.getByText('Capital')).toBeInTheDocument();
+    expect(screen.queryByText('Total P&L')).not.toBeInTheDocument();
+    // The KPI row still shows the full realised/unrealised triple.
+    expect(screen.getByText('Realised P&L')).toBeInTheDocument();
+    expect(screen.getByText('Unrealised P&L')).toBeInTheDocument();
   });
 
   it('falls back to the strategy label when the portfolio name is missing', async () => {

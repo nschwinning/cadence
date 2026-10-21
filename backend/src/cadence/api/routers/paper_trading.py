@@ -54,6 +54,7 @@ from cadence.paper_trading.errors import (
     SessionNotArchivableError,
     SessionNotFoundError,
 )
+from cadence.paper_trading.models import PaperTradingSession
 
 router = APIRouter(prefix="/paper-trading", tags=["paper-trading"])
 
@@ -64,6 +65,7 @@ BrokerDep = Annotated[Broker, Depends(get_broker)]
 @router.get("/sessions", response_model=PaperTradingSessionListResponse)
 def list_sessions(
     db: DbSession,
+    broker: BrokerDep,
     status_filter: Annotated[
         SessionStatus | None,
         Query(alias="status", description="Filter by session status"),
@@ -74,9 +76,14 @@ def list_sessions(
     ] = False,
     limit: int = 50,
 ) -> PaperTradingSessionListResponse:
-    """Return paper-trading sessions, most recently updated first."""
+    """Return paper-trading sessions, most recently updated first.
+
+    Each session is marked to market at request time, so its ``current_value``,
+    ``realised_pnl``, and ``unrealised_pnl`` reflect current quotes rather than the
+    last stored snapshot.
+    """
     items = [
-        PaperTradingSessionRead.model_validate(row)
+        _session_read(db, broker, row)
         for row in service.list_sessions(
             db,
             status=status_filter,
@@ -120,11 +127,30 @@ def _require_session(db: Session, session_id: uuid.UUID) -> None:
         ) from exc
 
 
+def _session_read(
+    db: Session, broker: Broker, row: PaperTradingSession
+) -> PaperTradingSessionRead:
+    """Build a session read, marking its live money triple to market.
+
+    Computes the ``(current_value, realised_pnl, unrealised_pnl)`` triple from
+    current quotes (all-time basis) via ``session_pnl_triple`` and assigns it onto
+    the validated read, so every session the client sees carries live figures rather
+    than a stale stored valuation. A quote the broker cannot price falls back to the
+    position's average cost inside ``compute_session_value`` rather than failing.
+    """
+    read = PaperTradingSessionRead.model_validate(row)
+    triple = service.session_pnl_triple(db, session_id=row.id, broker=broker)
+    read.current_value = triple.current_value
+    read.realised_pnl = triple.realised_pnl
+    read.unrealised_pnl = triple.unrealised_pnl
+    return read
+
+
 @router.post(
     "/sessions/{session_id}/archive", response_model=PaperTradingSessionRead
 )
 def archive_session(
-    session_id: uuid.UUID, db: DbSession
+    session_id: uuid.UUID, db: DbSession, broker: BrokerDep
 ) -> PaperTradingSessionRead:
     """Soft-archive a stopped session (409 if it is not stopped)."""
     try:
@@ -137,14 +163,14 @@ def archive_session(
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT, detail=str(exc)
         ) from exc
-    return PaperTradingSessionRead.model_validate(row)
+    return _session_read(db, broker, row)
 
 
 @router.post(
     "/sessions/{session_id}/unarchive", response_model=PaperTradingSessionRead
 )
 def unarchive_session(
-    session_id: uuid.UUID, db: DbSession
+    session_id: uuid.UUID, db: DbSession, broker: BrokerDep
 ) -> PaperTradingSessionRead:
     """Restore an archived session to the default listing."""
     try:
@@ -153,7 +179,7 @@ def unarchive_session(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)
         ) from exc
-    return PaperTradingSessionRead.model_validate(row)
+    return _session_read(db, broker, row)
 
 
 @router.post(
@@ -361,6 +387,7 @@ def change_session_benchmark(
     session_id: uuid.UUID,
     payload: SessionBenchmarkChangeRequest,
     db: DbSession,
+    broker: BrokerDep,
 ) -> PaperTradingSessionRead:
     """Switch a session's benchmark (404 unknown session, 422 invalid id)."""
     try:
@@ -375,7 +402,7 @@ def change_session_benchmark(
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
         ) from exc
-    return PaperTradingSessionRead.model_validate(row)
+    return _session_read(db, broker, row)
 
 
 @router.put(
@@ -414,7 +441,7 @@ def change_session_scope(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail=str(exc) or "Brokerage is unavailable",
         ) from exc
-    return PaperTradingSessionRead.model_validate(row)
+    return _session_read(db, broker, row)
 
 
 @router.post(
@@ -425,6 +452,7 @@ def increase_session_capital(
     session_id: uuid.UUID,
     payload: SessionCapitalIncreaseRequest,
     db: DbSession,
+    broker: BrokerDep,
 ) -> PaperTradingSessionRead:
     """Increase a session's capital by a positive amount (increase-only).
 
@@ -444,4 +472,4 @@ def increase_session_capital(
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
         ) from exc
-    return PaperTradingSessionRead.model_validate(row)
+    return _session_read(db, broker, row)

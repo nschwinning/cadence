@@ -42,5 +42,8 @@ export function useDashboardOverview(range: DashboardRange) {
   return useQuery<DashboardOverview>({
     queryKey: dashboardKeys.overview(range),
     queryFn: () => getDashboardOverview(range),
+    // Live-refresh the marked-to-market overview ~every 30s. Pauses in the
+    // background (TanStack default refetchIntervalInBackground: false).
+    refetchInterval: 30_000,
   });
 }

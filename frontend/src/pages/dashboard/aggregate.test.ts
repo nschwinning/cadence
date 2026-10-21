@@ -1,8 +1,9 @@
 import { describe, it, expect } from 'vitest';
 import {
   aggregateTotals,
+  benchmarkDollarSeries,
+  closeOnOrBefore,
   combinedSeries,
-  rebaseBenchmarkLine,
   sessionReturnPct,
   sessionValueStart,
 } from './aggregate';
@@ -22,12 +23,29 @@ describe('sessionValueStart / sessionReturnPct', () => {
 });
 
 describe('aggregateTotals (money-weighted)', () => {
-  it('sums value, pnl and fees and money-weights the return', () => {
-    const a = makeSession({ id: 'a', current_value: 11000, pnl: 1000, fees: 2 });
-    const b = makeSession({ id: 'b', current_value: 20000, pnl: 0, fees: 3 });
+  it('sums value, pnl, realised/unrealised and fees and money-weights the return', () => {
+    const a = makeSession({
+      id: 'a',
+      current_value: 11000,
+      pnl: 1000,
+      realised_pnl: 600,
+      unrealised_pnl: 400,
+      fees: 2,
+    });
+    const b = makeSession({
+      id: 'b',
+      current_value: 20000,
+      pnl: 0,
+      realised_pnl: -100,
+      unrealised_pnl: 100,
+      fees: 3,
+    });
     const totals = aggregateTotals([a, b]);
     expect(totals.totalValue).toBe(31000);
     expect(totals.pnl).toBe(1000);
+    // Range realised/unrealised are simple dollar sums across the selection.
+    expect(totals.realisedPnl).toBe(500);
+    expect(totals.unrealisedPnl).toBe(500);
     expect(totals.fees).toBe(5);
     // Σ pnl / Σ value_start = 1000 / (10000 + 20000)
     expect(totals.returnPct).toBeCloseTo(1000 / 30000, 10);
@@ -38,6 +56,8 @@ describe('aggregateTotals (money-weighted)', () => {
     expect(totals).toEqual({
       totalValue: 0,
       pnl: 0,
+      realisedPnl: 0,
+      unrealisedPnl: 0,
       fees: 0,
       returnPct: 0,
     });
@@ -86,61 +106,101 @@ describe('combinedSeries (carry-forward summed line)', () => {
   });
 });
 
-describe('rebaseBenchmarkLine', () => {
-  const start = { date: '2026-06-05', value: 10000 };
+describe('closeOnOrBefore', () => {
+  const points = [
+    { date: '2026-06-01', price: 100 },
+    { date: '2026-06-03', price: 110 },
+  ];
 
-  it('rebases to the combined start using the on/before anchor and seeds the origin', () => {
-    // Anchor (100) is on/before the start date; later closes scale off it.
-    const line = rebaseBenchmarkLine(
-      [
-        { date: '2026-06-01', price: 100 }, // pre-start anchor (not plotted)
-        { date: '2026-06-05', price: 110 }, // on the start date → deduped by origin
-        { date: '2026-06-10', price: 121 },
+  it('returns the last close on/before the date (carry-forward)', () => {
+    expect(closeOnOrBefore(points, '2026-06-01')).toBe(100);
+    expect(closeOnOrBefore(points, '2026-06-02')).toBe(100); // carried forward
+    expect(closeOnOrBefore(points, '2026-06-04')).toBe(110); // carried forward
+  });
+
+  it('returns null before the first stored close', () => {
+    expect(closeOnOrBefore(points, '2026-05-31')).toBeNull();
+    expect(closeOnOrBefore([], '2026-06-01')).toBeNull();
+  });
+});
+
+describe('benchmarkDollarSeries (per-session buy-and-hold aggregate)', () => {
+  const index = [
+    { date: '2026-06-01', price: 100 },
+    { date: '2026-06-02', price: 110 },
+    { date: '2026-06-03', price: 100 },
+    { date: '2026-06-04', price: 120 },
+  ];
+  const axis = ['2026-06-01', '2026-06-02', '2026-06-03', '2026-06-04'];
+
+  it('sums sessions and steps up on the second session open date', () => {
+    const a = makeSession({
+      id: 'a',
+      contributions: [{ effective_date: '2026-06-01', amount: 10000 }],
+    });
+    const b = makeSession({
+      id: 'b',
+      contributions: [{ effective_date: '2026-06-03', amount: 20000 }],
+    });
+    // a buys 10000/100 = 100 units on 06-01; b buys 20000/100 = 200 units on 06-03.
+    expect(benchmarkDollarSeries([a, b], index, axis)).toEqual([
+      { date: '2026-06-01', value: 10000 }, // 100u × 100
+      { date: '2026-06-02', value: 11000 }, // 100u × 110
+      { date: '2026-06-03', value: 30000 }, // (100+200)u × 100 — steps up on b's open
+      { date: '2026-06-04', value: 36000 }, // 300u × 120
+    ]);
+  });
+
+  it('steps up on a capital-increase contribution', () => {
+    const a = makeSession({
+      id: 'a',
+      contributions: [
+        { effective_date: '2026-06-01', amount: 10000 }, // 100 units @ 100
+        { effective_date: '2026-06-03', amount: 5000 }, // +50 units @ 100
       ],
-      start,
-    );
-    expect(line).toEqual([
-      { date: '2026-06-05', value: 10000 }, // origin shares the portfolio start
-      { date: '2026-06-10', value: 11000 }, // 10000 × 121 / 110
+    });
+    expect(benchmarkDollarSeries([a], index, axis)).toEqual([
+      { date: '2026-06-01', value: 10000 }, // 100u × 100
+      { date: '2026-06-02', value: 11000 }, // 100u × 110
+      { date: '2026-06-03', value: 15000 }, // 150u × 100 — increase steps up
+      { date: '2026-06-04', value: 18000 }, // 150u × 120
     ]);
   });
 
-  it('anchors to the earliest close when every close is after the start', () => {
-    // No close on/before the start: the first available close anchors the line,
-    // so it begins at that later date (no synthetic origin at the start).
-    const line = rebaseBenchmarkLine(
-      [
-        { date: '2026-06-08', price: 200 },
-        { date: '2026-06-12', price: 220 },
-      ],
-      start,
-    );
-    expect(line).toEqual([
-      { date: '2026-06-08', value: 10000 }, // 10000 × 200 / 200
-      { date: '2026-06-12', value: 11000 }, // 10000 × 220 / 200
-    ]);
+  it('is zero before the first selected session opens', () => {
+    const b = makeSession({
+      id: 'b',
+      contributions: [{ effective_date: '2026-06-03', amount: 20000 }],
+    });
+    const line = benchmarkDollarSeries([b], index, axis);
+    expect(line[0]).toEqual({ date: '2026-06-01', value: 0 });
+    expect(line[1]).toEqual({ date: '2026-06-02', value: 0 });
+    expect(line[2]).toEqual({ date: '2026-06-03', value: 20000 }); // 200u × 100
   });
 
-  it('returns an empty line when there are no points', () => {
-    expect(rebaseBenchmarkLine([], start)).toEqual([]);
+  it('yields no line when the index has no stored closes', () => {
+    const a = makeSession({
+      id: 'a',
+      contributions: [{ effective_date: '2026-06-01', amount: 10000 }],
+    });
+    expect(benchmarkDollarSeries([a], [], axis)).toEqual([]);
   });
 
-  it('re-rebases to a different combined start (selection change)', () => {
-    // When the session selection changes, the combined curve's first point moves,
-    // so the same benchmark series must re-rebase onto the new origin.
-    const points = [
-      { date: '2026-06-05', price: 100 },
-      { date: '2026-06-10', price: 120 },
-    ];
-    const atTen = rebaseBenchmarkLine(points, { date: '2026-06-05', value: 10000 });
-    const atTwenty = rebaseBenchmarkLine(points, { date: '2026-06-05', value: 20000 });
-    expect(atTen).toEqual([
-      { date: '2026-06-05', value: 10000 },
-      { date: '2026-06-10', value: 12000 },
-    ]);
-    expect(atTwenty).toEqual([
-      { date: '2026-06-05', value: 20000 },
-      { date: '2026-06-10', value: 24000 },
-    ]);
+  it('yields no line when every contribution predates all closes', () => {
+    // A contribution before the index's first close buys no units; with no other
+    // priceable contribution the line is empty so the chart draws nothing.
+    const a = makeSession({
+      id: 'a',
+      contributions: [{ effective_date: '2026-05-01', amount: 10000 }],
+    });
+    expect(benchmarkDollarSeries([a], index, axis)).toEqual([]);
+  });
+
+  it('is empty when the date axis is empty', () => {
+    const a = makeSession({
+      id: 'a',
+      contributions: [{ effective_date: '2026-06-01', amount: 10000 }],
+    });
+    expect(benchmarkDollarSeries([a], index, [])).toEqual([]);
   });
 });

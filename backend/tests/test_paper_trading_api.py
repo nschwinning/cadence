@@ -981,3 +981,103 @@ def test_session_sector_performance_unknown_session_404(
         f"/api/v1/paper-trading/sessions/{uuid.uuid4()}/sector-performance"
     )
     assert resp.status_code == 404
+
+
+def test_list_sessions_returns_live_triple_marked_to_market(
+    client: TestClient, db_session: Session
+) -> None:
+    """The session list carries the live (value, realised, unrealised) triple.
+
+    The triple reflects current quotes at request time, not the last stored value
+    snapshot: a snapshot is recorded while the broker quotes AAPL at 100, then the
+    list is read while it quotes 120, and the list value tracks the live 120.
+    """
+    portfolio = portfolios_service.create_portfolio(
+        db_session, name="AI", stocks=["AAPL"]
+    )
+    sess = service.create_session(
+        db_session,
+        portfolio_id=portfolio.id,
+        strategy_key="ai_buy_hold",
+        allocated_capital=100_000.0,
+        rebalance_prompt_version=1,
+        crypto_rebalance_prompt_version=1,
+        benchmark=Benchmark.SP500,
+    )
+    service.apply_fill_to_ledger(
+        db_session,
+        session_id=sess.id,
+        ticker="AAPL",
+        side=OrderSide.BUY,
+        shares=10,
+        price=100.0,
+    )
+    # Freeze a value snapshot while the quote sits at the entry price (100) -> the
+    # stored snapshot value is the all-cash-equivalent 100_000 with zero unrealised.
+    service.record_value_snapshot(
+        db_session,
+        session_id=sess.id,
+        as_of=date(2026, 1, 1),
+        broker=_QuoteBroker({"AAPL": 100.0}),
+    )
+
+    app.dependency_overrides[get_broker] = lambda: _QuoteBroker({"AAPL": 120.0})
+    resp = client.get("/api/v1/paper-trading/sessions")
+    assert resp.status_code == 200
+    item = next(i for i in resp.json()["items"] if i["id"] == str(sess.id))
+    # cash 99_000 + 10 * 120 = 100_200 (live), NOT the snapshot's 100_000.
+    assert item["current_value"] == pytest.approx(100_200.0)
+    assert item["unrealised_pnl"] == pytest.approx(200.0)
+    # No closed lots -> cumulative realised is zero.
+    assert item["realised_pnl"] == pytest.approx(0.0)
+
+
+def test_list_sessions_empty_session_all_cash_zero_unrealised(
+    client: TestClient, db_session: Session
+) -> None:
+    """A session with no open positions reports all-cash value and zero unrealised."""
+    portfolio = portfolios_service.create_portfolio(
+        db_session, name="Empty", stocks=["AAPL"]
+    )
+    sess = service.create_session(
+        db_session,
+        portfolio_id=portfolio.id,
+        strategy_key="ai_buy_hold",
+        allocated_capital=100_000.0,
+        rebalance_prompt_version=1,
+        crypto_rebalance_prompt_version=1,
+        benchmark=Benchmark.SP500,
+    )
+
+    app.dependency_overrides[get_broker] = lambda: _QuoteBroker({})
+    resp = client.get("/api/v1/paper-trading/sessions")
+    assert resp.status_code == 200
+    item = next(i for i in resp.json()["items"] if i["id"] == str(sess.id))
+    assert item["current_value"] == pytest.approx(100_000.0)
+    assert item["unrealised_pnl"] == pytest.approx(0.0)
+    assert item["realised_pnl"] == pytest.approx(0.0)
+
+
+def test_list_sessions_realised_reflects_closed_lots(
+    client: TestClient, db_session: Session
+) -> None:
+    """The list's all-time realised P&L equals the session's cumulative total_pnl."""
+    portfolio = portfolios_service.create_portfolio(
+        db_session, name="Realised", stocks=["AAPL"]
+    )
+    sess = service.create_session(
+        db_session,
+        portfolio_id=portfolio.id,
+        strategy_key="ai_buy_hold",
+        allocated_capital=100_000.0,
+        rebalance_prompt_version=1,
+        crypto_rebalance_prompt_version=1,
+        benchmark=Benchmark.SP500,
+    )
+    service.update_session_last_run(db_session, sess.id, pnl_delta=350.0)
+
+    app.dependency_overrides[get_broker] = lambda: _QuoteBroker({})
+    resp = client.get("/api/v1/paper-trading/sessions")
+    assert resp.status_code == 200
+    item = next(i for i in resp.json()["items"] if i["id"] == str(sess.id))
+    assert item["realised_pnl"] == pytest.approx(350.0)

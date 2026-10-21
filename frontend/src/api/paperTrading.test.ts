@@ -9,7 +9,9 @@ import {
   useChangeSessionBenchmark,
   useChangeSessionScope,
   useIncreaseSessionCapital,
+  useSessionKpis,
   useSessionOrderSync,
+  useSessions,
   useSessionsValueComparison,
 } from './paperTrading';
 import { dashboardKeys } from './dashboard';
@@ -175,6 +177,9 @@ describe('useChangeSessionBenchmark', () => {
       use_fundamentals: false,
       include_watchlist: false,
       model: 'gpt-5-mini',
+      current_value: 10000,
+      realised_pnl: 0,
+      unrealised_pnl: 0,
     };
   }
 
@@ -368,5 +373,77 @@ describe('useSessionOrderSync polling', () => {
     // New fills move the session's value, so the dashboard equity curve and
     // hero/leaderboard tiles that aggregate it must refresh too.
     expect(invalidate).toHaveBeenCalledWith({ queryKey: dashboardKeys.all });
+  });
+});
+
+describe('live ~30s refresh of the marked-to-market reads', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('useSessions refetches once per ~30s without a storm', async () => {
+    mockedGet.mockResolvedValue({ data: { items: [], total: 0 } });
+
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false, gcTime: 0 } },
+    });
+
+    renderHook(() => useSessions(), { wrapper: wrapper(queryClient) });
+
+    // Initial fetch on mount.
+    await vi.advanceTimersByTimeAsync(0);
+    expect(mockedGet).toHaveBeenCalledTimes(1);
+
+    // Nothing fires before the interval elapses (no storm).
+    await vi.advanceTimersByTimeAsync(29_000);
+    expect(mockedGet).toHaveBeenCalledTimes(1);
+
+    // One refetch at ~30s, then one more at ~60s.
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(mockedGet).toHaveBeenCalledTimes(2);
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(mockedGet).toHaveBeenCalledTimes(3);
+  });
+
+  it('useSessionKpis refetches once per ~30s', async () => {
+    mockedGet.mockResolvedValue({ data: {} });
+
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false, gcTime: 0 } },
+    });
+
+    renderHook(() => useSessionKpis('sess-1'), {
+      wrapper: wrapper(queryClient),
+    });
+
+    await vi.advanceTimersByTimeAsync(0);
+    expect(mockedGet).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(mockedGet).toHaveBeenCalledTimes(2);
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(mockedGet).toHaveBeenCalledTimes(3);
+  });
+
+  it('does not leak polling to a non-live query on the same client', async () => {
+    mockedGet.mockResolvedValue({ data: { sessions: [] } });
+
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false, gcTime: 0 } },
+    });
+
+    // The comparison hook sets no refetchInterval — it must stay at one fetch.
+    renderHook(() => useSessionsValueComparison(), {
+      wrapper: wrapper(queryClient),
+    });
+
+    await vi.advanceTimersByTimeAsync(0);
+    expect(mockedGet).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(120_000);
+    expect(mockedGet).toHaveBeenCalledTimes(1);
   });
 });

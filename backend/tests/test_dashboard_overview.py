@@ -31,6 +31,7 @@ from cadence.paper_trading.models import (
     BenchmarkPrice,
     PaperTrade,
     PaperTradingSession,
+    SessionCapitalEvent,
     SessionValueSnapshot,
 )
 from cadence.portfolios import service as portfolios_service
@@ -244,6 +245,60 @@ def test_session_starting_within_range_baselines_on_allocated(
     assert [p.date for p in perf.points] == [date(2026, 6, 10)]
     # Baselines on allocated capital (current value - allocated).
     assert perf.pnl == 0.0
+
+
+def test_session_contributions_include_opening_capital_and_increases(
+    db_session: Session,
+) -> None:
+    session_row = _make_session(
+        db_session, name="Gamma", strategy_key="s3", allocated=15_000.0
+    )
+    # Opening snapshot on 2026-05-20 (the contribution baseline date), then a
+    # $5,000 capital increase effective 2026-06-01 (allocated now 15,000).
+    _add_snapshot(db_session, session_row.id, on=date(2026, 5, 20), total_value=10_000.0)
+    _add_snapshot(db_session, session_row.id, on=date(2026, 6, 5), total_value=16_000.0)
+    db_session.add(
+        SessionCapitalEvent(
+            session_id=session_row.id,
+            amount=5_000.0,
+            effective_date=date(2026, 6, 1),
+        )
+    )
+    db_session.flush()
+
+    overview = service.get_dashboard_overview(
+        db_session,
+        range_=DashboardRange.MONTH,
+        broker=StubBroker(),
+        today=_TODAY,
+        now=_NOW,
+    )
+
+    perf = overview.sessions[0]
+    # Opening capital (allocated − increases) at the first snapshot date, then the
+    # increase on its effective date — NOT windowed to the range (opening predates it).
+    assert [(c.effective_date, c.amount) for c in perf.contributions] == [
+        (date(2026, 5, 20), 10_000.0),
+        (date(2026, 6, 1), 5_000.0),
+    ]
+
+
+def test_session_without_snapshots_has_no_contributions(
+    db_session: Session,
+) -> None:
+    _make_session(db_session, name="Delta", strategy_key="s4", allocated=10_000.0)
+
+    overview = service.get_dashboard_overview(
+        db_session,
+        range_=DashboardRange.MONTH,
+        broker=StubBroker(),
+        today=_TODAY,
+        now=_NOW,
+    )
+
+    perf = overview.sessions[0]
+    assert perf.points == []
+    assert perf.contributions == []
 
 
 def test_range_fees_sum_crypto_notional_within_window(db_session: Session) -> None:
@@ -629,3 +684,129 @@ def test_overview_endpoint_requires_range(client: TestClient) -> None:
     response = client.get("/api/v1/dashboard/overview")
 
     assert response.status_code == 422
+
+
+# --- range realised / unrealised triple -------------------------------------
+
+
+def _add_closed_position(
+    db_session: Session,
+    session_id: uuid.UUID,
+    *,
+    pnl: float,
+    exit_on: datetime,
+) -> None:
+    # record_closed_position derives realized_pnl = (exit - entry) * qty; use qty 1
+    # with entry 100 so exit = 100 + pnl yields exactly `pnl`.
+    paper_trading_service.record_closed_position(
+        db_session,
+        session_id=session_id,
+        ticker="TECH",
+        quantity=1.0,
+        entry_price=100.0,
+        exit_price=100.0 + pnl,
+        entry_date=exit_on - timedelta(days=1),
+        exit_date=exit_on,
+    )
+
+
+def _add_baseline_snapshot(
+    db_session: Session,
+    session_id: uuid.UUID,
+    *,
+    on: date,
+    unrealized: float,
+) -> None:
+    db_session.add(
+        SessionValueSnapshot(
+            session_id=session_id,
+            snapshot_date=on,
+            total_value=10_000.0,
+            cash_value=9_000.0,
+            positions_value=1_000.0,
+            daily_pnl=0.0,
+            daily_pnl_pct=0.0,
+            positions=[{"unrealized_pnl": unrealized}],
+        )
+    )
+    db_session.flush()
+
+
+def test_session_range_realised_and_unrealised_emitted(db_session: Session) -> None:
+    session_row = _make_session(
+        db_session, name="Triple", strategy_key="s5", allocated=10_000.0
+    )
+    # Range (1M) starts 2026-05-16. One closed lot inside the window, one before it:
+    # only the in-window lot's realised P&L counts toward the range figure.
+    _add_closed_position(
+        db_session, session_row.id, pnl=500.0, exit_on=datetime(2026, 6, 1, tzinfo=UTC)
+    )
+    _add_closed_position(
+        db_session, session_row.id, pnl=999.0, exit_on=datetime(2026, 5, 1, tzinfo=UTC)
+    )
+    # Baseline snapshot on/before the range start carries +300 unrealised. With no
+    # open positions the current live unrealised is 0, so the range figure nets to
+    # 0 − 300 = −300.
+    _add_baseline_snapshot(
+        db_session, session_row.id, on=date(2026, 5, 10), unrealized=300.0
+    )
+
+    overview = service.get_dashboard_overview(
+        db_session,
+        range_=DashboardRange.MONTH,
+        broker=StubBroker(),
+        today=_TODAY,
+        now=_NOW,
+    )
+
+    perf = overview.sessions[0]
+    assert perf.realised_pnl == pytest.approx(500.0)
+    assert perf.unrealised_pnl == pytest.approx(-300.0)
+
+
+def test_session_max_range_realised_cumulative_unrealised_live(
+    db_session: Session,
+) -> None:
+    session_row = _make_session(
+        db_session, name="MaxTriple", strategy_key="s6", allocated=10_000.0
+    )
+    # Cumulative realised lives on the session row; an in-window-only sum would miss
+    # the pre-window lot. Max must report the cumulative total_pnl.
+    paper_trading_service.update_session_last_run(
+        db_session, session_row.id, pnl_delta=1_234.0
+    )
+    # A baseline snapshot exists, but Max has no range start so it must be ignored:
+    # unrealised collapses to the current live figure (0 with no open positions).
+    _add_baseline_snapshot(
+        db_session, session_row.id, on=date(2026, 5, 10), unrealized=300.0
+    )
+
+    overview = service.get_dashboard_overview(
+        db_session,
+        range_=DashboardRange.MAX,
+        broker=StubBroker(),
+        today=_TODAY,
+        now=_NOW,
+    )
+
+    perf = overview.sessions[0]
+    assert perf.realised_pnl == pytest.approx(1_234.0)
+    assert perf.unrealised_pnl == pytest.approx(0.0)
+
+
+def test_session_without_activity_has_zero_realised_unrealised(
+    db_session: Session,
+) -> None:
+    _make_session(db_session, name="Zeroed", strategy_key="s7", allocated=10_000.0)
+
+    overview = service.get_dashboard_overview(
+        db_session,
+        range_=DashboardRange.MONTH,
+        broker=StubBroker(),
+        today=_TODAY,
+        now=_NOW,
+    )
+
+    perf = overview.sessions[0]
+    assert perf.realised_pnl == pytest.approx(0.0)
+    assert perf.unrealised_pnl == pytest.approx(0.0)

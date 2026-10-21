@@ -1224,6 +1224,118 @@ def test_session_kpis_unknown_session_raises(db_session: Session) -> None:
 
 
 # --------------------------------------------------------------------------- #
+# Shared money triple + range-relative realised/unrealised helpers
+# --------------------------------------------------------------------------- #
+
+
+def test_session_pnl_triple_live_figures(db_session: Session) -> None:
+    sess = _ai_session(db_session)
+    _buy(db_session, sess.id, "AAPL", 10, 100.0)  # +20/share -> +200 unrealised
+    service.update_session_last_run(db_session, sess.id, pnl_delta=300.0)
+    triple = service.session_pnl_triple(
+        db_session, session_id=sess.id, broker=_QuoteBroker({"AAPL": 120.0})
+    )
+    # current_value = 100,000 allocated + 300 realised − 0 fees + 200 unrealised.
+    assert triple.current_value == pytest.approx(100_500.0)
+    assert triple.realised_pnl == pytest.approx(300.0)  # cumulative total_pnl
+    assert triple.unrealised_pnl == pytest.approx(200.0)
+
+
+def test_session_pnl_triple_unknown_session_raises(db_session: Session) -> None:
+    with pytest.raises(SessionNotFoundError):
+        service.session_pnl_triple(
+            db_session, session_id=uuid.uuid4(), broker=_QuoteBroker({})
+        )
+
+
+def _close_lot(
+    db_session: Session, session_id: object, pnl: float, exit_day: date
+) -> None:
+    """Record a closed lot whose realised P&L is ``pnl``, exited on ``exit_day``."""
+    service.record_closed_position(
+        db_session,
+        session_id=session_id,
+        ticker="AAPL",
+        quantity=1.0,
+        entry_price=100.0,
+        exit_price=100.0 + pnl,
+        entry_date=datetime(2025, 12, 1, tzinfo=UTC),
+        exit_date=datetime(exit_day.year, exit_day.month, exit_day.day, tzinfo=UTC),
+    )
+
+
+def test_range_realised_pnl_within_window(db_session: Session) -> None:
+    sess = _ai_session(db_session)
+    _close_lot(db_session, sess.id, 100.0, date(2026, 1, 5))
+    _close_lot(db_session, sess.id, 200.0, date(2026, 2, 10))
+    _close_lot(db_session, sess.id, -50.0, date(2026, 3, 1))
+    service.update_session_last_run(db_session, sess.id, pnl_delta=250.0)
+
+    # (start, now]: only lots exited strictly after the start are counted.
+    after_jan = service.range_realised_pnl(
+        db_session, sess.id, start=datetime(2026, 1, 31, tzinfo=UTC)
+    )
+    assert after_jan == pytest.approx(150.0)  # 200 − 50
+
+    # Bounded on both ends: exit in (2026-01-01, 2026-02-28].
+    bounded = service.range_realised_pnl(
+        db_session,
+        sess.id,
+        start=datetime(2026, 1, 1, tzinfo=UTC),
+        end=datetime(2026, 2, 28, tzinfo=UTC),
+    )
+    assert bounded == pytest.approx(300.0)  # 100 + 200
+
+
+def test_range_realised_pnl_max_equals_cumulative(db_session: Session) -> None:
+    sess = _ai_session(db_session)
+    _close_lot(db_session, sess.id, 100.0, date(2026, 1, 5))
+    _close_lot(db_session, sess.id, 200.0, date(2026, 2, 10))
+    service.update_session_last_run(db_session, sess.id, pnl_delta=300.0)
+    # Unbounded (Max) reduces to the session's cumulative realised P&L exactly.
+    maxed = service.range_realised_pnl(db_session, sess.id, start=None)
+    assert maxed == pytest.approx(300.0)
+    assert maxed == pytest.approx(service.get_session(db_session, sess.id).total_pnl)
+
+
+def test_range_unrealised_pnl_nets_range_start_baseline(db_session: Session) -> None:
+    sess = _ai_session(db_session)
+    # A range-start snapshot captured +50 of unrealised across its holdings.
+    db_session.add(
+        SessionValueSnapshot(
+            session_id=sess.id,
+            snapshot_date=date(2026, 1, 31),
+            total_value=100_050.0,
+            cash_value=99_000.0,
+            positions_value=1_050.0,
+            daily_pnl=0.0,
+            daily_pnl_pct=0.0,
+            positions=[{"ticker": "AAPL", "unrealized_pnl": 50.0}],
+        )
+    )
+    db_session.commit()
+    # Live unrealised is 200; range-relative nets out the 50 already captured.
+    ranged = service.range_unrealised_pnl(
+        db_session, sess.id, start_date=date(2026, 2, 1), current_unrealised=200.0
+    )
+    assert ranged == pytest.approx(150.0)
+
+
+def test_range_unrealised_pnl_max_and_no_snapshot_equal_live(
+    db_session: Session,
+) -> None:
+    sess = _ai_session(db_session)
+    # Max range (start_date None) -> baseline 0 -> equals the live unrealised.
+    assert service.range_unrealised_pnl(
+        db_session, sess.id, start_date=None, current_unrealised=200.0
+    ) == pytest.approx(200.0)
+    # A start before any snapshot also falls back to a zero baseline.
+    assert service.range_unrealised_pnl(
+        db_session, sess.id, start_date=date(2020, 1, 1), current_unrealised=200.0
+    ) == pytest.approx(200.0)
+
+
+# --------------------------------------------------------------------------- #
 # Max drawdown (pure helper)
 # --------------------------------------------------------------------------- #
 

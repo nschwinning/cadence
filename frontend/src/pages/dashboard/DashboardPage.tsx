@@ -3,12 +3,14 @@ import { useHealth } from '../../api/health';
 import { useDashboardOverview } from '../../api/dashboard';
 import type { DashboardRange } from '../../types/api';
 import { RangeSelector } from './RangeSelector';
-import { HeroTiles } from './HeroTiles';
+import { ValueTiles, PerformanceTiles } from './HeroTiles';
 import { CombinedEquityChart } from './CombinedEquityChart';
 import { PortfolioLeaderboard } from './PortfolioLeaderboard';
 import { AutomationPanel } from './AutomationPanel';
 import { RecentActivityFeed } from './RecentActivityFeed';
 import { UniverseSection } from './UniverseSection';
+import { overPhrase } from './rangeLabel';
+import { FreshnessBadge } from '../paper-trading/PaperTradingSessionPage';
 
 /**
  * Dashboard — the daily-driver landing view. A global broker-style range selector
@@ -50,6 +52,39 @@ function HealthIndicator() {
       />
       {label}
     </span>
+  );
+}
+
+/**
+ * A labelled dashboard scope band: a heading (with an optional trailing chip/badge
+ * and a docked control such as the range selector) over its content. The bands make
+ * each figure's scope legible — point-in-time value, range-scoped performance, and
+ * current-composition universe read as three distinct regions.
+ */
+function ScopeBand({
+  title,
+  badge,
+  control,
+  children,
+}: {
+  title: string;
+  badge?: React.ReactNode;
+  control?: React.ReactNode;
+  children: React.ReactNode;
+}) {
+  return (
+    <section className="flex flex-col gap-4">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div className="flex flex-wrap items-baseline gap-2">
+          <h2 className="text-sm font-semibold uppercase tracking-wide text-slate-500">
+            {title}
+          </h2>
+          {badge}
+        </div>
+        {control}
+      </div>
+      {children}
+    </section>
   );
 }
 
@@ -97,12 +132,9 @@ export function DashboardPage() {
   return (
     <section className="flex flex-col gap-6">
       <div className="flex flex-wrap items-center justify-between gap-3">
-        <div className="flex flex-wrap items-center gap-4">
-          <h1 className="text-2xl font-bold tracking-tight text-slate-900">
-            Dashboard
-          </h1>
-          <RangeSelector value={range} onChange={setRange} />
-        </div>
+        <h1 className="text-2xl font-bold tracking-tight text-slate-900">
+          Dashboard
+        </h1>
         <HealthIndicator />
       </div>
 
@@ -132,21 +164,36 @@ export function DashboardPage() {
             </p>
           )}
 
-          <HeroTiles sessions={selectedSessions} range={range} />
+          <ScopeBand
+            title="Portfolio value"
+            badge={<FreshnessBadge kind="live" />}
+          >
+            <ValueTiles sessions={selectedSessions} />
+          </ScopeBand>
 
-          <CombinedEquityChart
-            sessions={sessions}
-            selectedIds={selectedIds}
-            onToggle={toggle}
-            benchmarkSeries={data.benchmark_series}
-          />
+          <ScopeBand
+            title={`Performance · ${overPhrase(range)}`}
+            control={<RangeSelector value={range} onChange={setRange} />}
+          >
+            <PerformanceTiles sessions={selectedSessions} range={range} />
 
-          <PortfolioLeaderboard sessions={selectedSessions} />
+            <CombinedEquityChart
+              sessions={sessions}
+              selectedIds={selectedIds}
+              onToggle={toggle}
+              benchmarkSeries={data.benchmark_series}
+            />
 
-          <UniverseSection
-            balance={data.universe_balance}
-            performers={data.universe_performers}
-          />
+            <PortfolioLeaderboard sessions={selectedSessions} range={range} />
+          </ScopeBand>
+
+          <ScopeBand title="Universe">
+            <UniverseSection
+              balance={data.universe_balance}
+              performers={data.universe_performers}
+              range={range}
+            />
+          </ScopeBand>
 
           <div className="grid grid-cols-1 items-start gap-6 lg:grid-cols-2">
             <AutomationPanel automation={data.automation} />

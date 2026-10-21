@@ -13,7 +13,7 @@ import { categoricalColor } from '../../lib/palette';
 import { EChart } from '../../components/charts/EChart';
 import {
   combinedSeries,
-  rebaseBenchmarkLine,
+  benchmarkDollarSeries,
   type CombinedPoint,
 } from './aggregate';
 
@@ -37,7 +37,7 @@ const BENCHMARK_COLORS = [
   '#0d9488', // teal-600
 ] as const;
 
-/** One rebased benchmark line ready to plot alongside the combined curve. */
+/** One aggregated benchmark line ready to plot alongside the combined curve. */
 interface BenchmarkLine {
   id: string;
   name: string;
@@ -48,10 +48,11 @@ interface BenchmarkLine {
 /**
  * Build the ECharts option for the combined equity curve: a single emerald line
  * summing the selected sessions' values, plus any selected benchmark index lines
- * (dashed, thinner, muted) rebased to the combined curve's start — all on a shared
- * time x-axis and USD y-axis. The axis tooltip reports the summed value and each
- * drawn benchmark's value at the hovered date. Mirrors the paper-trading charts'
- * EChart option shape so the dashboard chart looks and behaves like them.
+ * (dashed, thinner, muted) — each the aggregated buy-and-hold of the selected
+ * sessions' opening capital in that index — all on a shared time x-axis and USD
+ * y-axis. The axis tooltip reports the summed value and each drawn benchmark's
+ * value at the hovered date. Mirrors the paper-trading charts' EChart option shape
+ * so the dashboard chart looks and behaves like them.
  */
 export function buildCombinedOption(
   points: CombinedPoint[],
@@ -120,7 +121,8 @@ export function buildCombinedOption(
 /**
  * The combined equity curve: a single line summing the checked sessions' values
  * on a shared, carry-forward date axis windowed to the selected range, with
- * selectable benchmark index lines rebased to the combined curve's start. The
+ * selectable benchmark index lines — each the aggregated buy-and-hold of the
+ * checked sessions' opening capital (and later increases) in that index. The
  * portfolio checkbox legend toggles the page-level selection (which also re-derives
  * the hero tiles and leaderboard); the benchmark checkbox legend toggles local
  * overlay state. Both render from already-fetched data and never refetch on a toggle.
@@ -151,16 +153,18 @@ export function CombinedEquityChart({
       return next;
     });
 
-  // Rebase each selected, non-empty benchmark to the combined curve's first point.
-  // Re-runs when the selection (hence the combined start) or the overlay set
-  // changes — no refetch. Colors are keyed to catalog position for stability.
-  const start = series[0];
+  // Aggregate each selected, non-empty benchmark over exactly the checked sessions:
+  // a buy-and-hold of each session's contributed capital in that index, summed and
+  // evaluated on the combined curve's date axis. Re-runs when the session selection,
+  // the overlay set, or the fetched data changes — no refetch. Colors are keyed to
+  // catalog position for stability.
+  const dateAxis = series.map((p) => p.date);
   const benchmarkLines = useMemo<BenchmarkLine[]>(() => {
-    if (!start) return [];
+    if (dateAxis.length === 0) return [];
     const lines: BenchmarkLine[] = [];
     benchmarkSeries.forEach((bench, i) => {
       if (!selectedBenchmarks.has(bench.benchmark_id)) return;
-      const points = rebaseBenchmarkLine(bench.points, start);
+      const points = benchmarkDollarSeries(selected, bench.points, dateAxis);
       if (points.length === 0) return;
       lines.push({
         id: bench.benchmark_id,
@@ -170,7 +174,8 @@ export function CombinedEquityChart({
       });
     });
     return lines;
-  }, [benchmarkSeries, selectedBenchmarks, start]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [benchmarkSeries, selectedBenchmarks, selected, dateAxis.join(',')]);
 
   return (
     <div className={CARD_CLASS}>
@@ -291,7 +296,7 @@ function Legend({
 /**
  * Checkbox legend of every catalog benchmark. A benchmark with no price data over
  * the range is disabled (its checkbox is inert) rather than erroring. Toggling an
- * enabled benchmark adds or removes its rebased overlay line without a refetch.
+ * enabled benchmark adds or removes its aggregated overlay line without a refetch.
  */
 function BenchmarkLegend({
   benchmarkSeries,
