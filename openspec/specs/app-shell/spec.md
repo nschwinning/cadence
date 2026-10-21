@@ -135,7 +135,7 @@ SHALL NOT prevent the rest of the detail view from rendering.
 
 ### Requirement: Portfolio and paper-trading views
 
-The system SHALL provide a single unified **Portfolios** area — one list view and one per-session detail view — replacing the previously separate portfolio and paper-trading views. The unified list SHALL be session-driven: each row is a paper-trading session, and the list SHALL present, alongside each session's status, allocated capital, trade count, and profit/loss, the portfolio-definition attributes of the session's portfolio — its risk profile and its number of holdings. The list SHALL show the AI portfolio build form and the multi-session performance-comparison chart above the table. Opening a row SHALL navigate to the session's detail view at `/portfolios/:id`, where the identifier is the session's id. The session list and the session detail header SHALL identify each session by its portfolio name as the primary label, and SHALL present the strategy as secondary context rather than the primary identifier. When a session has no resolvable portfolio name, the UI SHALL fall back to the strategy label. The session detail view SHALL display its trades, runs, positions, and AI-portfolio events. The session detail view SHALL additionally display the session's **portfolio definition**, resolved via the session's portfolio reference: an overview of the portfolio's source, risk profile, maximum allocation, number of holdings, creation time, and source run, together with a holdings list whose tickers each link to the asset's detail view; when the session has no resolvable portfolio, the detail view SHALL still render the session content and SHALL omit the portfolio-definition section rather than erroring. The session detail view SHALL display the session's **AI model** — the model its AI runs execute on, shown by its catalog display name. The session detail view SHALL display the session's **automatic stop-loss configuration** — whether it is enabled and, when enabled, its threshold percentage. The session detail view SHALL display the session's **risk-guardrail configuration** — whether the guardrails are enabled and, when enabled, the maximum percentage per asset, the maximum percentage per asset class, the minimum number of positions, and the maximum invested percentage. The session detail view SHALL display the session's **learning-feedback configuration** — whether learning feedback (informing the rebalance agent of the session's recent prior-run outcomes) is enabled and, when enabled, its learning window (number of recent days). The session detail view SHALL display the session's **company-fundamentals configuration** — whether company fundamentals (supplying the rebalance agent with per-ticker company financials) are enabled. The session detail view SHALL display the session's **watchlist-inclusion configuration** — whether the candidate universe the AI picks from includes the user's watchlist-membership assets. Among the session's trades and runs, those produced by the automatic stop-loss SHALL be identifiable as stop-loss activity (rather than AI-driven build or rebalance activity). On the session detail view, a run that was produced by an AI build or rebalance SHALL link to that run's detail view; a run not backed by an AI-portfolio event SHALL remain non-interactive. The legacy `/paper-trading` and `/paper-trading/:id` paths SHALL redirect to `/portfolios` and `/portfolios/:id` respectively, preserving the identifier, so existing links continue to work.
+The system SHALL provide a single unified **Portfolios** area — one list view and one per-session detail view — replacing the previously separate portfolio and paper-trading views. The unified list SHALL be session-driven: each row is a paper-trading session, and the list SHALL present, alongside each session's status, allocated capital, trade count, current portfolio value, realised profit/loss, and unrealised profit/loss, the portfolio-definition attributes of the session's portfolio — its risk profile and its number of holdings. The list's per-row current portfolio value, realised profit/loss, and unrealised profit/loss SHALL be marked to market from live quotes on an all-time basis, using the same definition of the three figures as the session detail view's performance KPIs (current value is the net asset value net of fees, realised profit/loss is the cumulative closed-lot realised profit/loss, and unrealised profit/loss is the current mark-to-market gain or loss on open positions). The list SHALL show the AI portfolio build form and the multi-session performance-comparison chart above the table. Opening a row SHALL navigate to the session's detail view at `/portfolios/:id`, where the identifier is the session's id. The session list and the session detail header SHALL identify each session by its portfolio name as the primary label, and SHALL present the strategy as secondary context rather than the primary identifier. When a session has no resolvable portfolio name, the UI SHALL fall back to the strategy label. The session detail view SHALL display its trades, runs, positions, and AI-portfolio events. The session detail view SHALL additionally display the session's **portfolio definition**, resolved via the session's portfolio reference: an overview of the portfolio's source, risk profile, maximum allocation, number of holdings, creation time, and source run, together with a holdings list whose tickers each link to the asset's detail view; when the session has no resolvable portfolio, the detail view SHALL still render the session content and SHALL omit the portfolio-definition section rather than erroring. The session detail view SHALL display the session's **AI model** — the model its AI runs execute on, shown by its catalog display name. The session detail view SHALL display the session's **automatic stop-loss configuration** — whether it is enabled and, when enabled, its threshold percentage. The session detail view SHALL display the session's **risk-guardrail configuration** — whether the guardrails are enabled and, when enabled, the maximum percentage per asset, the maximum percentage per asset class, the minimum number of positions, and the maximum invested percentage. The session detail view SHALL display the session's **learning-feedback configuration** — whether learning feedback (informing the rebalance agent of the session's recent prior-run outcomes) is enabled and, when enabled, its learning window (number of recent days). The session detail view SHALL display the session's **company-fundamentals configuration** — whether company fundamentals (supplying the rebalance agent with per-ticker company financials) are enabled. The session detail view SHALL display the session's **watchlist-inclusion configuration** — whether the candidate universe the AI picks from includes the user's watchlist-membership assets. Among the session's trades and runs, those produced by the automatic stop-loss SHALL be identifiable as stop-loss activity (rather than AI-driven build or rebalance activity). On the session detail view, a run that was produced by an AI build or rebalance SHALL link to that run's detail view; a run not backed by an AI-portfolio event SHALL remain non-interactive. The legacy `/paper-trading` and `/paper-trading/:id` paths SHALL redirect to `/portfolios` and `/portfolios/:id` respectively, preserving the identifier, so existing links continue to work.
 
 On the session detail view, each of the four tables — AI-portfolio events, trades, closed positions, and runs — SHALL show one fixed-size page of rows at a time rather than a single unbounded list, with the first page showing the most recent rows. The default page size SHALL be 5 rows for the AI-portfolio events and runs tables and 10 rows for the trades and closed-positions tables. Each table SHALL provide page-through navigation (moving to the previous and next page, without infinite scroll) and SHALL indicate the user's position within the whole (for example, the current page relative to the total number of pages or rows). When a table has no more than one page of rows, its navigation SHALL convey that there are no further pages. Paging one table SHALL NOT change the page shown by the other tables.
 
@@ -152,7 +152,12 @@ On the session detail view, each of the four tables — AI-portfolio events, tra
 #### Scenario: List shows portfolio definition alongside performance
 
 - **WHEN** a user views the unified Portfolios list
-- **THEN** each row SHALL show the session's status, allocated capital, trade count, and profit/loss together with the portfolio's risk profile and its number of holdings
+- **THEN** each row SHALL show the session's status, allocated capital, trade count, current portfolio value, realised profit/loss, and unrealised profit/loss together with the portfolio's risk profile and its number of holdings
+
+#### Scenario: List shows live marked-to-market value and P&L
+
+- **WHEN** a user views the unified Portfolios list for a session holding open positions
+- **THEN** that row's current value, realised profit/loss, and unrealised profit/loss SHALL be marked to market from live quotes (not a stale stored valuation), consistent with the figures the session's detail view shows
 
 #### Scenario: List shows the build form and comparison chart
 
@@ -479,7 +484,22 @@ The headline performance tiles (current value, unallocated cash, realised P&L, u
 
 ### Requirement: AI build form asset scope and default capital
 
-The AI portfolio build form SHALL let the user choose the portfolio's asset scope — stocks only, crypto only, or both — defaulting to both, and SHALL let the user choose the session's benchmark from the fixed benchmark catalog, defaulting to S&P 500. The form SHALL also let the user choose the session's **AI model** from the fixed model catalog, defaulting to the configured default model. The form SHALL also let the user opt the portfolio into the **technical-indicator trend strategy** via a toggle that defaults to **off**. The form SHALL also let the user opt the portfolio into **company fundamentals** via a toggle that defaults to **off**, which when enabled supplies the session's rebalance agent with per-ticker company financials. The form SHALL also let the user opt the portfolio into **including watchlist assets** via a toggle that defaults to **off**, which when enabled adds the user's watchlist-membership assets to the candidate universe the session's AI picks from. The form SHALL also let the user opt the portfolio into an **automatic hard stop-loss** via a toggle that defaults to **off**, and SHALL let the user set the **stop-loss threshold percentage** (defaulting to the configured default) that applies when the stop-loss is enabled; the threshold control MAY be hidden or disabled while the stop-loss toggle is off. The form SHALL also let the user opt the portfolio into **portfolio risk guardrails** via a toggle that defaults to **off**, and SHALL let the user set the guardrail parameters that apply when the guardrails are enabled — the **maximum percentage per asset**, the **maximum percentage per asset class**, the **minimum number of positions**, and the **maximum invested percentage** (cash buffer) — each defaulting to its configured default; the guardrail parameter controls MAY be hidden or disabled while the guardrail toggle is off. The form SHALL also let the user opt the portfolio into **learning feedback** via a toggle that defaults to **off**, which when enabled informs the session's rebalance agent of its own recent prior-run outcomes, and SHALL let the user set the **learning window** (number of recent days, defaulting to the configured default) that applies when learning feedback is enabled; the window control MAY be hidden or disabled while the learning-feedback toggle is off. The form's allocated-capital input SHALL default to the configured default amount (10,000). The chosen asset scope SHALL be sent with the build request so the resulting portfolio is restricted to the selected asset types, the chosen benchmark SHALL be sent with the build request so the session is compared against it, the chosen model SHALL be sent with the build request so the session's AI runs execute on it, the technical-indicator opt-in SHALL be sent with the build request so the resulting session applies (or omits) the trend strategy accordingly, the company-fundamentals opt-in SHALL be sent with the build request so the resulting session enables (or omits) the fundamentals block accordingly, the watchlist-inclusion opt-in SHALL be sent with the build request so the resulting session includes (or omits) watchlist assets in its candidate universe accordingly, the stop-loss opt-in and (when enabled) threshold SHALL be sent with the build request so the resulting session applies (or omits) the automatic stop-loss accordingly, and the risk-guardrail opt-in and (when enabled) its parameters SHALL be sent with the build request so the resulting session applies (or omits) the guardrails accordingly, and the learning-feedback opt-in and (when enabled) its window SHALL be sent with the build request so the resulting session enables (or omits) learning feedback accordingly.
+The AI portfolio build form SHALL be opened from a control on the Portfolios page and presented in a modal dialog rather than rendered inline on the page, so the page is not cluttered by the form when the user is not building a portfolio; the modal SHALL be dismissible via an explicit close control, a click on the backdrop, and the Escape key. The build form SHALL NOT offer a daily-rebalancing enrollment choice — every AI portfolio is enrolled in daily rebalancing automatically — and MAY note that all AI portfolios rebalance daily. The AI portfolio build form SHALL let the user choose the portfolio's asset scope — stocks only, crypto only, or both — defaulting to both, and SHALL let the user choose the session's benchmark from the fixed benchmark catalog, defaulting to S&P 500. The form SHALL also let the user choose the session's **AI model** from the fixed model catalog, defaulting to the configured default model. The form SHALL also let the user opt the portfolio into the **technical-indicator trend strategy** via a toggle that defaults to **off**. The form SHALL also let the user opt the portfolio into **company fundamentals** via a toggle that defaults to **off**, which when enabled supplies the session's rebalance agent with per-ticker company financials. The form SHALL also let the user opt the portfolio into **including watchlist assets** via a toggle that defaults to **off**, which when enabled adds the user's watchlist-membership assets to the candidate universe the session's AI picks from. The form SHALL also let the user opt the portfolio into an **automatic hard stop-loss** via a toggle that defaults to **off**, and SHALL let the user set the **stop-loss threshold percentage** (defaulting to the configured default) that applies when the stop-loss is enabled; the threshold control MAY be hidden or disabled while the stop-loss toggle is off. The form SHALL also let the user opt the portfolio into **portfolio risk guardrails** via a toggle that defaults to **off**, and SHALL let the user set the guardrail parameters that apply when the guardrails are enabled — the **maximum percentage per asset**, the **maximum percentage per asset class**, the **minimum number of positions**, and the **maximum invested percentage** (cash buffer) — each defaulting to its configured default; the guardrail parameter controls MAY be hidden or disabled while the guardrail toggle is off. The form SHALL also let the user opt the portfolio into **learning feedback** via a toggle that defaults to **off**, which when enabled informs the session's rebalance agent of its own recent prior-run outcomes, and SHALL let the user set the **learning window** (number of recent days, defaulting to the configured default) that applies when learning feedback is enabled; the window control MAY be hidden or disabled while the learning-feedback toggle is off. The form's allocated-capital input SHALL default to the configured default amount (10,000). The chosen asset scope SHALL be sent with the build request so the resulting portfolio is restricted to the selected asset types, the chosen benchmark SHALL be sent with the build request so the session is compared against it, the chosen model SHALL be sent with the build request so the session's AI runs execute on it, the technical-indicator opt-in SHALL be sent with the build request so the resulting session applies (or omits) the trend strategy accordingly, the company-fundamentals opt-in SHALL be sent with the build request so the resulting session enables (or omits) the fundamentals block accordingly, the watchlist-inclusion opt-in SHALL be sent with the build request so the resulting session includes (or omits) watchlist assets in its candidate universe accordingly, the stop-loss opt-in and (when enabled) threshold SHALL be sent with the build request so the resulting session applies (or omits) the automatic stop-loss accordingly, and the risk-guardrail opt-in and (when enabled) its parameters SHALL be sent with the build request so the resulting session applies (or omits) the guardrails accordingly, and the learning-feedback opt-in and (when enabled) its window SHALL be sent with the build request so the resulting session enables (or omits) learning feedback accordingly.
+
+#### Scenario: Opening the build form opens a modal
+
+- **WHEN** a user activates the "Build an AI portfolio" control on the Portfolios page
+- **THEN** the build form SHALL be presented in a modal dialog overlaying the page rather than inline
+
+#### Scenario: Dismissing the build modal
+
+- **WHEN** the build modal is open and the user activates its close control, clicks the backdrop, or presses the Escape key
+- **THEN** the modal SHALL be dismissed and the Portfolios page SHALL be shown without the form
+
+#### Scenario: Form offers no daily-rebalancing choice
+
+- **WHEN** a user opens the AI portfolio build form
+- **THEN** the form SHALL NOT present any daily-rebalancing enrollment control, and the build request it submits SHALL carry no daily-rebalancing option
 
 #### Scenario: Default form values
 
@@ -782,21 +802,36 @@ The Dashboard SHALL NOT render these asset-composition donut charts.
 
 ### Requirement: Dashboard global range selector
 
-The Dashboard SHALL present a single range selector offering the choices `1D`, `1W`, `1M`, `YTD`, `1Y`, and `Max`, with one range active at a time. Changing the selected range SHALL drive every range-dependent section of the Dashboard (performance tiles, equity curve, portfolio leaderboard, automation failed-run count, recent activity, and universe performers) so that the whole view answers for the same horizon. The universe balance summary is range-independent and SHALL NOT change with the selector.
+The Dashboard SHALL present a single range selector offering the choices `1D`, `1W`, `1M`, `YTD`, `1Y`, and `Max`, with one range active at a time. Changing the selected range SHALL drive every range-dependent section of the Dashboard (performance tiles, equity curve, portfolio leaderboard, automation failed-run count, recent activity, and universe performers) so that the whole view answers for the same horizon. The universe balance summary is range-independent and SHALL NOT change with the selector. The point-in-time current portfolio value is range-independent and SHALL NOT change with the selector. The range selector SHALL be presented in association with the range-scoped performance region (rather than only beside the page title) so that its scope — the range-dependent figures, not the point-in-time current value or the current-composition universe balance — is evident to the user.
 
 #### Scenario: Selecting a range updates the whole dashboard
 
 - **WHEN** a user selects a different range
-- **THEN** the performance tiles, equity curve, leaderboard, recent activity, and universe performers SHALL all refresh to that range while the universe balance summary stays unchanged
+- **THEN** the performance tiles, equity curve, leaderboard, recent activity, and universe performers SHALL all refresh to that range while the universe balance summary and the point-in-time current value stay unchanged
+
+#### Scenario: Selector presented with the performance region
+
+- **WHEN** the Dashboard renders the range selector
+- **THEN** it SHALL be presented in association with the range-scoped performance region so its governance over the range-dependent figures is evident, rather than implying it governs the point-in-time current value or the current-composition universe balance
 
 ### Requirement: Dashboard aggregate performance tiles
 
-The Dashboard SHALL present hero performance tiles aggregated over the active sessions currently selected in the equity curve: total current value, profit/loss over the selected range, money-weighted return over the selected range, and fees incurred within the range. The tiles SHALL reflect the current portfolio selection and the selected range.
+The Dashboard SHALL present, for the active sessions currently selected in the equity curve, the aggregate **current portfolio value** as a point-in-time figure marked as current/live and shown separately from the range-scoped performance tiles. The Dashboard SHALL also present range-scoped performance tiles showing, over the selected range, the summed realised profit/loss, the summed unrealised profit/loss, the money-weighted return, and the fees incurred within the range, grouped together under an indication of the active range. The summed realised and unrealised tiles SHALL use the per-session range-relative realised and unrealised profit/loss summed across the selected sessions, and SHALL be visually distinguished by sign (gain versus loss). The range-scoped tiles SHALL reflect the current portfolio selection and the selected range; the current value SHALL reflect the current selection but SHALL NOT change with the range. The realised and unrealised figures are shown as two independent amounts and are not presented as an additive breakdown of the range return.
+
+#### Scenario: Current value shown as point-in-time
+
+- **WHEN** the Dashboard renders the aggregate performance tiles
+- **THEN** the aggregate current portfolio value SHALL be shown separately from the range-scoped tiles and marked as a current/live figure that does not change when the range changes
 
 #### Scenario: Tiles reflect range and selection
 
 - **WHEN** a user changes the range or the set of selected portfolios
-- **THEN** the hero tiles SHALL recompute to show aggregate value, range profit/loss, money-weighted range return, and range fees for the selected sessions
+- **THEN** the range-scoped tiles SHALL recompute to show summed range realised P&L, summed range unrealised P&L, money-weighted range return, and range fees for the selected sessions, grouped under an indication of the active range
+
+#### Scenario: Realised and unrealised tiles distinguished by sign
+
+- **WHEN** the summed range realised or unrealised profit/loss for the selected sessions is positive or negative
+- **THEN** the corresponding tile SHALL indicate the sign visually (gain versus loss)
 
 ### Requirement: Dashboard combined equity curve
 
@@ -853,12 +888,17 @@ When the equity curve plots a line, it SHALL support **hover inspection**: movin
 
 ### Requirement: Dashboard portfolio leaderboard
 
-The Dashboard SHALL present a leaderboard table of the selected active sessions, sorted by return over the selected range in descending order (best first). Each row SHALL show the portfolio's name, current value, range profit/loss, range return, and range fees, using the same money-weighted basis as the hero tiles, and SHALL link to that session's detail view. Return direction SHALL be visually distinguished (for example gains and losses colored differently). Deselecting a session in the equity curve SHALL remove it from the leaderboard.
+The Dashboard SHALL present a leaderboard table of the selected active sessions, sorted by return over the selected range in descending order (best first). Each row SHALL show the portfolio's name, current value, range realised profit/loss, range unrealised profit/loss, range return, and range fees, using the same money-weighted basis as the hero tiles, and SHALL link to that session's detail view. The current value column SHALL be marked as a point-in-time/live figure, and the range-scoped columns (realised profit/loss, unrealised profit/loss, return, and fees) SHALL be visually grouped under an indication of the active range, so the user can tell the point-in-time value apart from the range-scoped figures. Return direction and the realised and unrealised profit/loss SHALL be visually distinguished by sign (for example gains and losses colored differently). Deselecting a session in the equity curve SHALL remove it from the leaderboard.
 
 #### Scenario: Sessions ranked by range return
 
 - **WHEN** the Dashboard renders the leaderboard for a range
-- **THEN** it SHALL list the selected sessions sorted by range return descending, each row showing name, value, range profit/loss, range return, and range fees, and linking to that session's detail view
+- **THEN** it SHALL list the selected sessions sorted by range return descending, each row showing name, value, range realised profit/loss, range unrealised profit/loss, range return, and range fees, and linking to that session's detail view
+
+#### Scenario: Leaderboard distinguishes point-in-time value from range columns
+
+- **WHEN** the Dashboard renders the leaderboard
+- **THEN** the current value column SHALL be marked as a point-in-time/live figure and the realised, unrealised, return, and fees columns SHALL be grouped under an indication of the active range
 
 #### Scenario: Selection narrows the leaderboard
 
@@ -885,7 +925,7 @@ The Dashboard SHALL present a recent-activity feed listing AI runs (build, rebal
 
 ### Requirement: Dashboard universe section
 
-The Dashboard SHALL present a universe section with a range-independent balance summary and range-dependent performers. The balance summary SHALL show the eligible versus ineligible split, the number of sectors represented, the largest sector's share, and the largest category's share. The performers SHALL show the best and worst tracked assets by market return over the selected range.
+The Dashboard SHALL present a universe section with a range-independent balance summary and range-dependent performers. The balance summary SHALL show the eligible versus ineligible split, the number of sectors represented, the largest sector's share, and the largest category's share, and SHALL be marked as reflecting the current composition rather than the selected range. The performers SHALL show the best and worst tracked assets by market return over the selected range, and SHALL carry an indication of the active range so that, within the one section, the user can see the balance summary does not change with the range while the performers do.
 
 #### Scenario: Balance summary and performers shown
 
@@ -896,6 +936,11 @@ The Dashboard SHALL present a universe section with a range-independent balance 
 
 - **WHEN** a user changes the selected range
 - **THEN** the best/worst performers SHALL update to that range while the balance summary stays unchanged
+
+#### Scenario: Section distinguishes current-composition balance from range-scoped performers
+
+- **WHEN** the Dashboard renders the universe section
+- **THEN** the balance summary SHALL be marked as current composition and the best/worst performers SHALL carry an indication of the active range, so the differing scopes within the one section are evident
 
 ### Requirement: Technical Indicators navigation entry and info page
 
@@ -1066,3 +1111,62 @@ technology.
 
 - **WHEN** the operator activates the disclosure toggle while the panel is collapsed
 - **THEN** the panel body is shown again and the toggle reports an expanded state
+
+### Requirement: Live auto-refresh of portfolio value and P&L
+
+The Dashboard overview, the Portfolios list, and a paper-trading session's detail performance KPIs SHALL auto-refresh their marked-to-market figures — current portfolio value, realised profit/loss, and unrealised profit/loss — on a recurring interval of approximately 30 seconds while the view is visible, so the figures track live quotes without a manual page reload. The recurring refresh SHALL pause while the view is not the active/foreground tab and SHALL resume when it becomes active again. The refresh SHALL update values in place without resetting the user's current range selection, portfolio selection, table paging, or scroll position, and SHALL NOT change the meaning of any figure — only its freshness. This auto-refresh is independent of, and additive to, the session detail's existing order-state reconciliation polling (which keys off non-terminal order statuses).
+
+#### Scenario: Dashboard refreshes on an interval
+
+- **WHEN** a user leaves the Dashboard open with the tab focused
+- **THEN** the Dashboard SHALL re-fetch and update its current value and range profit/loss figures on a recurring ~30-second interval without a manual reload, preserving the selected range and portfolio selection
+
+#### Scenario: Portfolios list refreshes on an interval
+
+- **WHEN** a user leaves the Portfolios list open with the tab focused
+- **THEN** the list SHALL re-fetch and update each row's current value, realised profit/loss, and unrealised profit/loss on a recurring ~30-second interval without a manual reload, preserving table paging
+
+#### Scenario: Session detail KPIs refresh on an interval
+
+- **WHEN** a user leaves a session's detail view open with the tab focused
+- **THEN** the session's performance KPI tiles SHALL re-fetch and update their marked-to-market figures on a recurring ~30-second interval without a manual reload
+
+#### Scenario: Refresh pauses when the view is backgrounded
+
+- **WHEN** the tab showing the Dashboard, Portfolios list, or session detail is not the active foreground tab
+- **THEN** the recurring auto-refresh SHALL pause and SHALL resume when the tab becomes active again
+
+### Requirement: Dashboard figure-scope legibility
+
+The Dashboard SHALL make visually clear, for every figure it presents, whether that figure is scoped to the selected range or is a point-in-time/current figure that does not change with the range, so a user understands why some numbers move when the range selector changes and others do not. The Dashboard SHALL organise its figures into three scopes and signal each scope to the user:
+
+- **Range-scoped** figures — the aggregate and per-session realised profit/loss, unrealised profit/loss, return, and fees; the combined equity curve; the automation failed-run count; the recent-activity feed; and the universe best/worst performers — SHALL be presented grouped with the range-scoped performance region and SHALL carry an indication of the active range they cover.
+- The **point-in-time current portfolio value** (net asset value) SHALL be presented separately from the range-scoped performance figures and marked as a current, live figure (as of now), consistent with the live-data indicator used elsewhere in the application.
+- The **current-composition** universe balance summary (asset counts, eligible-versus-ineligible split, sectors represented, largest sector share, and largest category share) SHALL be marked as reflecting the current composition rather than the selected range.
+
+The range selector SHALL be presented in association with the range-scoped performance region so that its governance over the range-scoped figures is evident, rather than implying it governs the point-in-time current value or the current-composition universe balance. Because the universe section mixes scopes — its balance summary is range-independent while its best/worst performers are range-scoped — the performers SHALL carry their own range indication even when shown alongside the range-independent balance summary.
+
+#### Scenario: Range-scoped figures indicate the active range
+
+- **WHEN** the Dashboard renders its range-scoped performance figures for a selected range
+- **THEN** those figures SHALL be grouped together and SHALL carry an indication of the active range they cover
+
+#### Scenario: Current value marked as point-in-time
+
+- **WHEN** the Dashboard renders the aggregate current portfolio value
+- **THEN** it SHALL be shown separately from the range-scoped performance figures and marked as a current/live figure that does not change with the range
+
+#### Scenario: Universe balance marked as current composition
+
+- **WHEN** the Dashboard renders the universe balance summary
+- **THEN** it SHALL be marked as reflecting the current composition rather than the selected range
+
+#### Scenario: Universe performers indicate the range within the composition section
+
+- **WHEN** the Dashboard renders the universe best/worst performers alongside the range-independent balance summary
+- **THEN** the performers SHALL carry their own indication of the active range, distinct from the current-composition balance summary
+
+#### Scenario: Range selector reads as governing the performance figures
+
+- **WHEN** the Dashboard renders the range selector
+- **THEN** it SHALL be presented in association with the range-scoped performance region so a user can tell it governs the range-scoped figures and not the point-in-time current value or the current-composition universe balance

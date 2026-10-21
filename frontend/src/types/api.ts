@@ -710,15 +710,14 @@ export type AIEventStatus =
  * across the app's ENTIRE asset universe automatically — the AI decides each
  * asset's weight (long-only, no caps) and may research and add new assets — so
  * callers no longer supply tickers or a position count. Backend defaults:
- * `allocated_capital` 10000, `risk_profile` "balanced", `asset_types` "both",
- * `daily_rebalancing` false.
+ * `allocated_capital` 10000, `risk_profile` "balanced", `asset_types` "both".
+ * Every built session is enrolled in daily rebalancing (no opt-out).
  */
 export interface AIPortfolioBuildRequest {
   allocated_capital?: number;
   risk_profile?: string;
   /** Which asset categories the portfolio may hold. Defaults to `both`. */
   asset_types?: 'stocks' | 'crypto' | 'both';
-  daily_rebalancing?: boolean;
   /** Benchmark id to compare the session against. Defaults to `SP500`. */
   benchmark?: string;
   /**

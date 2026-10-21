@@ -132,14 +132,32 @@ describe('PaperTradingPage', () => {
     expect(within(row).getByText('$300.00')).toBeInTheDocument(); // unrealised
   });
 
-  it('renders the AI build form above the list', async () => {
+  it('opens the AI build form in a modal only after the trigger is activated, and dismisses it', async () => {
     mockedGet.mockImplementation(routeGet([session]));
+    const user = userEvent.setup();
 
     renderWithClient(<PaperTradingPage />);
 
+    // The form is not mounted until the user opens it.
+    await screen.findByRole('link', { name: 'Aggressive Jolly Wozniak' });
     expect(
-      await screen.findByRole('heading', { name: 'Build an AI portfolio' }),
+      screen.queryByRole('heading', { name: 'Build an AI portfolio' }),
+    ).not.toBeInTheDocument();
+
+    await user.click(
+      screen.getByRole('button', { name: 'Build an AI portfolio' }),
+    );
+
+    const dialog = await screen.findByRole('dialog');
+    expect(
+      within(dialog).getByRole('heading', { name: 'Build an AI portfolio' }),
     ).toBeInTheDocument();
+
+    // Dismissing via the close control hides the form again.
+    await user.click(within(dialog).getByRole('button', { name: 'Close' }));
+    expect(
+      screen.queryByRole('heading', { name: 'Build an AI portfolio' }),
+    ).not.toBeInTheDocument();
   });
 
   it('falls back to the strategy label when the portfolio name is missing', async () => {

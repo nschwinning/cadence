@@ -25,7 +25,6 @@ class AIBuildParams:
     allocated_capital: float = 10000.0
     risk_profile: str = "balanced"
     asset_types: str = AssetScope.BOTH.value
-    daily_rebalancing: bool = False
     benchmark: str = settings.DEFAULT_BENCHMARK
     model: str = settings.AI_PORTFOLIO_MODEL
     use_technical_indicators: bool = False
@@ -46,7 +45,6 @@ class AIBuildParams:
             "allocated_capital": self.allocated_capital,
             "risk_profile": self.risk_profile,
             "asset_types": self.asset_types,
-            "daily_rebalancing": self.daily_rebalancing,
             "benchmark": self.benchmark,
             "model": self.model,
             "use_technical_indicators": self.use_technical_indicators,
@@ -75,7 +73,6 @@ class AIBuildParams:
             allocated_capital=float(payload.get("allocated_capital", 10000.0)),
             risk_profile=str(payload.get("risk_profile", "balanced")),
             asset_types=str(payload.get("asset_types", AssetScope.BOTH.value)),
-            daily_rebalancing=bool(payload.get("daily_rebalancing", False)),
             benchmark=str(payload.get("benchmark", settings.DEFAULT_BENCHMARK)),
             model=str(payload.get("model", settings.AI_PORTFOLIO_MODEL)),
             use_technical_indicators=bool(

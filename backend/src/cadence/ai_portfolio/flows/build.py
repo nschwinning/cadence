@@ -106,11 +106,9 @@ def run_build_event(
             allow_empty=True,
         )
 
-        schedule_mode = (
-            ScheduleMode.DAILY_REBALANCING
-            if params.daily_rebalancing
-            else ScheduleMode.MANUAL
-        )
+        # Daily rebalancing is the mandatory operating mode for AI portfolios:
+        # every built session is enrolled, with no opt-out.
+        schedule_mode = ScheduleMode.DAILY_REBALANCING
         session_row = paper_service.create_session(
             session,
             portfolio_id=portfolio.id,

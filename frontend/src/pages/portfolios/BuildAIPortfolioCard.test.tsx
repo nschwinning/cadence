@@ -90,7 +90,7 @@ describe('BuildAIPortfolioCard', () => {
     ).not.toBeInTheDocument();
   });
 
-  it('starts a build with the default capital, risk profile, asset scope, and rebalancing, and updates to succeeded without manual refresh', async () => {
+  it('starts a build with the default capital, risk profile, and asset scope, and updates to succeeded without manual refresh', async () => {
     let status: AIEventStatus = 'running';
     mockedPost.mockResolvedValue({ data: { event_id: 'evt-1', status: 'queued' } });
     mockedGet.mockImplementation(routeGet(() => status));
@@ -110,7 +110,6 @@ describe('BuildAIPortfolioCard', () => {
       allocated_capital: 10000,
       risk_profile: 'balanced',
       asset_types: 'both',
-      daily_rebalancing: false,
       benchmark: 'SP500',
       model: 'gpt-6-luna',
       use_technical_indicators: false,
@@ -138,21 +137,23 @@ describe('BuildAIPortfolioCard', () => {
     expect(screen.getByRole('button', { name: 'Build another' })).toBeInTheDocument();
   });
 
-  it('enrolls in daily rebalancing when the toggle is checked', async () => {
+  it('renders no daily-rebalancing control and sends no daily_rebalancing key', async () => {
     mockedPost.mockResolvedValue({ data: { event_id: 'evt-1', status: 'queued' } });
     mockedGet.mockImplementation(routeGet(() => 'running'));
     const user = userEvent.setup();
 
     renderWithClient(<BuildAIPortfolioCard />);
 
-    await user.click(
-      screen.getByRole('checkbox', { name: /Enroll in daily rebalancing/i }),
-    );
+    // Daily rebalancing is mandatory, so there is no opt-in control for it.
+    expect(
+      screen.queryByRole('checkbox', { name: /daily rebalancing/i }),
+    ).not.toBeInTheDocument();
+
     await user.click(screen.getByRole('button', { name: 'Build portfolio' }));
 
     expect(mockedPost).toHaveBeenCalledWith(
       '/api/v1/ai-portfolio/build',
-      expect.objectContaining({ daily_rebalancing: true }),
+      expect.not.objectContaining({ daily_rebalancing: expect.anything() }),
     );
   });
 

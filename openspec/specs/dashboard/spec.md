@@ -40,7 +40,9 @@ The system SHALL provide a single endpoint returning an aggregated overview of t
 
 ### Requirement: Per-session performance data for the overview
 
-For each active session the overview SHALL return the data needed to render aggregate performance, compare sessions, and compute per-session benchmark comparison lines over the selected range, without requiring the client to re-fetch when it changes which sessions are included. For each session this SHALL include a stable identifier, a display label, the allocated capital, the current value, the profit/loss and fees attributable to the selected range, a value series over the range suitable for plotting, and the session's capital contributions — the session's opening capital effective at its start date plus any later capital-increase events, each a contribution amount and the date it became effective. The value series SHALL be windowed to the selected range; a session that has no value before the range start SHALL be represented as contributing zero until its first recorded value.
+For each active session the overview SHALL return the data needed to render aggregate performance, compare sessions, and compute per-session benchmark comparison lines over the selected range, without requiring the client to re-fetch when it changes which sessions are included. For each session this SHALL include a stable identifier, a display label, the allocated capital, the current value, the profit/loss and fees attributable to the selected range, the realised and unrealised profit/loss attributable to the selected range, a value series over the range suitable for plotting, and the session's capital contributions — the session's opening capital effective at its start date plus any later capital-increase events, each a contribution amount and the date it became effective. The value series SHALL be windowed to the selected range; a session that has no value before the range start SHALL be represented as contributing zero until its first recorded value.
+
+The session's **range realised profit/loss** SHALL be the sum of the realised profit/loss of the closed positions whose close falls within the selected range; for the maximum range this SHALL equal the session's cumulative realised profit/loss. The session's **range unrealised profit/loss** SHALL be the session's current live unrealised profit/loss on its open positions (valued at current market quotes) minus the unrealised profit/loss recorded in the session's daily value snapshot at the start of the range; when the session has no value snapshot at or before the range start — including the maximum range — the range-start unrealised baseline SHALL be zero, so the figure equals the current live unrealised profit/loss. The realised figure SHALL be gross of fees, and the realised and unrealised figures SHALL be returned as two independent amounts rather than as an additive decomposition of the range profit/loss.
 
 #### Scenario: Session series windowed to the range
 
@@ -51,6 +53,16 @@ For each active session the overview SHALL return the data needed to render aggr
 
 - **WHEN** the overview is requested for a range
 - **THEN** each session's returned profit/loss SHALL be its value at the end of the range minus its value at the start of the range, and its fees SHALL be those incurred within the range
+
+#### Scenario: Range-relative realised and unrealised profit/loss
+
+- **WHEN** the overview is requested for a range
+- **THEN** each session's returned realised profit/loss SHALL be the sum of its closed positions' realised profit/loss for lots closed within the range, and its returned unrealised profit/loss SHALL be its current live unrealised profit/loss minus the unrealised profit/loss recorded in its range-start value snapshot (or minus zero when it has no snapshot at the range start)
+
+#### Scenario: Maximum range reduces realised and unrealised to cumulative
+
+- **WHEN** the overview is requested for the maximum range
+- **THEN** each session's returned realised profit/loss SHALL equal its cumulative closed-lot realised profit/loss and its returned unrealised profit/loss SHALL equal its current live unrealised profit/loss on open positions
 
 #### Scenario: Session capital contributions included
 
@@ -100,19 +112,25 @@ The overview SHALL include a universe-balance summary and universe performers. T
 
 ### Requirement: Benchmark price series in the overview
 
-The range-scoped overview SHALL include, for each benchmark index in the fixed benchmark catalog, a price series over the selected range that a client uses to build a benchmark comparison line for the combined equity curve. Each series SHALL identify its benchmark by a stable identifier and a display name, and SHALL contain a sequence of points, each a date and that index's closing price on that date, windowed to the selected range on the same date basis as the per-session value series. The price series SHALL carry index prices only; it SHALL NOT be pre-converted to any portfolio-relative dollar value, because the dollar comparison line depends on which sessions the client has selected and on each session's capital contributions — the client combines the index prices with the selected sessions' contributions to produce a buy-and-hold dollar line that invests each session's contributed capital in that index at each contribution's effective date and holds. A benchmark whose stored prices do not cover the range SHALL be represented as present in the catalog list but with an empty series rather than being omitted or causing an error.
+The range-scoped overview SHALL include, for each benchmark index in the fixed benchmark catalog, a price series over the selected range that a client uses to build a benchmark comparison line for the combined equity curve. Each series SHALL identify its benchmark by a stable identifier and a display name, and SHALL contain a sequence of points, each a date and that index's closing price on that date. The series SHALL be windowed to the plotted era on the same date basis as the per-session value series, except that its window SHALL extend back far enough to price the **earliest contribution across the active sessions**: the series SHALL include a closing price on or before the earliest session contribution's effective date, even when that date precedes the selected range window, so that **no** selected session's contribution is left unpriceable and dropped from the benchmark line. (A session's contributions comprise its opening capital at its first value-snapshot date plus any later capital increases, and are not windowed to the range.) The price series SHALL carry index prices only; it SHALL NOT be pre-converted to any portfolio-relative dollar value, because the dollar comparison line depends on which sessions the client has selected and on each session's capital contributions — the client combines the index prices with the selected sessions' contributions to produce a buy-and-hold dollar line that invests each session's contributed capital in that index at each contribution's effective date and holds. A benchmark whose stored prices do not cover the range SHALL be represented as present in the catalog list but with an empty series rather than being omitted or causing an error.
 
 #### Scenario: Benchmark series returned for the range
 
 - **WHEN** a client requests the dashboard overview for a given range
-- **THEN** the overview SHALL include, for each catalog benchmark, that index's identifier, display name, and a date/price series windowed to the selected range
+- **THEN** the overview SHALL include, for each catalog benchmark, that index's identifier, display name, and a date/price series covering the plotted era
+
+#### Scenario: Session opened before the range start is still priceable
+
+- **WHEN** a client requests the overview for a range whose start falls after some active session's opening date, so that session's opening contribution precedes the earliest range-windowed value point
+- **THEN** each catalog benchmark's price series SHALL include a closing price on or before that session's earliest contribution date, so the client can price that contribution and count the session's capital in the benchmark line rather than dropping it
 
 #### Scenario: Benchmark with no prices over the range
 
-- **WHEN** a catalog benchmark has no stored prices within the selected range
+- **WHEN** a catalog benchmark has no stored prices within the plotted era
 - **THEN** the overview SHALL still list that benchmark but with an empty price series, rather than omitting it or returning an error
 
 #### Scenario: Empty system
 
 - **WHEN** there are no active sessions and no assets
 - **THEN** the overview SHALL return the benchmark catalog entries with empty price series rather than an error
+

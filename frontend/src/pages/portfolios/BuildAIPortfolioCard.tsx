@@ -166,7 +166,6 @@ export function BuildAIPortfolioCard() {
   const [capital, setCapital] = useState('10000');
   const [riskProfile, setRiskProfile] = useState<string>('balanced');
   const [assetTypes, setAssetTypes] = useState<AssetScope>('both');
-  const [dailyRebalancing, setDailyRebalancing] = useState(false);
   const [useTechnicalIndicators, setUseTechnicalIndicators] = useState(false);
   const [useFundamentals, setUseFundamentals] = useState(false);
   const [includeWatchlist, setIncludeWatchlist] = useState(false);
@@ -265,7 +264,6 @@ export function BuildAIPortfolioCard() {
         allocated_capital: capitalValue,
         risk_profile: riskProfile,
         asset_types: assetTypes,
-        daily_rebalancing: dailyRebalancing,
         benchmark,
         model,
         use_technical_indicators: useTechnicalIndicators,
@@ -295,13 +293,13 @@ export function BuildAIPortfolioCard() {
   const running = eventId !== null && !terminal;
 
   return (
-    <div className="flex h-full flex-col rounded-lg border border-slate-200 bg-white p-6 shadow-sm">
+    <div className="flex flex-col rounded-lg border border-slate-200 bg-white p-6 shadow-sm">
       <h2 className="text-lg font-semibold text-slate-900">
         Build an AI portfolio
       </h2>
       <p className="mt-1 text-sm text-slate-500">
-        The AI manager builds a portfolio across the entire asset universe,
-        opens a paper-trading session, and can enroll it in daily rebalancing.
+        The AI manager builds a portfolio across the entire asset universe and
+        opens a paper-trading session enrolled in daily rebalancing.
       </p>
 
       {/* --------------------------------------------------------------- IDLE */}
@@ -413,22 +411,11 @@ export function BuildAIPortfolioCard() {
             </div>
           </div>
 
-          {/* Daily rebalancing — the primary operating mode. */}
-          <div className="flex flex-col gap-1">
-            <label className="flex items-center gap-2 text-sm font-medium text-slate-800">
-              <input
-                type="checkbox"
-                checked={dailyRebalancing}
-                onChange={(e) => setDailyRebalancing(e.target.checked)}
-                className="h-4 w-4 rounded border-slate-300 text-emerald-600 focus:ring-emerald-500"
-              />
-              Enroll in daily rebalancing
-            </label>
-            <p className="text-xs text-slate-500">
-              When enabled, the AI re-weights the portfolio toward fresh targets
-              every trading day. You can still rebalance manually at any time.
-            </p>
-          </div>
+          {/* Daily rebalancing is the mandatory operating mode — not optional. */}
+          <p className="rounded border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-600">
+            Every AI portfolio rebalances daily: the AI re-weights it toward fresh
+            targets each trading day. You can still rebalance manually at any time.
+          </p>
 
           {/* Advanced / risk controls — all frozen at build for the session. */}
           <fieldset className="flex flex-col gap-4 border-t border-slate-200 pt-4">
@@ -443,9 +430,10 @@ export function BuildAIPortfolioCard() {
               Opt-in toggles laid out as a responsive two-column grid of equal
               cards (single column on small screens). `items-start` keeps each
               card top-aligned so a control that expands its sub-inputs grows
-              downward without stretching its row neighbour. The guardrails
-              control carries four sub-inputs, so it spans both columns to keep
-              its expanded params visually grouped and aligned.
+              downward without stretching its row neighbour. Every card occupies
+              a single grid cell so the two-column rhythm is consistent; the
+              guardrails card stacks its four sub-inputs vertically to read
+              cleanly within one column.
             */}
             <div className="grid grid-cols-1 items-start gap-4 sm:grid-cols-2">
               {/* Technical-indicator strategy. */}
@@ -580,8 +568,8 @@ export function BuildAIPortfolioCard() {
                 )}
               </div>
 
-              {/* Deterministic risk guardrails — spans both columns (4 params). */}
-              <div className="flex flex-col gap-1 rounded-lg border border-slate-200 p-4 sm:col-span-2">
+              {/* Deterministic risk guardrails — four stacked sub-params. */}
+              <div className="flex flex-col gap-1 rounded-lg border border-slate-200 p-4">
                 <label className="flex items-center gap-2 text-sm font-medium text-slate-800">
                   <input
                     type="checkbox"
@@ -604,7 +592,7 @@ export function BuildAIPortfolioCard() {
                     id="ai-guardrails-panel"
                     className="ml-6 mt-1 border-l-2 border-slate-100 pl-4"
                   >
-                    <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                    <div className="grid grid-cols-1 gap-4">
                       <NumberField
                         id="ai-max-asset-pct"
                         label="Max per asset (%)"
@@ -729,7 +717,7 @@ export function BuildAIPortfolioCard() {
                 {event.actions_taken.length === 1 ? '' : 's'} placed.
               </p>
             )}
-            {dailyRebalancing && status === 'succeeded' && (
+            {status === 'succeeded' && (
               <p className="mt-1">Enrolled in daily rebalancing.</p>
             )}
           </div>

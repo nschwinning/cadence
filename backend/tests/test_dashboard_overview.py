@@ -609,6 +609,95 @@ def test_benchmark_series_windowed_with_anchor_and_names(
     ]
 
 
+def test_benchmark_series_prices_contribution_before_range_start(
+    db_session: Session,
+) -> None:
+    # Two active sessions; "Alpha" opened BEFORE the 1M window start (2026-05-16):
+    # its first snapshot (2026-05-01) is its opening-contribution date, which
+    # precedes the earliest range-windowed value point (2026-06-05). The benchmark
+    # overlay floor must reach back to price that early contribution so Alpha's
+    # capital is not dropped from the benchmark line.
+    alpha = _make_session(db_session, name="Alpha", strategy_key="s1")
+    _add_snapshot(db_session, alpha.id, on=date(2026, 5, 1), total_value=10_000.0)
+    _add_snapshot(db_session, alpha.id, on=date(2026, 6, 5), total_value=10_500.0)
+    beta = _make_session(db_session, name="Beta", strategy_key="s2")
+    _add_snapshot(db_session, beta.id, on=date(2026, 6, 5), total_value=10_000.0)
+
+    # Alpha's earliest contribution date (its first snapshot).
+    earliest_contribution = date(2026, 5, 1)
+
+    # S&P 500 closes. Under the OLD (too-narrow) floor the anchor would be the
+    # 2026-05-10 close — AFTER Alpha's 2026-05-01 contribution — so that
+    # contribution would be unpriceable and dropped. The fix lowers the floor to
+    # the contribution date, so the 2026-04-20 close is prepended as the anchor.
+    for on, close in [
+        (date(2026, 4, 20), 100.0),
+        (date(2026, 5, 10), 105.0),
+        (date(2026, 6, 5), 110.0),
+        (date(2026, 6, 10), 121.0),
+    ]:
+        _add_benchmark_price(db_session, benchmark=Benchmark.SP500, on=on, close=close)
+
+    overview = service.get_dashboard_overview(
+        db_session,
+        range_=DashboardRange.MONTH,
+        broker=StubBroker(),
+        today=_TODAY,
+        now=_NOW,
+    )
+
+    sp500 = next(
+        s for s in overview.benchmark_series if s.benchmark_id == Benchmark.SP500.value
+    )
+    # The series includes a close on/before Alpha's earliest contribution, so the
+    # client can price it. (Under the old floor the earliest point was 2026-05-10,
+    # after the contribution, and Alpha was dropped.)
+    assert min(p.date for p in sp500.points) <= earliest_contribution
+    assert [(p.date, p.price) for p in sp500.points] == [
+        (date(2026, 4, 20), 100.0),
+        (date(2026, 5, 10), 105.0),
+        (date(2026, 6, 5), 110.0),
+        (date(2026, 6, 10), 121.0),
+    ]
+
+
+def test_benchmark_series_contribution_floor_is_noop_for_max_range(
+    db_session: Session,
+) -> None:
+    # For the Max range, value points are not windowed, so the floor already sits
+    # at the earliest snapshot (= the opening-contribution date). Folding
+    # contribution dates into the floor cannot move it: the overlay is unchanged.
+    alpha = _make_session(db_session, name="Alpha", strategy_key="s1")
+    _add_snapshot(db_session, alpha.id, on=date(2026, 5, 1), total_value=10_000.0)
+    _add_snapshot(db_session, alpha.id, on=date(2026, 6, 5), total_value=10_500.0)
+
+    for on, close in [
+        (date(2026, 4, 20), 100.0),
+        (date(2026, 5, 1), 104.0),
+        (date(2026, 6, 5), 110.0),
+    ]:
+        _add_benchmark_price(db_session, benchmark=Benchmark.SP500, on=on, close=close)
+
+    overview = service.get_dashboard_overview(
+        db_session,
+        range_=DashboardRange.MAX,
+        broker=StubBroker(),
+        today=_TODAY,
+        now=_NOW,
+    )
+
+    sp500 = next(
+        s for s in overview.benchmark_series if s.benchmark_id == Benchmark.SP500.value
+    )
+    # Floor is the earliest snapshot (2026-05-01); the 2026-04-20 close is the
+    # prepended anchor. Identical to pre-fix behavior for Max.
+    assert [(p.date, p.price) for p in sp500.points] == [
+        (date(2026, 4, 20), 100.0),
+        (date(2026, 5, 1), 104.0),
+        (date(2026, 6, 5), 110.0),
+    ]
+
+
 def test_benchmark_without_prices_is_present_but_empty(
     db_session: Session,
 ) -> None:

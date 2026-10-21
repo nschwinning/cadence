@@ -11,6 +11,7 @@ import type { PaperTradingSession, Portfolio } from '../../types/api';
 import { formatCurrency } from '../../lib/format';
 import { SessionComparisonChart } from './SessionComparisonChart';
 import { BuildAIPortfolioCard } from '../portfolios/BuildAIPortfolioCard';
+import { Modal } from '../../components/Modal';
 
 /** Turn a raw risk slug into a display label. */
 function humanize(value: string | null | undefined): string {
@@ -136,6 +137,7 @@ function SessionRow({
 
 export function PaperTradingPage() {
   const [showArchived, setShowArchived] = useState(false);
+  const [buildOpen, setBuildOpen] = useState(false);
   const { data, isPending, isError } = useSessions({
     ...DEFAULT_SESSIONS_PARAMS,
     includeArchived: showArchived,
@@ -163,11 +165,26 @@ export function PaperTradingPage() {
 
   return (
     <section className="flex flex-col gap-6">
-      <h1 className="text-2xl font-bold tracking-tight text-slate-900">
-        Portfolios
-      </h1>
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <h1 className="text-2xl font-bold tracking-tight text-slate-900">
+          Portfolios
+        </h1>
+        <button
+          type="button"
+          onClick={() => setBuildOpen(true)}
+          className="rounded bg-emerald-500 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-600 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 focus-visible:ring-offset-1"
+        >
+          Build an AI portfolio
+        </button>
+      </div>
 
-      <BuildAIPortfolioCard />
+      <Modal
+        open={buildOpen}
+        onClose={() => setBuildOpen(false)}
+        title="Build an AI portfolio"
+      >
+        <BuildAIPortfolioCard />
+      </Modal>
 
       <SessionComparisonChart />
 
@@ -206,7 +223,7 @@ export function PaperTradingPage() {
 
         {!isPending && !isError && sessions.length === 0 && (
           <p className="p-6 text-slate-500">
-            No portfolios yet. Build an AI portfolio above to get started.
+            No portfolios yet. Use “Build an AI portfolio” to get started.
           </p>
         )}
 

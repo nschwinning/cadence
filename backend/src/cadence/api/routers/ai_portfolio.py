@@ -103,7 +103,6 @@ def build_ai_portfolio_endpoint(
     params = AIBuildParams(
         allocated_capital=payload.allocated_capital,
         risk_profile=payload.risk_profile,
-        daily_rebalancing=payload.daily_rebalancing,
         asset_types=payload.asset_types,
         benchmark=(
             payload.benchmark.value

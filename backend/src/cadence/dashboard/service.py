@@ -675,10 +675,14 @@ def _benchmark_overlays(
 
     Returns one entry per catalog benchmark, in catalog order, each carrying the
     index's stored closes over the plotted era as raw (date, price) points. The
-    series is windowed to ``floor`` — the earliest date present across the
-    sessions' range-windowed value series — so it spans exactly where the sessions
-    do (and the ``Max`` range does not ship decades of pre-session history). The
-    last close strictly *before* ``floor`` is prepended as a rebasing anchor so the
+    series is windowed to ``floor`` — the earliest date across the sessions'
+    range-windowed value series *and* their contribution effective dates — so it
+    spans where the sessions are plotted yet always reaches back far enough to
+    price the earliest contribution (a session that opened before the range start
+    contributes earlier than its earliest windowed point). This keeps every
+    contribution priceable so none is dropped from the client's benchmark line,
+    while the ``Max`` range still ships no decades of pre-session history. The last
+    close strictly *before* ``floor`` is prepended as a rebasing anchor so the
     client can resolve the benchmark price on or before the combined curve's start
     even when that start falls on a non-trading day. A benchmark with no stored
     prices in range yields an empty ``points`` list rather than being omitted;
@@ -750,11 +754,20 @@ def get_dashboard_overview(
         )
     }
 
-    # Benchmark overlay spans exactly the plotted session era: the earliest date
-    # present across the sessions' windowed value series (``None`` when nothing is
-    # plotted, which yields empty series).
+    # Benchmark overlay spans the plotted session era, floored early enough to
+    # price every session contribution: the earliest date across the sessions'
+    # windowed value series AND every session's contribution effective dates
+    # (``None`` when nothing is plotted, which yields empty series). A session that
+    # opened before the range start has a contribution earlier than its earliest
+    # windowed point; without folding contribution dates in, that contribution
+    # would fall before the overlay's anchor and be dropped from the benchmark line.
     session_point_dates = [point.date for perf in sessions for point in perf.points]
-    overlay_floor = min(session_point_dates) if session_point_dates else None
+    contribution_dates = [
+        contribution.effective_date
+        for perf in sessions
+        for contribution in perf.contributions
+    ]
+    overlay_floor = min([*session_point_dates, *contribution_dates], default=None)
 
     return DashboardOverview(
         range=range_,

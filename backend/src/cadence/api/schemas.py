@@ -903,10 +903,6 @@ class AIPortfolioBuildRequest(BaseModel):
         description="Which asset categories the portfolio may hold: "
         "'stocks', 'crypto', or 'both' (default).",
     )
-    daily_rebalancing: bool = Field(
-        default=False,
-        description="Enroll this session in automatic daily rebalancing.",
-    )
     benchmark: Benchmark | None = Field(
         default=None,
         description="Benchmark index to compare the session against (a catalog "

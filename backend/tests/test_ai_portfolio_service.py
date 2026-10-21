@@ -280,7 +280,7 @@ def test_run_build_event_success_creates_portfolio_and_session(
     provider = _seed_universe(db_session, "AAPL", "MSFT")
     agent = FakeAIPortfolioAgent(build_result=_build_result("AAPL", "MSFT"))
     broker = StubBroker()
-    event = service.create_build_event(db_session, _params(daily_rebalancing=True))
+    event = service.create_build_event(db_session, _params())
 
     service.run_build_event(db_session, event.id, agent, broker, provider)
 
@@ -881,37 +881,38 @@ def test_run_build_event_rejects_out_of_scope_discovery(
     assert "TSLA" not in universe  # out-of-scope stock rejected by the hard-filter
 
 
-def test_run_build_event_manual_schedule_when_not_enrolled(
+def test_run_build_event_always_enrolls_in_daily_rebalancing(
     db_session: Session,
 ) -> None:
+    # Daily rebalancing is mandatory: every build enrolls its session, with no
+    # opt-out in the request.
     provider = _seed_universe(db_session, "AAPL", "MSFT")
     agent = FakeAIPortfolioAgent(build_result=_build_result("AAPL", "MSFT"))
-    event = service.create_build_event(db_session, _params(daily_rebalancing=False))
+    event = service.create_build_event(db_session, _params())
 
     service.run_build_event(db_session, event.id, agent, StubBroker(), provider)
 
     refreshed = service.get_event(db_session, event.id)
     session_row = paper_service.get_session(db_session, refreshed.session_id)
-    assert session_row.schedule_mode == ScheduleMode.MANUAL.value
+    assert session_row.schedule_mode == ScheduleMode.DAILY_REBALANCING.value
 
 
-def test_run_build_event_manual_session_allocated_at_creation(
+def test_run_build_event_session_allocated_at_creation(
     db_session: Session,
 ) -> None:
-    # Task 3.3: a manual (non-daily) session is allocated by the initial rebalance at
-    # creation while the market is open — it does not sit empty waiting for a
-    # scheduled run that manual sessions never receive.
+    # Task 3.3: a built session is allocated by the initial rebalance at creation
+    # while the market is open — it does not sit empty waiting for a scheduled run.
     provider = _seed_universe(db_session, "AAPL", "MSFT")
     agent = FakeAIPortfolioAgent(build_result=_build_result("AAPL", "MSFT"))
     broker = StubBroker()  # market open by default
-    event = service.create_build_event(db_session, _params(daily_rebalancing=False))
+    event = service.create_build_event(db_session, _params())
 
     service.run_build_event(db_session, event.id, agent, broker, provider)
 
     refreshed = service.get_event(db_session, event.id)
     session_row = paper_service.get_session(db_session, refreshed.session_id)
-    assert session_row.schedule_mode == ScheduleMode.MANUAL.value
-    # Allocated at creation: the manual session already holds its opening positions.
+    assert session_row.schedule_mode == ScheduleMode.DAILY_REBALANCING.value
+    # Allocated at creation: the session already holds its opening positions.
     positions = {
         p.ticker
         for p in paper_service.list_open_positions(db_session, refreshed.session_id)
@@ -1006,7 +1007,7 @@ def _seed_session(
     the build params so callers can seed a scoped or non-default-risk session.
     """
     agent = FakeAIPortfolioAgent(build_result=_build_result("AAPL", "MSFT", "NVDA"))
-    params = {"allocated_capital": 50_000.0, "daily_rebalancing": True}
+    params = {"allocated_capital": 50_000.0}
     params.update(build_params)
     build_event = service.create_build_event(db_session, _params(**params))
     service.run_build_event(db_session, build_event.id, agent, broker, provider)
@@ -1274,7 +1275,6 @@ def _seed_mixed_session(
     agent = FakeAIPortfolioAgent(build_result=_build_result("AAPL", "BTC-USD"))
     params: dict[str, object] = {
         "allocated_capital": 50_000.0,
-        "daily_rebalancing": True,
         "asset_types": "both",
     }
     params.update(build_params)
@@ -2208,7 +2208,7 @@ def test_run_rebalance_event_closed_market_trades_crypto(db_session: Session) ->
     broker = _StopLossBroker(market_open=True)
     agent = FakeAIPortfolioAgent(build_result=_build_result("AAPL", "BTC-USD"))
     build_event = service.create_build_event(
-        db_session, _params(allocated_capital=50_000.0, daily_rebalancing=True)
+        db_session, _params(allocated_capital=50_000.0)
     )
     service.run_build_event(db_session, build_event.id, agent, broker, eq_provider)
     session_id = service.get_event(db_session, build_event.id).session_id
@@ -2415,7 +2415,7 @@ def test_run_rebalance_event_crypto_only_notifies_labelled_crypto(
     )
     build_event = service.create_build_event(
         db_session,
-        _params(allocated_capital=50_000.0, daily_rebalancing=True, asset_types="both"),
+        _params(allocated_capital=50_000.0, asset_types="both"),
     )
     service.run_build_event(db_session, build_event.id, agent, broker, _provider())
     session_id = service.get_event(db_session, build_event.id).session_id
@@ -3629,7 +3629,6 @@ def _seed_gated_session(
         db_session,
         _params(
             allocated_capital=50_000.0,
-            daily_rebalancing=True,
             use_technical_indicators=True,
         ),
     )
@@ -3775,7 +3774,7 @@ def test_run_rebalance_event_opted_out_ignores_trend_gate(
     agent = FakeAIPortfolioAgent(build_result=_build_result("AAPL", "MSFT", "NVDA"))
     build_event = service.create_build_event(
         db_session,
-        _params(allocated_capital=50_000.0, daily_rebalancing=True),
+        _params(allocated_capital=50_000.0),
     )
     service.run_build_event(db_session, build_event.id, agent, broker, provider)
     session_id = service.get_event(db_session, build_event.id).session_id
@@ -3980,7 +3979,6 @@ def _seed_fundamentals_session(
         db_session,
         _params(
             allocated_capital=50_000.0,
-            daily_rebalancing=True,
             use_fundamentals=use_fundamentals,
         ),
     )

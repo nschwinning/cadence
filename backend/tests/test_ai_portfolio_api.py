@@ -584,7 +584,6 @@ def _build_session(client: TestClient, executor: ManualExecutor) -> str:
         "/api/v1/ai-portfolio/build",
         json={
             "allocated_capital": 100000,
-            "daily_rebalancing": True,
         },
     )
     event_id = resp.json()["event_id"]
@@ -1071,7 +1070,6 @@ def test_rebalance_crypto_daily_skips_stocks_only_scope(
         "/api/v1/ai-portfolio/build",
         json={
             "allocated_capital": 100000,
-            "daily_rebalancing": True,
             "asset_types": "stocks",
         },
     )
@@ -1106,7 +1104,6 @@ def test_rebalance_crypto_daily_skips_stocks_scope_even_holding_crypto(
         "/api/v1/ai-portfolio/build",
         json={
             "allocated_capital": 100000,
-            "daily_rebalancing": True,
             "asset_types": "stocks",
         },
     )
@@ -1365,7 +1362,6 @@ def test_scan_stop_losses_stops_out_breached_positions(
         "/api/v1/ai-portfolio/build",
         json={
             "allocated_capital": 100000,
-            "daily_rebalancing": True,
             "stop_loss_enabled": True,
             "stop_loss_pct": 0.15,
         },
