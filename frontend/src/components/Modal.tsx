@@ -39,20 +39,26 @@ export function Modal({
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-slate-900/40 p-4 sm:items-center"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 p-4"
       // Close only when the backdrop itself is pressed, not when a press that
       // started inside the panel bubbles up here.
       onMouseDown={(e) => {
         if (e.target === e.currentTarget) onClose();
       }}
     >
+      {/*
+        The panel is capped at the viewport height and scrolls its own content,
+        rather than letting the backdrop scroll. Centering a taller-than-viewport
+        child with `items-center` would clip its top out of reach; capping the
+        height keeps the header (and the close control) always visible.
+      */}
       <div
         ref={dialogRef}
         role="dialog"
         aria-modal="true"
         aria-label={title}
         tabIndex={-1}
-        className="relative my-8 w-full max-w-3xl focus:outline-none"
+        className="relative flex max-h-[calc(100vh-2rem)] w-full max-w-5xl flex-col focus:outline-none"
       >
         <button
           type="button"
@@ -62,7 +68,9 @@ export function Modal({
         >
           <span aria-hidden="true">×</span>
         </button>
-        {children}
+        <div className="min-h-0 flex-1 overflow-y-auto rounded-lg">
+          {children}
+        </div>
       </div>
     </div>
   );
