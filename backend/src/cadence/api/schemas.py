@@ -647,6 +647,10 @@ class PaperTradingSessionKpisRead(BaseModel):
     average_loss: float | None
     best_trade: float | None
     worst_trade: float | None
+    #: Cumulative AI (LLM) cost in USD attributed to this session's rebalance
+    #: runs, from the model proxy's spend log. ``None`` when the cost source is
+    #: unconfigured or has no attributed spend for the session.
+    ai_cost_usd: float | None
 
 
 class AIDailySnapshotResponse(BaseModel):

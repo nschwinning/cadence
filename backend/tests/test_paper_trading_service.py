@@ -1186,6 +1186,31 @@ def test_session_kpis_daily_avg_orders_none_without_snapshots(
     assert kpis.daily_avg_orders is None
 
 
+def test_session_kpis_ai_cost_from_source(
+    db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The AI-cost KPI reflects the value returned by the spend-log read helper.
+    sess = _ai_session(db_session)
+    monkeypatch.setattr(service, "session_ai_cost_usd", lambda session_id: 4.56)
+    kpis = service.session_kpis(
+        db_session, session_id=sess.id, broker=_QuoteBroker({"AAPL": 10.0})
+    )
+    assert kpis.ai_cost_usd == 4.56
+
+
+def test_session_kpis_ai_cost_none_when_unavailable(
+    db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A disabled/unreadable cost source yields no AI cost but leaves other KPIs intact.
+    sess = _ai_session(db_session)
+    monkeypatch.setattr(service, "session_ai_cost_usd", lambda session_id: None)
+    kpis = service.session_kpis(
+        db_session, session_id=sess.id, broker=_QuoteBroker({"AAPL": 10.0})
+    )
+    assert kpis.ai_cost_usd is None
+    assert kpis.current_value is not None  # other KPIs still computed
+
+
 def test_session_kpis_sharpe_none_until_enough_history(db_session: Session) -> None:
     sess = _ai_session(db_session)
     base = date(2026, 1, 1)

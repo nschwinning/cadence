@@ -431,7 +431,11 @@ def run_rebalance_event(
                 {"run_date": s.run_date.isoformat(), "document": s.document}
                 for s in snapshots
             ]
-        with record_web_searches() as research, llm_trace(str(event_id)):
+        with record_web_searches() as research, llm_trace(
+            str(event_id),
+            session_id=str(session_id),
+            portfolio_id=str(session_row.portfolio_id),
+        ):
             result = agent.rebalance(
                 holdings=holdings,
                 account_summary=account_summary,

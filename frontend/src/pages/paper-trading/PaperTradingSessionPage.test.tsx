@@ -125,6 +125,7 @@ const KPIS: PaperTradingSessionKpis = {
   average_loss: -110,
   best_trade: 900,
   worst_trade: -450,
+  ai_cost_usd: 3.21,
 };
 
 /** A session with no snapshots or closed positions: the new metrics are null. */
@@ -370,6 +371,29 @@ describe('PaperTradingSessionPage', () => {
     await screen.findByText('Benchmark return');
     // Both the benchmark-return and excess-return tiles fall back to the copy.
     expect(screen.getAllByText('Not yet available')).toHaveLength(2);
+  });
+
+  it('renders the AI cost tile with the session spend when available', async () => {
+    installGet(() => 'running');
+
+    renderPage(<PaperTradingSessionPage />);
+
+    expect(await screen.findByText('AI cost')).toBeInTheDocument();
+    // ai_cost_usd 3.21 -> $3.21, with the cumulative-cost hint.
+    expect(screen.getByText('$3.21')).toBeInTheDocument();
+    expect(
+      screen.getByText('Cumulative LLM cost this session'),
+    ).toBeInTheDocument();
+  });
+
+  it('shows the AI cost em-dash when cost tracking is unconfigured', async () => {
+    installGet(() => 'running', { ...KPIS, ai_cost_usd: null });
+
+    renderPage(<PaperTradingSessionPage />);
+
+    expect(await screen.findByText('AI cost')).toBeInTheDocument();
+    expect(screen.getByText('—')).toBeInTheDocument();
+    expect(screen.getByText('Cost tracking unavailable')).toBeInTheDocument();
   });
 
   it('renders the risk & trade-quality group with the new tiles', async () => {

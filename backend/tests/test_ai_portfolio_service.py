@@ -7,6 +7,7 @@ provider for discovery-adds. No network is touched.
 
 from __future__ import annotations
 
+import json
 import uuid
 from dataclasses import replace
 from datetime import UTC, date, datetime, timedelta
@@ -639,6 +640,35 @@ def test_run_rebalance_event_run_stats_includes_pnl_and_account(
     assert "orders" in stats and "trades" in stats
     assert "realized_pnl" in stats
     assert "account" in stats
+
+
+def test_run_rebalance_event_attributes_spend_to_session_and_portfolio(
+    db_session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # With the gateway enabled, a rebalance run stamps the session + portfolio ids
+    # (alongside the trace id) into the spend-log metadata so the proxy's spend can
+    # be attributed to the session for the AI-cost KPI.
+    monkeypatch.setattr(settings, "LITELLM_BASE_URL", "http://litellm:4000")
+    provider = _seed_universe(db_session, "AAPL", "MSFT")
+    broker = StubBroker()
+    session_id, portfolio_id = _seed_session(db_session, broker, provider)
+
+    rebalance = FakeAIPortfolioAgent(
+        rebalance_result=AIRebalanceResult(
+            evaluation_summary="steady", target_allocations=[], portfolio_health="healthy"
+        )
+    )
+    rb_event = service.create_rebalance_event(db_session, session_id)
+    service.run_rebalance_event(db_session, rb_event.id, rebalance, broker, provider)
+
+    run_config = rebalance.rebalance_calls[0]["trace_run_config"]
+    assert run_config is not None
+    headers = run_config.model_settings.extra_headers
+    payload = json.loads(headers["x-litellm-spend-logs-metadata"])
+    assert payload["cadence_session_id"] == str(session_id)
+    assert payload["cadence_portfolio_id"] == str(portfolio_id)
+    assert payload["cadence_trace_id"] == str(rb_event.id)
 
 
 def test_run_rebalance_event_threads_recent_outcomes_when_enabled(

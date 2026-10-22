@@ -25,6 +25,7 @@ from cadence.assets.service import normalize_ticker
 from cadence.broker.base import Broker
 from cadence.broker.models import AssetClass, OrderSide, OrderStatus, Position
 from cadence.config import settings
+from cadence.paper_trading.ai_cost import session_ai_cost_usd
 from cadence.paper_trading.benchmark import (
     Contribution,
     benchmark_return_fraction,
@@ -2003,6 +2004,7 @@ class SessionKpis:
     average_loss: float | None
     best_trade: float | None
     worst_trade: float | None
+    ai_cost_usd: float | None
 
 
 def session_kpis(
@@ -2115,4 +2117,7 @@ def session_kpis(
         average_loss=trade_stats.average_loss,
         best_trade=trade_stats.best_trade,
         worst_trade=trade_stats.worst_trade,
+        # Best-effort external cost read; ``None`` when the source is unconfigured
+        # or unreadable (the helper never raises), leaving the other KPIs intact.
+        ai_cost_usd=session_ai_cost_usd(str(session_id)),
     )

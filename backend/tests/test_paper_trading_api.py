@@ -599,7 +599,10 @@ def test_session_kpis_returns_live_figures(
         "average_loss",
         "best_trade",
         "worst_trade",
+        "ai_cost_usd",
     }
+    # The cost source is unconfigured in tests, so the AI-cost KPI is withheld.
+    assert body["ai_cost_usd"] is None
     # Ledger buy above did not go through record_trade, so no fees accrued.
     assert body["total_fees"] == 0.0
     # No daily snapshots yet -> daily average orders withheld.

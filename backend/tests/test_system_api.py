@@ -24,6 +24,9 @@ _FAKE_SECRETS = {
     "SERP_API_KEY": "SECRET-serp-key-DEADBEEF",
     "SERPER_API_KEY": "SECRET-serper-key-DEADBEEF",
     "OPENAI_API_KEY": "SECRET-openai-key-DEADBEEF",
+    # The LiteLLM spend-DB DSN carries a password; it is read-only internal and
+    # must never surface in the status report (or any read model).
+    "LITELLM_DATABASE_URL": "postgresql://u:SECRET-litellm-db-pw-DEADBEEF@h:5432/litellm",
 }
 
 

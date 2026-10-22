@@ -848,6 +848,8 @@ function KpiRow({ sessionId }: { sessionId: string }) {
     data.daily_avg_orders === null
       ? 'Not yet available'
       : data.daily_avg_orders.toFixed(2);
+  const aiCost =
+    data.ai_cost_usd === null ? '—' : formatCurrency(data.ai_cost_usd);
 
   return (
     <div className="flex flex-col gap-6">
@@ -861,7 +863,7 @@ function KpiRow({ sessionId }: { sessionId: string }) {
           </h3>
           <FreshnessBadge kind="live" />
         </div>
-        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-5">
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-6">
           <KpiTile label="Current value" value={formatCurrency(data.current_value)} />
           <KpiTile
             label="Unallocated cash"
@@ -914,6 +916,15 @@ function KpiRow({ sessionId }: { sessionId: string }) {
             hint={`${benchmarkName}, buy & hold`}
           />
           <KpiTile label="Excess return" value={excessReturn} hint={excessHint} />
+          <KpiTile
+            label="AI cost"
+            value={aiCost}
+            hint={
+              data.ai_cost_usd === null
+                ? 'Cost tracking unavailable'
+                : 'Cumulative LLM cost this session'
+            }
+          />
         </div>
       </section>
 

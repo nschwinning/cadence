@@ -313,6 +313,7 @@ def get_session_kpis(
         average_loss=kpis.average_loss,
         best_trade=kpis.best_trade,
         worst_trade=kpis.worst_trade,
+        ai_cost_usd=kpis.ai_cost_usd,
     )
 
 

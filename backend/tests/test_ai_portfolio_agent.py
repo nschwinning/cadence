@@ -555,7 +555,11 @@ def test_rebalance_attaches_trace_id_when_gateway_enabled(
 
     run_config = captured["run_config"]
     assert run_config is not None
-    assert run_config.model_settings.metadata == {"cadence_trace_id": "event-42"}
+    headers = run_config.model_settings.extra_headers
+    assert headers is not None
+    assert json.loads(headers["x-litellm-spend-logs-metadata"]) == {
+        "cadence_trace_id": "event-42"
+    }
 
 
 # --------------------------------------------------------------------------- #

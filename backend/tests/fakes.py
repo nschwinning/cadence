@@ -7,6 +7,7 @@ from concurrent.futures import Future
 from datetime import date, timedelta
 from typing import Any
 
+from cadence.agents.gateway import run_config_for_trace
 from cadence.agents.tools import note_web_search
 from cadence.ai_portfolio.agent import (
     AIPortfolioBuildResult,
@@ -385,6 +386,9 @@ class FakeAIPortfolioAgent:
                 "guardrails": guardrails,
                 "recent_outcomes": recent_outcomes,
                 "model": model,
+                # The spend-log run config active during this call, so tests can
+                # assert the flow threaded the trace/session/portfolio metadata.
+                "trace_run_config": run_config_for_trace(),
             }
         )
         self._emit_research()

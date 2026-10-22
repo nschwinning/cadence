@@ -684,6 +684,12 @@ export interface PaperTradingSessionKpis {
   best_trade: number | null;
   /** Largest single losing closed-position P&L (signed). Null with none closed. */
   worst_trade: number | null;
+  /**
+   * Cumulative AI (LLM) cost in USD attributed to this session's rebalance runs,
+   * from the model proxy's spend log. Null when the cost source is unconfigured or
+   * has no attributed spend for the session.
+   */
+  ai_cost_usd: number | null;
 }
 
 // --------------------------------------------------------------------------- //

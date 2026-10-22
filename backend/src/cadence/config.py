@@ -60,6 +60,13 @@ class Settings(BaseSettings):
     # (OpenAI, Anthropic) live on the proxy, not here.
     LITELLM_BASE_URL: str = ""
     LITELLM_API_KEY: str = ""
+    # Optional read-only connection to the LiteLLM proxy's spend-log database
+    # (``LiteLLM_SpendLogs``), used solely to surface per-session AI cost as a
+    # KPI. Independent of ``LITELLM_BASE_URL``: routing can be on without cost
+    # surfacing, or vice-versa. Empty (the default) DISABLES the cost KPI — it
+    # is reported as absent and the spend DB is never queried. This is a secret
+    # (a DSN with a password) and is never surfaced in any response or status.
+    LITELLM_DATABASE_URL: str = ""
     # Opt-in offline stub for the recommender agent (no OpenAI/SerpAPI calls).
     # Intended for the Docker end-to-end smoke and local development; leave off
     # in production so the real agent runs and missing keys fail cleanly.

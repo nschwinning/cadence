@@ -6,6 +6,7 @@ No network calls: the SDK client-registration functions are patched, and
 
 from __future__ import annotations
 
+import json
 from unittest.mock import Mock
 
 import pytest
@@ -78,8 +79,46 @@ def test_run_config_carries_trace_id(monkeypatch: MonkeyPatch) -> None:
         config = gateway.run_config_for_trace()
 
     assert config is not None
-    assert config.model_settings.metadata == {"cadence_trace_id": "evt-123"}
-    assert config.model_settings.extra_headers == {"x-litellm-trace-id": "evt-123"}
+    # The trace id rides in the LiteLLM spend-log metadata header as JSON — the
+    # only mechanism LiteLLM persists for Responses-API runs (verified live).
+    headers = config.model_settings.extra_headers
+    assert headers is not None
+    assert set(headers) == {"x-litellm-spend-logs-metadata"}
+    assert json.loads(headers["x-litellm-spend-logs-metadata"]) == {
+        "cadence_trace_id": "evt-123"
+    }
+
+
+def test_run_config_carries_session_and_portfolio(monkeypatch: MonkeyPatch) -> None:
+    _enable(monkeypatch)
+    with gateway.llm_trace("evt-9", session_id="sess-7", portfolio_id="pf-3"):
+        config = gateway.run_config_for_trace()
+
+    assert config is not None
+    headers = config.model_settings.extra_headers
+    assert headers is not None
+    # Portfolio-scoped runs attribute spend to the session + portfolio.
+    assert json.loads(headers["x-litellm-spend-logs-metadata"]) == {
+        "cadence_trace_id": "evt-9",
+        "cadence_session_id": "sess-7",
+        "cadence_portfolio_id": "pf-3",
+    }
+
+
+def test_run_config_trace_only_without_session(monkeypatch: MonkeyPatch) -> None:
+    # Global runs (recommender / universe-eval) pass neither session nor portfolio,
+    # so their spend carries only the trace id — never a session/portfolio id.
+    _enable(monkeypatch)
+    with gateway.llm_trace("recommendation-run-1"):
+        config = gateway.run_config_for_trace()
+
+    assert config is not None
+    headers = config.model_settings.extra_headers
+    assert headers is not None
+    payload = json.loads(headers["x-litellm-spend-logs-metadata"])
+    assert payload == {"cadence_trace_id": "recommendation-run-1"}
+    assert "cadence_session_id" not in payload
+    assert "cadence_portfolio_id" not in payload
 
 
 def test_llm_trace_resets_after_block(monkeypatch: MonkeyPatch) -> None:
