@@ -73,19 +73,21 @@ class RecommendationJobRunner:
         broker: Broker,
         fundamentals: FundamentalsProvider,
         target: RunTarget = RunTarget.UNIVERSE,
+        model: str | None = None,
     ) -> tuple[RecommendationRun, bool]:
         """Create and submit a run, or return the in-flight one.
 
         Returns ``(run, started)``. When a run is already in flight, that run is
         returned with ``started=False`` and no new run is created (single-run
         concurrency guard). Validation errors from :func:`create_run` propagate.
+        ``model`` selects the AI model; ``None`` uses the configured default.
         """
         with self._lock:
             inflight_id = self._inflight_locked()
             if inflight_id is not None:
                 return get_run(session, inflight_id), False
 
-            run_id = create_run(session, count, categories, target)
+            run_id = create_run(session, count, categories, target, model)
             future = self._executor.submit(
                 self._job, run_id, agent, provider, broker, fundamentals
             )

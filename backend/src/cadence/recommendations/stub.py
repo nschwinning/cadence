@@ -57,7 +57,10 @@ class StubRecommenderAgent:
         composition: UniverseComposition,
         exclude_tickers: list[str],
         target: RunTarget = RunTarget.UNIVERSE,
+        model: str | None = None,
     ) -> RecommendationResult:
+        # The offline stub makes no agent call, so the selected model is ignored.
+        _ = model
         tickers = self._pool_for(categories, exclude_tickers)
         candidates = [
             RecommendationCandidate(

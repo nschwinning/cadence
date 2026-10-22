@@ -7,6 +7,7 @@ import {
   useCreateRecommendationRun,
   useRecommendationRun,
 } from '../../api/recommendations';
+import { useModels } from '../../api/paperTrading';
 import { CATEGORY_STYLES } from '../../components/CategoryBadge';
 import type {
   AssetCategory,
@@ -14,6 +15,14 @@ import type {
   RecommendationCandidateResult,
   RunPhase,
 } from '../../types/api';
+
+/**
+ * Default AI model for a recommendation run — mirrors the backend
+ * `settings.RECOMMENDER_MODEL`. Seeds the selector so the controlled value
+ * always matches a catalog option, and is what the backend uses when the field
+ * is omitted. A member of the shared model catalog (GPT-5 Mini).
+ */
+const DEFAULT_RECOMMENDER_MODEL = 'gpt-5-mini';
 
 /** The three in-flight phases rendered as stepper nodes (in order). */
 const PHASE_STEPS: { phase: RunPhase; label: string; caption: string }[] = [
@@ -230,7 +239,11 @@ export function RecommendAssetsCard({ onViewUniverse }: RecommendAssetsCardProps
 
   const [count, setCount] = useState('5');
   const [categories, setCategories] = useState<AssetCategory[]>([]);
+  const [model, setModel] = useState<string>(DEFAULT_RECOMMENDER_MODEL);
   const [runId, setRunId] = useState<number | null>(null);
+
+  const { data: models } = useModels();
+  const modelCatalog = Array.isArray(models) ? models : null;
 
   const runQuery = useRecommendationRun(runId);
   const run = runQuery.data;
@@ -288,7 +301,7 @@ export function RecommendAssetsCard({ onViewUniverse }: RecommendAssetsCardProps
     e.preventDefault();
     if (!canSubmit) return;
     createRun.mutate(
-      { count: countValue, categories },
+      { count: countValue, categories, model },
       { onSuccess: (created) => setRunId(created.id) },
     );
   };
@@ -369,6 +382,31 @@ export function RecommendAssetsCard({ onViewUniverse }: RecommendAssetsCardProps
             )}
           </div>
 
+          <div>
+            <label
+              htmlFor="rec-model"
+              className="block text-sm font-medium text-slate-700"
+            >
+              AI model
+            </label>
+            <select
+              id="rec-model"
+              value={model}
+              onChange={(e) => setModel(e.target.value)}
+              className="mt-1 w-full rounded border border-slate-300 px-3 py-2 text-slate-900 focus:border-emerald-500 focus:outline-none focus:ring-1 focus:ring-emerald-500"
+            >
+              {(
+                modelCatalog ?? [
+                  { id: DEFAULT_RECOMMENDER_MODEL, name: 'GPT-5 Mini' },
+                ]
+              ).map((m) => (
+                <option key={m.id} value={m.id}>
+                  {m.name}
+                </option>
+              ))}
+            </select>
+          </div>
+
           {createRun.isError && (
             <p
               role="alert"
@@ -429,7 +467,8 @@ export function RecommendAssetsCard({ onViewUniverse }: RecommendAssetsCardProps
               Requested up to {run.requested_count} · categories:{' '}
               {run.requested_categories
                 .map((c) => CATEGORY_STYLES[c as AssetCategory]?.label ?? c)
-                .join(', ')}
+                .join(', ')}{' '}
+              · model: {run.model}
             </p>
           )}
         </div>

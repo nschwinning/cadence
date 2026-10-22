@@ -135,12 +135,14 @@ class RecommenderAgent(Protocol):
         composition: UniverseComposition,
         exclude_tickers: list[str],
         target: RunTarget = RunTarget.UNIVERSE,
+        model: str | None = None,
     ) -> RecommendationResult:
         """Return up to ``count``-worth of candidates for the given categories.
 
         ``exclude_tickers`` are already tracked as assets and MUST NOT be
         proposed. ``target`` selects the universe (default) or the
-        emerging-companies watchlist prompt.
+        emerging-companies watchlist prompt. ``model`` selects the AI model to
+        run on; ``None`` uses the configured default.
         """
         ...
 
@@ -336,18 +338,22 @@ class OpenAIRecommenderAgent:
         composition: UniverseComposition,
         exclude_tickers: list[str],
         target: RunTarget = RunTarget.UNIVERSE,
+        model: str | None = None,
     ) -> RecommendationResult:
         prompt = self.build_prompt(
             categories, count, criteria, composition, exclude_tickers, target
         )
-        return asyncio.run(self._run(prompt, target))
+        return asyncio.run(self._run(prompt, target, model))
 
-    async def _run(self, prompt: str, target: RunTarget) -> RecommendationResult:
+    async def _run(
+        self, prompt: str, target: RunTarget, model: str | None = None
+    ) -> RecommendationResult:
         agent = build_agent(
             name=_AGENT_NAME,
             instructions=_agent_instructions(target),
             output_type=RecommendationOutput,
             tools=[web_search],
+            model=model,
         )
         timeout = settings.RECOMMENDER_AGENT_TIMEOUT_SECONDS
         try:

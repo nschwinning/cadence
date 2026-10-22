@@ -32,6 +32,7 @@ from cadence.assets.service import (
     list_assets,
 )
 from cadence.broker.base import Broker
+from cadence.config import settings
 from cadence.dashboard.service import get_universe_composition
 from cadence.recommendations.agent import (
     RecommenderAgent,
@@ -56,8 +57,13 @@ def create_run(
     count: int,
     categories: list[str],
     target: RunTarget = RunTarget.UNIVERSE,
+    model: str | None = None,
 ) -> int:
     """Validate the request and insert a queued run; return its id.
+
+    ``model`` is the AI model the run will execute on; when ``None`` it resolves
+    to the configured default recommender model. The resolved model is persisted
+    on the run so every run records which model produced its candidates.
 
     Raises:
         RecommendationValidationError: if ``count`` is not positive, no category
@@ -84,6 +90,7 @@ def create_run(
     run = RecommendationRun(
         status=RunPhase.QUEUED.value,
         target=target.value,
+        model=model or settings.RECOMMENDER_MODEL,
         requested_count=count,
         requested_categories=list(categories),
         tool_call_count=0,
@@ -170,7 +177,13 @@ def execute_run(
 
         with llm_trace(f"recommendation-run-{run.id}"):
             result = agent.recommend(
-                categories, ask_for, criteria, composition, exclude_tickers, target
+                categories,
+                ask_for,
+                criteria,
+                composition,
+                exclude_tickers,
+                target,
+                run.model,
             )
 
         run.tool_call_count = result.tool_call_count

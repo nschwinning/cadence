@@ -195,6 +195,7 @@ class FakeRecommenderAgent:
         self.recommend_calls: list[tuple[list[str], int]] = []
         self.exclude_calls: list[list[str]] = []
         self.target_calls: list[RunTarget] = []
+        self.model_calls: list[str | None] = []
 
     def build_prompt(
         self,
@@ -217,10 +218,12 @@ class FakeRecommenderAgent:
         composition: UniverseComposition,
         exclude_tickers: list[str],
         target: RunTarget = RunTarget.UNIVERSE,
+        model: str | None = None,
     ) -> RecommendationResult:
         self.recommend_calls.append((list(categories), count))
         self.exclude_calls.append(list(exclude_tickers))
         self.target_calls.append(target)
+        self.model_calls.append(model)
         if self._error is not None:
             raise self._error
         return RecommendationResult(

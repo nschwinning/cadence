@@ -209,6 +209,11 @@ class RecommendationRunCreate(BaseModel):
         description="Which bucket to populate: 'universe' (default) or "
         "'watchlist' (emerging companies; stock-only).",
     )
+    model: AIModel | None = Field(
+        default=None,
+        description="AI model to run on (from the shared catalog). Omit to use "
+        "the configured default recommender model. An unknown id is rejected.",
+    )
 
 
 class RecommendationCandidateResult(BaseModel):
@@ -229,6 +234,8 @@ class RecommendationRunRead(BaseModel):
     status: str
     # Which bucket the run populates ('universe' default, or 'watchlist').
     target: str = RunTarget.UNIVERSE.value
+    # The AI model the run executed on (a catalog AIModel value).
+    model: str
     requested_count: int
     requested_categories: list[str]
     prompt: str | None

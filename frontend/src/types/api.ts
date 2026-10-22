@@ -285,6 +285,8 @@ export interface RecommendationRun {
   error: string | null;
   /** The asset bucket this run targeted (defaults to `universe`). */
   target: RunTarget;
+  /** The AI model this run executed on (a shared-catalog model id). */
+  model: string;
 }
 
 /**
@@ -301,6 +303,11 @@ export interface RecommendationRunCreate {
    * target rejects any non-stock category (422).
    */
   target?: RunTarget;
+  /**
+   * AI model (a shared-catalog model id) to run on. Omit to use the configured
+   * default recommender model; an id outside the catalog is rejected (422).
+   */
+  model?: string;
 }
 
 // --------------------------------------------------------------------------- //

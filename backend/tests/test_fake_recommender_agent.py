@@ -33,6 +33,23 @@ def test_fake_satisfies_protocol_and_returns_candidates() -> None:
     assert [c.ticker for c in result.output.candidates] == ["AAPL"]
     assert fake.recommend_calls == [(["stock"], 5)]
     assert fake.exclude_calls == [["MSFT"]]
+    # Model defaults to None (the caller resolves the configured default).
+    assert fake.model_calls == [None]
+
+
+def test_fake_records_selected_model() -> None:
+    fake = FakeRecommenderAgent(
+        candidates=[RecommendationCandidate(ticker="AAPL", rationale="liquid")],
+    )
+    fake.recommend(
+        categories=["stock"],
+        count=5,
+        criteria=default_eligibility_criteria(),
+        composition=_EMPTY_COMPOSITION,
+        exclude_tickers=[],
+        model="claude-opus-5-5",
+    )
+    assert fake.model_calls == ["claude-opus-5-5"]
 
 
 def test_fake_can_raise() -> None:

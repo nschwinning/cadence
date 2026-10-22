@@ -22,6 +22,7 @@ import {
   useCreateRecommendationRun,
   useRecommendationRun,
 } from '../../api/recommendations';
+import { useModels } from '../../api/paperTrading';
 import type {
   Asset,
   AssetCategory,
@@ -41,6 +42,14 @@ const PHASE_LABELS: Record<RunPhase, string> = {
   failed: 'Failed',
 };
 
+/**
+ * Default AI model for a watchlist recommendation run — mirrors the backend
+ * `settings.RECOMMENDER_MODEL`. Seeds the selector so the controlled value
+ * always matches a catalog option; the backend uses it when the field is
+ * omitted. A member of the shared model catalog (GPT-5 Mini).
+ */
+const DEFAULT_RECOMMENDER_MODEL = 'gpt-5-mini';
+
 /** Derived rollup counts over a run's candidate results. */
 function rollup(results: RecommendationCandidateResult[]) {
   let added = 0;
@@ -58,7 +67,11 @@ function rollup(results: RecommendationCandidateResult[]) {
 function WatchlistRecommendCard({ onAdded }: { onAdded: () => void }) {
   const createRun = useCreateRecommendationRun();
   const [count, setCount] = useState('3');
+  const [model, setModel] = useState<string>(DEFAULT_RECOMMENDER_MODEL);
   const [runId, setRunId] = useState<number | null>(null);
+
+  const { data: models } = useModels();
+  const modelCatalog = Array.isArray(models) ? models : null;
 
   const runQuery = useRecommendationRun(runId);
   const run = runQuery.data;
@@ -86,7 +99,7 @@ function WatchlistRecommendCard({ onAdded }: { onAdded: () => void }) {
     e.preventDefault();
     if (!countValid) return;
     createRun.mutate(
-      { count: countValue, categories: ['stock'], target: 'watchlist' },
+      { count: countValue, categories: ['stock'], target: 'watchlist', model },
       { onSuccess: (created) => setRunId(created.id) },
     );
   };
@@ -134,6 +147,31 @@ function WatchlistRecommendCard({ onAdded }: { onAdded: () => void }) {
                 Emerging stocks only.
               </span>
             </div>
+          </div>
+
+          <div>
+            <label
+              htmlFor="watchlist-model"
+              className="block text-sm font-medium text-slate-700"
+            >
+              AI model
+            </label>
+            <select
+              id="watchlist-model"
+              value={model}
+              onChange={(e) => setModel(e.target.value)}
+              className="mt-1 w-full rounded border border-slate-300 px-3 py-2 text-slate-900 focus:border-emerald-500 focus:outline-none focus:ring-1 focus:ring-emerald-500"
+            >
+              {(
+                modelCatalog ?? [
+                  { id: DEFAULT_RECOMMENDER_MODEL, name: 'GPT-5 Mini' },
+                ]
+              ).map((m) => (
+                <option key={m.id} value={m.id}>
+                  {m.name}
+                </option>
+              ))}
+            </select>
           </div>
 
           {createRun.isError && (

@@ -49,6 +49,7 @@ function makeRun(overrides: Partial<RecommendationRun> = {}): RecommendationRun 
     results: [{ ticker: 'EMERG', outcome: 'added', detail: null }],
     error: null,
     target: 'watchlist',
+    model: 'gpt-5-mini',
     ...overrides,
   };
 }
@@ -201,6 +202,8 @@ describe('WatchlistPage', () => {
         count: 3,
         categories: ['stock'],
         target: 'watchlist',
+        // Defaults to the configured recommender model when unchanged.
+        model: 'gpt-5-mini',
       }),
     );
 

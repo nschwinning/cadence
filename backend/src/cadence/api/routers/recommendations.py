@@ -100,6 +100,7 @@ def create_recommendation_run(
             broker=broker,
             fundamentals=fundamentals,
             target=payload.target,
+            model=payload.model.value if payload.model is not None else None,
         )
     except RecommendationValidationError as exc:
         raise HTTPException(

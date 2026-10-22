@@ -28,6 +28,8 @@ from cadence.assets.fundamentals import (
     FundamentalsStatus,
 )
 from cadence.assets.market_data import AssetInfo, HistoryBar
+from cadence.config import settings
+from cadence.paper_trading.constants import AIModel
 from cadence.recommendations.agent import RecommendationCandidate
 from cadence.recommendations.background import RecommendationJobRunner
 
@@ -178,5 +180,66 @@ def test_create_rejects_watchlist_with_crypto(
     resp = client.post(
         "/api/v1/recommendations",
         json={"count": 1, "categories": ["crypto"], "target": "watchlist"},
+    )
+    assert resp.status_code == 422
+
+
+def test_create_defaults_model_to_configured_recommender_model(
+    client: TestClient, db_session: Session
+) -> None:
+    """Omitting ``model`` records and uses the configured default model."""
+    agent = FakeRecommenderAgent(
+        candidates=[RecommendationCandidate(ticker="ZZTOP", rationale="x")],
+        tool_call_count=1,
+    )
+    executor = ManualExecutor()
+    _wire(client, db_session, agent, executor)
+
+    created = client.post(
+        "/api/v1/recommendations", json={"count": 1, "categories": ["stock"]}
+    )
+    assert created.status_code == 202
+    assert created.json()["model"] == settings.RECOMMENDER_MODEL
+
+    executor.run_pending()
+    assert agent.model_calls == [settings.RECOMMENDER_MODEL]
+
+
+def test_create_uses_selected_model(
+    client: TestClient, db_session: Session
+) -> None:
+    """A valid selected model is echoed on the run and passed to the agent."""
+    agent = FakeRecommenderAgent(
+        candidates=[RecommendationCandidate(ticker="ZZTOP", rationale="x")],
+        tool_call_count=1,
+    )
+    executor = ManualExecutor()
+    _wire(client, db_session, agent, executor)
+
+    created = client.post(
+        "/api/v1/recommendations",
+        json={
+            "count": 1,
+            "categories": ["stock"],
+            "model": AIModel.CLAUDE_OPUS_5_5.value,
+        },
+    )
+    assert created.status_code == 202
+    assert created.json()["model"] == AIModel.CLAUDE_OPUS_5_5.value
+
+    executor.run_pending()
+    assert agent.model_calls == [AIModel.CLAUDE_OPUS_5_5.value]
+
+
+def test_create_rejects_unknown_model(
+    client: TestClient, db_session: Session
+) -> None:
+    """An id outside the shared catalog is rejected with 422 and no run runs."""
+    agent = FakeRecommenderAgent(candidates=[], tool_call_count=0)
+    _wire(client, db_session, agent, ManualExecutor())
+
+    resp = client.post(
+        "/api/v1/recommendations",
+        json={"count": 1, "categories": ["stock"], "model": "not-a-real-model"},
     )
     assert resp.status_code == 422

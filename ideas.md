@@ -11,3 +11,4 @@
 - Show if technical indicators are used on the session details page
 
 ## Bugs
+ you

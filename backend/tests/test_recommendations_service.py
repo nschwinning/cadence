@@ -21,6 +21,7 @@ from cadence.assets.fundamentals import (
     FundamentalsStatus,
 )
 from cadence.assets.market_data import AssetInfo, HistoryBar
+from cadence.config import settings
 from cadence.recommendations import service
 from cadence.recommendations.agent import RecommendationCandidate
 from cadence.recommendations.constants import CandidateOutcome, RunPhase, RunTarget
@@ -122,6 +123,33 @@ def test_create_run_accepts_stock_and_crypto(db_session: Session) -> None:
     run_id = service.create_run(db_session, count=3, categories=["stock", "crypto"])
     run = service.get_run(db_session, run_id)
     assert run.requested_categories == ["stock", "crypto"]
+
+
+def test_create_run_defaults_model_to_configured_default(db_session: Session) -> None:
+    run_id = service.create_run(db_session, count=1, categories=["stock"])
+    run = service.get_run(db_session, run_id)
+    assert run.model == settings.RECOMMENDER_MODEL
+
+
+def test_create_run_persists_selected_model(db_session: Session) -> None:
+    run_id = service.create_run(
+        db_session, count=1, categories=["stock"], model="claude-opus-5-5"
+    )
+    run = service.get_run(db_session, run_id)
+    assert run.model == "claude-opus-5-5"
+
+
+def test_execute_run_passes_persisted_model_to_agent(db_session: Session) -> None:
+    run_id = service.create_run(
+        db_session, count=1, categories=["stock"], model="claude-opus-5-5"
+    )
+    agent = _agent(["AAA"])
+
+    service.execute_run(
+        db_session, run_id, agent, _eligible_provider(), _broker(), _fundamentals()
+    )
+
+    assert agent.model_calls == ["claude-opus-5-5"]
 
 
 # --- 4.2 executor drives to completed --------------------------------------

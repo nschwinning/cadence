@@ -47,6 +47,10 @@ class RecommendationRun(Base):
         default=RunTarget.UNIVERSE.value,
         server_default=RunTarget.UNIVERSE.value,
     )
+    # The AI model the run executed on (a cadence.paper_trading.constants.AIModel
+    # value). Resolved at create time from the request or the configured default,
+    # so every run records which model produced its candidates.
+    model: Mapped[str] = mapped_column(String, nullable=False)
     requested_count: Mapped[int] = mapped_column(Integer, nullable=False)
     requested_categories: Mapped[list[str]] = mapped_column(JSONB, nullable=False)
     prompt: Mapped[str | None] = mapped_column(Text, nullable=True)
