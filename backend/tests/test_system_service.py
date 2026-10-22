@@ -195,6 +195,45 @@ def test_openai_unconfigured_is_not_probed(monkeypatch: pytest.MonkeyPatch) -> N
     assert result.reachable is None
 
 
+# --- Model gateway (LiteLLM) -------------------------------------------------
+
+
+def test_litellm_unconfigured_is_not_probed(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(settings, "LITELLM_BASE_URL", "")
+
+    result = service.probe_litellm()
+
+    assert result.configured is False
+    assert result.reachable is None
+
+
+def test_litellm_reachable_on_success(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(settings, "LITELLM_BASE_URL", "http://litellm:4000")
+    monkeypatch.setattr(service, "_check_litellm_liveness", lambda base_url: None)
+
+    result = service.probe_litellm()
+
+    assert result.configured is True
+    assert result.identifier == "http://litellm:4000"
+    assert result.reachable is True
+    assert result.latency_ms is not None
+
+
+def test_litellm_unreachable_with_detail(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(settings, "LITELLM_BASE_URL", "http://litellm:4000")
+
+    def _boom(base_url: str) -> None:
+        raise ConnectionError("connection refused")
+
+    monkeypatch.setattr(service, "_check_litellm_liveness", _boom)
+
+    result = service.probe_litellm()
+
+    assert result.configured is True
+    assert result.reachable is False
+    assert result.detail is not None
+
+
 # --- Aggregator --------------------------------------------------------------
 
 

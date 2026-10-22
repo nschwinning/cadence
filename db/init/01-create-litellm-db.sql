@@ -1,0 +1,12 @@
+-- Create the separate `litellm` database on the shared Postgres instance for the
+-- LiteLLM model-gateway's SpendLogs + admin-UI state, isolated from the app's
+-- `cadence` database.
+--
+-- Postgres only runs scripts in /docker-entrypoint-initdb.d when the data volume
+-- is FIRST initialized (a fresh `pgdata`). On an EXISTING volume this will not
+-- run, so create the database once manually:
+--   docker compose exec db createdb -U cadence litellm
+--
+-- LiteLLM creates its own tables (Prisma migrations) on first start; the app's
+-- Alembic migrations never touch this database.
+CREATE DATABASE litellm;

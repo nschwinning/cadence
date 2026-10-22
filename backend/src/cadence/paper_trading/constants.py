@@ -107,11 +107,21 @@ class AIModel(StrEnum):
     catalog. A session freezes one model for its lifetime so its results are
     attributable to a single model. The catalog is a fixed, server-defined list;
     extend it by adding members here (and a display name below).
+
+    The member value is also the alias the LiteLLM model-gateway (when enabled)
+    maps to a provider: ``gpt-*`` route to OpenAI and ``claude-*`` to Anthropic.
+    The Claude entries are models on LiteLLM's native structured-output path, so
+    the agent factory's mandatory Pydantic ``output_type`` contract holds for runs
+    on them. The column storing this value is a non-native string enum, so adding
+    members needs no database migration.
     """
 
     GPT_5_MINI = "gpt-5-mini"
     GPT_5_6_LUNA = "gpt-5.6-luna"
     GPT_6_LUNA = "gpt-6-luna"
+    CLAUDE_SONNET_5_5 = "claude-sonnet-5-5"
+    CLAUDE_OPUS_5_5 = "claude-opus-5-5"
+    CLAUDE_HAIKU_4_5 = "claude-haiku-4-5"
 
 
 #: Human-readable display name per AI model, surfaced in the UI catalog.
@@ -119,6 +129,9 @@ AI_MODEL_DISPLAY_NAMES: dict[AIModel, str] = {
     AIModel.GPT_5_MINI: "GPT-5 Mini",
     AIModel.GPT_5_6_LUNA: "GPT-5.6 Luna",
     AIModel.GPT_6_LUNA: "GPT-6 Luna",
+    AIModel.CLAUDE_SONNET_5_5: "Claude Sonnet 5.5",
+    AIModel.CLAUDE_OPUS_5_5: "Claude Opus 5.5",
+    AIModel.CLAUDE_HAIKU_4_5: "Claude Haiku 4.5",
 }
 
 

@@ -19,6 +19,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import InstrumentedAttribute, Session, selectinload
 from sqlalchemy.sql.expression import ColumnElement, UnaryExpression
 
+from cadence.agents import llm_trace
 from cadence.assets.category import (
     SUPPORTED_CATEGORIES,
     AssetCategory,
@@ -822,8 +823,12 @@ def generate_evaluation(
         return None
 
     summary = _universe_summary(assets)
-    output = agent.evaluate(summary)
+    # Compute the fingerprint first so it can double as the run's trace id: it is
+    # persisted on the evaluation row, so a proxy usage record tagged with it
+    # correlates back to this evaluation.
     fingerprint = _universe_fingerprint(assets)
+    with llm_trace(f"universe-evaluation-{fingerprint}"):
+        output = agent.evaluate(summary)
     model = get_universe_evaluation_model()
     generated_at = datetime.now(tz=UTC)
 

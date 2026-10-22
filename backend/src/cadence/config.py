@@ -50,6 +50,16 @@ class Settings(BaseSettings):
     SERP_API_KEY: str = ""
     SERPER_API_KEY: str = ""
     RECOMMENDER_MODEL: str = "gpt-5-mini"
+    # Optional LiteLLM model-gateway proxy. When ``LITELLM_BASE_URL`` is set, all
+    # agent LLM calls are routed through that OpenAI-compatible proxy, which maps
+    # each model id to its provider (OpenAI for ``gpt-*``, Anthropic for
+    # ``claude-*``) and records per-request token usage/cost. ``LITELLM_API_KEY``
+    # is the proxy's master/virtual key. Empty base URL (the default) DISABLES the
+    # gateway entirely: the SDK keeps its implicit OpenAI client and behavior —
+    # including the offline stubs and tests — is unchanged. The provider API keys
+    # (OpenAI, Anthropic) live on the proxy, not here.
+    LITELLM_BASE_URL: str = ""
+    LITELLM_API_KEY: str = ""
     # Opt-in offline stub for the recommender agent (no OpenAI/SerpAPI calls).
     # Intended for the Docker end-to-end smoke and local development; leave off
     # in production so the real agent runs and missing keys fail cleanly.

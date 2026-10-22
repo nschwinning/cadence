@@ -1,0 +1,54 @@
+# LiteLLM model-gateway configuration for Cadence.
+#
+# Each `model_name` is an AIModel catalog alias (see
+# backend/src/cadence/paper_trading/constants.py). The backend sends runs to the
+# proxy by this alias; LiteLLM routes to the provider in `litellm_params.model`.
+# Provider API keys are read from the proxy's environment (never the app).
+#
+# The Claude entries are on LiteLLM's native structured-output path, so the
+# agent factory's mandatory Pydantic output_type contract is served by the
+# provider's native json_schema support rather than tool-emulation. Adjust the
+# right-hand provider model ids to the exact, currently-available model strings
+# for your OpenAI/Anthropic accounts.
+model_list:
+  # --- OpenAI ---
+  - model_name: gpt-5-mini
+    litellm_params:
+      model: openai/gpt-5-mini
+      api_key: os.environ/OPENAI_API_KEY
+  - model_name: gpt-5.6-luna
+    litellm_params:
+      model: openai/gpt-5.6-luna
+      api_key: os.environ/OPENAI_API_KEY
+  - model_name: gpt-6-luna
+    litellm_params:
+      model: openai/gpt-6-luna
+      api_key: os.environ/OPENAI_API_KEY
+
+  # --- Anthropic (Claude) ---
+  - model_name: claude-sonnet-5-5
+    litellm_params:
+      model: anthropic/claude-sonnet-5-5
+      api_key: os.environ/ANTHROPIC_API_KEY
+  - model_name: claude-opus-5-5
+    litellm_params:
+      model: anthropic/claude-opus-5-5
+      api_key: os.environ/ANTHROPIC_API_KEY
+  - model_name: claude-haiku-4-5
+    litellm_params:
+      model: anthropic/claude-haiku-4-5
+      api_key: os.environ/ANTHROPIC_API_KEY
+
+general_settings:
+  # Proxy master/virtual key the backend presents as LITELLM_API_KEY.
+  master_key: os.environ/LITELLM_MASTER_KEY
+  # SpendLogs + UI state live in the separate `litellm` database on the shared
+  # Postgres instance (same server as the app's `cadence` database).
+  database_url: os.environ/DATABASE_URL
+
+litellm_settings:
+  # Persist a per-request spend log (model, token counts, computed cost) to the
+  # database so usage/cost is queryable and browsable in the admin UI.
+  success_callback: ["postgres"]
+  # Drop provider-unsupported params rather than failing the request.
+  drop_params: true

@@ -13,6 +13,7 @@ from typing import Any
 
 import pytest
 
+from cadence.agents import gateway as gateway_module
 from cadence.agents import tools as tools_module
 from cadence.agents.tools import (
     BUDGET_EXHAUSTED_MESSAGE,
@@ -467,9 +468,12 @@ def _patch_runner(monkeypatch: pytest.MonkeyPatch, output: Any) -> dict[str, Any
 
     class _FakeRunner:
         @staticmethod
-        async def run(agent: Any, prompt: str, max_turns: int) -> _FakeResult:
+        async def run(
+            agent: Any, prompt: str, max_turns: int, run_config: Any = None
+        ) -> _FakeResult:
             captured["prompt"] = prompt
             captured["max_turns"] = max_turns
+            captured["run_config"] = run_config
             return _FakeResult(output)
 
     monkeypatch.setattr(agent_module, "Runner", _FakeRunner)
@@ -523,6 +527,35 @@ def test_rebalance_ai_portfolio_returns_final_output(
     assert captured["max_turns"] == settings.AI_PORTFOLIO_MAX_TURNS
     # The versioned input template is rendered and handed to the Runner.
     assert captured["prompt"] == 'rebalance balanced: [\n  {\n    "ticker": "NVDA"\n  }\n]'
+    # With no gateway configured, no run_config (trace) is attached.
+    assert captured["run_config"] is None
+
+
+def test_rebalance_attaches_trace_id_when_gateway_enabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # With the gateway enabled and a trace set by the caller, the rebalance run
+    # carries the trace id through to the SDK Runner so the proxy can correlate
+    # captured usage back to the originating Cadence run.
+    monkeypatch.setattr(settings, "LITELLM_BASE_URL", "http://litellm:4000")
+    expected = AIRebalanceResult(
+        evaluation_summary="ok", target_allocations=[], portfolio_health="healthy"
+    )
+    captured = _patch_runner(monkeypatch, expected)
+
+    with gateway_module.llm_trace("event-42"):
+        rebalance_ai_portfolio(
+            holdings=[{"ticker": "AAPL"}],
+            account_summary={"cash_available": 5000},
+            candidates=[{"ticker": "NVDA"}],
+            risk_profile="balanced",
+            instructions="caps {max_new_assets}/{max_web_searches}",
+            input_template="rebalance {risk_profile}: {candidates_json}",
+        )
+
+    run_config = captured["run_config"]
+    assert run_config is not None
+    assert run_config.model_settings.metadata == {"cadence_trace_id": "event-42"}
 
 
 # --------------------------------------------------------------------------- #

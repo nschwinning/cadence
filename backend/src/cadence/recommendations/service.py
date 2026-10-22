@@ -15,6 +15,7 @@ from __future__ import annotations
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from cadence.agents import llm_trace
 from cadence.assets.category import SUPPORTED_CATEGORIES, AssetCategory, AssetMembership
 from cadence.assets.errors import (
     DuplicateAssetError,
@@ -167,9 +168,10 @@ def execute_run(
         run.status = RunPhase.SEARCHING.value
         session.commit()
 
-        result = agent.recommend(
-            categories, ask_for, criteria, composition, exclude_tickers, target
-        )
+        with llm_trace(f"recommendation-run-{run.id}"):
+            result = agent.recommend(
+                categories, ask_for, criteria, composition, exclude_tickers, target
+            )
 
         run.tool_call_count = result.tool_call_count
         run.status = RunPhase.VALIDATING.value

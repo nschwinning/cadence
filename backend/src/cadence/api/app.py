@@ -9,6 +9,7 @@ from fastapi import FastAPI, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
+from cadence.agents import configure_model_gateway
 from cadence.ai_portfolio.background import cleanup_orphaned_events_on_startup
 from cadence.api.routers import (
     ai_portfolio_router,
@@ -44,6 +45,11 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
 def create_app() -> FastAPI:
     """Build and configure the FastAPI application."""
+    # Register the LiteLLM model-gateway as the SDK's default client when a proxy
+    # endpoint is configured. No-op (SDK keeps its implicit OpenAI client) when
+    # LITELLM_BASE_URL is empty, so the disabled path and tests are unaffected.
+    configure_model_gateway()
+
     app = FastAPI(
         title=settings.APP_NAME,
         version=settings.APP_VERSION,

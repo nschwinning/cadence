@@ -16,6 +16,7 @@ from typing import Any
 
 from sqlalchemy.orm import Session
 
+from cadence.agents import llm_trace
 from cadence.agents.tools import record_web_searches
 from cadence.ai_portfolio._helpers import (
     _add_discovered_assets,
@@ -430,7 +431,7 @@ def run_rebalance_event(
                 {"run_date": s.run_date.isoformat(), "document": s.document}
                 for s in snapshots
             ]
-        with record_web_searches() as research:
+        with record_web_searches() as research, llm_trace(str(event_id)):
             result = agent.rebalance(
                 holdings=holdings,
                 account_summary=account_summary,

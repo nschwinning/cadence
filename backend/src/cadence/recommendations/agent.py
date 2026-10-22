@@ -17,7 +17,7 @@ from agents.items import ToolCallItem
 from agents.run import Runner
 from pydantic import BaseModel, Field
 
-from cadence.agents import build_agent
+from cadence.agents import build_agent, run_config_for_trace
 from cadence.agents.tools import web_search
 from cadence.assets import constants as asset_constants
 from cadence.config import settings
@@ -352,7 +352,12 @@ class OpenAIRecommenderAgent:
         timeout = settings.RECOMMENDER_AGENT_TIMEOUT_SECONDS
         try:
             result = await asyncio.wait_for(
-                Runner.run(agent, prompt, max_turns=settings.RECOMMENDER_MAX_TURNS),
+                Runner.run(
+                    agent,
+                    prompt,
+                    max_turns=settings.RECOMMENDER_MAX_TURNS,
+                    run_config=run_config_for_trace(),
+                ),
                 timeout=timeout,
             )
         except TimeoutError as exc:

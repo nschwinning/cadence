@@ -21,6 +21,26 @@ def test_every_model_has_a_non_empty_display_name() -> None:
     assert set(AI_MODEL_DISPLAY_NAMES) == set(AIModel)
 
 
+def test_catalog_offers_both_providers() -> None:
+    # OpenAI (gpt-*) and Anthropic (claude-*) models are both selectable entries,
+    # each with a stable identifier and display name.
+    ids = {m.value for m in AIModel}
+    assert any(i.startswith("gpt-") for i in ids)
+    anthropic_ids = {
+        AIModel.CLAUDE_SONNET_5_5.value,
+        AIModel.CLAUDE_OPUS_5_5.value,
+        AIModel.CLAUDE_HAIKU_4_5.value,
+    }
+    assert anthropic_ids <= ids
+    for member in (
+        AIModel.CLAUDE_SONNET_5_5,
+        AIModel.CLAUDE_OPUS_5_5,
+        AIModel.CLAUDE_HAIKU_4_5,
+    ):
+        assert member.value.startswith("claude-")
+        assert ai_model_display_name(member)
+
+
 # --------------------------------------------------------------------------- #
 # 1.4 Default + backfill ids are catalog members
 # --------------------------------------------------------------------------- #

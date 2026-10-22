@@ -31,7 +31,7 @@ from typing import Any, Protocol, runtime_checkable
 from agents.run import Runner
 from pydantic import BaseModel, Field
 
-from cadence.agents import build_agent
+from cadence.agents import build_agent, run_config_for_trace
 from cadence.agents.tools import web_search, web_search_budget
 from cadence.config import settings
 
@@ -448,6 +448,7 @@ async def _run_rebalance(
                     recent_outcomes,
                 ),
                 max_turns=settings.AI_PORTFOLIO_MAX_TURNS,
+                run_config=run_config_for_trace(),
             ),
             timeout=REBALANCE_TIMEOUT_SECONDS,
         )

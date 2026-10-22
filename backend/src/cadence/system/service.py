@@ -1,8 +1,9 @@
 """Live reachability probes for the application's external backends.
 
 Each backend the app depends on — the Alpaca broker, the web-search provider,
-yfinance market data, and the OpenAI model — is probed with the cheapest call
-that proves connectivity (and, where applicable, credentials). Every probe is
+yfinance market data, the OpenAI model, and the optional LiteLLM model-gateway
+proxy — is probed with the cheapest call that proves connectivity (and, where
+applicable, credentials). Every probe is
 isolated: it catches all failures and returns a :class:`ProbeResult` with
 ``reachable=False`` rather than raising, so one unhealthy backend never breaks
 the others or the overall report.
@@ -262,6 +263,52 @@ def probe_openai() -> ProbeResult:
     )
 
 
+def _check_litellm_liveness(base_url: str) -> None:
+    """Hit the LiteLLM proxy liveness endpoint. Seam so tests can monkeypatch it.
+
+    ``/health/liveliness`` is unauthenticated, so no proxy credential is sent; it
+    proves only that the gateway process is up and reachable over the network.
+    """
+    import httpx
+
+    url = f"{base_url.rstrip('/')}/health/liveliness"
+    resp = httpx.get(url, timeout=settings.SYSTEM_STATUS_PROBE_TIMEOUT_SECONDS)
+    resp.raise_for_status()
+
+
+def probe_litellm() -> ProbeResult:
+    """Probe the optional LiteLLM model-gateway proxy via its liveness endpoint.
+
+    The gateway is opt-in: when ``LITELLM_BASE_URL`` is empty it is reported as not
+    configured with no reachability result (matching the disabled-by-default
+    routing), so the status tab only shows it reachable once the proxy is deployed
+    and the base URL is set. ``identifier`` is the non-secret proxy base URL.
+    """
+    name = "Model gateway"
+    base_url = settings.LITELLM_BASE_URL.strip()
+    if not base_url:
+        return ProbeResult(name=name, configured=False)
+
+    start = time.perf_counter()
+    try:
+        _check_litellm_liveness(base_url)
+    except Exception as exc:  # noqa: BLE001 - probe must never raise
+        return ProbeResult(
+            name=name,
+            configured=True,
+            identifier=base_url,
+            reachable=False,
+            detail=_classify_error(exc),
+        )
+    return ProbeResult(
+        name=name,
+        configured=True,
+        identifier=base_url,
+        reachable=True,
+        latency_ms=_elapsed_ms(start),
+    )
+
+
 #: Ordered probe registry: (stable backend name, probe callable). The name is
 #: reused when building a timeout/error fallback for a probe that never returned.
 _PROBES: tuple[tuple[str, Callable[[], ProbeResult]], ...] = (
@@ -269,6 +316,7 @@ _PROBES: tuple[tuple[str, Callable[[], ProbeResult]], ...] = (
     ("Web search", probe_web_search),
     ("yfinance", probe_yfinance),
     ("OpenAI", probe_openai),
+    ("Model gateway", probe_litellm),
 )
 
 

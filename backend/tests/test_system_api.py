@@ -14,7 +14,7 @@ from cadence.config import settings
 from cadence.system import service
 
 # Expected backend names, mirroring the service probe registry.
-_EXPECTED_BACKENDS = {"Alpaca", "Web search", "yfinance", "OpenAI"}
+_EXPECTED_BACKENDS = {"Alpaca", "Web search", "yfinance", "OpenAI", "Model gateway"}
 
 # Distinctive fake secret values we plant in settings and then assert never
 # appear anywhere in the serialized response body.
@@ -43,6 +43,7 @@ def _no_network_probes() -> tuple[tuple[str, object], ...]:
         ("Web search", lambda: _ok("Web search")),
         ("yfinance", lambda: _ok("yfinance")),
         ("OpenAI", lambda: _ok("OpenAI")),
+        ("Model gateway", lambda: _ok("Model gateway")),
     )
 
 

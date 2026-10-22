@@ -17,7 +17,7 @@ from typing import NamedTuple, Protocol, runtime_checkable
 from agents.run import Runner
 from pydantic import BaseModel, Field
 
-from cadence.agents import build_agent
+from cadence.agents import build_agent, run_config_for_trace
 from cadence.assets.errors import AssetEvaluationUnavailableError
 from cadence.config import settings
 
@@ -226,7 +226,7 @@ class OpenAIUniverseEvaluationAgent:
         timeout = settings.RECOMMENDER_AGENT_TIMEOUT_SECONDS
         try:
             result = await asyncio.wait_for(
-                Runner.run(agent, prompt, max_turns=1),
+                Runner.run(agent, prompt, max_turns=1, run_config=run_config_for_trace()),
                 timeout=timeout,
             )
         except TimeoutError as exc:

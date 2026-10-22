@@ -10,11 +10,49 @@ services:
       - "5435:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
+      # Creates the separate `litellm` database on a FRESH volume only (Postgres
+      # runs initdb scripts once, at first volume init). On an existing volume,
+      # create it manually: `docker compose exec db createdb -U cadence litellm`.
+      - ./db/init:/docker-entrypoint-initdb.d:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-cadence} -d ${POSTGRES_DB:-cadence}"]
       interval: 5s
       timeout: 5s
       retries: 10
+    restart: unless-stopped
+
+  litellm:
+    # Optional model-provider gateway. Routes agent runs by model alias (gpt-* ->
+    # OpenAI, claude-* -> Anthropic) and records per-request token usage/cost. The
+    # backend only reaches it when LITELLM_BASE_URL is set (disabled by default).
+    image: ghcr.io/berriai/litellm:main-latest
+    environment:
+      # SpendLogs + UI state live in the SEPARATE `litellm` database on the SAME
+      # Postgres instance. Prisma wants the plain postgresql:// scheme.
+      DATABASE_URL: postgresql://cadence:cadence@db:5432/litellm
+      # Proxy master/virtual key (must equal the backend's LITELLM_API_KEY).
+      LITELLM_MASTER_KEY: ${LITELLM_API_KEY:-}
+      # Provider secrets live here, on the proxy — never in the app.
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      # Admin UI credentials (served at :4000/ui), forwarded from the root .env.
+      UI_USERNAME: ${LITELLM_UI_USERNAME:-admin}
+      UI_PASSWORD: ${LITELLM_UI_PASSWORD:-}
+    command: ["--config", "/app/config.yaml", "--port", "4000"]
+    volumes:
+      - ./litellm/config.yaml:/app/config.yaml:ro
+    ports:
+      # Host 4000 -> container 4000 (proxy API + admin UI at /ui).
+      - "4000:4000"
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:4000/health/liveliness').status==200 else 1)"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
     restart: unless-stopped
 
   backend:
@@ -38,6 +76,13 @@ services:
       RECOMMENDER_STUB: ${RECOMMENDER_STUB:-}
       # AI portfolio manager model id.
       AI_PORTFOLIO_MODEL: ${AI_PORTFOLIO_MODEL:-gpt-5-mini}
+      # Optional LiteLLM model-gateway. Empty base URL (default) DISABLES it: the
+      # SDK talks to OpenAI directly as before. Set LITELLM_BASE_URL in the root
+      # .env to route all agent runs through the `litellm` service, which maps
+      # gpt-* -> OpenAI and claude-* -> Anthropic and records usage/cost. The
+      # LITELLM_API_KEY is the proxy's master/virtual key (== LITELLM_MASTER_KEY).
+      LITELLM_BASE_URL: ${LITELLM_BASE_URL:-}
+      LITELLM_API_KEY: ${LITELLM_API_KEY:-}
       # Alpaca paper-trading credentials/config, forwarded from the root .env.
       ALPACA_API_KEY: ${ALPACA_API_KEY:-}
       ALPACA_SECRET_KEY: ${ALPACA_SECRET_KEY:-}
