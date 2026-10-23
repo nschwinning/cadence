@@ -134,7 +134,47 @@ describe('BuildAIPortfolioCard', () => {
     });
 
     expect(await screen.findByText('Build succeeded')).toBeInTheDocument();
+    // The build places no trades: the completion copy sets the deferred-allocation
+    // expectation (empty now, allocated on the next daily rebalance) and never
+    // implies any opening trades were placed.
+    expect(
+      screen.getByText(/allocated on its next daily rebalance/i),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/orders? placed/i)).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Build another' })).toBeInTheDocument();
+  });
+
+  it('shows no opening-trades summary on completion even if actions are present', async () => {
+    let status: AIEventStatus = 'running';
+    mockedPost.mockResolvedValue({ data: { event_id: 'evt-1', status: 'queued' } });
+    // Route the build event with a populated actions_taken to prove the UI never
+    // renders an "N orders placed" style summary for a build result.
+    mockedGet.mockImplementation((url: string) => {
+      if (url.endsWith('/paper-trading/benchmarks')) {
+        return Promise.resolve({ data: BENCHMARKS });
+      }
+      if (url.endsWith('/paper-trading/models')) {
+        return Promise.resolve({ data: MODELS });
+      }
+      return Promise.resolve({
+        data: { ...makeEvent(status), actions_taken: ['bought AAPL', 'bought MSFT'] },
+      });
+    });
+    const user = userEvent.setup();
+
+    const { queryClient } = renderWithClient(<BuildAIPortfolioCard />);
+
+    await user.click(screen.getByRole('button', { name: 'Build portfolio' }));
+    await screen.findByText('Building portfolio…');
+
+    status = 'succeeded';
+    await queryClient.refetchQueries({
+      queryKey: aiPortfolioKeys.buildStatus('evt-1'),
+    });
+
+    expect(await screen.findByText('Build succeeded')).toBeInTheDocument();
+    expect(screen.queryByText(/orders? placed/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/added \d+ asset/i)).not.toBeInTheDocument();
   });
 
   it('renders no daily-rebalancing control and sends no daily_rebalancing key', async () => {

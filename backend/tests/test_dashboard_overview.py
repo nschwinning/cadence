@@ -283,9 +283,13 @@ def test_session_contributions_include_opening_capital_and_increases(
     ]
 
 
-def test_session_without_snapshots_has_no_contributions(
+def test_session_without_snapshots_reports_baseline_contribution(
     db_session: Session,
 ) -> None:
+    # A freshly built session (no snapshot yet) must still report its allocated
+    # capital as a contribution and a live anchor point at the as-of date, so its
+    # fresh cash is not mistaken for profit (which inflated lifetime P&L / total
+    # return by the whole allocation).
     _make_session(db_session, name="Delta", strategy_key="s4", allocated=10_000.0)
 
     overview = service.get_dashboard_overview(
@@ -297,8 +301,14 @@ def test_session_without_snapshots_has_no_contributions(
     )
 
     perf = overview.sessions[0]
-    assert perf.points == []
-    assert perf.contributions == []
+    assert len(perf.contributions) == 1
+    assert perf.contributions[0].amount == 10_000.0
+    assert perf.contributions[0].effective_date == _TODAY
+    assert len(perf.points) == 1
+    assert perf.points[0].date == _TODAY
+    assert perf.points[0].value == perf.current_value
+    # All cash, no gain yet: value equals contributed capital, so no P&L.
+    assert perf.pnl == 0.0
 
 
 def test_range_fees_sum_crypto_notional_within_window(db_session: Session) -> None:
@@ -827,10 +837,11 @@ def test_session_benchmark_value_is_none_when_unpriceable(
     assert perf.benchmark_value is None
 
 
-def test_session_benchmark_value_is_none_without_contributions(
+def test_session_benchmark_value_is_none_without_prices(
     db_session: Session,
 ) -> None:
-    # No snapshots → no contributions → nothing to value.
+    # The session has a baseline contribution, but with no stored benchmark prices
+    # there is nothing to value the buy-and-hold against, so benchmark_value is None.
     _make_session(db_session, name="Delta", strategy_key="s4")
 
     overview = service.get_dashboard_overview(
@@ -842,7 +853,7 @@ def test_session_benchmark_value_is_none_without_contributions(
     )
 
     perf = overview.sessions[0]
-    assert perf.contributions == []
+    assert len(perf.contributions) == 1
     assert perf.benchmark_value is None
 
 

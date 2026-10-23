@@ -192,23 +192,32 @@ def build_orders_settled(
     :func:`paper_service.reconcile_session_orders`) so the recorded status is fresh
     even when the separate reconcile cron has not run first.
 
-    The opening allocation now runs through an **initial rebalance** (not the build
-    event), so the orders to wait on are that rebalance's. Sessions built after that
-    change record ``initial_rebalance_event_id`` in their metadata; legacy sessions
-    only have ``build_event_id`` and keep reading the build event's orders, so their
-    behaviour is unchanged.
+    Three generations of sessions coexist and all resolve correctly here:
 
-    A session whose opening allocation placed no orders that need to settle — an
-    all-cash allocation, a session with no recorded opening event, or one whose
-    orders have already settled (for example under an immediate-fill broker) — is
-    ready immediately, so this gate can never permanently strand a session.
+    * **Current** — the build places no orders and records no
+      ``initial_rebalance_event_id``; the opening allocation is produced by the
+      first scheduled daily rebalance. Such a session falls back to its
+      ``build_event_id``, which recorded **zero** trades, so the trade-count check
+      below reports it **ready** on its first scheduled run (nothing to wait on).
+    * **Recent** — the opening allocation ran through an inline *initial rebalance*
+      at build time, so the orders to wait on live under
+      ``initial_rebalance_event_id``.
+    * **Legacy** — the build event itself placed the opening orders, so they live
+      under ``build_event_id``.
+
+    A session whose opening allocation placed no orders that need to settle — a
+    never-allocated (current) session, an all-cash allocation, a session with no
+    recorded opening event, or one whose orders have already settled (for example
+    under an immediate-fill broker) — is ready immediately, so this gate can never
+    permanently strand a session.
 
     Fails safe: if reconciliation raises, the session is reported not ready
     (deferred to a later trigger) rather than rebalanced on unverified state.
     """
     metadata = session_row.session_metadata or {}
-    # Prefer the initial rebalance event (the opening allocation); fall back to the
-    # build event for legacy sessions built before the allocation moved there.
+    # Prefer the inline initial rebalance event (recent sessions); fall back to the
+    # build event for current sessions (whose build placed zero orders → ready) and
+    # legacy sessions (whose build event placed the opening orders).
     raw_opening_event_id = metadata.get("initial_rebalance_event_id") or metadata.get(
         "build_event_id"
     )

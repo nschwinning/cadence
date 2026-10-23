@@ -460,37 +460,46 @@ def _session_performance(
     )
     allocated = session_row.allocated_capital
 
-    points = [
-        SessionValuePoint(
-            date=point.snapshot.snapshot_date, value=point.snapshot.total_value
-        )
-        for point in history
-        if start_date is None or point.snapshot.snapshot_date >= start_date
-    ]
-
-    # Contributions drive the client-side benchmark overlay: opening capital at the
-    # session's first snapshot date plus any later capital increases. Derived on the
-    # same basis as the session detail chart (first snapshot date as the baseline),
-    # and NOT windowed to the range — earlier contributions are still held within it.
-    # A session with no snapshots yet has no plottable points and no contributions.
-    if history:
-        contrib_start = history[0].snapshot.snapshot_date
-        events = paper_trading_service.list_capital_events(
-            session, session_id=session_row.id
-        )
-        contributions = [
-            SessionContribution(effective_date=c.effective_date, amount=c.amount)
-            for c in paper_trading_service.session_contributions(
-                session_row, events, start_date=contrib_start
-            )
-        ]
-    else:
-        contributions = []
-
     kpis = paper_trading_service.session_kpis(
         session, session_id=session_row.id, broker=broker
     )
     current_value = kpis.current_value
+
+    # Contributions drive the live value-band tiles and the client-side benchmark
+    # overlay: the opening capital plus any later capital increases. The baseline is
+    # anchored at the session's first snapshot date, or — before any snapshot exists
+    # (a freshly built session, between its build and its first snapshot cron) — at the
+    # dashboard's as-of date, so the session always reports its contributed capital and
+    # its fresh cash is never mistaken for profit (which would otherwise inflate the
+    # lifetime P&L and total-return tiles by the whole allocation). NOT windowed to the
+    # range: earlier contributions are still held within it.
+    contrib_start = history[0].snapshot.snapshot_date if history else today
+    events = paper_trading_service.list_capital_events(
+        session, session_id=session_row.id
+    )
+    contributions = [
+        SessionContribution(effective_date=c.effective_date, amount=c.amount)
+        for c in paper_trading_service.session_contributions(
+            session_row, events, start_date=contrib_start
+        )
+    ]
+
+    # Value series windowed to the range (oldest first). A session with no snapshot yet
+    # has no stored points, so it would be invisible on the combined-equity line while
+    # its contributed capital already feeds the benchmark line — leaving the two lines
+    # misaligned. Anchor a single live point (current value, at the as-of date) so the
+    # equity line reflects the session's current all-cash value and stays aligned with
+    # the benchmark overlay until the first real snapshot lands.
+    if history:
+        points = [
+            SessionValuePoint(
+                date=point.snapshot.snapshot_date, value=point.snapshot.total_value
+            )
+            for point in history
+            if start_date is None or point.snapshot.snapshot_date >= start_date
+        ]
+    else:
+        points = [SessionValuePoint(date=today, value=current_value)]
 
     # Value at the range start: the latest snapshot on/before the start date. A
     # session with no snapshot before the start began within the range, so its

@@ -190,6 +190,19 @@ def run_rebalance_event(
         )
         any_crypto = _involves_crypto(positions, candidate_targets, asset_classes)
 
+        # Opening allocation on a weekend crypto run: a freshly-built session is an
+        # empty shell (no positions, no portfolio picks yet) because the build no
+        # longer allocates inline — the opening allocation is the first scheduled
+        # rebalance. Such a session holds/targets no crypto yet, so ``any_crypto``
+        # above is False and the crypto-only run would skip it, stranding a
+        # crypto-scoped session empty over the weekend. Since the cron only selects
+        # sessions whose configured scope admits crypto, treat an empty shell as
+        # crypto-involved so the weekend run can open its crypto sleeve from cash.
+        # Established sessions are unaffected (they hold positions or carry picks);
+        # the "no free cash to buy crypto" guard below still skips a cashless shell.
+        if crypto_only and not any_crypto and not full_ledger and not portfolio.stocks:
+            any_crypto = True
+
         # Value the session once (marked to market) and reason off its OWN free
         # cash, not the shared broker's global buying power (D5). ``cash_value`` is
         # the session's unallocated cash; the crypto budget (crypto positions'

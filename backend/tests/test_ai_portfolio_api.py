@@ -453,7 +453,8 @@ def test_build_persists_chosen_model_and_runs_on_it(
     # The chosen model is frozen on the session...
     session = paper_service.get_session(db_session, uuid.UUID(session_id))
     assert session.model == "gpt-5.6-luna"
-    # ...and the opening allocation (an initial rebalance) ran on it.
+    # ...and the opening allocation (the first rebalance) runs on it.
+    _opening_rebalance(client, executor, session_id)
     assert agent.rebalance_calls
     assert agent.rebalance_calls[0]["model"] == "gpt-5.6-luna"
 
@@ -494,6 +495,11 @@ def test_run_records_the_model_that_produced_it(
     )
     assert resp.status_code == 202
     executor.run_pending()
+    event_id = resp.json()["event_id"]
+    session_id = client.get(
+        f"/api/v1/ai-portfolio/build/status/{event_id}"
+    ).json()["session_id"]
+    _opening_rebalance(client, executor, session_id)
 
     runs = client.get("/api/v1/ai-portfolio/runs").json()
     by_type = {item["event_type"]: item for item in runs["items"]}
@@ -579,7 +585,12 @@ def test_build_status_unknown_event_404(
 
 
 def _build_session(client: TestClient, executor: ManualExecutor) -> str:
-    """Build a session synchronously and return its id."""
+    """Build a session synchronously and return its id.
+
+    Under the deferred-allocation flow a build creates an enrolled, empty
+    (100% cash) session and places no trades. Use
+    :func:`_build_and_allocate_session` when the test needs open positions.
+    """
     resp = client.post(
         "/api/v1/ai-portfolio/build",
         json={
@@ -590,6 +601,45 @@ def _build_session(client: TestClient, executor: ManualExecutor) -> str:
     executor.run_pending()
     status = client.get(f"/api/v1/ai-portfolio/build/status/{event_id}").json()
     return status["session_id"]
+
+
+def _opening_rebalance(
+    client: TestClient, executor: ManualExecutor, session_id: str
+) -> str:
+    """Run a session's opening allocation via a rebalance; return its event id."""
+    resp = client.post(f"/api/v1/ai-portfolio/sessions/{session_id}/rebalance")
+    event_id = resp.json()["event_id"]
+    executor.run_pending()
+    return event_id
+
+
+def _build_and_allocate_session(
+    client: TestClient, executor: ManualExecutor
+) -> str:
+    """Build an empty session and run its opening allocation; return its id.
+
+    The build no longer trades inline, so the opening allocation is produced by
+    the session's first rebalance — the same path a scheduled daily rebalance
+    would take. Leaves the session holding the build's targets.
+    """
+    session_id = _build_session(client, executor)
+    _opening_rebalance(client, executor, session_id)
+    return session_id
+
+
+def _stamp_initial_rebalance_event(
+    db_session: Session, session_id: str, event_id: str
+) -> None:
+    """Record an opening-allocation event id on a session's metadata.
+
+    Models a session whose opening allocation is tracked by the readiness gate
+    (the gate waits on the orders recorded under ``initial_rebalance_event_id``).
+    """
+    session_row = paper_service.get_session(db_session, uuid.UUID(session_id))
+    metadata = dict(session_row.session_metadata or {})
+    metadata["initial_rebalance_event_id"] = str(event_id)
+    session_row.session_metadata = metadata
+    db_session.commit()
 
 
 def test_session_rebalance_and_events_listing(
@@ -695,10 +745,10 @@ def test_list_runs_and_detail(client: TestClient, db_session: Session) -> None:
         research_queries=["AAPL earnings"],
     )
     _wire(db_session, executor, agent=agent)
-    _build_session(client, executor)
+    _build_and_allocate_session(client, executor)
 
-    # A build now records two runs: the build shell and the initial rebalance that
-    # places the opening allocation (which carries the research and the trades).
+    # Two runs now exist: the empty build shell and the opening-allocation rebalance
+    # (which carries the research and the trades).
     listing = client.get("/api/v1/ai-portfolio/runs")
     assert listing.status_code == 200
     body = listing.json()
@@ -760,7 +810,7 @@ def test_close_session_liquidates_and_stops(
     executor = ManualExecutor()
     _seed_universe(db_session, _provider())
     _wire(db_session, executor)
-    session_id = _build_session(client, executor)
+    session_id = _build_and_allocate_session(client, executor)
 
     resp = client.post(f"/api/v1/ai-portfolio/sessions/{session_id}/close")
     assert resp.status_code == 200
@@ -932,10 +982,13 @@ def test_rebalance_daily_defers_session_with_unfilled_build_orders(
     _seed_universe(db_session, _provider())
     _wire(db_session, executor)
     session_id = _build_session(client, executor)
+    opening_event_id = _opening_rebalance(client, executor, session_id)
+    # Model a session whose opening-allocation orders are tracked by the gate.
+    _stamp_initial_rebalance_event(db_session, session_id, opening_event_id)
     _mark_build_orders_unfilled(db_session, session_id)
 
-    # The broker still reports the build orders as unknown/unsettled, so the
-    # freshly-built session must be deferred rather than rebalanced.
+    # The broker still reports the opening orders as unknown/unsettled, so the
+    # session must be deferred rather than rebalanced.
     app.dependency_overrides[get_broker] = lambda: _ReconcileBroker({})
     resp = client.post(
         "/api/v1/ai-portfolio/rebalance-daily",
@@ -956,6 +1009,8 @@ def test_rebalance_daily_includes_session_once_build_orders_fill(
     _seed_universe(db_session, _provider())
     _, shared_broker = _wire(db_session, executor)
     session_id = _build_session(client, executor)
+    opening_event_id = _opening_rebalance(client, executor, session_id)
+    _stamp_initial_rebalance_event(db_session, session_id, opening_event_id)
     _mark_build_orders_unfilled(db_session, session_id)
 
     # First run: orders unsettled at the broker -> deferred.
@@ -1136,10 +1191,13 @@ def test_rebalance_crypto_daily_skips_stocks_scope_even_holding_crypto(
 def test_rebalance_crypto_daily_triggers_crypto_session(
     client: TestClient, db_session: Session, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    # A both-scoped session (default) is triggered in crypto-only mode.
+    # A both-scoped session (default) is triggered in crypto-only mode. Freshly
+    # built, it starts empty; the weekend crypto run is its opening allocation.
     monkeypatch.setattr(settings, "REBALANCE_CRON_TOKEN", "secret")
     executor = ManualExecutor(run_immediately=True)
     session_id = _build_crypto_session(client, db_session, executor)
+    # The build placed no opening trades.
+    assert paper_service.list_open_positions(db_session, uuid.UUID(session_id)) == []
 
     resp = client.post(
         "/api/v1/ai-portfolio/rebalance-crypto-daily",
@@ -1150,6 +1208,13 @@ def test_rebalance_crypto_daily_triggers_crypto_session(
     assert body["sessions_triggered"] == 1
     assert session_id in body["session_ids"]
     assert session_id not in body["skipped_not_crypto_scope"]
+
+    # The weekend crypto run allocated the empty session (it now holds the crypto).
+    held = {
+        p.ticker
+        for p in paper_service.list_open_positions(db_session, uuid.UUID(session_id))
+    }
+    assert held == {"BTC-USD"}
 
 
 def test_manual_rebalance_not_deferred_by_unfilled_build_orders(
@@ -1357,7 +1422,7 @@ def test_scan_stop_losses_stops_out_breached_positions(
     broker = _StopScanBroker()
     _wire(db_session, executor, broker=broker)
 
-    # Build a stop-loss-enabled session (holds AAPL + MSFT).
+    # Build a stop-loss-enabled session, then allocate it (holds AAPL + MSFT).
     resp = client.post(
         "/api/v1/ai-portfolio/build",
         json={
@@ -1372,6 +1437,7 @@ def test_scan_stop_losses_stops_out_breached_positions(
     session_id = client.get(
         f"/api/v1/ai-portfolio/build/status/{event_id}"
     ).json()["session_id"]
+    _opening_rebalance(client, executor, session_id)
 
     # Drive every held position below its trigger.
     ledger = paper_service.list_open_positions(db_session, uuid.UUID(session_id))

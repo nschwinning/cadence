@@ -397,12 +397,14 @@ class FakeAIPortfolioAgent:
         self._emit_research()
         if self._rebalance_error is not None:
             raise self._rebalance_error
-        # The opening allocation now runs as an initial rebalance inside the build
-        # flow, so the FIRST rebalance call represents that opening allocation. When
-        # a ``build_result`` is configured, derive the opening targets from the build
-        # picks so a build-then-rebalance test seeds the build's holdings on the
-        # opening allocation and applies the explicit ``rebalance_result`` on the
-        # next call — mirroring the old "build allocates, rebalance re-targets" flow.
+        # The opening allocation now runs as the FIRST explicit rebalance after a
+        # build — the session's first scheduled daily rebalance in production, or the
+        # seeding rebalance that ``_seed_session`` runs in tests — not inside the
+        # build flow. So the FIRST rebalance call represents that opening allocation:
+        # when a ``build_result`` is configured, derive the opening targets from the
+        # build picks so a build-then-rebalance test seeds the build's holdings on the
+        # opening allocation and applies the explicit ``rebalance_result`` on the next
+        # call — mirroring the "allocate from the build picks, then re-target" flow.
         is_opening_allocation = len(self.rebalance_calls) == 1
         if is_opening_allocation and self._build_result is not None:
             return self._opening_allocation_from_build(self._build_result)

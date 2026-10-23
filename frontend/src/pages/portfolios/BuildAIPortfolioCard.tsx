@@ -306,8 +306,9 @@ export function BuildAIPortfolioCard() {
         Build an AI portfolio
       </h2>
       <p className="mt-1 text-xs text-slate-500">
-        The AI manager builds a portfolio across the entire asset universe and
-        opens a paper-trading session enrolled in daily rebalancing.
+        Creates an AI-managed portfolio and opens a paper-trading session
+        enrolled in daily rebalancing. The portfolio starts empty (holding cash)
+        and is allocated on its first daily rebalance.
       </p>
 
       {/* --------------------------------------------------------------- IDLE */}
@@ -709,7 +710,8 @@ export function BuildAIPortfolioCard() {
             Status: {humanizeStatus(status ?? 'queued')}
           </span>
           <p className="text-xs text-slate-500">
-            The AI is selecting and sizing positions. This updates automatically.
+            Creating your portfolio and enrolling it in daily rebalancing. This
+            updates automatically.
           </p>
         </div>
       )}
@@ -727,14 +729,17 @@ export function BuildAIPortfolioCard() {
                 {event.error}
               </p>
             )}
-            {event.actions_taken && event.actions_taken.length > 0 && (
-              <p className="mt-1">
-                {event.actions_taken.length} order
-                {event.actions_taken.length === 1 ? '' : 's'} placed.
-              </p>
-            )}
+            {/*
+              A build places no opening trades — it creates the portfolio and
+              enrolls it, then its first daily rebalance produces the opening
+              allocation. So we set that expectation rather than implying any
+              trades happened (no "N orders placed" summary).
+            */}
             {status === 'succeeded' && (
-              <p className="mt-1">Enrolled in daily rebalancing.</p>
+              <p className="mt-1">
+                Your portfolio is enrolled in daily rebalancing and starts empty
+                (holding cash). It will be allocated on its next daily rebalance.
+              </p>
             )}
           </div>
           <div className="flex justify-end">

@@ -1,14 +1,16 @@
 """Build flow: drive a queued build event to a terminal status.
 
-A build no longer allocates capital. It creates the AI-managed portfolio and the
-paper-trading session *shell* (freezing every opt-in, the frozen prompt versions,
-the benchmark, and the session metadata), then triggers an **initial rebalance**
-inline — through the standard rebalance path — so the opening allocation benefits
-from every rebalance-only enhancement (trend gate, fundamentals, the guardrail
-clamp, the reserved cash buffer, unexecutable-weight redeploy, sells-before-buys,
-and sizing against the session's live value). The build event records the
-shell-creation step and references the triggered initial rebalance; the opening
-trades are recorded on that rebalance's run.
+A build no longer allocates capital, and it no longer triggers any rebalance. It
+creates the AI-managed portfolio and the paper-trading session *shell* (freezing
+every opt-in, the frozen prompt versions, the benchmark, and the session metadata),
+places no orders, and finishes. The newly built session starts **empty** — it holds
+100% cash equal to its allocated capital — and is enrolled in daily rebalancing. Its
+**opening allocation is produced by the session's first scheduled daily rebalance**,
+through the standard rebalance path, so the opening allocation still benefits from
+every rebalance-only enhancement (trend gate, fundamentals, the guardrail clamp, the
+reserved cash buffer, unexecutable-weight redeploy, sells-before-buys, and sizing
+against the session's live value). The build event records only the shell-creation
+step; there are no opening trades until that first scheduled rebalance runs.
 """
 
 from __future__ import annotations
@@ -32,8 +34,7 @@ from cadence.ai_portfolio.constants import (
     EventStatus,
     PromptKind,
 )
-from cadence.ai_portfolio.events import create_rebalance_event, get_event
-from cadence.ai_portfolio.flows.rebalance import run_rebalance_event
+from cadence.ai_portfolio.events import get_event
 from cadence.ai_portfolio.params import AIBuildParams
 from cadence.ai_portfolio.prompts import get_active_rebalance_prompt
 from cadence.assets.market_data import MarketDataProvider
@@ -57,11 +58,14 @@ def run_build_event(
 ) -> None:
     """Drive a queued build event to a terminal status.
 
-    The build creates the portfolio + session shell and places no opening orders;
-    the opening allocation is produced by an initial rebalance that this flow
-    triggers inline. The initial rebalance runs regardless of the session's
-    schedule mode, so a manual session is allocated at creation and does not sit
-    empty; a daily session is additionally enrolled in the scheduled job.
+    The build creates the portfolio + session shell and places no opening orders,
+    and triggers no rebalance. The session is enrolled in daily rebalancing and
+    starts empty (100% cash); its opening allocation is produced by its first
+    scheduled daily rebalance through the standard rebalance path.
+
+    ``agent``, ``broker``, and ``provider`` are accepted to keep the job-runner
+    call signature uniform across event flows; the build itself no longer uses
+    them now that it places no orders.
     """
     t0 = time.monotonic()
     event = get_event(session, event_id)
@@ -93,8 +97,9 @@ def run_build_event(
             and params.max_allocation_pct is not None
             else 1.0
         )
-        # Shell portfolio: no holdings yet. The inline initial rebalance populates
-        # its end-state (``update_portfolio_stocks``) once it allocates.
+        # Shell portfolio: no holdings yet. The session's first scheduled daily
+        # rebalance populates its end-state (``update_portfolio_stocks``) once it
+        # allocates.
         portfolio = portfolios_service.create_portfolio(
             session,
             name=portfolio_name,
@@ -152,36 +157,25 @@ def run_build_event(
         event.portfolio_id = portfolio.id
         session.commit()
 
-        # The opening allocation is a rebalance: create a rebalance event for the
-        # new session, record its id on the session so the build-order readiness
-        # gate follows it (D3), then drive it DIRECTLY — not via the single-worker
-        # job runner, which would deadlock the build job (D2). No notifier: the
-        # build path is silent, like a manual rebalance.
-        rebalance_event = create_rebalance_event(session, session_row.id)
-        session_row.session_metadata = {
-            **(session_row.session_metadata or {}),
-            "initial_rebalance_event_id": str(rebalance_event.id),
-        }
-        session.commit()
-
-        run_rebalance_event(session, rebalance_event.id, agent, broker, provider)
-
-        # The build event is the shell-creation + opening-allocation-trigger step;
-        # it places no trades of its own and finishes succeeded once the shell
-        # exists and the initial rebalance has been triggered (the rebalance event
-        # carries its own terminal status and the opening trades).
+        # The build is the shell-creation step only: it places no trades and
+        # triggers no rebalance. The session starts empty (100% cash) and is
+        # enrolled in daily rebalancing; its opening allocation is produced by its
+        # first scheduled daily rebalance. No ``initial_rebalance_event_id`` is
+        # written — the readiness gate treats a never-allocated session (build
+        # event with zero orders) as ready, so the first scheduled run allocates it.
         _finish_event(
             session,
             event,
             EventStatus.SUCCEEDED,
-            result_payload={"initial_rebalance_event_id": str(rebalance_event.id)},
+            result_payload={},
             actions_taken=[],
             duration_ms=_elapsed_ms(t0),
         )
         logger.info(
-            "AI portfolio build %s created shell; initial rebalance %s triggered",
+            "AI portfolio build %s created empty enrolled session %s; "
+            "opening allocation deferred to first scheduled rebalance",
             event.id,
-            rebalance_event.id,
+            session_row.id,
         )
     except Exception as exc:  # noqa: BLE001 - persisted as the event's failure reason
         session.rollback()
