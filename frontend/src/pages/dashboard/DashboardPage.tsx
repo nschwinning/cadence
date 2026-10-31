@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
 import { useHealth } from '../../api/health';
-import { useDashboardOverview } from '../../api/dashboard';
+import { useDashboardAiCosts, useDashboardOverview } from '../../api/dashboard';
 import type { DashboardRange } from '../../types/api';
+import { AiCostBreakdown } from '../../components/dashboard/AiCostBreakdown';
 import { RangeSelector } from './RangeSelector';
 import { ValueTiles, PerformanceTiles } from './HeroTiles';
 import { CombinedEquityChart } from './CombinedEquityChart';
@@ -91,6 +92,8 @@ function ScopeBand({
 export function DashboardPage() {
   const [range, setRange] = useState<DashboardRange>('1M');
   const { data, isPending, isError } = useDashboardOverview(range);
+  // All-time + range-independent, so a separate fetch from the overview.
+  const { data: aiCosts } = useDashboardAiCosts();
 
   const sessions = data?.sessions ?? [];
   const sessionIds = sessions.map((s) => s.id);
@@ -186,6 +189,12 @@ export function DashboardPage() {
 
             <PortfolioLeaderboard sessions={selectedSessions} range={range} />
           </ScopeBand>
+
+          {aiCosts && (
+            <ScopeBand title="AI cost">
+              <AiCostBreakdown data={aiCosts} />
+            </ScopeBand>
+          )}
 
           <ScopeBand title="Universe">
             <UniverseSection

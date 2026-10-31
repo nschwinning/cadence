@@ -1,6 +1,7 @@
 /** Shared test fixtures for the dashboard overview components. */
 
 import type {
+  DashboardAiCosts,
   DashboardOverview,
   DashboardSessionPerformance,
 } from '../../types/api';
@@ -77,6 +78,19 @@ export function makeOverview(
       ],
     },
     benchmark_series: [],
+    ...overrides,
+  };
+}
+
+/** Build a per-portfolio AI cost breakdown payload with sensible defaults. */
+export function makeAiCosts(
+  overrides: Partial<DashboardAiCosts> = {},
+): DashboardAiCosts {
+  return {
+    portfolios: [
+      { session_id: 'session-a', label: 'Portfolio A', ai_cost_usd: 1.5 },
+    ],
+    total_ai_cost_usd: 1.5,
     ...overrides,
   };
 }

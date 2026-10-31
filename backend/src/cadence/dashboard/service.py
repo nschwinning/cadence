@@ -39,6 +39,7 @@ from cadence.dashboard.constants import (
     resolve_range_start,
 )
 from cadence.paper_trading import service as paper_trading_service
+from cadence.paper_trading.ai_cost import session_ai_costs_usd
 from cadence.paper_trading.benchmark import (
     Contribution,
     load_benchmark_series,
@@ -749,6 +750,73 @@ def _benchmark_overlays(
             )
         )
     return overlays
+
+
+@dataclass(frozen=True)
+class PortfolioAiCost:
+    """One portfolio's all-time cumulative AI cost.
+
+    ``ai_cost_usd`` is ``None`` only when the cost source is unavailable; a
+    portfolio with no recorded spend reads as ``0.0`` (distinct from unavailable).
+    """
+
+    session_id: str
+    label: str
+    ai_cost_usd: float | None
+
+
+@dataclass(frozen=True)
+class DashboardAiCosts:
+    """Per-portfolio AI cost breakdown with a grand total.
+
+    ``total_ai_cost_usd`` is ``None`` when the cost source is unavailable and the
+    sum of the per-portfolio costs when it is reachable.
+    """
+
+    portfolios: list[PortfolioAiCost]
+    total_ai_cost_usd: float | None
+
+
+def get_dashboard_ai_costs(session: Session) -> DashboardAiCosts:
+    """Return the all-time AI cost per active portfolio with a grand total.
+
+    Lists active (non-archived) paper-trading sessions, reads their cumulative
+    LiteLLM spend in a single batched query, and assembles per-portfolio rows
+    sorted by cost descending. Range-independent — the figures are cumulative
+    since each session began.
+
+    Degradation mirrors the per-session AI cost tile: when the cost source is
+    unavailable every row's cost and the total are ``None`` (the UI renders an em
+    dash); when the source is reachable a session with no recorded spend reads as
+    ``0.0``. Succeeds on an empty system, returning an empty list and a ``None``
+    total.
+    """
+    active_sessions = paper_trading_service.list_sessions(
+        session, status=SessionStatus.ACTIVE, limit=_OVERVIEW_SESSION_LIMIT
+    )
+    session_ids = [str(row.id) for row in active_sessions]
+    cost_map = session_ai_costs_usd(session_ids)
+
+    portfolios: list[PortfolioAiCost] = []
+    for row in active_sessions:
+        sid = str(row.id)
+        label = row.portfolio_name or row.strategy_key
+        if cost_map is None:
+            cost: float | None = None
+        else:
+            # Absent from the grouped result => no recorded spend, read as 0.
+            cost = cost_map.get(sid, 0.0)
+        portfolios.append(PortfolioAiCost(session_id=sid, label=label, ai_cost_usd=cost))
+
+    # Sort by cost descending; unavailable (None) costs sort last.
+    portfolios.sort(key=lambda p: (p.ai_cost_usd is not None, p.ai_cost_usd or 0.0), reverse=True)
+
+    total = (
+        None
+        if cost_map is None
+        else sum(p.ai_cost_usd or 0.0 for p in portfolios)
+    )
+    return DashboardAiCosts(portfolios=portfolios, total_ai_cost_usd=total)
 
 
 def get_dashboard_overview(

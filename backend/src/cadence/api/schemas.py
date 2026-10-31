@@ -1429,6 +1429,32 @@ class DashboardOverview(BaseModel):
     benchmark_series: list[DashboardBenchmarkSeries]
 
 
+# --- Dashboard AI cost per portfolio (all-time, range-independent) ------------
+
+
+class DashboardPortfolioAiCostRead(BaseModel):
+    """One portfolio's all-time cumulative AI cost.
+
+    ``ai_cost_usd`` is ``None`` only when the cost source is unavailable; a
+    portfolio with no recorded spend reads as ``0.0``.
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    session_id: str
+    label: str
+    ai_cost_usd: float | None
+
+
+class DashboardAiCostsRead(BaseModel):
+    """Per-portfolio AI cost breakdown with a grand total."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    portfolios: list[DashboardPortfolioAiCostRead]
+    total_ai_cost_usd: float | None
+
+
 # --- System status -----------------------------------------------------------
 
 

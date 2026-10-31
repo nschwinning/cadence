@@ -6,7 +6,7 @@ import { MemoryRouter } from 'react-router-dom';
 import type { ReactNode } from 'react';
 import { DashboardPage } from './DashboardPage';
 import { apiClient } from '../../api/client';
-import { makeOverview, makeSession } from './fixtures';
+import { makeAiCosts, makeOverview, makeSession } from './fixtures';
 import type { DashboardOverview, HealthResponse } from '../../types/api';
 
 vi.mock('../../api/client', () => ({
@@ -60,6 +60,9 @@ describe('DashboardPage', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockedGet.mockImplementation((url: string, config?: unknown) => {
+      if (url.includes('/dashboard/ai-costs')) {
+        return Promise.resolve({ data: makeAiCosts() });
+      }
       if (url.includes('/dashboard/overview')) {
         const range = (config as GetConfig | undefined)?.params?.range;
         return Promise.resolve({
@@ -80,6 +83,19 @@ describe('DashboardPage', () => {
     expect(screen.getByText('Automation')).toBeInTheDocument();
     expect(screen.getByText('Recent activity')).toBeInTheDocument();
     expect(screen.getByText('Top performers')).toBeInTheDocument();
+  });
+
+  it('renders the AI cost panel above the market-performers tiles', async () => {
+    renderWithClient(<DashboardPage />);
+    const panelHeading = await screen.findByText('AI cost per portfolio');
+    const performersHeading = await screen.findByText('Market performers');
+    // The AI cost panel precedes the market-performers tiles in document order.
+    expect(
+      panelHeading.compareDocumentPosition(performersHeading) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+    // It renders the cost from the separate ai-costs fetch (row + total both $1.50).
+    expect(screen.getAllByText('$1.50')).toHaveLength(2);
   });
 
   it('refetches keyed by range and updates performers while balance stays stable', async () => {

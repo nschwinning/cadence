@@ -1139,6 +1139,19 @@ export interface DashboardOverview {
   benchmark_series: DashboardBenchmarkSeries[];
 }
 
+/** One portfolio's all-time cumulative AI cost (null when unavailable). */
+export interface DashboardPortfolioAiCost {
+  session_id: string;
+  label: string;
+  ai_cost_usd: number | null;
+}
+
+/** Per-portfolio AI cost breakdown from `GET /api/v1/dashboard/ai-costs`. */
+export interface DashboardAiCosts {
+  portfolios: DashboardPortfolioAiCost[];
+  total_ai_cost_usd: number | null;
+}
+
 // --- Technical-indicator configuration (read-only) -------------------------
 
 /** One period/lookback parameter defining an indicator. */

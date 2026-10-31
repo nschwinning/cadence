@@ -12,10 +12,19 @@ from typing import Annotated
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 
-from cadence.api.schemas import DashboardMetrics, DashboardOverview
+from cadence.api.schemas import (
+    DashboardAiCostsRead,
+    DashboardMetrics,
+    DashboardOverview,
+    DashboardPortfolioAiCostRead,
+)
 from cadence.broker import Broker, get_broker
 from cadence.dashboard.constants import DashboardRange
-from cadence.dashboard.service import get_dashboard_metrics, get_dashboard_overview
+from cadence.dashboard.service import (
+    get_dashboard_ai_costs,
+    get_dashboard_metrics,
+    get_dashboard_overview,
+)
 from cadence.database import get_db
 
 router = APIRouter(prefix="/dashboard", tags=["dashboard"])
@@ -41,4 +50,24 @@ def read_dashboard_overview(
     """
     return DashboardOverview.model_validate(
         get_dashboard_overview(db, range_=range, broker=broker)
+    )
+
+
+@router.get("/ai-costs", response_model=DashboardAiCostsRead)
+def read_dashboard_ai_costs(db: DbSession) -> DashboardAiCostsRead:
+    """Return the all-time AI cost per active portfolio with a grand total.
+
+    Range-independent: the figures are cumulative since each session began, so
+    there is no ``range`` parameter. Costs degrade to ``null`` when the LiteLLM
+    cost source is unavailable rather than failing.
+    """
+    costs = get_dashboard_ai_costs(db)
+    return DashboardAiCostsRead(
+        portfolios=[
+            DashboardPortfolioAiCostRead(
+                session_id=p.session_id, label=p.label, ai_cost_usd=p.ai_cost_usd
+            )
+            for p in costs.portfolios
+        ],
+        total_ai_cost_usd=costs.total_ai_cost_usd,
     )
