@@ -2,9 +2,7 @@ import { useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import {
   DEFAULT_SESSIONS_PARAMS,
-  useArchiveSession,
   useSessions,
-  useUnarchiveSession,
 } from '../../api/paperTrading';
 import { DEFAULT_PORTFOLIOS_PARAMS, usePortfolios } from '../../api/portfolios';
 import type { PaperTradingSession, Portfolio } from '../../types/api';
@@ -13,10 +11,31 @@ import { SessionComparisonChart } from './SessionComparisonChart';
 import { BuildAIPortfolioCard } from '../portfolios/BuildAIPortfolioCard';
 import { Modal } from '../../components/Modal';
 
-/** Turn a raw risk slug into a display label. */
-function humanize(value: string | null | undefined): string {
-  if (!value) return '—';
-  return value.replace(/[-_]/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
+/**
+ * Compact schedule indicator. Keeps the column narrow by rendering a single
+ * glyph with the full schedule exposed via `title`/`aria-label`.
+ */
+const SCHEDULE_META: Record<string, { short: string; label: string }> = {
+  DAILY_REBALANCING: { short: 'D', label: 'Daily rebalancing' },
+  WEEKLY_REBALANCING: { short: 'W', label: 'Weekly rebalancing' },
+  MONTHLY_REBALANCING: { short: 'M', label: 'Monthly rebalancing' },
+  SCHEDULED: { short: 'S', label: 'Scheduled' },
+};
+
+function ScheduleBadge({ mode }: { mode: string }) {
+  const meta = SCHEDULE_META[mode] ?? {
+    short: mode.charAt(0) || '—',
+    label: mode,
+  };
+  return (
+    <span
+      title={meta.label}
+      aria-label={meta.label}
+      className="inline-flex h-6 min-w-[1.5rem] items-center justify-center rounded-md bg-slate-100 px-1.5 text-xs font-semibold text-slate-600"
+    >
+      {meta.short}
+    </span>
+  );
 }
 
 /** Status pill colors per session status. */
@@ -52,10 +71,7 @@ function SessionRow({
   /** The session's portfolio definition, resolved by `portfolio_id` (may be absent). */
   portfolio: Portfolio | undefined;
 }) {
-  const archive = useArchiveSession();
-  const unarchive = useUnarchiveSession();
   const isArchived = session.archived_at !== null;
-  const busy = archive.isPending || unarchive.isPending;
   return (
     <tr className="border-b border-slate-100 hover:bg-slate-50">
       <td className="px-4 py-3 font-semibold">
@@ -83,13 +99,12 @@ function SessionRow({
       >
         {formatAge(session.created_at)}
       </td>
-      <td className="px-4 py-3 text-slate-700">
-        {humanize(portfolio?.risk_profile)}
-      </td>
       <td className="px-4 py-3 text-right tabular-nums text-slate-700">
         {portfolio ? portfolio.stocks.length : '—'}
       </td>
-      <td className="px-4 py-3 text-slate-700">{session.schedule_mode}</td>
+      <td className="px-4 py-3 text-slate-700">
+        <ScheduleBadge mode={session.schedule_mode} />
+      </td>
       <td className="px-4 py-3 text-right tabular-nums text-slate-700">
         {formatCurrency(session.allocated_capital)}
       </td>
@@ -113,29 +128,6 @@ function SessionRow({
         {session.last_run_at
           ? new Date(session.last_run_at).toLocaleString()
           : '—'}
-      </td>
-      <td className="px-4 py-3 text-right">
-        {isArchived ? (
-          <button
-            type="button"
-            onClick={() => unarchive.mutate(session.id)}
-            disabled={busy}
-            className="rounded border border-slate-300 px-2.5 py-1 text-xs font-medium text-slate-700 hover:bg-slate-100 disabled:opacity-50"
-          >
-            Unarchive
-          </button>
-        ) : session.status === 'stopped' ? (
-          <button
-            type="button"
-            onClick={() => archive.mutate(session.id)}
-            disabled={busy}
-            className="rounded border border-slate-300 px-2.5 py-1 text-xs font-medium text-slate-700 hover:bg-slate-100 disabled:opacity-50"
-          >
-            Archive
-          </button>
-        ) : (
-          <span className="text-slate-300">—</span>
-        )}
       </td>
     </tr>
   );
@@ -235,13 +227,12 @@ export function PaperTradingPage() {
 
         {!isPending && !isError && sessions.length > 0 && (
           <div className="overflow-x-auto">
-            <table className="w-full min-w-[1200px] border-collapse text-sm">
+            <table className="w-full min-w-[1000px] border-collapse text-sm">
               <thead>
                 <tr className="border-b border-slate-200 bg-slate-50 text-left text-xs font-semibold uppercase tracking-wide text-slate-500">
                   <th className="px-4 py-3">Portfolio</th>
                   <th className="px-4 py-3">Status</th>
                   <th className="px-4 py-3">Age</th>
-                  <th className="px-4 py-3">Risk</th>
                   <th className="px-4 py-3 text-right">Holdings</th>
                   <th className="px-4 py-3">Schedule</th>
                   <th className="px-4 py-3 text-right">Capital</th>
@@ -250,7 +241,6 @@ export function PaperTradingPage() {
                   <th className="px-4 py-3 text-right">Realised P&amp;L</th>
                   <th className="px-4 py-3 text-right">Unrealised P&amp;L</th>
                   <th className="px-4 py-3">Last Run</th>
-                  <th className="px-4 py-3 text-right">Actions</th>
                 </tr>
               </thead>
               <tbody>

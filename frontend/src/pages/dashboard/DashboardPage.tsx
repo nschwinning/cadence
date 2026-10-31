@@ -91,7 +91,8 @@ function ScopeBand({
 
 export function DashboardPage() {
   const [range, setRange] = useState<DashboardRange>('1M');
-  const { data, isPending, isError } = useDashboardOverview(range);
+  const { data, isPending, isError, isPlaceholderData } =
+    useDashboardOverview(range);
   // All-time + range-independent, so a separate fetch from the overview.
   const { data: aiCosts } = useDashboardAiCosts();
 
@@ -176,18 +177,44 @@ export function DashboardPage() {
 
           <ScopeBand
             title={`Performance · ${overPhrase(range)}`}
+            badge={
+              isPlaceholderData ? (
+                <span
+                  role="status"
+                  aria-live="polite"
+                  className="inline-flex items-center gap-1.5 text-xs font-medium text-slate-400"
+                >
+                  <span
+                    aria-hidden="true"
+                    className="inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-slate-400"
+                  />
+                  Updating…
+                </span>
+              ) : undefined
+            }
             control={<RangeSelector value={range} onChange={setRange} />}
           >
-            <PerformanceTiles sessions={selectedSessions} range={range} />
+            <div
+              className={
+                isPlaceholderData
+                  ? 'flex flex-col gap-6 opacity-60 transition-opacity'
+                  : 'flex flex-col gap-6 transition-opacity'
+              }
+            >
+              <PerformanceTiles sessions={selectedSessions} range={range} />
 
-            <CombinedEquityChart
-              sessions={sessions}
-              selectedIds={selectedIds}
-              onToggle={toggle}
-              benchmarkSeries={data.benchmark_series}
-            />
+              <CombinedEquityChart
+                sessions={sessions}
+                selectedIds={selectedIds}
+                onToggle={toggle}
+                benchmarkSeries={data.benchmark_series}
+              />
 
-            <PortfolioLeaderboard sessions={selectedSessions} range={range} />
+              <PortfolioLeaderboard
+                sessions={selectedSessions}
+                range={range}
+              />
+            </div>
           </ScopeBand>
 
           {aiCosts && (

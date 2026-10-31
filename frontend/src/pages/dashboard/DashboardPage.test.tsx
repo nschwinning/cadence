@@ -118,6 +118,44 @@ describe('DashboardPage', () => {
     ).toBe(true);
   });
 
+  it('keeps the page mounted while a new range loads instead of a full-page reload', async () => {
+    // A deferred YTD response lets us observe the in-flight window.
+    let resolveYtd!: (value: { data: DashboardOverview }) => void;
+    const ytdPending = new Promise<{ data: DashboardOverview }>((resolve) => {
+      resolveYtd = resolve;
+    });
+    mockedGet.mockImplementation((url: string, config?: unknown) => {
+      if (url.includes('/dashboard/ai-costs')) {
+        return Promise.resolve({ data: makeAiCosts() });
+      }
+      if (url.includes('/dashboard/overview')) {
+        const range = (config as GetConfig | undefined)?.params?.range;
+        if (range === 'YTD') return ytdPending;
+        return Promise.resolve({ data: overview1M });
+      }
+      if (url.includes('/health')) return Promise.resolve({ data: health });
+      return Promise.resolve({ data: {} });
+    });
+
+    renderWithClient(<DashboardPage />);
+    await screen.findByText('TECH');
+
+    await userEvent.click(screen.getByRole('button', { name: 'YTD' }));
+
+    // While YTD is in flight the page does NOT collapse into the loading state;
+    // the previous range's figures and surrounding chrome stay on screen.
+    expect(screen.queryByText('Loading overview…')).not.toBeInTheDocument();
+    expect(screen.getByText('$31,000.00')).toBeInTheDocument();
+    expect(screen.getByText('TECH')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'YTD' })).toBeInTheDocument();
+    // An unobtrusive "Updating…" status marks the interim refetch.
+    expect(screen.getByText('Updating…')).toBeInTheDocument();
+
+    resolveYtd({ data: overviewYTD });
+    await waitFor(() => expect(screen.getByText('GOLD')).toBeInTheDocument());
+    expect(screen.queryByText('Updating…')).not.toBeInTheDocument();
+  });
+
   it('docks the range selector in the Performance band with an active-range phrase', async () => {
     renderWithClient(<DashboardPage />);
     const perfHeading = await screen.findByText(/^Performance ·/);

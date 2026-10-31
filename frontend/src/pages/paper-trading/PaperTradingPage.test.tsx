@@ -14,7 +14,6 @@ vi.mock('../../api/client', () => ({
 }));
 
 const mockedGet = vi.mocked(apiClient.get);
-const mockedPost = vi.mocked(apiClient.post);
 
 const session: PaperTradingSession = {
   id: 's1',
@@ -106,7 +105,7 @@ describe('PaperTradingPage', () => {
     expect(screen.getByText('12')).toBeInTheDocument();
   });
 
-  it('folds the portfolio risk profile and holdings count into the row', async () => {
+  it('folds the holdings count into the row', async () => {
     mockedGet.mockImplementation(routeGet([session]));
 
     renderWithClient(<PaperTradingPage />);
@@ -115,9 +114,24 @@ describe('PaperTradingPage', () => {
       name: 'Aggressive Jolly Wozniak',
     });
     const row = link.closest('tr') as HTMLElement;
-    // Risk profile (humanized) and holdings count come from the portfolio.
-    expect(within(row).getByText('Balanced')).toBeInTheDocument();
+    // Holdings count comes from the portfolio.
     expect(within(row).getByText('3')).toBeInTheDocument();
+  });
+
+  it('renders the schedule as a compact badge with the full label on hover', async () => {
+    mockedGet.mockImplementation(routeGet([session]));
+
+    renderWithClient(<PaperTradingPage />);
+
+    const link = await screen.findByRole('link', {
+      name: 'Aggressive Jolly Wozniak',
+    });
+    const row = link.closest('tr') as HTMLElement;
+    // The daily-rebalancing session collapses to a "D" glyph that exposes the
+    // full schedule via its accessible label / title.
+    const badge = within(row).getByLabelText('Daily rebalancing');
+    expect(badge).toHaveTextContent('D');
+    expect(badge).toHaveAttribute('title', 'Daily rebalancing');
   });
 
   it('shows the portfolio age with the exact creation date on hover', async () => {
@@ -286,51 +300,16 @@ describe('PaperTradingPage', () => {
     });
   });
 
-  it('archives a stopped session via the row action and refetches the list', async () => {
-    const stopped: PaperTradingSession = {
-      ...session,
-      status: 'stopped',
-    };
-    mockedGet.mockResolvedValue({ data: { items: [stopped], total: 1 } });
-    mockedPost.mockResolvedValue({
-      data: { ...stopped, archived_at: '2026-09-16T00:00:00Z' },
-    });
-    const user = userEvent.setup();
-
-    renderWithClient(<PaperTradingPage />);
-    await screen.findByRole('link', { name: 'Aggressive Jolly Wozniak' });
-
-    await user.click(screen.getByRole('button', { name: 'Archive' }));
-
-    expect(mockedPost).toHaveBeenCalledWith(
-      '/api/v1/paper-trading/sessions/s1/archive',
-      {},
-    );
-    // Success invalidates the sessions list, triggering a refetch.
-    await waitFor(() => {
-      expect(mockedGet.mock.calls.length).toBeGreaterThan(1);
-    });
-  });
-
-  it('unarchives an archived session via the row action', async () => {
+  it('shows the Archived badge for an archived session in the row', async () => {
     const archived: PaperTradingSession = {
       ...session,
       status: 'stopped',
       archived_at: '2026-09-16T00:00:00Z',
     };
     mockedGet.mockResolvedValue({ data: { items: [archived], total: 1 } });
-    mockedPost.mockResolvedValue({ data: { ...archived, archived_at: null } });
-    const user = userEvent.setup();
 
     renderWithClient(<PaperTradingPage />);
     await screen.findByRole('link', { name: 'Aggressive Jolly Wozniak' });
     expect(screen.getByText('Archived')).toBeInTheDocument();
-
-    await user.click(screen.getByRole('button', { name: 'Unarchive' }));
-
-    expect(mockedPost).toHaveBeenCalledWith(
-      '/api/v1/paper-trading/sessions/s1/unarchive',
-      {},
-    );
   });
 });

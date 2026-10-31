@@ -1,4 +1,4 @@
-import { useQuery } from '@tanstack/react-query';
+import { keepPreviousData, useQuery } from '@tanstack/react-query';
 import { apiClient } from './client';
 import type {
   DashboardAiCosts,
@@ -48,6 +48,10 @@ export function useDashboardOverview(range: DashboardRange) {
   return useQuery<DashboardOverview>({
     queryKey: dashboardKeys.overview(range),
     queryFn: () => getDashboardOverview(range),
+    // Keep the previous range's data on screen while the next range loads, so
+    // switching ranges swaps just the figures instead of unmounting the page
+    // into a full-screen loading state. `isPlaceholderData` flags the interim.
+    placeholderData: keepPreviousData,
     // Live-refresh the marked-to-market overview ~every 30s. Pauses in the
     // background (TanStack default refetchIntervalInBackground: false).
     refetchInterval: 30_000,
