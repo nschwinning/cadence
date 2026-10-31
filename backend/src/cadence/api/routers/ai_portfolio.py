@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import logging
 import uuid
+from datetime import UTC, datetime
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -59,7 +60,11 @@ from cadence.database import get_db
 from cadence.notify import get_notifier
 from cadence.notify.base import Notifier
 from cadence.paper_trading import service as paper_service
-from cadence.paper_trading.constants import ScheduleMode, SessionStatus
+from cadence.paper_trading.constants import (
+    REBALANCING_SCHEDULE_MODES,
+    ScheduleMode,
+    SessionStatus,
+)
 from cadence.paper_trading.errors import SessionNotFoundError
 from cadence.paper_trading.models import PaperTradingSession
 
@@ -126,6 +131,7 @@ def build_ai_portfolio_endpoint(
         learning_feedback_window=payload.learning_feedback_window,
         use_fundamentals=payload.use_fundamentals,
         include_watchlist=payload.include_watchlist,
+        rebalance_cadence=payload.rebalance_cadence.value,
     )
     try:
         event = job_runner.start_build(db, params, agent, broker, provider)
@@ -232,32 +238,47 @@ def rebalance_daily(
     notifier: NotifierDep,
     _token: Annotated[None, Depends(require_valid_cron_token)],
 ) -> AIDailyRebalanceResponse:
-    """Rebalance every active session enrolled in daily rebalancing.
+    """Rebalance every active session enrolled in rebalancing that is due today.
 
-    Guarded by the ``X-Cron-Token`` header. Each enrolled session's rebalance runs
-    as a background job; sessions already rebalancing are skipped. A freshly-built
-    session whose initial build orders have not yet filled is deferred — rebalancing
-    it against a not-yet-real position state would trade on unsettled holdings — and
-    picked up by a later trigger once its orders settle. A ``notifier`` is threaded
-    to each job so executed rebalances (and failures) are pushed — this is what
-    distinguishes the daily path from the silent manual trigger.
+    Guarded by the ``X-Cron-Token`` header. The fan-out targets every active AI
+    session enrolled in a rebalancing cadence — daily, weekly, or monthly — and
+    applies a per-session calendar-boundary due-check before starting it: a daily
+    session is always due; a weekly session is due only on the first run of a new
+    ISO week; a monthly session only on the first run of a new calendar month
+    (boundaries in US/Eastern). A session that has never completed a rebalance is due
+    now, so its opening allocation is not delayed by its cadence. Each due session's
+    rebalance runs as a background job; sessions already rebalancing are skipped. A
+    freshly-built session whose initial build orders have not yet filled is deferred
+    — rebalancing it against a not-yet-real position state would trade on unsettled
+    holdings — and picked up by a later trigger once its orders settle. A session
+    skipped only because its cadence is not yet due is reported distinctly. A
+    ``notifier`` is threaded to each job so executed rebalances (and failures) are
+    pushed — this is what distinguishes the daily path from the silent manual trigger.
     """
+    from cadence.ai_portfolio import events as ai_events
     from cadence.ai_portfolio import service as ai_service
+    from cadence.ai_portfolio.scheduling import rebalance_due
 
+    now = datetime.now(UTC)
     sessions = paper_service.list_sessions(db, status=SessionStatus.ACTIVE, limit=500)
     targets = [
         s
         for s in sessions
-        if s.schedule_mode == ScheduleMode.DAILY_REBALANCING.value
+        if s.schedule_mode in REBALANCING_SCHEDULE_MODES
         and s.strategy_key == AI_STRATEGY_KEY
     ]
 
     triggered: list[uuid.UUID] = []
     skipped: list[uuid.UUID] = []
     deferred: list[uuid.UUID] = []
+    not_due: list[uuid.UUID] = []
     for session_row in targets:
         if not ai_service.build_orders_settled(db, broker, session_row):
             deferred.append(session_row.id)
+            continue
+        last_rebalanced_at = ai_events.get_last_rebalanced_at(db, session_row.id)
+        if not rebalance_due(session_row.schedule_mode, last_rebalanced_at, now):
+            not_due.append(session_row.id)
             continue
         _event, started = job_runner.start_rebalance(
             db, session_row.id, agent, broker, provider, notifier=notifier
@@ -285,6 +306,7 @@ def rebalance_daily(
         session_ids=triggered,
         skipped_already_running=skipped,
         skipped_awaiting_build_fill=deferred,
+        skipped_not_due=not_due,
     )
 
 
@@ -303,14 +325,19 @@ def rebalance_crypto_daily(
     """Rebalance only the crypto sleeve of every active daily-rebalancing session.
 
     The weekend cadence: crypto trades 24/7, so this fan-out tends crypto on days
-    the equities market is closed. Guarded by the ``X-Cron-Token`` header. Mirrors
-    :func:`rebalance_daily`'s targeting (active ``DAILY_REBALANCING`` AI sessions,
-    build orders deferred until settled, already-running sessions skipped) but
-    starts each job in crypto-only mode and, before creating any job, skips sessions
-    whose **configured** asset scope does not include crypto (distinct
+    the equities market is closed. Guarded by the ``X-Cron-Token`` header. Starts
+    each job in crypto-only mode and, before creating any job, skips sessions whose
+    **configured** asset scope does not include crypto (distinct
     ``skipped_not_crypto_scope`` bucket) — a stocks-only session is never rebalanced
     on weekends even if it happens to hold or target crypto. The ``notifier`` is
     threaded so executed crypto rebalances are pushed just like the weekday path.
+
+    Targeting is restricted to **daily-cadence** sessions only (``DAILY_REBALANCING``);
+    weekly- and monthly-cadence sessions are intentionally excluded. This is what
+    guarantees a mixed stock+crypto weekly/monthly session rebalances its whole
+    portfolio exactly once per period on a weekday run, rather than having its crypto
+    sleeve tended separately on the weekend (e.g. crypto on Saturday the 1st and the
+    rest of the portfolio on Monday the 3rd).
     """
     from cadence.ai_portfolio import service as ai_service
 

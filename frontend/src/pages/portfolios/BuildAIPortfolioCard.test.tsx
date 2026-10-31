@@ -72,6 +72,18 @@ function renderWithClient(ui: ReactNode) {
   return { ...utils, queryClient };
 }
 
+/**
+ * Pick a rebalance cadence radio. Cadence is a required choice with no
+ * pre-selected default, so most submit paths must choose one first (defaulting
+ * these tests to Daily) before the Build button is enabled.
+ */
+async function chooseCadence(
+  user: ReturnType<typeof userEvent.setup>,
+  cadence: RegExp = /Daily/,
+) {
+  await user.click(screen.getByRole('radio', { name: cadence }));
+}
+
 describe('BuildAIPortfolioCard', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -102,6 +114,7 @@ describe('BuildAIPortfolioCard', () => {
     expect(screen.getByLabelText('Capital ($)')).toHaveValue(10000);
     expect(screen.getByLabelText('Asset types')).toHaveValue('both');
 
+    await chooseCadence(user);
     await user.click(screen.getByRole('button', { name: 'Build portfolio' }));
 
     // Running mode appears from the polled status, no user action needed.
@@ -110,6 +123,7 @@ describe('BuildAIPortfolioCard', () => {
       allocated_capital: 10000,
       risk_profile: 'balanced',
       asset_types: 'both',
+      rebalance_cadence: 'daily',
       benchmark: 'SP500',
       model: 'gpt-6-luna',
       use_technical_indicators: false,
@@ -135,10 +149,10 @@ describe('BuildAIPortfolioCard', () => {
 
     expect(await screen.findByText('Build succeeded')).toBeInTheDocument();
     // The build places no trades: the completion copy sets the deferred-allocation
-    // expectation (empty now, allocated on the next daily rebalance) and never
-    // implies any opening trades were placed.
+    // expectation (empty now, allocated on the next rebalance) and never implies
+    // any opening trades were placed.
     expect(
-      screen.getByText(/allocated on its next daily rebalance/i),
+      screen.getByText(/allocated on its next rebalance/i),
     ).toBeInTheDocument();
     expect(screen.queryByText(/orders? placed/i)).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Build another' })).toBeInTheDocument();
@@ -164,6 +178,7 @@ describe('BuildAIPortfolioCard', () => {
 
     const { queryClient } = renderWithClient(<BuildAIPortfolioCard />);
 
+    await chooseCadence(user);
     await user.click(screen.getByRole('button', { name: 'Build portfolio' }));
     await screen.findByText('Building portfolio…');
 
@@ -184,16 +199,69 @@ describe('BuildAIPortfolioCard', () => {
 
     renderWithClient(<BuildAIPortfolioCard />);
 
-    // Daily rebalancing is mandatory, so there is no opt-in control for it.
+    // Daily rebalancing is no longer a checkbox opt-in — cadence is a required
+    // radio choice, so there is no legacy daily_rebalancing checkbox.
     expect(
       screen.queryByRole('checkbox', { name: /daily rebalancing/i }),
     ).not.toBeInTheDocument();
 
+    await chooseCadence(user);
     await user.click(screen.getByRole('button', { name: 'Build portfolio' }));
 
     expect(mockedPost).toHaveBeenCalledWith(
       '/api/v1/ai-portfolio/build',
       expect.not.objectContaining({ daily_rebalancing: expect.anything() }),
+    );
+  });
+
+  // ---------------------------------------------------------------- cadence
+  // Task 5.5: the cadence radio group has no pre-selected option and blocks
+  // submission until one is chosen; the chosen cadence is sent with the build.
+
+  it('pre-selects no cadence and blocks submission until one is chosen', async () => {
+    mockedPost.mockResolvedValue({ data: { event_id: 'evt-1', status: 'queued' } });
+    mockedGet.mockImplementation(routeGet(() => 'running'));
+    const user = userEvent.setup();
+
+    renderWithClient(<BuildAIPortfolioCard />);
+
+    // No cadence radio starts checked.
+    const radios = screen.getAllByRole('radio');
+    expect(radios).toHaveLength(3);
+    radios.forEach((radio) => expect(radio).not.toBeChecked());
+
+    // The invalid hint is shown and the Build button is disabled while unchosen.
+    expect(
+      screen.getByText('Select a rebalance cadence to continue.'),
+    ).toBeInTheDocument();
+    const submit = screen.getByRole('button', { name: 'Build portfolio' });
+    expect(submit).toBeDisabled();
+
+    // A disabled submit sends nothing.
+    await user.click(submit);
+    expect(mockedPost).not.toHaveBeenCalled();
+
+    // Choosing a cadence clears the hint and enables submission.
+    await chooseCadence(user, /Weekly/);
+    expect(
+      screen.queryByText('Select a rebalance cadence to continue.'),
+    ).not.toBeInTheDocument();
+    expect(submit).toBeEnabled();
+  });
+
+  it('sends the chosen rebalance cadence with the build request', async () => {
+    mockedPost.mockResolvedValue({ data: { event_id: 'evt-1', status: 'queued' } });
+    mockedGet.mockImplementation(routeGet(() => 'running'));
+    const user = userEvent.setup();
+
+    renderWithClient(<BuildAIPortfolioCard />);
+
+    await chooseCadence(user, /Monthly/);
+    await user.click(screen.getByRole('button', { name: 'Build portfolio' }));
+
+    expect(mockedPost).toHaveBeenCalledWith(
+      '/api/v1/ai-portfolio/build',
+      expect.objectContaining({ rebalance_cadence: 'monthly' }),
     );
   });
 
@@ -211,6 +279,7 @@ describe('BuildAIPortfolioCard', () => {
     expect(toggle).not.toBeChecked();
 
     await user.click(toggle);
+    await chooseCadence(user);
     await user.click(screen.getByRole('button', { name: 'Build portfolio' }));
 
     expect(mockedPost).toHaveBeenCalledWith(
@@ -233,6 +302,7 @@ describe('BuildAIPortfolioCard', () => {
     expect(toggle).not.toBeChecked();
 
     await user.click(toggle);
+    await chooseCadence(user);
     await user.click(screen.getByRole('button', { name: 'Build portfolio' }));
 
     expect(mockedPost).toHaveBeenCalledWith(
@@ -248,6 +318,7 @@ describe('BuildAIPortfolioCard', () => {
 
     renderWithClient(<BuildAIPortfolioCard />);
 
+    await chooseCadence(user);
     await user.click(screen.getByRole('button', { name: 'Build portfolio' }));
 
     expect(mockedPost).toHaveBeenCalledWith(
@@ -270,6 +341,7 @@ describe('BuildAIPortfolioCard', () => {
     expect(toggle).not.toBeChecked();
 
     await user.click(toggle);
+    await chooseCadence(user);
     await user.click(screen.getByRole('button', { name: 'Build portfolio' }));
 
     expect(mockedPost).toHaveBeenCalledWith(
@@ -285,6 +357,7 @@ describe('BuildAIPortfolioCard', () => {
 
     renderWithClient(<BuildAIPortfolioCard />);
 
+    await chooseCadence(user);
     await user.click(screen.getByRole('button', { name: 'Build portfolio' }));
 
     expect(mockedPost).toHaveBeenCalledWith(
@@ -317,6 +390,7 @@ describe('BuildAIPortfolioCard', () => {
     await user.clear(threshold);
     await user.type(threshold, '20');
 
+    await chooseCadence(user);
     await user.click(screen.getByRole('button', { name: 'Build portfolio' }));
 
     // The percentage is sent as a fraction.
@@ -333,6 +407,7 @@ describe('BuildAIPortfolioCard', () => {
 
     renderWithClient(<BuildAIPortfolioCard />);
 
+    await chooseCadence(user);
     await user.click(screen.getByRole('button', { name: 'Build portfolio' }));
 
     expect(mockedPost).toHaveBeenCalledWith(
@@ -370,6 +445,7 @@ describe('BuildAIPortfolioCard', () => {
     await user.clear(maxAsset);
     await user.type(maxAsset, '20');
 
+    await chooseCadence(user);
     await user.click(screen.getByRole('button', { name: 'Build portfolio' }));
 
     // Percentages are sent as fractions; the minimum is an integer count.
@@ -392,6 +468,7 @@ describe('BuildAIPortfolioCard', () => {
 
     renderWithClient(<BuildAIPortfolioCard />);
 
+    await chooseCadence(user);
     await user.click(screen.getByRole('button', { name: 'Build portfolio' }));
 
     expect(mockedPost).toHaveBeenCalledWith(
@@ -430,6 +507,7 @@ describe('BuildAIPortfolioCard', () => {
     await user.clear(window);
     await user.type(window, '8');
 
+    await chooseCadence(user);
     await user.click(screen.getByRole('button', { name: 'Build portfolio' }));
 
     expect(mockedPost).toHaveBeenCalledWith(
@@ -448,6 +526,7 @@ describe('BuildAIPortfolioCard', () => {
 
     renderWithClient(<BuildAIPortfolioCard />);
 
+    await chooseCadence(user);
     await user.click(screen.getByRole('button', { name: 'Build portfolio' }));
 
     expect(mockedPost).toHaveBeenCalledWith(
@@ -467,6 +546,7 @@ describe('BuildAIPortfolioCard', () => {
     renderWithClient(<BuildAIPortfolioCard />);
 
     await user.selectOptions(screen.getByLabelText('Asset types'), 'crypto');
+    await chooseCadence(user);
     await user.click(screen.getByRole('button', { name: 'Build portfolio' }));
 
     expect(mockedPost).toHaveBeenCalledWith(
@@ -492,6 +572,7 @@ describe('BuildAIPortfolioCard', () => {
       name: 'Dow Jones Industrial Average',
     });
     await user.selectOptions(select, 'DJIA');
+    await chooseCadence(user);
     await user.click(screen.getByRole('button', { name: 'Build portfolio' }));
 
     expect(mockedPost).toHaveBeenCalledWith(
@@ -515,6 +596,7 @@ describe('BuildAIPortfolioCard', () => {
     // catalog model — it is sent with the build request.
     await screen.findByRole('option', { name: 'GPT-5.6 Luna' });
     await user.selectOptions(select, 'gpt-5.6-luna');
+    await chooseCadence(user);
     await user.click(screen.getByRole('button', { name: 'Build portfolio' }));
 
     expect(mockedPost).toHaveBeenCalledWith(

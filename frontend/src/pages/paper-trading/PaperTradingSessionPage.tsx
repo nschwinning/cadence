@@ -112,6 +112,18 @@ function pct(value: number | null | undefined): string {
   return value == null ? '—' : `${(value * 100).toFixed(0)}%`;
 }
 
+/** Human label for a rebalance cadence; defaults to Daily when unrecorded. */
+function cadenceLabel(value: string | null | undefined): string {
+  switch (value) {
+    case 'weekly':
+      return 'Weekly';
+    case 'monthly':
+      return 'Monthly';
+    default:
+      return 'Daily';
+  }
+}
+
 /**
  * Render a value that may be a stop-loss marker. Stop-loss activity gets a
  * distinct amber "Stop-loss" badge; anything else renders as plain text.
@@ -650,6 +662,14 @@ function SessionHeader({
             Schedule
           </dt>
           <dd className="text-sm text-slate-900">{session.schedule_mode}</dd>
+        </div>
+        <div>
+          <dt className="text-xs font-semibold uppercase tracking-wide text-slate-500">
+            Rebalance cadence
+          </dt>
+          <dd className="text-sm text-slate-900">
+            {cadenceLabel(session.rebalance_cadence)}
+          </dd>
         </div>
         <div>
           <dt className="text-xs font-semibold uppercase tracking-wide text-slate-500">

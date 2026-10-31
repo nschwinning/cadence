@@ -161,6 +161,7 @@ describe('useChangeSessionBenchmark', () => {
       total_pnl: 0,
       session_metadata: null,
       schedule_mode: 'manual',
+      rebalance_cadence: 'daily',
       archived_at: null,
       rebalance_prompt_version: 1,
       benchmark,

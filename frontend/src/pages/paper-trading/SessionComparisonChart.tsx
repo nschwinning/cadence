@@ -8,7 +8,7 @@ import {
   formatPercent,
   formatTooltipTimestamp,
 } from '../../lib/format';
-import { colorForKey } from '../../lib/palette';
+import { categoricalColor } from '../../lib/palette';
 import { EChart } from '../../components/charts/EChart';
 import { Panel } from './PaperTradingSessionPage';
 
@@ -21,7 +21,7 @@ export interface PlotPoint {
   value: number;
 }
 
-/** A session prepared for plotting: its colour, label, and metric-space points. */
+/** A session prepared for plotting: its colour (by position), label, and points. */
 export interface PlotSeries {
   id: string;
   label: string;
@@ -37,17 +37,18 @@ function formatMetric(metric: Metric, value: number): string {
 /**
  * Convert the comparison response into plot series for the active metric.
  *
- * Each session's colour is keyed to its stable id (not its position), so a session
- * keeps the same colour across renders and regardless of which other sessions are
- * plotted. For the return metric a session with non-positive allocated capital
- * cannot be normalised, so it yields no points (and thus drops to legend-only).
- * Order is preserved from the input, which the API returns oldest-created first.
+ * Each session's colour is assigned by its position in the list, so no two sessions
+ * ever share a colour until the palette is genuinely exhausted (more sessions than
+ * palette colours). Because the API returns sessions oldest-created first, a session's
+ * colour is stable across renders unless an older session is added or removed ahead of
+ * it. For the return metric a session with non-positive allocated capital cannot be
+ * normalised, so it yields no points (and thus drops to legend-only).
  */
 export function buildComparisonSeries(
   sessions: SessionValueComparisonSeries[],
   metric: Metric,
 ): PlotSeries[] {
-  return sessions.map((series) => {
+  return sessions.map((series, index) => {
     const canReturn = metric === 'return' && series.allocated_capital > 0;
     const points: PlotPoint[] =
       metric === 'value' || canReturn
@@ -63,7 +64,7 @@ export function buildComparisonSeries(
     return {
       id: series.session_id,
       label: series.label,
-      color: colorForKey(series.session_id),
+      color: categoricalColor(index),
       points,
     };
   });
@@ -187,7 +188,8 @@ function Legend({ series, metric }: { series: PlotSeries[]; metric: Metric }) {
  * Panel comparing every non-archived session's performance over time, with a
  * %/$ toggle (defaulting to normalised return %) so sessions with different
  * capital and start dates can be compared fairly. Sessions are ordered oldest-created
- * first (from the API) and each keeps a stable colour keyed to its identity.
+ * first (from the API) and each gets a distinct colour assigned by position, so no two
+ * sessions share a colour until the palette is exhausted.
  */
 export function SessionComparisonChart() {
   const [metric, setMetric] = useState<Metric>('return');

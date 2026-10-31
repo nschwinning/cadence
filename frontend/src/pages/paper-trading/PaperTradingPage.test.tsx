@@ -31,6 +31,7 @@ const session: PaperTradingSession = {
   total_pnl: 1500,
   session_metadata: null,
   schedule_mode: 'DAILY_REBALANCING',
+  rebalance_cadence: 'daily',
   archived_at: null,
   rebalance_prompt_version: 1,
   benchmark: 'SP500',

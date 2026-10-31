@@ -27,6 +27,7 @@ from cadence.paper_trading.constants import (
     BENCHMARK_DISPLAY_NAMES,
     AIModel,
     Benchmark,
+    ScheduleMode,
     SessionStatus,
 )
 from cadence.paper_trading.models import BenchmarkPrice
@@ -775,6 +776,41 @@ def test_session_read_exposes_asset_scope(
     resp = client.get("/api/v1/paper-trading/sessions")
     by_id = {item["id"]: item for item in resp.json()["items"]}
     assert by_id[str(session_id)]["asset_types"] == "crypto"
+
+
+@pytest.mark.parametrize(
+    ("schedule_mode", "expected"),
+    [
+        (ScheduleMode.DAILY_REBALANCING, "daily"),
+        (ScheduleMode.WEEKLY_REBALANCING, "weekly"),
+        (ScheduleMode.MONTHLY_REBALANCING, "monthly"),
+        # A legacy/non-rebalancing mode reads as daily.
+        (ScheduleMode.SCHEDULED, "daily"),
+        (ScheduleMode.MANUAL, "daily"),
+    ],
+)
+def test_session_read_exposes_rebalance_cadence(
+    client: TestClient,
+    db_session: Session,
+    schedule_mode: ScheduleMode,
+    expected: str,
+) -> None:
+    portfolio = portfolios_service.create_portfolio(
+        db_session, name="C", stocks=["AAPL"]
+    )
+    sess = service.create_session(
+        db_session,
+        portfolio_id=portfolio.id,
+        strategy_key="ai_buy_hold",
+        rebalance_prompt_version=1,
+        crypto_rebalance_prompt_version=1,
+        benchmark=Benchmark.SP500,
+        schedule_mode=schedule_mode,
+    )
+    resp = client.get("/api/v1/paper-trading/sessions")
+    assert resp.status_code == 200
+    item = next(i for i in resp.json()["items"] if i["id"] == str(sess.id))
+    assert item["rebalance_cadence"] == expected
 
 
 def test_change_scope_persists_new_selection(

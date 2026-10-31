@@ -1033,6 +1033,140 @@ def test_rebalance_daily_includes_session_once_build_orders_fill(
     assert session_id not in second["skipped_awaiting_build_fill"]
 
 
+def _build_session_with_cadence(
+    client: TestClient, executor: ManualExecutor, cadence: str
+) -> str:
+    """Build a session at a given rebalance cadence; return its id."""
+    resp = client.post(
+        "/api/v1/ai-portfolio/build",
+        json={"allocated_capital": 100000, "rebalance_cadence": cadence},
+    )
+    event_id = resp.json()["event_id"]
+    executor.run_pending()
+    return client.get(
+        f"/api/v1/ai-portfolio/build/status/{event_id}"
+    ).json()["session_id"]
+
+
+@pytest.mark.parametrize(
+    ("cadence", "expected_mode"),
+    [
+        ("daily", "DAILY_REBALANCING"),
+        ("weekly", "WEEKLY_REBALANCING"),
+        ("monthly", "MONTHLY_REBALANCING"),
+    ],
+)
+def test_build_persists_schedule_mode_for_cadence(
+    client: TestClient,
+    db_session: Session,
+    cadence: str,
+    expected_mode: str,
+) -> None:
+    executor = ManualExecutor(run_immediately=True)
+    _seed_universe(db_session, _provider())
+    _wire(db_session, executor)
+    session_id = _build_session_with_cadence(client, executor, cadence)
+    row = paper_service.get_session(db_session, uuid.UUID(session_id))
+    assert row.schedule_mode == expected_mode
+
+
+@pytest.mark.parametrize("cadence", ["weekly", "monthly"])
+def test_rebalance_daily_includes_due_weekly_monthly_session(
+    client: TestClient,
+    db_session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+    cadence: str,
+) -> None:
+    # A never-rebalanced weekly/monthly session is due now (its opening allocation
+    # is not delayed by cadence), so the daily fan-out triggers it.
+    monkeypatch.setattr(settings, "REBALANCE_CRON_TOKEN", "secret")
+    executor = ManualExecutor(run_immediately=True)
+    _seed_universe(db_session, _provider())
+    _wire(db_session, executor)
+    session_id = _build_session_with_cadence(client, executor, cadence)
+
+    resp = client.post(
+        "/api/v1/ai-portfolio/rebalance-daily",
+        headers={"X-Cron-Token": "secret"},
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert session_id in body["session_ids"]
+    assert session_id not in body["skipped_not_due"]
+
+
+@pytest.mark.parametrize("cadence", ["weekly", "monthly"])
+def test_rebalance_daily_skips_not_yet_due_weekly_monthly(
+    client: TestClient,
+    db_session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+    cadence: str,
+) -> None:
+    # Once a weekly/monthly session has completed a rebalance in the current
+    # period, a same-period daily run reports it under ``skipped_not_due``.
+    monkeypatch.setattr(settings, "REBALANCE_CRON_TOKEN", "secret")
+    executor = ManualExecutor(run_immediately=True)
+    _seed_universe(db_session, _provider())
+    _wire(db_session, executor)
+    session_id = _build_session_with_cadence(client, executor, cadence)
+    # Opening allocation: produces a SUCCEEDED rebalance event anchored at ~now.
+    _opening_rebalance(client, executor, session_id)
+
+    resp = client.post(
+        "/api/v1/ai-portfolio/rebalance-daily",
+        headers={"X-Cron-Token": "secret"},
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert session_id in body["skipped_not_due"]
+    assert session_id not in body["session_ids"]
+
+
+def test_rebalance_daily_still_triggers_daily_after_recent_rebalance(
+    client: TestClient, db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Regression: a daily session is always due, even right after a rebalance.
+    monkeypatch.setattr(settings, "REBALANCE_CRON_TOKEN", "secret")
+    executor = ManualExecutor(run_immediately=True)
+    _seed_universe(db_session, _provider())
+    _wire(db_session, executor)
+    session_id = _build_session_with_cadence(client, executor, "daily")
+    _opening_rebalance(client, executor, session_id)
+
+    body = client.post(
+        "/api/v1/ai-portfolio/rebalance-daily",
+        headers={"X-Cron-Token": "secret"},
+    ).json()
+    assert session_id in body["session_ids"]
+    assert session_id not in body["skipped_not_due"]
+
+
+@pytest.mark.parametrize("cadence", ["weekly", "monthly"])
+def test_rebalance_crypto_daily_excludes_weekly_monthly(
+    client: TestClient,
+    db_session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+    cadence: str,
+) -> None:
+    # The weekend crypto cron targets only daily-cadence sessions, so a weekly or
+    # monthly (both-scope) session is neither triggered nor bucketed by it.
+    monkeypatch.setattr(settings, "REBALANCE_CRON_TOKEN", "secret")
+    executor = ManualExecutor(run_immediately=True)
+    _seed_universe(db_session, _provider())
+    _wire(db_session, executor)
+    session_id = _build_session_with_cadence(client, executor, cadence)
+
+    resp = client.post(
+        "/api/v1/ai-portfolio/rebalance-crypto-daily",
+        headers={"X-Cron-Token": "secret"},
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert session_id not in body["session_ids"]
+    assert session_id not in body["skipped_not_crypto_scope"]
+    assert session_id not in body["skipped_awaiting_build_fill"]
+
+
 def _crypto_provider() -> FakeMarketDataProvider:
     """A provider yielding a crypto (``CRYPTOCURRENCY``) profile with no sector."""
     return FakeMarketDataProvider(

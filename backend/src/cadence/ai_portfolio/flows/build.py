@@ -41,7 +41,10 @@ from cadence.assets.market_data import MarketDataProvider
 from cadence.broker.base import Broker
 from cadence.config import settings
 from cadence.paper_trading import service as paper_service
-from cadence.paper_trading.constants import Benchmark, ScheduleMode
+from cadence.paper_trading.constants import (
+    Benchmark,
+    cadence_to_schedule_mode,
+)
 from cadence.portfolios import service as portfolios_service
 from cadence.portfolios.constants import PortfolioSource
 from cadence.utils.name_generator import generate_unique_name
@@ -111,9 +114,11 @@ def run_build_event(
             allow_empty=True,
         )
 
-        # Daily rebalancing is the mandatory operating mode for AI portfolios:
-        # every built session is enrolled, with no opt-out.
-        schedule_mode = ScheduleMode.DAILY_REBALANCING
+        # Rebalancing is the mandatory operating mode for AI portfolios: every built
+        # session is enrolled, with no opt-out. The chosen cadence (daily/weekly/
+        # monthly, frozen on the build request) maps to the rebalancing schedule mode
+        # the rebalance cron fans out over; an unspecified cadence defaults to daily.
+        schedule_mode = cadence_to_schedule_mode(params.rebalance_cadence)
         session_row = paper_service.create_session(
             session,
             portfolio_id=portfolio.id,

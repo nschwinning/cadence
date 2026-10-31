@@ -40,6 +40,7 @@ const session: PaperTradingSession = {
   total_pnl: 500,
   session_metadata: null,
   schedule_mode: 'DAILY_REBALANCING',
+  rebalance_cadence: 'daily',
   archived_at: null,
   rebalance_prompt_version: 1,
   benchmark: 'SP500',
@@ -846,6 +847,62 @@ describe('PaperTradingSessionPage', () => {
     // Stop-loss, Risk guardrails, Learning feedback, Company fundamentals,
     // Watchlist assets, and Technical indicators all read "Off".
     expect(screen.getAllByText('Off')).toHaveLength(6);
+  });
+
+  it('renders the rebalance-cadence fact tile with the frozen cadence', async () => {
+    const weekly: PaperTradingSession = {
+      ...session,
+      schedule_mode: 'WEEKLY_REBALANCING',
+      rebalance_cadence: 'weekly',
+    };
+    mockedGet.mockImplementation((url: string) => {
+      if (url.endsWith('/paper-trading/sessions')) {
+        return Promise.resolve({ data: { items: [weekly], total: 1 } });
+      }
+      if (url.endsWith('/kpis')) {
+        return Promise.resolve({ data: KPIS });
+      }
+      if (url.endsWith('/sector-performance')) {
+        return Promise.resolve({ data: { by_sector: [], by_category: [] } });
+      }
+      if (url.includes('/ai-portfolio/sessions/') && url.endsWith('/events')) {
+        return Promise.resolve({ data: { items: [], total: 0 } });
+      }
+      return Promise.resolve({ data: { items: [], total: 0 } });
+    });
+
+    renderPage(<PaperTradingSessionPage />);
+    await screen.findByRole('heading', { name: 'Aggressive Jolly Wozniak' });
+
+    expect(screen.getByText('Rebalance cadence')).toBeInTheDocument();
+    expect(screen.getByText('Weekly')).toBeInTheDocument();
+  });
+
+  it('defaults the rebalance-cadence fact tile to Daily when unrecorded', async () => {
+    // A legacy session with no persisted cadence reads as Daily.
+    const { rebalance_cadence: _omitted, ...legacy } = session;
+    void _omitted;
+    mockedGet.mockImplementation((url: string) => {
+      if (url.endsWith('/paper-trading/sessions')) {
+        return Promise.resolve({ data: { items: [legacy], total: 1 } });
+      }
+      if (url.endsWith('/kpis')) {
+        return Promise.resolve({ data: KPIS });
+      }
+      if (url.endsWith('/sector-performance')) {
+        return Promise.resolve({ data: { by_sector: [], by_category: [] } });
+      }
+      if (url.includes('/ai-portfolio/sessions/') && url.endsWith('/events')) {
+        return Promise.resolve({ data: { items: [], total: 0 } });
+      }
+      return Promise.resolve({ data: { items: [], total: 0 } });
+    });
+
+    renderPage(<PaperTradingSessionPage />);
+    await screen.findByRole('heading', { name: 'Aggressive Jolly Wozniak' });
+
+    expect(screen.getByText('Rebalance cadence')).toBeInTheDocument();
+    expect(screen.getByText('Daily')).toBeInTheDocument();
   });
 
   it('shows the watchlist-assets fact tile as On when the session opted in', async () => {

@@ -12,6 +12,7 @@ from typing import Any
 
 from cadence.assets.category import AssetScope
 from cadence.config import settings
+from cadence.paper_trading.constants import RebalanceCadence
 
 
 @dataclass(frozen=True)
@@ -39,6 +40,7 @@ class AIBuildParams:
     learning_feedback_window: int | None = None
     use_fundamentals: bool = False
     include_watchlist: bool = False
+    rebalance_cadence: str = RebalanceCadence.DAILY.value
 
     def to_payload(self) -> dict[str, Any]:
         return {
@@ -59,6 +61,7 @@ class AIBuildParams:
             "learning_feedback_window": self.learning_feedback_window,
             "use_fundamentals": self.use_fundamentals,
             "include_watchlist": self.include_watchlist,
+            "rebalance_cadence": self.rebalance_cadence,
         }
 
     @classmethod
@@ -95,4 +98,7 @@ class AIBuildParams:
             ),
             use_fundamentals=bool(payload.get("use_fundamentals", False)),
             include_watchlist=bool(payload.get("include_watchlist", False)),
+            rebalance_cadence=str(
+                payload.get("rebalance_cadence", RebalanceCadence.DAILY.value)
+            ),
         )

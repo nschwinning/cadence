@@ -8,7 +8,7 @@ import {
   type Metric,
 } from './SessionComparisonChart';
 import { apiClient } from '../../api/client';
-import { colorForKey } from '../../lib/palette';
+import { CATEGORICAL_PALETTE, categoricalColor } from '../../lib/palette';
 import type { SessionValueComparisonSeries } from '../../types/api';
 
 vi.mock('../../api/client', () => ({
@@ -81,20 +81,24 @@ describe('buildComparisonSeries', () => {
     expect(s.points).toHaveLength(0);
   });
 
-  it('keys each session colour to its identity, stable across order and membership', () => {
-    const a = series('a', 'Alpha', 100000, [['2026-01-04', 100000], ['2026-01-05', 101000]]);
-    const b = series('b', 'Beta', 100000, [['2026-01-04', 100000], ['2026-01-05', 102000]]);
-    const forward = buildComparisonSeries([a, b], 'return');
-    const reversed = buildComparisonSeries([b, a], 'return');
-    const colorOf = (list: ReturnType<typeof buildComparisonSeries>, id: string) =>
-      list.find((s) => s.id === id)!.color;
-    // 'a' keeps its colour regardless of position, and it equals the identity hash.
-    expect(colorOf(forward, 'a')).toBe(colorOf(reversed, 'a'));
-    expect(colorOf(forward, 'a')).toBe(colorForKey('a'));
-    // Dropping 'a' from the plotted set does not change 'b'’s colour.
-    expect(colorOf(buildComparisonSeries([b], 'return'), 'b')).toBe(
-      colorOf(forward, 'b'),
+  it('assigns a distinct colour per session by position, never colliding within the palette', () => {
+    // One session per palette colour: every assigned colour must be unique.
+    const many = Array.from({ length: CATEGORICAL_PALETTE.length }, (_, i) =>
+      series(`s${i}`, `S${i}`, 100000, [
+        ['2026-01-04', 100000],
+        ['2026-01-05', 101000],
+      ]),
     );
+    const colors = buildComparisonSeries(many, 'return').map((s) => s.color);
+    expect(colors).toEqual([...CATEGORICAL_PALETTE]);
+    expect(new Set(colors).size).toBe(colors.length);
+    // Colour follows list position (oldest-created first from the API).
+    const [first, second] = buildComparisonSeries(
+      [many[0], many[1]],
+      'return',
+    );
+    expect(first.color).toBe(categoricalColor(0));
+    expect(second.color).toBe(categoricalColor(1));
   });
 
   it('preserves the input order (which the API returns oldest-created first)', () => {

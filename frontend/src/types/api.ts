@@ -384,6 +384,11 @@ export interface PaperTradingSession {
   total_pnl: number;
   session_metadata: Record<string, unknown> | null;
   schedule_mode: string;
+  /**
+   * How often this session rebalances (frozen at build time). Derived from
+   * `schedule_mode`; legacy sessions on a non-rebalancing mode read as `'daily'`.
+   */
+  rebalance_cadence: 'daily' | 'weekly' | 'monthly';
   archived_at: string | null;
   /** The rebalance-prompt version frozen onto this session at build time. */
   rebalance_prompt_version: number;
@@ -731,6 +736,12 @@ export interface AIPortfolioBuildRequest {
   risk_profile?: string;
   /** Which asset categories the portfolio may hold. Defaults to `both`. */
   asset_types?: 'stocks' | 'crypto' | 'both';
+  /**
+   * How often the session rebalances, frozen at build time. One of `daily`,
+   * `weekly`, or `monthly`. Defaults to `daily`; a value outside this set is
+   * rejected (422).
+   */
+  rebalance_cadence?: 'daily' | 'weekly' | 'monthly';
   /** Benchmark id to compare the session against. Defaults to `SP500`. */
   benchmark?: string;
   /**

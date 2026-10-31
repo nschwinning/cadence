@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 import uuid
+from datetime import datetime
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -170,6 +171,34 @@ def get_inflight_rebalance_event(
             AIPortfolioEvent.event_type == EventType.REBALANCE.value,
             AIPortfolioEvent.status.in_(
                 [EventStatus.QUEUED.value, EventStatus.RUNNING.value]
+            ),
+        )
+        .order_by(AIPortfolioEvent.created_at.desc(), AIPortfolioEvent.id.desc())
+        .limit(1)
+    )
+    return session.execute(stmt).scalars().first()
+
+
+def get_last_rebalanced_at(
+    session: Session, session_id: uuid.UUID
+) -> datetime | None:
+    """Return when the session last *completed* a rebalance, or ``None``.
+
+    The anchor for the cadence due-check (see ``cadence.ai_portfolio.scheduling``):
+    the newest ``REBALANCE`` event that reached a terminal state in which the agent
+    actually ran and placed (or deliberately held) orders — ``SUCCEEDED`` or
+    ``PARTIAL``. A ``FAILED`` or ``SKIPPED`` (market-closed no-op) run is excluded,
+    so a run that did not complete a rebalance does **not** advance the anchor and
+    the session stays due and is retried on the next trigger. A session that has
+    never completed a rebalance returns ``None`` and is treated as due now.
+    """
+    stmt = (
+        select(AIPortfolioEvent.created_at)
+        .where(
+            AIPortfolioEvent.session_id == session_id,
+            AIPortfolioEvent.event_type == EventType.REBALANCE.value,
+            AIPortfolioEvent.status.in_(
+                [EventStatus.SUCCEEDED.value, EventStatus.PARTIAL.value]
             ),
         )
         .order_by(AIPortfolioEvent.created_at.desc(), AIPortfolioEvent.id.desc())

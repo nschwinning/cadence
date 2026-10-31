@@ -31,6 +31,15 @@ const ASSET_SCOPES = [
 
 type AssetScope = (typeof ASSET_SCOPES)[number]['value'];
 
+/** Rebalance-cadence options (value sent as `rebalance_cadence`). */
+const REBALANCE_CADENCES = [
+  { value: 'daily', label: 'Daily', hint: 'Re-weighted every trading day.' },
+  { value: 'weekly', label: 'Weekly', hint: 'Re-weighted once per week.' },
+  { value: 'monthly', label: 'Monthly', hint: 'Re-weighted once per month.' },
+] as const;
+
+type RebalanceCadence = (typeof REBALANCE_CADENCES)[number]['value'];
+
 /** Shared classes for the plain `<select>` controls in the basics column. */
 const SELECT_CLASS =
   'mt-1 w-full rounded border border-slate-300 px-3 py-1.5 text-sm text-slate-900 focus:border-emerald-500 focus:outline-none focus:ring-1 focus:ring-emerald-500';
@@ -174,6 +183,9 @@ export function BuildAIPortfolioCard() {
   const [capital, setCapital] = useState('10000');
   const [riskProfile, setRiskProfile] = useState<string>('balanced');
   const [assetTypes, setAssetTypes] = useState<AssetScope>('both');
+  // The enrollment cadence is a required choice with no pre-selected default —
+  // the user must consciously pick exactly one before the form can be submitted.
+  const [cadence, setCadence] = useState<RebalanceCadence | ''>('');
   const [useTechnicalIndicators, setUseTechnicalIndicators] = useState(false);
   const [useFundamentals, setUseFundamentals] = useState(false);
   const [includeWatchlist, setIncludeWatchlist] = useState(false);
@@ -237,8 +249,15 @@ export function BuildAIPortfolioCard() {
     !learningFeedbackEnabled ||
     (Number.isInteger(learningWindowValue) && learningWindowValue >= 1);
 
+  // Enrollment cadence must be explicitly chosen (no default) before building.
+  const cadenceValid = cadence !== '';
+
   const canSubmit =
-    capitalValid && stopLossValid && guardrailsValid && learningWindowValid;
+    capitalValid &&
+    cadenceValid &&
+    stopLossValid &&
+    guardrailsValid &&
+    learningWindowValid;
 
   // Per-field invalid flags drive the inline red hints (only surfaced once the
   // relevant toggle is on so untouched, hidden fields never look erroneous).
@@ -272,6 +291,8 @@ export function BuildAIPortfolioCard() {
         allocated_capital: capitalValue,
         risk_profile: riskProfile,
         asset_types: assetTypes,
+        // `cadenceValid` is part of `canSubmit`, so `cadence` is a concrete value here.
+        rebalance_cadence: cadence as RebalanceCadence,
         benchmark,
         model,
         use_technical_indicators: useTechnicalIndicators,
@@ -307,8 +328,9 @@ export function BuildAIPortfolioCard() {
       </h2>
       <p className="mt-1 text-xs text-slate-500">
         Creates an AI-managed portfolio and opens a paper-trading session
-        enrolled in daily rebalancing. The portfolio starts empty (holding cash)
-        and is allocated on its first daily rebalance.
+        enrolled in automatic rebalancing at the cadence you choose. The
+        portfolio starts empty (holding cash) and is allocated on its first
+        rebalance.
       </p>
 
       {/* --------------------------------------------------------------- IDLE */}
@@ -427,12 +449,50 @@ export function BuildAIPortfolioCard() {
                 </div>
               </div>
 
-              {/* Daily rebalancing is the mandatory operating mode — not optional. */}
-              <p className="rounded border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-600">
-                Every AI portfolio rebalances daily: the AI re-weights it toward
-                fresh targets each trading day. You can still rebalance manually
-                at any time.
-              </p>
+              {/*
+                Enrollment cadence is a required choice — exactly one must be
+                picked, with no pre-selected default, so building is blocked until
+                the user consciously chooses. Frozen at build for the session's life.
+              */}
+              <fieldset
+                aria-describedby="ai-cadence-hint"
+                aria-invalid={!cadenceValid || undefined}
+              >
+                <legend className="block text-sm font-medium text-slate-700">
+                  Rebalance cadence
+                </legend>
+                <div className="mt-1 flex flex-col gap-2">
+                  {REBALANCE_CADENCES.map((option) => (
+                    <label
+                      key={option.value}
+                      className="flex items-start gap-2 text-sm text-slate-800"
+                    >
+                      <input
+                        type="radio"
+                        name="ai-rebalance-cadence"
+                        value={option.value}
+                        checked={cadence === option.value}
+                        onChange={() => setCadence(option.value)}
+                        className="mt-0.5 h-4 w-4 border-slate-300 text-emerald-600 focus:ring-emerald-500"
+                      />
+                      <span>
+                        <span className="font-medium">{option.label}</span>
+                        <span className="block text-xs text-slate-500">
+                          {option.hint}
+                        </span>
+                      </span>
+                    </label>
+                  ))}
+                </div>
+                <p
+                  id="ai-cadence-hint"
+                  className={`mt-1 text-xs ${cadenceValid ? 'text-slate-500' : 'text-red-700'}`}
+                >
+                  {cadenceValid
+                    ? 'Frozen for the session’s lifetime. You can still rebalance manually at any time.'
+                    : 'Select a rebalance cadence to continue.'}
+                </p>
+              </fieldset>
             </div>
 
             {/* RIGHT — advanced / risk controls, all frozen at build. */}
@@ -710,8 +770,8 @@ export function BuildAIPortfolioCard() {
             Status: {humanizeStatus(status ?? 'queued')}
           </span>
           <p className="text-xs text-slate-500">
-            Creating your portfolio and enrolling it in daily rebalancing. This
-            updates automatically.
+            Creating your portfolio and enrolling it in automatic rebalancing.
+            This updates automatically.
           </p>
         </div>
       )}
@@ -737,8 +797,8 @@ export function BuildAIPortfolioCard() {
             */}
             {status === 'succeeded' && (
               <p className="mt-1">
-                Your portfolio is enrolled in daily rebalancing and starts empty
-                (holding cash). It will be allocated on its next daily rebalance.
+                Your portfolio is enrolled in automatic rebalancing and starts
+                empty (holding cash). It will be allocated on its next rebalance.
               </p>
             )}
           </div>

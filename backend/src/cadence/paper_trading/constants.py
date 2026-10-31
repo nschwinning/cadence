@@ -19,11 +19,73 @@ class ScheduleMode(StrEnum):
     - ``SCHEDULED``: run by the periodic intraday signal-scan cron.
     - ``DAILY_REBALANCING``: rebalanced once per weekday morning by the AI
       rebalance cron (AI buy-and-hold portfolios opting into daily rebalancing).
+    - ``WEEKLY_REBALANCING`` / ``MONTHLY_REBALANCING``: enrolled in the same AI
+      rebalance cron as ``DAILY_REBALANCING`` but due only once per ISO week / per
+      calendar month (a calendar-boundary due-check, evaluated in US/Eastern).
+
+    The column storing this value is a non-native string enum, so adding members
+    needs no database migration.
     """
 
     MANUAL = "MANUAL"
     SCHEDULED = "SCHEDULED"
     DAILY_REBALANCING = "DAILY_REBALANCING"
+    WEEKLY_REBALANCING = "WEEKLY_REBALANCING"
+    MONTHLY_REBALANCING = "MONTHLY_REBALANCING"
+
+
+class RebalanceCadence(StrEnum):
+    """User-facing rebalance cadence chosen at build and frozen on the session.
+
+    The member *value* is the stable identifier the API accepts and returns; each
+    maps to exactly one rebalancing :class:`ScheduleMode` the cron fans out over
+    (see :data:`REBALANCING_SCHEDULE_MODES`).
+    """
+
+    DAILY = "daily"
+    WEEKLY = "weekly"
+    MONTHLY = "monthly"
+
+
+#: Cadence → the rebalancing ``ScheduleMode`` persisted on a session.
+_CADENCE_TO_SCHEDULE_MODE: dict[RebalanceCadence, ScheduleMode] = {
+    RebalanceCadence.DAILY: ScheduleMode.DAILY_REBALANCING,
+    RebalanceCadence.WEEKLY: ScheduleMode.WEEKLY_REBALANCING,
+    RebalanceCadence.MONTHLY: ScheduleMode.MONTHLY_REBALANCING,
+}
+
+#: Inverse of :data:`_CADENCE_TO_SCHEDULE_MODE`, keyed by the mode's string value.
+_SCHEDULE_MODE_TO_CADENCE: dict[str, RebalanceCadence] = {
+    mode.value: cadence for cadence, mode in _CADENCE_TO_SCHEDULE_MODE.items()
+}
+
+#: The scheduling modes the AI rebalance cron fans out over. A session in any of
+#: these is "enrolled" in rebalancing; the per-cadence due-check decides whether a
+#: given run is due (see ``cadence.ai_portfolio.scheduling``).
+REBALANCING_SCHEDULE_MODES: frozenset[str] = frozenset(
+    mode.value for mode in _CADENCE_TO_SCHEDULE_MODE.values()
+)
+
+
+def cadence_to_schedule_mode(cadence: str) -> ScheduleMode:
+    """Map a user-facing cadence string to its rebalancing ``ScheduleMode``.
+
+    An unrecognized value falls back to daily, so a malformed or legacy cadence is
+    treated as daily rather than rejected here (the API layer validates the enum).
+    """
+    try:
+        return _CADENCE_TO_SCHEDULE_MODE[RebalanceCadence(cadence)]
+    except ValueError:
+        return ScheduleMode.DAILY_REBALANCING
+
+
+def schedule_mode_to_cadence(mode: str) -> RebalanceCadence:
+    """Map a stored ``schedule_mode`` value to its user-facing cadence.
+
+    Any non-rebalancing or legacy mode (``MANUAL``/``SCHEDULED``/an unknown value)
+    reads as daily, so the session read model always surfaces a cadence.
+    """
+    return _SCHEDULE_MODE_TO_CADENCE.get(mode, RebalanceCadence.DAILY)
 
 
 class SessionStatus(StrEnum):

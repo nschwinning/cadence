@@ -12,7 +12,12 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 from cadence.assets.category import AssetMembership, AssetScope
 from cadence.config import settings
 from cadence.dashboard.constants import DashboardRange
-from cadence.paper_trading.constants import AIModel, Benchmark
+from cadence.paper_trading.constants import (
+    AIModel,
+    Benchmark,
+    RebalanceCadence,
+    schedule_mode_to_cadence,
+)
 from cadence.portfolios.constants import PortfolioSource, RiskProfile
 from cadence.recommendations.constants import RunTarget
 
@@ -334,6 +339,10 @@ class PaperTradingSessionRead(BaseModel):
     total_pnl: float
     session_metadata: dict[str, Any] | None
     schedule_mode: str
+    # The session's rebalance cadence ('daily', 'weekly', or 'monthly'), derived
+    # from ``schedule_mode`` in ``_populate_asset_types`` below. A legacy session
+    # with a non-rebalancing/unknown mode reads as 'daily'.
+    rebalance_cadence: str = RebalanceCadence.DAILY.value
     archived_at: datetime | None
     # The rebalance-prompt version frozen onto this session at build time.
     rebalance_prompt_version: int
@@ -406,6 +415,9 @@ class PaperTradingSessionRead(BaseModel):
         # ``allocated_capital`` is the running total of contributed capital; surface
         # it under the explicit ``contributed_capital`` name for the UI.
         self.contributed_capital = self.allocated_capital
+        # Derive the user-facing rebalance cadence from the stored schedule mode;
+        # a legacy/non-rebalancing mode reads as 'daily'.
+        self.rebalance_cadence = schedule_mode_to_cadence(self.schedule_mode).value
         return self
 
 
@@ -1017,6 +1029,12 @@ class AIPortfolioBuildRequest(BaseModel):
         "When enabled, each rebalance assembles candidates from the union of universe- "
         "and watchlist-membership assets. Defaults to off (opt-in).",
     )
+    rebalance_cadence: RebalanceCadence = Field(
+        default=RebalanceCadence.DAILY,
+        description="How often the session is automatically rebalanced: 'daily', "
+        "'weekly', or 'monthly' (frozen at build time). Defaults to daily. A value "
+        "outside this set is rejected (422).",
+    )
 
     @field_validator("asset_types")
     @classmethod
@@ -1112,6 +1130,10 @@ class AIDailyRebalanceResponse(BaseModel):
     #: Freshly-built sessions deferred because their build orders have not yet
     #: filled; picked up by a later trigger once they settle.
     skipped_awaiting_build_fill: list[uuid.UUID] = Field(default_factory=list)
+    #: Weekly/monthly sessions whose cadence is not yet due this run (their ISO
+    #: week / calendar month has not rolled over since the last rebalance); picked
+    #: up by a later trigger once their period boundary is crossed.
+    skipped_not_due: list[uuid.UUID] = Field(default_factory=list)
 
 
 class AIDailyCryptoRebalanceResponse(AIDailyRebalanceResponse):
