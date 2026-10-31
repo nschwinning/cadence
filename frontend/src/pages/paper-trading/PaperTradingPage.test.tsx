@@ -6,6 +6,7 @@ import { MemoryRouter } from 'react-router-dom';
 import type { ReactNode } from 'react';
 import { PaperTradingPage } from './PaperTradingPage';
 import { apiClient } from '../../api/client';
+import { formatAge } from '../../lib/format';
 import type { PaperTradingSession, Portfolio } from '../../types/api';
 
 vi.mock('../../api/client', () => ({
@@ -117,6 +118,25 @@ describe('PaperTradingPage', () => {
     // Risk profile (humanized) and holdings count come from the portfolio.
     expect(within(row).getByText('Balanced')).toBeInTheDocument();
     expect(within(row).getByText('3')).toBeInTheDocument();
+  });
+
+  it('shows the portfolio age with the exact creation date on hover', async () => {
+    mockedGet.mockImplementation(routeGet([session]));
+
+    renderWithClient(<PaperTradingPage />);
+
+    const link = await screen.findByRole('link', {
+      name: 'Aggressive Jolly Wozniak',
+    });
+    const row = link.closest('tr') as HTMLElement;
+    // The age cell reads as the same compact duration formatAge produces, and
+    // exposes the exact creation date via its title (hover) attribute.
+    const expectedAge = formatAge(session.created_at);
+    const ageCell = within(row).getByText(expectedAge);
+    expect(ageCell).toHaveAttribute(
+      'title',
+      new Date(session.created_at).toLocaleString(),
+    );
   });
 
   it('renders the live value + realised + unrealised triple in the row', async () => {

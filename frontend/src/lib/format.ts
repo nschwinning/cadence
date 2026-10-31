@@ -100,6 +100,29 @@ export function formatTooltipTimestamp(ms: number): string {
 }
 
 /**
+ * Format how long ago an ISO datetime was as a compact, largest-whole-unit
+ * duration for at-a-glance comparison (e.g. `today`, `5d`, `3w`, `2mo`, `1y`).
+ * Unlike {@link formatRelativeTime} it has no "ago" suffix and no sub-day
+ * granularity — it answers "how old is this?" for a table cell. Thresholds:
+ * same calendar-distance day is `today`; `<7d` reads in days; `<30d` in whole
+ * weeks; `<365d` in whole months (30-day months); otherwise in whole years
+ * (365-day years). A future or non-finite input clamps to `today`. The `now`
+ * argument is injectable so callers (and tests) can pin the reference time.
+ */
+export function formatAge(from: string | Date, now: Date = new Date()): string {
+  const then = from instanceof Date ? from : new Date(from);
+  const ms = then.getTime();
+  if (!Number.isFinite(ms)) return typeof from === 'string' ? from : '';
+  const diffMs = now.getTime() - ms;
+  const days = diffMs > 0 ? Math.floor(diffMs / 86_400_000) : 0;
+  if (days === 0) return 'today';
+  if (days < 7) return `${days}d`;
+  if (days < 30) return `${Math.floor(days / 7)}w`;
+  if (days < 365) return `${Math.floor(days / 30)}mo`;
+  return `${Math.floor(days / 365)}y`;
+}
+
+/**
  * Format an ISO datetime as a compact, human relative time (e.g. `just now`,
  * `5m ago`, `3h ago`, `2d ago`), falling back to an absolute locale date for
  * anything older than a week or a future time. Used by the dashboard automation

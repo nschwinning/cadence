@@ -1,19 +1,20 @@
-"""AI agents for portfolio building and rebalancing, and their output contracts.
+"""AI agent for portfolio rebalancing, and its output contracts.
 
 Ported from trading-bot's ``ai_portfolio_agent`` and adapted to Cadence:
 
-- The agents are built with Cadence's :func:`cadence.agents.build_agent` (which
+- The agent is built with Cadence's :func:`cadence.agents.build_agent` (which
   forces a Pydantic ``output_type``) and its SerpAPI ``web_search`` tool, on
   :data:`settings.AI_PORTFOLIO_MODEL`.
-- The public entrypoints (:func:`build_ai_portfolio` / :func:`rebalance_ai_portfolio`)
-  are **synchronous**, wrapping ``asyncio.run(Runner.run(...))`` under a timeout —
-  the same sync-over-async pattern the recommender agent uses so the background
-  job runner stays fully synchronous. :class:`AIPortfolioAgent` is the seam service
-  code depends on, so tests can inject a fake with no network.
+- The public entrypoint (:func:`rebalance_ai_portfolio`) is **synchronous**,
+  wrapping ``asyncio.run(Runner.run(...))`` under a timeout — the same
+  sync-over-async pattern the recommender agent uses so the background job runner
+  stays fully synchronous. :class:`AIPortfolioAgent` is the seam service code
+  depends on, so tests can inject a fake with no network.
 
-Both flows are **long-only** and operate over the entire asset universe as the
-candidate set. The agent may additionally discover a bounded number of assets
-beyond the universe. Cost is bounded by three caps
+The rebalance flow is **long-only** and operates over the entire asset universe
+as the candidate set (a session's opening allocation runs as its first rebalance,
+see ``flows/build.py``). The agent may additionally discover a bounded number of
+assets beyond the universe. Cost is bounded by three caps
 (:data:`settings.AI_PORTFOLIO_MAX_TURNS`, ``AI_PORTFOLIO_MAX_WEB_SEARCHES``,
 ``AI_PORTFOLIO_MAX_NEW_ASSETS``): the turn cap is enforced by the SDK, the
 web-search cap by the ``web_search`` tool's per-run budget, and the discovery cap
@@ -35,7 +36,6 @@ from cadence.agents import build_agent, run_config_for_trace
 from cadence.agents.tools import web_search, web_search_budget
 from cadence.config import settings
 
-BUILD_TIMEOUT_SECONDS = 300
 REBALANCE_TIMEOUT_SECONDS = 300
 
 
@@ -137,44 +137,6 @@ def _guardrails_block(guardrails: GuardrailInstruction) -> str:
     )
 
 
-def _builder_instructions() -> str:
-    # DEAD CODE (unreferenced): the build prompt for the builder agent. A build no
-    # longer runs a builder agent (the opening allocation is an initial rebalance,
-    # see ``flows/build.py``), so this prompt is retained for a follow-up removal
-    # only; nothing in ``src/cadence`` builds a portfolio through it.
-    return f"""
-You are a seasoned investment portfolio manager building a long-term buy-and-hold portfolio.
-Select stocks from the provided candidate universe for a diversified, LONG-ONLY portfolio.
-Use the web_search tool to research current market conditions and recent news.
-
-Trend context:
-- Every candidate has ALREADY been hard-filtered to a confirmed uptrend by a
-  deterministic technical-indicator gate, so you are choosing only among assets in
-  an uptrend. Each candidate carries an ``indicators`` block (trend, momentum, and
-  volume measures such as SMA50/200, MACD, RSI14, ROC120, OBV). Allocate by
-  conviction, favouring the strongest, most durable trends.
-
-Requirements:
-- Select stocks with strong long-term fundamentals (2-5 year horizon), using the
-  supplied trend ``indicators`` to size conviction
-- Diversify across sectors where possible
-- All positions are LONG (buy-and-hold); never propose short positions
-- allocation_pct values across ALL picks must sum to approximately 1.0
-- You may set an asset's allocation_pct to ~0 to effectively exclude it
-- Provide concrete, evidence-based investment theses
-- Focus on stocks you have high conviction in
-- Candidates may include crypto assets (shown via their ``category``); crypto uses
-  yfinance-style tickers like ``BTC-USD`` and trades 24/7. Size any crypto weight
-  according to the requested risk profile.
-
-Discovery and cost controls:
-- You may also research and include assets NOT in the candidate universe if you
-  find compelling opportunities; clearly explain why each merits inclusion.
-- You may discover at most {settings.AI_PORTFOLIO_MAX_NEW_ASSETS} assets beyond the universe.
-- Perform at most {settings.AI_PORTFOLIO_MAX_WEB_SEARCHES} web searches total across this task; batch your research.
-"""
-
-
 def _render(template: str, **values: str) -> str:
     """Fill ``{name}`` placeholders in ``template`` by explicit token replacement.
 
@@ -189,23 +151,6 @@ def _render(template: str, **values: str) -> str:
     for key, value in values.items():
         rendered = rendered.replace("{" + key + "}", value)
     return rendered
-
-
-def _build_portfolio_input(
-    candidates: list[dict[str, Any]],
-    risk_profile: str,
-    guardrails: GuardrailInstruction | None = None,
-) -> str:
-    candidates_json = json.dumps(candidates, indent=2)
-    guardrails_block = _guardrails_block(guardrails) if guardrails else ""
-    return f"""
-Build a {risk_profile} long-only buy-and-hold portfolio allocating over the candidate universe below.
-You may also discover a bounded number of assets beyond this list.
-allocation_pct values across all picks must sum to approximately 1.0.
-{guardrails_block}
-Candidate universe (JSON):
-{candidates_json}
-"""
 
 
 def _summarize_recent_outcomes(
@@ -329,51 +274,6 @@ def _build_rebalance_input(
 # --------------------------------------------------------------------------- #
 
 
-def build_ai_portfolio(
-    candidates: list[dict[str, Any]],
-    risk_profile: str = "balanced",
-    guardrails: GuardrailInstruction | None = None,
-) -> AIPortfolioBuildResult:
-    """Run the builder agent and return its validated :class:`AIPortfolioBuildResult`.
-
-    DEAD CODE (unreferenced): a build no longer calls a builder agent — the opening
-    allocation is produced by an initial rebalance (see ``flows/build.py``), so
-    :meth:`OpenAIAIPortfolioAgent.build` and this helper are no longer invoked.
-    Retained for a follow-up removal; nothing in ``src/cadence`` calls them.
-    """
-    return asyncio.run(
-        _run_build(
-            candidates=candidates, risk_profile=risk_profile, guardrails=guardrails
-        )
-    )
-
-
-async def _run_build(
-    candidates: list[dict[str, Any]],
-    risk_profile: str,
-    guardrails: GuardrailInstruction | None = None,
-) -> AIPortfolioBuildResult:
-    agent = build_agent(
-        name="AIPortfolioBuilderAgent",
-        instructions=_builder_instructions(),
-        output_type=AIPortfolioBuildResult,
-        tools=[web_search],
-        model=settings.AI_PORTFOLIO_MODEL,
-    )
-
-    with web_search_budget(settings.AI_PORTFOLIO_MAX_WEB_SEARCHES):
-        result = await asyncio.wait_for(
-            Runner.run(
-                agent,
-                _build_portfolio_input(candidates, risk_profile, guardrails),
-                max_turns=settings.AI_PORTFOLIO_MAX_TURNS,
-            ),
-            timeout=BUILD_TIMEOUT_SECONDS,
-        )
-    output: AIPortfolioBuildResult = result.final_output
-    return output
-
-
 def rebalance_ai_portfolio(
     holdings: list[dict[str, Any]],
     account_summary: dict[str, Any],
@@ -463,27 +363,12 @@ async def _run_rebalance(
 
 @runtime_checkable
 class AIPortfolioAgent(Protocol):
-    """Seam for building and rebalancing AI portfolios.
+    """Seam for rebalancing AI portfolios.
 
     Implemented by :class:`OpenAIAIPortfolioAgent` in production and by a fake in
-    tests. Both methods are synchronous so the background job runner stays fully
-    sync; the real implementation drives the async SDK internally.
+    tests. The method is synchronous so the background job runner stays fully sync;
+    the real implementation drives the async SDK internally.
     """
-
-    def build(
-        self,
-        candidates: list[dict[str, Any]],
-        risk_profile: str,
-        guardrails: GuardrailInstruction | None = None,
-    ) -> AIPortfolioBuildResult:
-        """Return a structured portfolio the agent built from the candidates.
-
-        DEAD CODE (unreferenced): the build flow no longer calls ``build`` — the
-        opening allocation runs as an initial rebalance (see ``flows/build.py``), so
-        this method is retained on the protocol for a follow-up removal only.
-        ``guardrails`` (when set) tells the AI the advisory caps to plan within.
-        """
-        ...
 
     def rebalance(
         self,
@@ -512,18 +397,6 @@ class AIPortfolioAgent(Protocol):
 
 class OpenAIAIPortfolioAgent:
     """Production :class:`AIPortfolioAgent` backed by ``openai-agents``."""
-
-    def build(
-        self,
-        candidates: list[dict[str, Any]],
-        risk_profile: str,
-        guardrails: GuardrailInstruction | None = None,
-    ) -> AIPortfolioBuildResult:
-        # DEAD CODE (unreferenced): see the protocol ``build`` docstring — the build
-        # flow now triggers an initial rebalance instead of calling ``build``.
-        return build_ai_portfolio(
-            candidates=candidates, risk_profile=risk_profile, guardrails=guardrails
-        )
 
     def rebalance(
         self,

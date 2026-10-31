@@ -311,16 +311,21 @@ class FakeUniverseEvaluationAgent:
 class FakeAIPortfolioAgent:
     """In-memory :class:`AIPortfolioAgent` returning canned structured output.
 
-    Set ``build_error``/``rebalance_error`` to drive failure paths. ``build_calls``
-    and ``rebalance_calls`` record the keyword arguments of each call so tests can
-    assert the service passed flags (risk profile, allow_short, ...) through.
+    Set ``rebalance_error`` to drive the failure path. ``rebalance_calls`` records
+    the keyword arguments of each call so tests can assert the service passed flags
+    (risk profile, model, ...) through.
+
+    A ``build_result`` seeds a session's OPENING ALLOCATION: the opening allocation
+    now runs as the session's first rebalance (see ``flows/build.py``), so the first
+    ``rebalance`` call derives its targets from the build picks (see
+    :meth:`_opening_allocation_from_build`).
 
     ``research_queries`` simulates the agent doing web searches: each entry is
-    emitted via :func:`note_web_search` when ``build``/``rebalance`` runs, so — since
-    the service wraps the agent call in ``record_web_searches()`` — the run's
-    research transcript is captured exactly as it would be with the real agent. The
-    emission happens BEFORE any configured error is raised, mirroring how research
-    performed mid-run survives a later failure.
+    emitted via :func:`note_web_search` when ``rebalance`` runs, so — since the
+    service wraps the agent call in ``record_web_searches()`` — the run's research
+    transcript is captured exactly as it would be with the real agent. The emission
+    happens BEFORE any configured error is raised, mirroring how research performed
+    mid-run survives a later failure.
     """
 
     def __init__(
@@ -328,16 +333,13 @@ class FakeAIPortfolioAgent:
         *,
         build_result: AIPortfolioBuildResult | None = None,
         rebalance_result: AIRebalanceResult | None = None,
-        build_error: Exception | None = None,
         rebalance_error: Exception | None = None,
         research_queries: list[str] | None = None,
     ) -> None:
         self._build_result = build_result
         self._rebalance_result = rebalance_result
-        self._build_error = build_error
         self._rebalance_error = rebalance_error
         self._research_queries = research_queries or []
-        self.build_calls: list[dict[str, Any]] = []
         self.rebalance_calls: list[dict[str, Any]] = []
 
     def _emit_research(self) -> None:
@@ -346,25 +348,6 @@ class FakeAIPortfolioAgent:
             note_web_search(
                 query, {"organic_results": [{"title": f"result for {query}"}]}
             )
-
-    def build(
-        self,
-        candidates: list[dict[str, Any]],
-        risk_profile: str,
-        guardrails: Any = None,
-    ) -> AIPortfolioBuildResult:
-        self.build_calls.append(
-            {
-                "candidates": candidates,
-                "risk_profile": risk_profile,
-                "guardrails": guardrails,
-            }
-        )
-        self._emit_research()
-        if self._build_error is not None:
-            raise self._build_error
-        assert self._build_result is not None, "FakeAIPortfolioAgent has no build_result"
-        return self._build_result
 
     def rebalance(
         self,

@@ -8,7 +8,7 @@ import {
 } from '../../api/paperTrading';
 import { DEFAULT_PORTFOLIOS_PARAMS, usePortfolios } from '../../api/portfolios';
 import type { PaperTradingSession, Portfolio } from '../../types/api';
-import { formatCurrency } from '../../lib/format';
+import { formatAge, formatCurrency } from '../../lib/format';
 import { SessionComparisonChart } from './SessionComparisonChart';
 import { BuildAIPortfolioCard } from '../portfolios/BuildAIPortfolioCard';
 import { Modal } from '../../components/Modal';
@@ -76,6 +76,12 @@ function SessionRow({
       </td>
       <td className="px-4 py-3">
         <StatusBadge status={session.status} />
+      </td>
+      <td
+        className="px-4 py-3 text-slate-700"
+        title={new Date(session.created_at).toLocaleString()}
+      >
+        {formatAge(session.created_at)}
       </td>
       <td className="px-4 py-3 text-slate-700">
         {humanize(portfolio?.risk_profile)}
@@ -229,11 +235,12 @@ export function PaperTradingPage() {
 
         {!isPending && !isError && sessions.length > 0 && (
           <div className="overflow-x-auto">
-            <table className="w-full min-w-[1120px] border-collapse text-sm">
+            <table className="w-full min-w-[1200px] border-collapse text-sm">
               <thead>
                 <tr className="border-b border-slate-200 bg-slate-50 text-left text-xs font-semibold uppercase tracking-wide text-slate-500">
                   <th className="px-4 py-3">Portfolio</th>
                   <th className="px-4 py-3">Status</th>
+                  <th className="px-4 py-3">Age</th>
                   <th className="px-4 py-3">Risk</th>
                   <th className="px-4 py-3 text-right">Holdings</th>
                   <th className="px-4 py-3">Schedule</th>

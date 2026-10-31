@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
+  formatAge,
   formatAxisDate,
   formatCurrency,
   formatPercent,
@@ -31,6 +32,48 @@ describe('formatPercent', () => {
 
   it('honours a custom fraction-digit count', () => {
     expect(formatPercent(0.032, 1)).toBe('3.2%');
+  });
+});
+
+describe('formatAge', () => {
+  const now = new Date('2026-06-15T12:00:00Z');
+  const daysBefore = (n: number) =>
+    new Date(now.getTime() - n * 86_400_000).toISOString();
+
+  it('reads same-day as today', () => {
+    expect(formatAge(daysBefore(0), now)).toBe('today');
+    // Earlier the same calendar distance (a few hours) is still today.
+    expect(formatAge(new Date(now.getTime() - 3 * 3_600_000), now)).toBe('today');
+  });
+
+  it('reads recent ages in whole days below a week', () => {
+    expect(formatAge(daysBefore(1), now)).toBe('1d');
+    expect(formatAge(daysBefore(6), now)).toBe('6d');
+  });
+
+  it('rolls over to weeks at seven days', () => {
+    expect(formatAge(daysBefore(7), now)).toBe('1w');
+    expect(formatAge(daysBefore(20), now)).toBe('2w');
+    expect(formatAge(daysBefore(29), now)).toBe('4w');
+  });
+
+  it('rolls over to months at thirty days', () => {
+    expect(formatAge(daysBefore(30), now)).toBe('1mo');
+    expect(formatAge(daysBefore(90), now)).toBe('3mo');
+  });
+
+  it('rolls over to years at a full year', () => {
+    expect(formatAge(daysBefore(365), now)).toBe('1y');
+    expect(formatAge(daysBefore(900), now)).toBe('2y');
+  });
+
+  it('accepts a Date and clamps a future time to today', () => {
+    expect(formatAge(new Date(daysBefore(2)), now)).toBe('2d');
+    expect(formatAge(new Date(now.getTime() + 86_400_000), now)).toBe('today');
+  });
+
+  it('falls back to the raw string for an unparseable input', () => {
+    expect(formatAge('not-a-date', now)).toBe('not-a-date');
   });
 });
 

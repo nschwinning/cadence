@@ -28,39 +28,11 @@ from cadence.ai_portfolio.agent import (
     AITargetAllocation,
     GuardrailInstruction,
     PositionSide,
-    _build_portfolio_input,
     _build_rebalance_input,
     _summarize_recent_outcomes,
-    build_ai_portfolio,
     rebalance_ai_portfolio,
 )
 from cadence.config import settings
-
-
-def _valid_build_result() -> AIPortfolioBuildResult:
-    return AIPortfolioBuildResult(
-        portfolio_name="Test Portfolio",
-        stocks=[
-            AIPortfolioStock(
-                ticker="AAPL",
-                company_name="Apple",
-                side=PositionSide.LONG,
-                allocation_pct=0.5,
-                investment_thesis="Strong",
-                confidence=0.8,
-            ),
-            AIPortfolioStock(
-                ticker="MSFT",
-                company_name="Microsoft",
-                allocation_pct=0.5,
-                investment_thesis="Cloud",
-                confidence=0.9,
-            ),
-        ],
-        overall_thesis="Diversified tech",
-        risk_assessment="Concentration risk",
-    )
-
 
 # --------------------------------------------------------------------------- #
 # Output model contracts
@@ -134,34 +106,6 @@ def test_target_allocation_bounds_enforced() -> None:
 # --------------------------------------------------------------------------- #
 # Prompt builders
 # --------------------------------------------------------------------------- #
-
-
-def test_build_portfolio_input_reflects_universe_and_risk() -> None:
-    candidates = [{"ticker": "AAPL"}]
-    prompt = _build_portfolio_input(candidates, "aggressive")
-    assert "aggressive" in prompt
-    assert "sum to approximately 1.0" in prompt
-    assert "AAPL" in prompt
-
-
-def test_build_portfolio_input_includes_guardrails_when_enabled() -> None:
-    guardrails = GuardrailInstruction(
-        max_per_asset=0.25,
-        max_per_class=0.6,
-        min_positions=5,
-        max_invested=0.9,
-    )
-    prompt = _build_portfolio_input([{"ticker": "AAPL"}], "balanced", guardrails)
-    assert "Risk guardrails" in prompt
-    assert "25%" in prompt  # max per asset
-    assert "60%" in prompt  # max per class
-    assert "5" in prompt  # min positions
-    assert "90%" in prompt  # max invested
-
-
-def test_build_portfolio_input_omits_guardrails_when_absent() -> None:
-    prompt = _build_portfolio_input([{"ticker": "AAPL"}], "balanced")
-    assert "Risk guardrails" not in prompt
 
 
 def _load_migration(filename: str) -> ModuleType:
@@ -478,22 +422,6 @@ def _patch_runner(monkeypatch: pytest.MonkeyPatch, output: Any) -> dict[str, Any
 
     monkeypatch.setattr(agent_module, "Runner", _FakeRunner)
     return captured
-
-
-def test_build_ai_portfolio_returns_final_output(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    expected = _valid_build_result()
-    captured = _patch_runner(monkeypatch, expected)
-
-    result = build_ai_portfolio(
-        candidates=[{"ticker": "AAPL"}, {"ticker": "MSFT"}],
-        risk_profile="balanced",
-    )
-
-    assert result is expected
-    assert captured["max_turns"] == settings.AI_PORTFOLIO_MAX_TURNS
-    assert "balanced" in captured["prompt"]
 
 
 def test_rebalance_ai_portfolio_returns_final_output(
