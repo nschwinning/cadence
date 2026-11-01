@@ -311,6 +311,16 @@ a placeholder indicating there is not yet enough history to chart, rather than a
 or empty chart. While the value history is loading or fails to load, the view SHALL show
 a loading or error state consistent with the page's other panels.
 
+The chart SHALL **carry each line's last recorded value forward** across dates on
+which the session has no snapshot — weekends and any other non-trading days — so the
+plotted value on such a date equals the most recent snapshot on or before it, drawn as
+a flat segment rather than a sloped line or a gap. The plotted axis SHALL extend to a
+trailing horizon of the current day (US Eastern), so the latest weekend or other
+non-trading day reads flat at the preceding trading day's value rather than ending the
+line at the last stored snapshot. No value before a line's first snapshot SHALL be
+synthesized. Carrying values forward SHALL NOT alter any stored snapshot; it only
+affects what the chart draws.
+
 When the chart is rendered, it SHALL display a **labelled x-axis** marking several
 calendar dates spread across the plotted history — more than just the first and last
 points — and a **labelled y-axis** marking portfolio value in USD, so a user can read
@@ -340,6 +350,11 @@ SHALL NOT appear when the placeholder, loading, or error state is shown.
 
 - **WHEN** a user opens a session that has at least two value snapshots
 - **THEN** the view SHALL render a line chart of the session's total value over time
+
+#### Scenario: Value carried forward over non-trading days
+
+- **WHEN** an equity-only session's latest snapshot is a prior trading day and the current day is a weekend or other non-trading day
+- **THEN** the view SHALL draw the value line flat from that snapshot forward to the current day at the same value, rather than ending the line at the last snapshot
 
 #### Scenario: Chart marked as end-of-day
 
@@ -705,16 +720,23 @@ The paper-trading session list view SHALL display a **performance-comparison cha
 - **Return %** (default): each session's line SHALL be its cumulative total-return percentage, computed from the session's total value relative to its allocated capital, so sessions with different allocated capital and start dates are compared fairly and the highest line is the best performer.
 - **Value ($)**: each session's line SHALL be its absolute total portfolio value in USD.
 
+Each plotted session's line SHALL **carry its last recorded value forward** across dates on which that session has no value point — weekends and any other non-trading days — so the line is drawn flat at the preceding trading day's value rather than ending early or sloping across the gap. The chart's shared time axis SHALL span the union of all plotted sessions' dates extended to a trailing horizon of the current day (US Eastern), so that a session whose latest point is an earlier trading day (for example an equity-only session with no weekend snapshots) stays plotted — flat — alongside sessions that do have more recent points (for example sessions holding crypto, which is valued on weekends). No value before a session's first value point SHALL be synthesized, and a session with fewer than two value points SHALL remain legended-but-not-plotted. Carrying values forward SHALL affect only what the chart draws, not any stored data.
+
 When the chart plots at least one line, it SHALL display a **labelled x-axis** marking several calendar dates spread across the shared time axis — more than just the first and last points — and a **labelled y-axis** whose tick labels match the active metric — percentages in the Return % view and USD amounts in the Value $ view — and the y-axis labels SHALL update when the metric toggle switches. Axis tick labels SHALL be rendered legibly (not distorted by the chart's scaling).
 
 When the chart plots at least one line, it SHALL support **hover inspection**: moving the pointer over the plot area SHALL identify the plotted point nearest the pointer across all plotted session lines and SHALL show a tooltip reporting that point's **session label**, its **date**, and its **value** formatted for the active metric — a percentage in the Return % view and a USD amount in the Value $ view. The tooltip SHALL be rendered legibly (not distorted by the chart's scaling) and SHALL be positioned near the hovered point without being clipped out of the chart area. The chart MAY also mark the hovered point visually. When the pointer leaves the plot area, the tooltip SHALL be dismissed. Hover inspection SHALL NOT change any plotted value and SHALL NOT appear when the insufficient-data placeholder, loading, or error state is shown.
 
-When no non-archived session has enough value points to plot, the chart SHALL show an insufficient-data placeholder rather than an empty plot area. The chart SHALL show its own loading and error states while the comparison data is being fetched or if the fetch fails. The existing single-session value chart on the session detail view SHALL remain unchanged.
+When no non-archived session has enough value points to plot, the chart SHALL show an insufficient-data placeholder rather than an empty plot area. The chart SHALL show its own loading and error states while the comparison data is being fetched or if the fetch fails.
 
 #### Scenario: Comparison chart overlays non-archived sessions
 
 - **WHEN** a user opens the paper-trading session list and multiple non-archived sessions each have at least two value points
 - **THEN** the chart SHALL render one line per such session on a shared y-scale with a legend identifying each session by its label
+
+#### Scenario: Equity-only session stays plotted flat over a weekend
+
+- **WHEN** one plotted session's latest value point is a Friday (an equity-only session with no weekend snapshots) while another plotted session has later weekend value points
+- **THEN** the chart SHALL extend the equity-only session's line flat from Friday across the weekend at its Friday value, so it remains visible and comparable rather than ending at Friday
 
 #### Scenario: Lines and legend are ordered oldest-created first
 
@@ -914,7 +936,7 @@ The Dashboard SHALL also present range-scoped performance tiles showing, over th
 
 ### Requirement: Dashboard combined equity curve
 
-The Dashboard SHALL present a combined equity curve as a single line equal to the summed value of the selected active sessions over the selected range, on a common date axis. A session SHALL contribute zero before its first recorded value (carry-forward thereafter). The Dashboard SHALL offer a selectable list of the active sessions, all selected by default, letting the user include or exclude each session; the selection SHALL also drive the hero tiles and the leaderboard. Toggling a session SHALL re-aggregate from already-fetched per-session data without issuing a new request per toggle. When no session is selected, the chart SHALL show an empty state instead of a line.
+The Dashboard SHALL present a combined equity curve as a single line equal to the summed value of the selected active sessions over the selected range, on a common date axis. A session SHALL contribute zero before its first recorded value (carry-forward thereafter). The common date axis SHALL span the union of the selected sessions' snapshot dates extended to a trailing horizon of the current day (US Eastern), so the combined line — and the benchmark lines described below — extend flat across trailing non-trading days (for example the current weekend) at their last known value rather than ending at the latest snapshot date. The Dashboard SHALL offer a selectable list of the active sessions, all selected by default, letting the user include or exclude each session; the selection SHALL also drive the hero tiles and the leaderboard. Toggling a session SHALL re-aggregate from already-fetched per-session data without issuing a new request per toggle. When no session is selected, the chart SHALL show an empty state instead of a line.
 
 The chart SHALL also overlay **benchmark index lines** on the same dollar axis. It SHALL present a benchmark legend listing every index in the benchmark catalog, each individually selectable, with the S&P 500 selected by default and the others deselected. For each selected benchmark that has price data over the range, the chart SHALL draw a line equal to the **sum over the selected sessions of a buy-and-hold of each session's contributed capital in that index** — for each selected session, its opening capital is treated as invested in the index on the session's first date and each later capital increase as invested on its effective date, each held thereafter and valued forward by the index's price movement, and these per-session positions are summed on the common date axis. Consequently the benchmark line starts from zero before any selected session has opened and **steps up as each selected session opens** (and on each later capital increase), mirroring how the combined equity line aggregates, so the two curves are directly comparable in USD (no percent/dollar toggle). A selected benchmark that has no price data over the range SHALL draw no line, and its legend control SHALL be inert rather than erroring. Benchmark lines SHALL be visually distinguishable from the portfolio line and from one another. Toggling a benchmark SHALL add or remove its line without issuing a new request, and changing the session selection SHALL re-aggregate the benchmark lines over the newly selected sessions. When no session is selected, no benchmark lines SHALL be drawn (the empty state is shown instead).
 
@@ -924,6 +946,11 @@ When the equity curve plots a line, it SHALL support **hover inspection**: movin
 
 - **WHEN** the Dashboard renders the equity curve with one or more sessions selected
 - **THEN** it SHALL plot a single line equal to the sum of the selected sessions' values across the range, each session contributing zero before its first recorded value
+
+#### Scenario: Combined line extends flat over a trailing weekend
+
+- **WHEN** the latest snapshot among the selected sessions is a prior trading day and the current day is a weekend or other non-trading day
+- **THEN** the combined equity line and each drawn benchmark line SHALL extend flat from that date to the current day at their last known value, rather than ending at the latest snapshot date
 
 #### Scenario: Toggling a session re-aggregates without refetch
 

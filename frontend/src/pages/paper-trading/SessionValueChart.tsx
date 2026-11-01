@@ -7,6 +7,11 @@ import {
   formatCurrency,
   formatTooltipTimestamp,
 } from '../../lib/format';
+import {
+  carryForwardSeries,
+  todayEt,
+  unionDateAxis,
+} from '../../lib/carryForward';
 import { EChart } from '../../components/charts/EChart';
 import { FreshnessBadge, Panel } from './PaperTradingSessionPage';
 
@@ -43,12 +48,28 @@ export function benchmarkDrawnFor(snapshots: SessionValueSnapshot[]): boolean {
  * benchmark overlay (dashed amber) on the same USD y-scale and shared time x-axis
  * (with several dated ticks). The tooltip reports each line's value at the hovered
  * date, skipping the benchmark row where no benchmark value exists.
+ *
+ * Both lines are carried forward flat to `horizon` (typically today in ET) so the
+ * latest weekend / non-trading-day reads flat at the last close instead of ending
+ * on the last snapshot. The portfolio line uses last-observation-carried-forward;
+ * the benchmark preserves its interior nulls (genuine unpriceable days stay gaps)
+ * and only extends its trailing segment flat at its last non-null value.
  */
 export function buildValueOption(
   snapshots: SessionValueSnapshot[],
+  horizon?: string,
 ): EChartsCoreOption {
   const trendStroke = TREND_STROKE[trendOf(snapshots)];
   const benchmarkDrawn = benchmarkDrawnFor(snapshots);
+
+  const axis = unionDateAxis(
+    [snapshots.map((s) => s.snapshot_date)],
+    horizon,
+  );
+  const portfolio = carryForwardSeries(
+    snapshots.map((s) => ({ date: s.snapshot_date, value: s.total_value })),
+    axis,
+  );
 
   const series: Array<Record<string, unknown>> = [
     {
@@ -58,10 +79,28 @@ export function buildValueOption(
       showSymbol: false,
       lineStyle: { width: 2 },
       itemStyle: { color: trendStroke },
-      data: snapshots.map((s) => [Date.parse(s.snapshot_date), s.total_value]),
+      data: portfolio.map((p) => [Date.parse(p.date), p.value]),
     },
   ];
   if (benchmarkDrawn) {
+    // Plot the benchmark at its real snapshot dates (nulls preserved as gaps),
+    // then extend only the trailing segment flat at the last non-null value over
+    // any axis date beyond the last snapshot (the weekend / today horizon).
+    const lastSnapshotDate = snapshots[snapshots.length - 1].snapshot_date;
+    const lastBenchmark = [...snapshots]
+      .reverse()
+      .find((s) => s.benchmark_value !== null)?.benchmark_value;
+    const data: Array<[number, number | null]> = snapshots.map((s) => [
+      Date.parse(s.snapshot_date),
+      s.benchmark_value,
+    ]);
+    if (lastBenchmark !== undefined && lastBenchmark !== null) {
+      for (const date of axis) {
+        if (date > lastSnapshotDate) {
+          data.push([Date.parse(date), lastBenchmark]);
+        }
+      }
+    }
     series.push({
       id: 'benchmark',
       name: 'Benchmark',
@@ -70,10 +109,7 @@ export function buildValueOption(
       lineStyle: { width: 1.5, type: 'dashed' },
       itemStyle: { color: BENCHMARK_STROKE },
       connectNulls: false,
-      data: snapshots.map((s) => [
-        Date.parse(s.snapshot_date),
-        s.benchmark_value,
-      ]),
+      data,
     });
   }
 
@@ -127,7 +163,7 @@ function ValueCurve({ snapshots }: { snapshots: SessionValueSnapshot[] }) {
   // Only build the option once there is something to plot; buildValueOption reads
   // the first/last snapshot for the trend colour and would throw on an empty list.
   const option = useMemo(
-    () => (snapshots.length >= 2 ? buildValueOption(snapshots) : null),
+    () => (snapshots.length >= 2 ? buildValueOption(snapshots, todayEt()) : null),
     [snapshots],
   );
   if (snapshots.length < 2 || option === null) {

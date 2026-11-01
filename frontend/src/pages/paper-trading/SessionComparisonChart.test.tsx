@@ -15,6 +15,27 @@ vi.mock('../../api/client', () => ({
   apiClient: { get: vi.fn(), post: vi.fn() },
 }));
 
+// Mock the ECharts wrapper so the weekend carry-forward test can inspect the
+// option (its series data) passed to it; keeps the accessible role="img" name.
+vi.mock('../../components/charts/EChart', () => ({
+  EChart: ({
+    option,
+    ariaLabel,
+  }: {
+    option: unknown;
+    ariaLabel?: string;
+  }) => (
+    <div role="img" aria-label={ariaLabel} data-option={JSON.stringify(option)} />
+  ),
+}));
+
+// Pin "today" (the carry-forward horizon) so plotted data is deterministic.
+vi.mock('../../lib/carryForward', async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import('../../lib/carryForward')>();
+  return { ...actual, todayEt: () => '2026-01-11' };
+});
+
 const mockedGet = vi.mocked(apiClient.get);
 
 function series(
@@ -260,5 +281,41 @@ describe('SessionComparisonChart', () => {
     expect(await screen.findByRole('alert')).toHaveTextContent(
       /could not load session comparison/i,
     );
+  });
+
+  it('carries an equity-only session flat across a weekend alongside a crypto session', async () => {
+    // Equity-only session: Thu + Fri, no weekend snapshots. Crypto session: also
+    // has Sat + Sun. The equity line must extend flat over the weekend (at its
+    // Friday value) instead of ending on Friday.
+    renderChart([
+      series('eq', 'Equity', 100000, [
+        ['2026-01-08', 100000],
+        ['2026-01-09', 101000],
+      ]),
+      series('cr', 'Crypto', 100000, [
+        ['2026-01-08', 100000],
+        ['2026-01-09', 100500],
+        ['2026-01-10', 100800],
+        ['2026-01-11', 101200],
+      ]),
+    ]);
+
+    await screen.findByRole('img', { name: /return percent/i });
+    // Switch to Value $ so the plotted data is the raw carried-forward value.
+    fireEvent.click(screen.getByRole('button', { name: 'Value $' }));
+
+    const el = screen.getByRole('img', { name: /portfolio value/i });
+    const option = JSON.parse(el.getAttribute('data-option') ?? '{}');
+    const plotted = option.series as Array<{
+      id: string;
+      data: [number, number][];
+    }>;
+    const equity = plotted.find((s) => s.id === 'eq');
+    expect(equity?.data).toEqual([
+      [Date.parse('2026-01-08'), 100000],
+      [Date.parse('2026-01-09'), 101000],
+      [Date.parse('2026-01-10'), 101000], // Saturday carried from Friday
+      [Date.parse('2026-01-11'), 101000], // Sunday carried from Friday
+    ]);
   });
 });

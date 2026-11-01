@@ -1,9 +1,21 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { CombinedEquityChart, buildCombinedOption } from './CombinedEquityChart';
 import { makeSession } from './fixtures';
+import { todayEt } from '../../lib/carryForward';
 import type { DashboardBenchmarkSeries } from '../../types/api';
+
+// Pin "today" (the carry-forward horizon) so the chart's axis is deterministic.
+// Default to the latest fixture date so existing cases see no trailing extension;
+// individual tests override it to assert the extension (or avoid one).
+vi.mock('../../lib/carryForward', async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import('../../lib/carryForward')>();
+  return { ...actual, todayEt: vi.fn(() => '2026-06-15') };
+});
+
+const mockedToday = vi.mocked(todayEt);
 
 // Mock the ECharts wrapper so tests can inspect the option passed to it (the real
 // SVG render is exercised elsewhere). Keeps the accessible `role="img"` name so the
@@ -161,6 +173,12 @@ describe('buildCombinedOption', () => {
 });
 
 describe('CombinedEquityChart', () => {
+  beforeEach(() => {
+    // Reset the pinned horizon to the latest fixture date so each test starts with
+    // no trailing carry-forward; tests that assert extension override it explicitly.
+    mockedToday.mockReturnValue('2026-06-15');
+  });
+
   it('draws the chart when sessions are selected', () => {
     render(
       <CombinedEquityChart
@@ -292,6 +310,9 @@ describe('CombinedEquityChart', () => {
   });
 
   it('draws the default S&P 500 line as the aggregated per-session buy-and-hold', () => {
+    // Pin the horizon to the latest data date so no trailing carry-forward point is
+    // appended, keeping this aggregation assertion exact.
+    mockedToday.mockReturnValue('2026-06-10');
     // Two sessions opening on different dates against a flat-priced index: a single
     // rebased curve would stay flat, but the aggregated buy-and-hold must step up on
     // the second session's open date — proving per-session aggregation, not rebasing.
@@ -339,6 +360,51 @@ describe('CombinedEquityChart', () => {
       [Date.parse('2026-06-01'), 10000],
       [Date.parse('2026-06-05'), 20000], // steps up on Beta's open, not flat
       [Date.parse('2026-06-10'), 20000],
+    ]);
+  });
+
+  it('extends the combined and benchmark lines flat to today over a trailing non-trading day', () => {
+    // Latest snapshot is 06-10 (a prior trading day); today is 06-20. Both the
+    // combined value line and the benchmark overlay must carry flat to 06-20.
+    mockedToday.mockReturnValue('2026-06-20');
+    const a = makeSession({
+      id: 'a',
+      label: 'Alpha',
+      points: [
+        { date: '2026-06-01', value: 10000 },
+        { date: '2026-06-10', value: 11000 },
+      ],
+      contributions: [{ effective_date: '2026-06-01', amount: 10000 }],
+    });
+    const index: DashboardBenchmarkSeries[] = [
+      {
+        benchmark_id: 'SP500',
+        name: 'S&P 500',
+        points: [
+          { date: '2026-06-01', price: 100 },
+          { date: '2026-06-10', price: 110 },
+        ],
+      },
+    ];
+    render(
+      <CombinedEquityChart
+        sessions={[a]}
+        selectedIds={new Set(['a'])}
+        onToggle={() => {}}
+        benchmarkSeries={index}
+      />,
+    );
+    const combined = chartSeries().find((s) => s.id === 'combined');
+    expect(combined?.data).toEqual([
+      [Date.parse('2026-06-01'), 10000],
+      [Date.parse('2026-06-10'), 11000],
+      [Date.parse('2026-06-20'), 11000], // carried flat to today
+    ]);
+    const bench = chartSeries().find((s) => s.id === 'benchmark:SP500');
+    expect(bench?.data).toEqual([
+      [Date.parse('2026-06-01'), 10000],
+      [Date.parse('2026-06-10'), 11000],
+      [Date.parse('2026-06-20'), 11000], // benchmark carried flat to today
     ]);
   });
 

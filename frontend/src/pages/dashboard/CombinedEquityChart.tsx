@@ -10,6 +10,7 @@ import {
   formatTooltipTimestamp,
 } from '../../lib/format';
 import { categoricalColor } from '../../lib/palette';
+import { todayEt } from '../../lib/carryForward';
 import { EChart } from '../../components/charts/EChart';
 import {
   combinedSeries,
@@ -139,7 +140,9 @@ export function CombinedEquityChart({
   benchmarkSeries: DashboardBenchmarkSeries[];
 }) {
   const selected = sessions.filter((s) => selectedIds.has(s.id));
-  const series = combinedSeries(selected);
+  // Extend the shared axis to today (ET) so the combined line and benchmark overlays
+  // read flat over a trailing weekend instead of ending at the last snapshot.
+  const series = combinedSeries(selected, todayEt());
 
   // Local overlay selection: S&P 500 on by default, the rest opt-in.
   const [selectedBenchmarks, setSelectedBenchmarks] = useState<Set<string>>(

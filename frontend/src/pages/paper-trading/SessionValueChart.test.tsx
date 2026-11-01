@@ -142,6 +142,58 @@ describe('buildValueOption', () => {
     expect(xAxis.axisLabel.formatter(Date.parse('2026-01-04'))).toBe('04.01');
   });
 
+  it('carries the value line and benchmark flat to the horizon over a trailing weekend', () => {
+    // Last snapshot is Friday; horizon is the following Sunday. Both lines extend
+    // flat at their Friday values to the horizon endpoint instead of ending Friday
+    // — on a time axis a segment between two equal-valued points reads flat, so the
+    // single trailing horizon point is enough (no synthetic interior weekend date).
+    const opt = buildValueOption(
+      [
+        snapshot('2026-01-08', 100000, 50000),
+        snapshot('2026-01-09', 101000, 50500),
+      ],
+      '2026-01-11',
+    );
+    const series = (opt.series ?? []) as Array<{
+      id: string;
+      data: [number, number | null][];
+    }>;
+    const portfolio = series.find((s) => s.id === 'portfolio');
+    expect(portfolio?.data).toEqual([
+      [Date.parse('2026-01-08'), 100000],
+      [Date.parse('2026-01-09'), 101000],
+      [Date.parse('2026-01-11'), 101000], // horizon carried flat from Friday
+    ]);
+    const benchmark = series.find((s) => s.id === 'benchmark');
+    expect(benchmark?.data).toEqual([
+      [Date.parse('2026-01-08'), 50000],
+      [Date.parse('2026-01-09'), 50500],
+      [Date.parse('2026-01-11'), 50500], // horizon carried flat from Friday
+    ]);
+  });
+
+  it('keeps an interior null benchmark point as a gap while extending the trailing end', () => {
+    // A null benchmark on 01-08 stays null (a gap); the trailing horizon still
+    // extends flat at the last non-null benchmark value.
+    const opt = buildValueOption(
+      [
+        snapshot('2026-01-07', 100000, 50000),
+        snapshot('2026-01-08', 100500, null),
+        snapshot('2026-01-09', 101000, 50500),
+      ],
+      '2026-01-11',
+    );
+    const benchmark = (
+      (opt.series ?? []) as Array<{ id: string; data: [number, number | null][] }>
+    ).find((s) => s.id === 'benchmark');
+    expect(benchmark?.data).toEqual([
+      [Date.parse('2026-01-07'), 50000],
+      [Date.parse('2026-01-08'), null], // interior null preserved as a gap
+      [Date.parse('2026-01-09'), 50500],
+      [Date.parse('2026-01-11'), 50500], // trailing horizon carried flat
+    ]);
+  });
+
   it('builds a tooltip reporting each line, skipping a null benchmark row', () => {
     const opt = buildValueOption([
       snapshot('2026-01-04', 100000, 100000),

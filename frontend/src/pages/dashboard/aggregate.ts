@@ -12,6 +12,7 @@ import type {
   DashboardBenchmarkPricePoint,
   DashboardSessionPerformance,
 } from '../../types/api';
+import { unionDateAxis } from '../../lib/carryForward';
 
 /** A session's value at the range start, derived as `current_value - pnl`. */
 export function sessionValueStart(session: DashboardSessionPerformance): number {
@@ -149,15 +150,23 @@ export interface CombinedPoint {
  * Sum the selected sessions onto a single value series over their shared date
  * axis. Each session's value is carried forward from its last snapshot on/before
  * a date, and contributes 0 before its first snapshot — so a newer session adds
- * nothing to earlier dates rather than dropping the whole point. Returns points
- * oldest-first; empty when nothing is selected or no session has points.
+ * nothing to earlier dates rather than dropping the whole point. When a `horizon`
+ * date (typically today in ET) is given, the axis is extended to it so the combined
+ * line reads flat over a trailing weekend / non-trading day rather than ending at
+ * the last snapshot. Returns points oldest-first; empty when nothing is selected or
+ * no session has points (even with a horizon).
  */
 export function combinedSeries(
   sessions: DashboardSessionPerformance[],
+  horizon?: string,
 ): CombinedPoint[] {
-  const dates = Array.from(
-    new Set(sessions.flatMap((s) => s.points.map((p) => p.date))),
-  ).sort();
+  const seriesDates = sessions.map((s) => s.points.map((p) => p.date));
+  const realAxis = unionDateAxis(seriesDates);
+  // Extend to the horizon only when there is an established multi-point line to
+  // carry forward; an empty or single-snapshot selection is left as-is so it stays
+  // empty / a lone point (the chart's "not enough history" placeholder), unchanged.
+  const dates =
+    realAxis.length >= 2 ? unionDateAxis(seriesDates, horizon) : realAxis;
   return dates.map((date) => {
     let value = 0;
     for (const s of sessions) {

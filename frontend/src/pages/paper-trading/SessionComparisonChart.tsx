@@ -9,6 +9,11 @@ import {
   formatTooltipTimestamp,
 } from '../../lib/format';
 import { categoricalColor } from '../../lib/palette';
+import {
+  carryForwardSeries,
+  todayEt,
+  unionDateAxis,
+} from '../../lib/carryForward';
 import { EChart } from '../../components/charts/EChart';
 import { Panel } from './PaperTradingSessionPage';
 
@@ -43,24 +48,43 @@ function formatMetric(metric: Metric, value: number): string {
  * colour is stable across renders unless an older session is added or removed ahead of
  * it. For the return metric a session with non-positive allocated capital cannot be
  * normalised, so it yields no points (and thus drops to legend-only).
+ *
+ * Each session's value is carried forward over the union of all displayed sessions'
+ * dates (plus the `horizon`, typically today in ET), so an equity-only session with no
+ * weekend snapshot stays plotted flat at its preceding trading day's value alongside a
+ * crypto session that does have weekend points. Carry-forward is applied to the value
+ * series before the metric transform (a flat value ⇒ a flat return). A session with
+ * fewer than two real snapshots is left as-is (not carried forward), so it stays
+ * legend-only rather than being promoted to a flat line.
  */
 export function buildComparisonSeries(
   sessions: SessionValueComparisonSeries[],
   metric: Metric,
+  horizon?: string,
 ): PlotSeries[] {
+  const axis = unionDateAxis(
+    sessions.map((s) => s.points.map((p) => p.snapshot_date)),
+    horizon,
+  );
   return sessions.map((series, index) => {
     const canReturn = metric === 'return' && series.allocated_capital > 0;
-    const points: PlotPoint[] =
-      metric === 'value' || canReturn
-        ? series.points.map((p) => ({
-            t: Date.parse(p.snapshot_date),
-            value:
-              metric === 'value'
-                ? p.total_value
-                : (p.total_value - series.allocated_capital) /
-                  series.allocated_capital,
-          }))
-        : [];
+    let points: PlotPoint[] = [];
+    if (metric === 'value' || canReturn) {
+      const raw = series.points.map((p) => ({
+        date: p.snapshot_date,
+        value: p.total_value,
+      }));
+      // Only carry a session forward once it has a real line (≥2 snapshots); a
+      // single snapshot stays a lone point so it remains legend-only.
+      const carried = raw.length >= 2 ? carryForwardSeries(raw, axis) : raw;
+      points = carried.map((dv) => ({
+        t: Date.parse(dv.date),
+        value:
+          metric === 'value'
+            ? dv.value
+            : (dv.value - series.allocated_capital) / series.allocated_capital,
+      }));
+    }
     return {
       id: series.session_id,
       label: series.label,
@@ -196,7 +220,7 @@ export function SessionComparisonChart() {
   const { data, isPending, isError } = useSessionsValueComparison();
   const sessions = data?.sessions ?? [];
   const series = useMemo(
-    () => buildComparisonSeries(sessions, metric),
+    () => buildComparisonSeries(sessions, metric, todayEt()),
     [sessions, metric],
   );
   const plottable = series.filter(isPlotted);

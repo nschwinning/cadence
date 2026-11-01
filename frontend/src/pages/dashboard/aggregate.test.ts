@@ -175,6 +175,46 @@ describe('combinedSeries (carry-forward summed line)', () => {
   it('is empty when there are no sessions or points', () => {
     expect(combinedSeries([])).toEqual([]);
   });
+
+  it('extends the combined line flat to a trailing horizon', () => {
+    const a = makeSession({
+      id: 'a',
+      points: [
+        { date: '2026-06-01', value: 100 },
+        { date: '2026-06-02', value: 110 },
+      ],
+    });
+    // Last snapshot is 06-02; a horizon of 06-04 carries the line flat to it.
+    expect(combinedSeries([a], '2026-06-04')).toEqual([
+      { date: '2026-06-01', value: 100 },
+      { date: '2026-06-02', value: 110 },
+      { date: '2026-06-04', value: 110 }, // carried flat to the horizon
+    ]);
+  });
+
+  it('does not duplicate a horizon equal to the latest snapshot date', () => {
+    const a = makeSession({
+      id: 'a',
+      points: [
+        { date: '2026-06-01', value: 100 },
+        { date: '2026-06-02', value: 110 },
+      ],
+    });
+    expect(combinedSeries([a], '2026-06-02')).toEqual([
+      { date: '2026-06-01', value: 100 },
+      { date: '2026-06-02', value: 110 },
+    ]);
+  });
+
+  it('does not extend a single-snapshot selection to the horizon', () => {
+    // A lone snapshot has no established line to carry forward; it stays a single
+    // point (which the chart renders as its "not enough history" placeholder).
+    const a = makeSession({ id: 'a', points: [{ date: '2026-06-01', value: 100 }] });
+    expect(combinedSeries([a], '2026-06-04')).toEqual([
+      { date: '2026-06-01', value: 100 },
+    ]);
+    expect(combinedSeries([], '2026-06-04')).toEqual([]);
+  });
 });
 
 describe('closeOnOrBefore', () => {
