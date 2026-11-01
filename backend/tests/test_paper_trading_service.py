@@ -46,6 +46,7 @@ from cadence.paper_trading.models import (
 )
 from cadence.portfolios import service as portfolios_service
 from cadence.portfolios.models import Portfolio
+from cadence.price_history.models import PriceHistory
 
 
 def _portfolio(db_session: Session) -> Portfolio:
@@ -858,6 +859,202 @@ def test_compute_value_total_quote_failure_falls_back_to_cost(
     # A wholesale get_quotes failure values every holding at avg cost (flat).
     assert valuation.positions_value == pytest.approx(1000.0)
     assert valuation.total_value == pytest.approx(100_000.0)
+
+
+# --------------------------------------------------------------------------- #
+# Market-closed valuation: equities marked to the last official close.
+# --------------------------------------------------------------------------- #
+
+
+class _ClosedMarketBroker(_QuoteBroker):
+    """A :class:`_QuoteBroker` whose clock reports the equity market closed."""
+
+    def is_market_open(self) -> bool:
+        return False
+
+
+def _price_history(
+    db_session: Session, asset: Asset, as_of: date, close: float
+) -> None:
+    db_session.add(PriceHistory(asset_id=asset.id, date=as_of, close=close))
+    db_session.commit()
+
+
+def test_last_official_closes_picks_latest_on_or_before(db_session: Session) -> None:
+    aapl = _asset(db_session, "AAPL", AssetCategory.STOCK)
+    msft = _asset(db_session, "MSFT", AssetCategory.STOCK)
+    db_session.add_all(
+        [
+            PriceHistory(asset_id=aapl.id, date=date(2026, 1, 1), close=100.0),
+            PriceHistory(asset_id=aapl.id, date=date(2026, 1, 2), close=110.0),  # Fri
+            PriceHistory(asset_id=aapl.id, date=date(2026, 1, 5), close=130.0),  # Mon
+            PriceHistory(asset_id=msft.id, date=date(2026, 1, 2), close=200.0),
+        ]
+    )
+    db_session.commit()
+
+    # Valuing on Saturday 2026-01-03: the latest close on/before is Friday's, never
+    # the following Monday's (which is after the valuation day).
+    closes = service._last_official_closes(
+        db_session, {"AAPL": aapl.id, "MSFT": msft.id}, date(2026, 1, 3)
+    )
+
+    assert closes == {
+        "AAPL": pytest.approx(110.0),
+        "MSFT": pytest.approx(200.0),
+    }
+
+
+def test_last_official_closes_omits_tickers_without_a_close(
+    db_session: Session,
+) -> None:
+    aapl = _asset(db_session, "AAPL", AssetCategory.STOCK)
+    nope = _asset(db_session, "NOPE", AssetCategory.STOCK)
+    _price_history(db_session, aapl, date(2026, 1, 2), 110.0)
+
+    closes = service._last_official_closes(
+        db_session, {"AAPL": aapl.id, "NOPE": nope.id}, date(2026, 1, 3)
+    )
+
+    # NOPE has no stored close -> simply absent (caller degrades to a quote/avg cost).
+    assert closes == {"AAPL": pytest.approx(110.0)}
+
+
+def test_last_official_closes_empty_ticker_map(db_session: Session) -> None:
+    assert service._last_official_closes(db_session, {}, date(2026, 1, 3)) == {}
+
+
+def test_compute_value_closed_market_marks_equity_at_last_close(
+    db_session: Session,
+) -> None:
+    aapl = _asset(db_session, "AAPL", AssetCategory.STOCK)
+    _price_history(db_session, aapl, date(2026, 1, 2), 130.0)
+    sess = _ai_session(db_session)
+    _buy(db_session, sess.id, "AAPL", 10, 100.0)  # cost basis 1000
+
+    # The live quote says 120, but the market is closed, so the equity is marked to
+    # its last official close (130) instead of the drifting intraday quote.
+    valuation = service.compute_session_value(
+        db_session,
+        session_id=sess.id,
+        broker=_ClosedMarketBroker({"AAPL": 120.0}),
+        as_of=date(2026, 1, 3),
+    )
+
+    (pos,) = valuation.positions
+    assert pos["price"] == pytest.approx(130.0)
+    assert pos["market_value"] == pytest.approx(1300.0)
+    assert valuation.total_value == pytest.approx(100_300.0)
+
+
+def test_compute_value_closed_market_keeps_crypto_live(db_session: Session) -> None:
+    btc = _asset(db_session, "BTC-USD", AssetCategory.CRYPTO)
+    # A stale close exists, but crypto trades around the clock and must stay live.
+    _price_history(db_session, btc, date(2026, 1, 2), 900.0)
+    sess = _ai_session(db_session)
+    _buy(db_session, sess.id, "BTC-USD", 1, 1000.0)
+
+    valuation = service.compute_session_value(
+        db_session,
+        session_id=sess.id,
+        broker=_ClosedMarketBroker({"BTC-USD": 1200.0}),
+        as_of=date(2026, 1, 3),
+    )
+
+    (pos,) = valuation.positions
+    # Live price (1200), not the stored 900 close.
+    assert pos["price"] == pytest.approx(1200.0)
+    assert valuation.total_value == pytest.approx(100_200.0)
+
+
+def test_compute_value_market_open_unchanged(db_session: Session) -> None:
+    aapl = _asset(db_session, "AAPL", AssetCategory.STOCK)
+    _price_history(db_session, aapl, date(2026, 1, 2), 130.0)
+    sess = _ai_session(db_session)
+    _buy(db_session, sess.id, "AAPL", 10, 100.0)
+
+    # Market open (StubBroker.is_market_open() is always True): the stored close is
+    # ignored and the live quote (120) is used, exactly as before this change.
+    valuation = service.compute_session_value(
+        db_session,
+        session_id=sess.id,
+        broker=StubBroker(),  # stub quotes AAPL; clock reports open
+    )
+
+    (pos,) = valuation.positions
+    assert pos["price"] != pytest.approx(130.0)
+
+
+def test_compute_value_closed_market_falls_back_when_no_close(
+    db_session: Session,
+) -> None:
+    # Equity is in the catalogue but has no stored close: closed-market marking
+    # degrades to the live quote, then to avg cost.
+    _asset(db_session, "AAPL", AssetCategory.STOCK)
+    _asset(db_session, "MSFT", AssetCategory.STOCK)
+    sess = _ai_session(db_session)
+    _buy(db_session, sess.id, "AAPL", 10, 100.0)  # quote available -> 120
+    _buy(db_session, sess.id, "MSFT", 5, 50.0)  # no quote, no close -> avg cost
+
+    valuation = service.compute_session_value(
+        db_session,
+        session_id=sess.id,
+        broker=_ClosedMarketBroker({"AAPL": 120.0, "MSFT": None}),
+        as_of=date(2026, 1, 3),
+    )
+
+    by_ticker = {p["ticker"]: p for p in valuation.positions}
+    assert by_ticker["AAPL"]["price"] == pytest.approx(120.0)  # fell back to quote
+    assert by_ticker["MSFT"]["price"] == pytest.approx(50.0)  # fell back to avg cost
+
+
+def test_compute_value_stocks_only_is_flat_across_non_trading_day(
+    db_session: Session,
+) -> None:
+    # A stocks-only session valued across a non-trading weekend shows no drift: the
+    # last official close is the same whether the live quote wandered up or down.
+    aapl = _asset(db_session, "AAPL", AssetCategory.STOCK)
+    _price_history(db_session, aapl, date(2026, 1, 2), 115.0)
+    sess = _ai_session(db_session)
+    _buy(db_session, sess.id, "AAPL", 10, 100.0)
+
+    saturday = service.compute_session_value(
+        db_session,
+        session_id=sess.id,
+        broker=_ClosedMarketBroker({"AAPL": 118.0}),
+        as_of=date(2026, 1, 3),
+    )
+    sunday = service.compute_session_value(
+        db_session,
+        session_id=sess.id,
+        broker=_ClosedMarketBroker({"AAPL": 125.0}),
+        as_of=date(2026, 1, 4),
+    )
+
+    # Both non-trading-day valuations resolve to Friday's close (115), so there is no
+    # day-over-day change attributable to live-quote drift.
+    assert saturday.total_value == pytest.approx(sunday.total_value)
+    assert saturday.total_value == pytest.approx(100_150.0)
+
+
+def test_closed_market_value_reaches_live_read_paths(db_session: Session) -> None:
+    # The single-chokepoint fix (compute_session_value) must reach the live read
+    # paths the UI renders: the P&L triple and the KPI summary both report the frozen
+    # last-close equity value while the market is closed, not the drifting live quote.
+    aapl = _asset(db_session, "AAPL", AssetCategory.STOCK)
+    _price_history(db_session, aapl, date(2026, 1, 2), 130.0)
+    sess = _ai_session(db_session)
+    _buy(db_session, sess.id, "AAPL", 10, 100.0)  # cost basis 1000
+    broker = _ClosedMarketBroker({"AAPL": 120.0})  # live quote drifts to 120
+
+    triple = service.session_pnl_triple(db_session, session_id=sess.id, broker=broker)
+    kpis = service.session_kpis(db_session, session_id=sess.id, broker=broker)
+
+    # Both report the last close (130 -> 1300 positions, +300 unrealised), never 120.
+    assert triple.current_value == pytest.approx(100_300.0)
+    assert triple.unrealised_pnl == pytest.approx(300.0)
+    assert kpis.current_value == pytest.approx(100_300.0)
+    assert kpis.unrealised_pnl == pytest.approx(300.0)
 
 
 def test_record_snapshot_is_idempotent_per_day(db_session: Session) -> None:

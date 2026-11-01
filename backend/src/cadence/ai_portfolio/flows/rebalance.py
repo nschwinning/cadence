@@ -43,6 +43,8 @@ from cadence.ai_portfolio._helpers import (
 from cadence.ai_portfolio.agent import AIPortfolioAgent
 from cadence.ai_portfolio.constants import (
     FUNDAMENTALS_PROMPT_VERSION,
+    NEWS_SENTIMENT_PROMPT_VERSION,
+    PRICE_ML_PROMPT_VERSION,
     TREND_PROMPT_VERSION,
     EventStatus,
     PromptKind,
@@ -66,10 +68,12 @@ from cadence.assets.market_data import MarketDataProvider
 from cadence.broker.base import Broker
 from cadence.broker.models import AssetClass, Position
 from cadence.config import settings
+from cadence.news_sentiment import service as news_sentiment_service
 from cadence.notify.base import Notifier
 from cadence.paper_trading import service as paper_service
 from cadence.paper_trading.constants import RunStatus
 from cadence.portfolios import service as portfolios_service
+from cadence.price_ml import service as price_ml_service
 from cadence.technical_indicators import service as ti_service
 
 logger = logging.getLogger(__name__)
@@ -313,6 +317,29 @@ def run_rebalance_event(
             and session_row.rebalance_prompt_version >= FUNDAMENTALS_PROMPT_VERSION
         )
 
+        # The learned price-direction block applies only when this session opted into
+        # price-ML at build time AND is frozen to the price-ML-aware prompt version
+        # (or later). Like fundamentals, it is never attached on a crypto-only weekend
+        # run (separate crypto prompt). Opted-out sessions and sessions on an earlier
+        # prompt version receive candidates/holdings with no price-ML block attached.
+        price_ml_enabled = (
+            bool(session_row.use_price_ml)
+            and not crypto_only
+            and session_row.rebalance_prompt_version >= PRICE_ML_PROMPT_VERSION
+        )
+
+        # The news-sentiment block applies only when this session opted into news
+        # sentiment at build time AND is frozen to the sentiment-aware prompt version
+        # (or later). Like fundamentals and price-ML, it is never attached on a
+        # crypto-only weekend run (separate crypto prompt). Opted-out sessions and
+        # sessions on an earlier prompt version receive candidates/holdings with no
+        # news-sentiment block attached.
+        news_sentiment_enabled = (
+            bool(session_row.use_news_sentiment)
+            and not crypto_only
+            and session_row.rebalance_prompt_version >= NEWS_SENTIMENT_PROMPT_VERSION
+        )
+
         # A freshly stopped-out position is quarantined for a cooldown window so the
         # agent cannot immediately re-buy it. Exclude quarantined tickers the session
         # does not currently hold (regardless of the trend opt-in); once the
@@ -348,11 +375,38 @@ def run_rebalance_event(
             if gating_enabled
             else {}
         )
+        # Resolve the learned price-direction block per candidate ticker from the
+        # stored signals (staleness-bounded; missing/stale → an explicit "unavailable"
+        # marker, never a fabricated direction). ``None`` when the session is opted out
+        # so no block is attached at all. The as-of clock (market-tz "today") is the
+        # service's own seam, matching how the signals are stamped at precompute.
+        candidate_price_ml = (
+            price_ml_service.resolve_signal_annotations(
+                session,
+                {asset.ticker: asset.id for asset in scoped_universe},
+            )
+            if price_ml_enabled
+            else None
+        )
+        # Resolve the recency-weighted news-tone block per candidate ticker. The
+        # service degrades gracefully (unconfigured/unreachable service, no recent news,
+        # or scoring error → an explicit "unavailable" marker, never a fabricated tone)
+        # so a rebalance never fails on sentiment. ``None`` when opted out so no block
+        # is attached at all. The as-of clock is the service's own seam.
+        candidate_news_sentiment = (
+            news_sentiment_service.resolve_sentiment_annotations(
+                [asset.ticker for asset in scoped_universe],
+            )
+            if news_sentiment_enabled
+            else None
+        )
         candidates, dropped_candidates = _candidates_from_universe(
             scoped_universe,
             candidate_snapshots,
             apply_gate=gating_enabled,
             fundamentals=fundamentals_enabled,
+            price_ml_by_ticker=candidate_price_ml,
+            news_sentiment_by_ticker=candidate_news_sentiment,
         )
         dropped_candidates.extend(excluded_candidates)
         holding_snapshots = (
@@ -373,12 +427,34 @@ def run_rebalance_event(
             if fundamentals_enabled
             else None
         )
+        # Price-ML for the holdings is keyed by ticker from the (eager-loaded)
+        # universe; a held ticker absent from the universe falls back to the
+        # unavailable marker inside ``_build_holdings``.
+        holding_price_ml = (
+            price_ml_service.resolve_signal_annotations(
+                session,
+                {asset.ticker: asset.id for asset in universe},
+            )
+            if price_ml_enabled
+            else None
+        )
+        # News sentiment for the holdings is resolved by ticker; a held ticker with no
+        # recent news falls back to the unavailable marker inside ``_build_holdings``.
+        holding_news_sentiment = (
+            news_sentiment_service.resolve_sentiment_annotations(
+                [entry.ticker for entry in ledger if entry.quantity],
+            )
+            if news_sentiment_enabled
+            else None
+        )
         holdings = _build_holdings(
             ledger,
             broker,
             asset_classes,
             holding_snapshots,
             fundamentals_by_ticker=holding_fundamentals,
+            price_ml_by_ticker=holding_price_ml,
+            news_sentiment_by_ticker=holding_news_sentiment,
         )
         if gating_enabled:
             trend_context = {
@@ -393,6 +469,37 @@ def run_rebalance_event(
                         "indicators": h["indicators"],
                         "reversal_flags": h["reversal_flags"],
                     }
+                    for h in holdings
+                ],
+            }
+        # Record the learned price-direction picture the agent was shown this run,
+        # even when the trend gate is off, so the run's offline-learning snapshot
+        # captures which block (available/unavailable) accompanied each name.
+        if price_ml_enabled:
+            if trend_context is None:
+                trend_context = {}
+            trend_context["price_ml"] = {
+                "candidates": [
+                    {"ticker": c["ticker"], "price_ml": c["price_ml"]}
+                    for c in candidates
+                ],
+                "holdings": [
+                    {"ticker": h["ticker"], "price_ml": h["price_ml"]}
+                    for h in holdings
+                ],
+            }
+        # Record the news-sentiment picture the agent was shown this run (available/
+        # unavailable per name), even when the trend gate is off, for offline learning.
+        if news_sentiment_enabled:
+            if trend_context is None:
+                trend_context = {}
+            trend_context["news_sentiment"] = {
+                "candidates": [
+                    {"ticker": c["ticker"], "news_sentiment": c["news_sentiment"]}
+                    for c in candidates
+                ],
+                "holdings": [
+                    {"ticker": h["ticker"], "news_sentiment": h["news_sentiment"]}
                     for h in holdings
                 ],
             }

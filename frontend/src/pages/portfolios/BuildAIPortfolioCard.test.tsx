@@ -128,6 +128,8 @@ describe('BuildAIPortfolioCard', () => {
       model: 'gpt-6-luna',
       use_technical_indicators: false,
       use_fundamentals: false,
+      use_price_ml: false,
+      use_news_sentiment: false,
       include_watchlist: false,
       stop_loss_enabled: false,
       stop_loss_pct: null,
@@ -324,6 +326,80 @@ describe('BuildAIPortfolioCard', () => {
     expect(mockedPost).toHaveBeenCalledWith(
       '/api/v1/ai-portfolio/build',
       expect.objectContaining({ use_fundamentals: false }),
+    );
+  });
+
+  it('opts into the price-ML strategy when the toggle is checked', async () => {
+    mockedPost.mockResolvedValue({ data: { event_id: 'evt-1', status: 'queued' } });
+    mockedGet.mockImplementation(routeGet(() => 'running'));
+    const user = userEvent.setup();
+
+    renderWithClient(<BuildAIPortfolioCard />);
+
+    // Defaults off: the toggle starts unchecked.
+    const toggle = screen.getByRole('checkbox', { name: /Use price ML/i });
+    expect(toggle).not.toBeChecked();
+
+    await user.click(toggle);
+    await chooseCadence(user);
+    await user.click(screen.getByRole('button', { name: 'Build portfolio' }));
+
+    expect(mockedPost).toHaveBeenCalledWith(
+      '/api/v1/ai-portfolio/build',
+      expect.objectContaining({ use_price_ml: true }),
+    );
+  });
+
+  it('sends price ML disabled when the toggle is left off', async () => {
+    mockedPost.mockResolvedValue({ data: { event_id: 'evt-1', status: 'queued' } });
+    mockedGet.mockImplementation(routeGet(() => 'running'));
+    const user = userEvent.setup();
+
+    renderWithClient(<BuildAIPortfolioCard />);
+
+    await chooseCadence(user);
+    await user.click(screen.getByRole('button', { name: 'Build portfolio' }));
+
+    expect(mockedPost).toHaveBeenCalledWith(
+      '/api/v1/ai-portfolio/build',
+      expect.objectContaining({ use_price_ml: false }),
+    );
+  });
+
+  it('opts into the news-sentiment strategy when the toggle is checked', async () => {
+    mockedPost.mockResolvedValue({ data: { event_id: 'evt-1', status: 'queued' } });
+    mockedGet.mockImplementation(routeGet(() => 'running'));
+    const user = userEvent.setup();
+
+    renderWithClient(<BuildAIPortfolioCard />);
+
+    // Defaults off: the toggle starts unchecked.
+    const toggle = screen.getByRole('checkbox', { name: /Use news sentiment/i });
+    expect(toggle).not.toBeChecked();
+
+    await user.click(toggle);
+    await chooseCadence(user);
+    await user.click(screen.getByRole('button', { name: 'Build portfolio' }));
+
+    expect(mockedPost).toHaveBeenCalledWith(
+      '/api/v1/ai-portfolio/build',
+      expect.objectContaining({ use_news_sentiment: true }),
+    );
+  });
+
+  it('sends news sentiment disabled when the toggle is left off', async () => {
+    mockedPost.mockResolvedValue({ data: { event_id: 'evt-1', status: 'queued' } });
+    mockedGet.mockImplementation(routeGet(() => 'running'));
+    const user = userEvent.setup();
+
+    renderWithClient(<BuildAIPortfolioCard />);
+
+    await chooseCadence(user);
+    await user.click(screen.getByRole('button', { name: 'Build portfolio' }));
+
+    expect(mockedPost).toHaveBeenCalledWith(
+      '/api/v1/ai-portfolio/build',
+      expect.objectContaining({ use_news_sentiment: false }),
     );
   });
 

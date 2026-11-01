@@ -349,9 +349,147 @@ still means sell/exit.
 - **WHEN** the fundamentals-aware rebalance prompt is used for a run
 - **THEN** the agent SHALL still return long-only target allocations summing to approximately 1.0, with an omitted or ~0-weight holding meaning exit, unchanged from the prior prompt version's output schema
 
+### Requirement: Rebalancing prompt includes the price-ML signal
+
+The system SHALL provide a **price-ML** rebalance strategy as a per-session **opt-in that
+defaults to off**, delivered as a new rebalance prompt version (per the versioned-prompt
+requirement). When a session has opted into price ML **and** is frozen on a prompt version
+at or after the price-ML-aware version, its rebalances SHALL supply the agent with a
+per-ticker **price-ML advisory block** attached to **both** the supplied buy candidates
+and the current holdings, so the agent can weigh the learned direction estimate when
+deciding what to buy and when deciding whether to sell, trim, or hold. A session that did
+not opt in, or that is frozen on a prompt version predating the price-ML-aware version,
+SHALL receive no price-ML block and SHALL behave exactly as it did before this change. The
+price-ML-aware prompt version's instructions SHALL describe the signal object
+**defensively** — weighing it when present and tolerating its absence — so that an
+opted-out session frozen on that version reads correctly with no signal attached.
+
+The price-ML block for an asset SHALL carry only an **advisory direction signal** derived
+from the stored model prediction: the predicted direction of the forward return over the
+model's horizon (up or down), the prediction probability, the model's recent out-of-sample
+accuracy, and the as-of date of the prediction. The signal SHALL be advisory input, not a
+guaranteed forecast or a target weight, and the prompt instructions SHALL present the
+recent out-of-sample accuracy so the agent can discount a weak signal. The prompt
+instructions SHALL frame the signal as **long-only** guidance — an up signal reinforcing a
+buy or hold, a down signal arguing to avoid or trim, **never** to open a short.
+
+When an asset has no usable price-ML signal — no stored signal, a stale signal, or the
+price-ML source is unavailable at run time — the block SHALL render an explicit **"ML
+signal unavailable"** marker for that asset rather than inventing a direction or omitting
+the asset. Signal unavailability SHALL NOT fail the rebalance.
+
+The prompt SHALL retain the existing rebalance constraints (long-only, target weights sum
+to approximately 1.0, per-trade transaction-cost discipline, crypto handled with
+around-the-clock tickers, discovery and web-search caps) and SHALL NOT change the AI output
+schema — omitting a holding or giving it an allocation of ~0 still means sell/exit.
+
+#### Scenario: Opted-in session on the price-ML-aware prompt attaches the block
+
+- **WHEN** a rebalance runs for a session that opted into price ML and is frozen on the
+  price-ML-aware prompt version (or later)
+- **THEN** the agent SHALL be presented with a per-ticker price-ML block on both the
+  candidates and the current holdings
+
+#### Scenario: Opted-out session receives no price-ML block
+
+- **WHEN** a rebalance runs for a session that did not opt into price ML, even if it is
+  frozen on the price-ML-aware prompt version
+- **THEN** the agent SHALL be given the candidates and holdings without any price-ML block
+
+#### Scenario: Older sessions receive no price-ML block
+
+- **WHEN** a rebalance runs for a session frozen to a prompt version that predates the
+  price-ML-aware version
+- **THEN** the agent SHALL be given the candidates and holdings without any price-ML block,
+  unchanged from that frozen version's behavior
+
+#### Scenario: Unavailable signal is marked, not fabricated
+
+- **WHEN** the price-ML block is assembled for an asset that has no stored signal, whose
+  signal is stale, or when the price-ML source is unavailable
+- **THEN** that asset SHALL be shown with an "ML signal unavailable" marker and no invented
+  direction, and the rebalance SHALL proceed
+
+#### Scenario: Price-ML-aware prompt preserves the output contract
+
+- **WHEN** the price-ML-aware rebalance prompt is used for a run
+- **THEN** the agent SHALL still return long-only target allocations summing to
+  approximately 1.0, with an omitted or ~0-weight holding meaning exit, unchanged from the
+  prior prompt version's output schema
+
+### Requirement: Rebalancing prompt includes news sentiment
+
+The system SHALL provide a **news-sentiment** rebalance strategy as a per-session
+**opt-in that defaults to off**, delivered as a new rebalance prompt version (per the
+versioned-prompt requirement). When a session has opted into news sentiment **and**
+is frozen on a prompt version at or after the sentiment-aware version, its rebalances
+SHALL supply the agent with a per-ticker **news-sentiment advisory block** attached to
+**both** the supplied buy candidates and the current holdings, so the agent can weigh
+recent news tone when deciding what to buy and when deciding whether to sell, trim, or
+hold. A session that did not opt in, or that is frozen on a prompt version predating
+the sentiment-aware version, SHALL receive no sentiment block and SHALL behave exactly
+as it did before this change. The sentiment-aware prompt version's instructions SHALL
+describe the sentiment object **defensively** — weighing it when present and tolerating
+its absence — so that an opted-out session frozen on that version reads correctly with
+no sentiment attached.
+
+The sentiment block for an asset SHALL carry only an **advisory tone signal** derived
+from recent news over a trailing window: an aggregate tone leaning positive, neutral,
+or negative, together with the number of articles it was derived from. The signal
+SHALL be advisory tone, not a return forecast or a target weight. The prompt
+instructions SHALL frame the signal as **long-only** guidance — positive tone
+reinforcing a buy or hold, negative tone arguing to avoid or trim, **never** to open
+a short.
+
+When an asset has no usable sentiment — no recent news in the window, or the sentiment
+source is unconfigured or unavailable at run time — the block SHALL render an explicit
+**"sentiment unavailable"** marker for that asset rather than inventing a tone or
+omitting the asset. Sentiment unavailability SHALL NOT fail the rebalance.
+
+The prompt SHALL retain the existing rebalance constraints (long-only, target weights
+sum to approximately 1.0, per-trade transaction-cost discipline, crypto handled with
+around-the-clock tickers, discovery and web-search caps) and SHALL NOT change the AI
+output schema — omitting a holding or giving it an allocation of ~0 still means
+sell/exit.
+
+#### Scenario: Opted-in session on the sentiment-aware prompt attaches the block
+
+- **WHEN** a rebalance runs for a session that opted into news sentiment and is frozen
+  on the sentiment-aware prompt version (or later)
+- **THEN** the agent SHALL be presented with a per-ticker news-sentiment block on both
+  the candidates and the current holdings
+
+#### Scenario: Opted-out session receives no sentiment block
+
+- **WHEN** a rebalance runs for a session that did not opt into news sentiment, even if
+  it is frozen on the sentiment-aware prompt version
+- **THEN** the agent SHALL be given the candidates and holdings without any sentiment
+  block
+
+#### Scenario: Older sessions receive no sentiment block
+
+- **WHEN** a rebalance runs for a session frozen to a prompt version that predates the
+  sentiment-aware version
+- **THEN** the agent SHALL be given the candidates and holdings without any sentiment
+  block, unchanged from that frozen version's behavior
+
+#### Scenario: Unavailable sentiment is marked, not fabricated
+
+- **WHEN** the sentiment block is assembled for an asset that has no recent news, or
+  when the sentiment source is unconfigured or unavailable
+- **THEN** that asset SHALL be shown with a "sentiment unavailable" marker and no
+  invented tone, and the rebalance SHALL proceed
+
+#### Scenario: Sentiment-aware prompt preserves the output contract
+
+- **WHEN** the sentiment-aware rebalance prompt is used for a run
+- **THEN** the agent SHALL still return long-only target allocations summing to
+  approximately 1.0, with an omitted or ~0-weight holding meaning exit, unchanged from
+  the prior prompt version's output schema
+
 ### Requirement: Read paper-trading session data
 
-The system SHALL let a client list paper-trading sessions and read a session's trades, runs, positions, its AI-portfolio events, and its daily portfolio-value snapshots. A session returned to a client SHALL include the name of the portfolio it trades so the client can identify the session by portfolio; when the portfolio cannot be resolved the name SHALL be absent (null) rather than causing an error. A session returned to a client SHALL include the benchmark it is compared against. A session returned to a client SHALL include the identifier of the AI model it runs on. A session returned to a client SHALL include its asset scope — whether it trades stocks only, crypto only, or both. A session returned to a client SHALL include its stop-loss configuration: whether the automatic stop-loss is enabled and, when enabled, its threshold percentage. A session returned to a client SHALL include its company-fundamentals configuration: whether company fundamentals are enabled. A session returned to a client SHALL include its watchlist-inclusion configuration: whether its candidate universe includes watchlist-membership assets. A session returned to a client SHALL include its risk-guardrail configuration: whether the risk guardrails are enabled and, when enabled, the maximum percentage per asset, the maximum percentage per asset class, the minimum number of positions, and the maximum invested percentage. A session returned to a client SHALL include its contributed capital (the sum of its recorded capital contributions, equal to its allocated capital). A session returned to a client SHALL additionally include its **live current value**, its **realised profit/loss**, and its **unrealised profit/loss**, computed by marking the session's open positions to market at read time: the live current value SHALL be the session's net asset value (cash plus open positions valued at current market quotes, net of cumulative transaction fees); the realised profit/loss SHALL be the session's cumulative closed-lot realised profit/loss (gross of fees); and the unrealised profit/loss SHALL be the current mark-to-market gain or loss on the session's open positions. These three figures SHALL be present both when listing sessions and when reading a single session, computed from current quotes at request time rather than returned from a stale stored valuation. An AI-portfolio event returned to a client SHALL include the AI's reasoning output and its persisted research transcript. A trade, closed position, or run returned to a client SHALL include the reference to the AI-portfolio event that produced it, when present. A session's value history SHALL be returned ordered oldest snapshot first, and each snapshot in the returned history SHALL carry the value of a buy-and-hold of the benchmark that receives the session's capital contributions on their effective dates — each contribution buying benchmark units at that date's benchmark price — so the benchmark line starts at the session's first contribution on the first snapshot date and steps up by each later contribution; for a session with a single contribution this is equivalent to a buy-and-hold of the allocated capital rebased to the first snapshot date. When the benchmark has no stored price on or before a snapshot's date, that snapshot's benchmark value SHALL be absent (null) rather than causing an error.
+The system SHALL let a client list paper-trading sessions and read a session's trades, runs, positions, its AI-portfolio events, and its daily portfolio-value snapshots. A session returned to a client SHALL include the name of the portfolio it trades so the client can identify the session by portfolio; when the portfolio cannot be resolved the name SHALL be absent (null) rather than causing an error. A session returned to a client SHALL include the benchmark it is compared against. A session returned to a client SHALL include the identifier of the AI model it runs on. A session returned to a client SHALL include its asset scope — whether it trades stocks only, crypto only, or both. A session returned to a client SHALL include its stop-loss configuration: whether the automatic stop-loss is enabled and, when enabled, its threshold percentage. A session returned to a client SHALL include its company-fundamentals configuration: whether company fundamentals are enabled. A session returned to a client SHALL include its price-ML configuration: whether the price-ML signal is enabled. A session returned to a client SHALL include its news-sentiment configuration: whether news sentiment is enabled. A session returned to a client SHALL include its watchlist-inclusion configuration: whether its candidate universe includes watchlist-membership assets. A session returned to a client SHALL include its risk-guardrail configuration: whether the risk guardrails are enabled and, when enabled, the maximum percentage per asset, the maximum percentage per asset class, the minimum number of positions, and the maximum invested percentage. A session returned to a client SHALL include its contributed capital (the sum of its recorded capital contributions, equal to its allocated capital). A session returned to a client SHALL additionally include its **live current value**, its **realised profit/loss**, and its **unrealised profit/loss**, computed by marking the session's open positions to market at read time: the live current value SHALL be the session's net asset value (cash plus open positions valued at current market quotes, net of cumulative transaction fees); the realised profit/loss SHALL be the session's cumulative closed-lot realised profit/loss (gross of fees); and the unrealised profit/loss SHALL be the current mark-to-market gain or loss on the session's open positions. These three figures SHALL be present both when listing sessions and when reading a single session, computed from current quotes at request time rather than returned from a stale stored valuation. An AI-portfolio event returned to a client SHALL include the AI's reasoning output and its persisted research transcript. A trade, closed position, or run returned to a client SHALL include the reference to the AI-portfolio event that produced it, when present. A session's value history SHALL be returned ordered oldest snapshot first, and each snapshot in the returned history SHALL carry the value of a buy-and-hold of the benchmark that receives the session's capital contributions on their effective dates — each contribution buying benchmark units at that date's benchmark price — so the benchmark line starts at the session's first contribution on the first snapshot date and steps up by each later contribution; for a session with a single contribution this is equivalent to a buy-and-hold of the allocated capital rebased to the first snapshot date. When the benchmark has no stored price on or before a snapshot's date, that snapshot's benchmark value SHALL be absent (null) rather than causing an error.
 
 Each of a session's tabular list reads — its trades, runs, closed positions, and AI-portfolio events — SHALL support paging via a caller-supplied page size (limit) and a zero-based offset, returning at most the page size of rows starting at the offset within the read's existing ordering, together with the total number of rows recorded for that session and list. The AI-portfolio event read SHALL return its rows wrapped together with that total, in the same shape as the trades, runs, and closed-position reads (rather than a bare list without a total). Reads that source data for computed metrics rather than for a table — such as the closed-position profit-and-loss series behind the session KPIs — SHALL remain unpaged.
 
@@ -389,6 +527,16 @@ Each of a session's tabular list reads — its trades, runs, closed positions, a
 
 - **WHEN** a client lists sessions or reads a single session
 - **THEN** each returned session SHALL include whether its company fundamentals are enabled, defaulting to disabled when no explicit setting was recorded
+
+#### Scenario: Session reports its price-ML configuration
+
+- **WHEN** a client lists sessions or reads a single session
+- **THEN** each returned session SHALL include whether its price-ML signal is enabled, defaulting to disabled when no explicit setting was recorded
+
+#### Scenario: Session reports its news-sentiment configuration
+
+- **WHEN** a client lists sessions or reads a single session
+- **THEN** each returned session SHALL include whether its news sentiment is enabled, defaulting to disabled when no explicit setting was recorded
 
 #### Scenario: Session reports its watchlist-inclusion configuration
 
@@ -847,6 +995,72 @@ entry price and its opened date as the entry date.
 - **THEN** the recorded realized profit and loss SHALL use the ledger entry's average
   cost as the entry price and its opened date as the entry date
 
+### Requirement: Value equity positions at the last official close when the market is closed
+
+The system SHALL value a session's open **equity** positions at the **last official
+daily close** whenever the equity market is closed, rather than at a live intraday
+quote, so that a session's valuation does not drift while the market it trades in is
+closed. The last official close SHALL be the most recent completed daily close on or
+before the valuation day (for a weekend or a market holiday, the prior trading day's
+close). **Crypto** positions SHALL always be valued at their current live price,
+because crypto trades around the clock.
+
+Whether the equity market is open SHALL be determined from the broker's market clock,
+the same signal that governs weekend/holiday equity trading. When the equity market
+is **open**, equity positions SHALL continue to be valued at current live quotes as
+before.
+
+This marking rule SHALL apply uniformly wherever this specification requires a
+session's open positions to be "marked to market" or valued at "current market
+quotes" — specifically the end-of-day value snapshot, the live session performance
+KPI summary, the session's P&L and return reads, automated rebalance sizing against
+the session's current marked-to-market value, and the consolidated daily-run learning
+snapshot — so that every valuation path reports the same closed-market value.
+
+When the equity market is closed and an equity position's last official close cannot
+be obtained, the system SHALL fall back to its existing valuation fallbacks (a live
+quote if available, otherwise the position's average cost) rather than failing the
+valuation.
+
+Because equity positions are held flat at the last official close while the market is
+closed, a session that holds only equities SHALL report no day-over-day value change
+across a non-trading day (for example a weekend), rather than appearing to gain or
+lose from live-quote drift.
+
+#### Scenario: Equities valued at the last official close while the market is closed
+
+- **WHEN** a session's value is computed while the equity market is closed and the
+  session holds equity positions
+- **THEN** the system SHALL mark those equity positions to their last official daily
+  close rather than a live intraday quote
+
+#### Scenario: Crypto still valued live while the equity market is closed
+
+- **WHEN** a session's value is computed while the equity market is closed and the
+  session holds crypto positions
+- **THEN** the system SHALL value those crypto positions at their current live price,
+  not at a stale close
+
+#### Scenario: Equities valued live while the market is open
+
+- **WHEN** a session's value is computed while the equity market is open
+- **THEN** the system SHALL value its open equity positions at current live quotes,
+  unchanged from prior behavior
+
+#### Scenario: Stocks-only session is flat across a non-trading day
+
+- **WHEN** a stocks-only session is valued on a non-trading day (for example a
+  Saturday) and again on the following trading-day marks
+- **THEN** its equity value on the non-trading day SHALL equal the last official
+  close, so it reports no day-over-day change attributable to live-quote drift
+
+#### Scenario: Close unavailable falls back without failing
+
+- **WHEN** the equity market is closed and an equity position's last official close
+  cannot be obtained
+- **THEN** the system SHALL fall back to a live quote if available, otherwise the
+  position's average cost, rather than failing the valuation
+
 ### Requirement: Snapshot session portfolio value at end of day
 
 The system SHALL, on a scheduled end-of-day trigger, record one portfolio-value
@@ -855,31 +1069,34 @@ strategy is AI-managed and whose status is active) and send a daily
 profit-and-loss report. On a **weekday** (Monday–Friday) the selected sessions SHALL
 be all active AI-managed sessions. On a **weekend day** (Saturday or Sunday,
 determined by calendar in the snapshot timezone, ignoring market holidays) the
-selected sessions SHALL be only those whose **configured asset scope includes crypto**
-(scope is crypto or both); an active AI-managed session configured stocks-only SHALL
-be skipped entirely on a weekend — neither a snapshot recorded nor a notification
-sent. A session with no persisted scope SHALL be treated as the default scope (both)
-and is therefore included on weekends. The trigger SHALL be a cron-guarded endpoint
-protected by the shared cron-token secret, and SHALL reject a request with a missing
-or invalid token. Recording SHALL be idempotent per session per day: re-running the
-trigger on the same calendar day SHALL update that day's snapshot rather than create a
-duplicate.
+selected sessions SHALL be only those that **currently hold at least one crypto
+position**; an active AI-managed session that holds no crypto position SHALL be
+skipped entirely on a weekend — neither a snapshot recorded nor a notification sent.
+Weekend selection SHALL be determined from the session's actual open holdings, not
+from its configured asset scope, so that a session configured to allow crypto but
+currently holding none is skipped on a weekend just as a stocks-only session is. The
+trigger SHALL be a cron-guarded endpoint protected by the shared cron-token secret,
+and SHALL reject a request with a missing or invalid token. Recording SHALL be
+idempotent per session per day: re-running the trigger on the same calendar day SHALL
+update that day's snapshot rather than create a duplicate.
 
 The end-of-day snapshot and its P&L report are intended to run on **every calendar
 day, including weekends**, so that a session's value and profit and loss are recorded
 and reported on days its holdings move — notably its crypto sleeve, which trades
 around the clock and is rebalanced on weekends. On weekends the trigger SHALL record
-and report only for sessions whose configured scope includes crypto, since a
-stocks-only session's holdings do not move while the equity market is closed. The
-trigger SHALL operate on any day it is validly called, with no dependence on the equity
-market being open; the scheduling cadence itself is a deployment concern (the cron
-schedule), not enforced by this endpoint.
+and report only for sessions that **currently hold crypto**, since a session holding
+no crypto does not move while the equity market is closed. The trigger SHALL operate
+on any day it is validly called, with no dependence on the equity market being open;
+the scheduling cadence itself is a deployment concern (the cron schedule), not
+enforced by this endpoint.
 
 Each snapshot SHALL record the session's total value, its cash value, the market
 value of its held positions, the day's profit and loss (absolute and percent), and a
 per-position breakdown (per held ticker: quantity, price, market value, unrealized
 profit and loss, and return). A session's total value SHALL be computed by marking its
-open positions — taken from the session's position ledger — to market and combining
+open positions — taken from the session's position ledger — to market (valuing equity
+positions at the last official close when the equity market is closed, per "Value
+equity positions at the last official close when the market is closed") and combining
 them with the session's contributed capital and realized profit and loss. The day's
 profit and loss SHALL be measured against the
 session's most recent prior snapshot, or against its contributed capital at the start
@@ -916,17 +1133,26 @@ to deliver the report SHALL NOT fail the snapshot job.
 #### Scenario: Snapshot and report run on weekends
 
 - **WHEN** the end-of-day snapshot trigger runs on a weekend (a day the equity
-  market is closed) and a session's configured scope includes crypto
+  market is closed) and a session currently holds at least one crypto position
 - **THEN** the system SHALL record a value snapshot for that session and send the
-  daily P&L report, marking crypto and other holdings to market, without requiring the
-  equity market to be open
+  daily P&L report, marking crypto to its live price and any equity holdings to their
+  last official close, without requiring the equity market to be open
 
 #### Scenario: Weekend skips stocks-only sessions entirely
 
-- **WHEN** the end-of-day snapshot trigger runs on a weekend and a session's
-  configured scope does not include crypto (stocks only)
+- **WHEN** the end-of-day snapshot trigger runs on a weekend and a session holds no
+  crypto position (for example a stocks-only session)
 - **THEN** the system SHALL skip that session entirely — recording no snapshot and
   sending no notification for it
+
+#### Scenario: Weekend skips a crypto-allowed session that holds no crypto
+
+- **WHEN** the end-of-day snapshot trigger runs on a weekend and a session is
+  configured to allow crypto (scope crypto or both, or no persisted scope) but
+  currently holds no crypto position
+- **THEN** the system SHALL skip that session entirely on that weekend, because
+  weekend selection is determined by actual crypto holdings rather than configured
+  scope
 
 #### Scenario: Snapshot is idempotent per day
 
@@ -2399,6 +2625,56 @@ SHALL be the sole consumer that broadens the candidate universe.
 - **THEN** the candidate universe presented to the AI SHALL include the session's
   watchlist-membership assets, subject to the session's asset scope and the usual
   quarantine and trend gates
+
+### Requirement: Price ML is a per-session opt-in frozen at build time
+
+The system SHALL expose a per-session boolean option that controls whether the session's
+rebalance agent is informed of the learned price-direction signal for its candidates and
+holdings. The option SHALL default to **disabled**, SHALL be chosen when the session is
+built, and SHALL be frozen for the life of the session — the same build-time-frozen
+pattern as the company-fundamentals, learning-feedback, stop-loss, and risk-guardrail
+options — so it SHALL NOT be changeable after build. Sessions that predate this option
+SHALL be treated as having price ML disabled, leaving their behavior unchanged. The build
+flow SHALL record the chosen value on the session and SHALL NOT itself train or infer any
+model.
+
+#### Scenario: Flag chosen at build and frozen
+
+- **WHEN** an AI session is built with price ML enabled
+- **THEN** the session SHALL be persisted with price ML enabled, and that value SHALL
+  remain fixed for the life of the session
+
+#### Scenario: Default and pre-existing sessions disabled
+
+- **WHEN** an AI session is built without enabling price ML, or a session predates the
+  option
+- **THEN** price ML SHALL be disabled for that session and its rebalance prompt SHALL be
+  unchanged from today's
+
+### Requirement: News sentiment is a per-session opt-in frozen at build time
+
+The system SHALL expose a per-session boolean option that controls whether the
+session's rebalance agent is informed of recent news sentiment for its candidates
+and holdings. The option SHALL default to **disabled**, SHALL be chosen when the
+session is built, and SHALL be frozen for the life of the session — the same
+build-time-frozen pattern as the company-fundamentals, learning-feedback, stop-loss,
+and risk-guardrail options — so it SHALL NOT be changeable after build. Sessions that
+predate this option SHALL be treated as having news sentiment disabled, leaving their
+behavior unchanged. The build flow SHALL record the chosen value on the session and
+SHALL NOT itself fetch or score news.
+
+#### Scenario: Flag chosen at build and frozen
+
+- **WHEN** an AI session is built with news sentiment enabled
+- **THEN** the session SHALL be persisted with news sentiment enabled, and that value
+  SHALL remain fixed for the life of the session
+
+#### Scenario: Default and pre-existing sessions disabled
+
+- **WHEN** an AI session is built without enabling news sentiment, or a session
+  predates the option
+- **THEN** news sentiment SHALL be disabled for that session and its rebalance prompt
+  SHALL be unchanged from today's
 
 ### Requirement: Attribute portfolio-scoped AI spend to its session
 

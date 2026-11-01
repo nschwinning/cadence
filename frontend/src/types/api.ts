@@ -448,6 +448,19 @@ export interface PaperTradingSession {
    */
   use_fundamentals: boolean;
   /**
+   * Whether this session opted into the learned price-direction (price-ML) strategy
+   * (frozen at build time): each rebalance attaches a per-ticker learned
+   * price-direction block to the agent's candidates and holdings. False for sessions
+   * built before this option existed.
+   */
+  use_price_ml: boolean;
+  /**
+   * Whether this session opted into the news-sentiment strategy (frozen at build time):
+   * each rebalance attaches a per-ticker recency-weighted news-tone block to the agent's
+   * candidates and holdings. False for sessions built before this option existed.
+   */
+  use_news_sentiment: boolean;
+  /**
    * Whether this session's candidate universe includes the user's watchlist-membership
    * assets (frozen at build time). False for sessions built before this option existed.
    */
@@ -763,6 +776,19 @@ export interface AIPortfolioBuildRequest {
    * block to the agent's candidates and holdings. Defaults to off (opt-in).
    */
   use_fundamentals?: boolean;
+  /**
+   * Opt this portfolio into the learned price-direction (price-ML) strategy (frozen
+   * at build time). When enabled, each rebalance attaches a per-ticker learned
+   * price-direction block to the agent's candidates and holdings. Defaults to off
+   * (opt-in).
+   */
+  use_price_ml?: boolean;
+  /**
+   * Opt this portfolio into the news-sentiment strategy (frozen at build time). When
+   * enabled, each rebalance attaches a per-ticker recency-weighted news-tone block to
+   * the agent's candidates and holdings. Defaults to off (opt-in).
+   */
+  use_news_sentiment?: boolean;
   /**
    * Opt this portfolio into including the user's watchlist-membership assets in the
    * candidate universe the AI picks from (frozen at build time). When enabled, each

@@ -130,6 +130,8 @@ def build_ai_portfolio_endpoint(
         learning_feedback_enabled=payload.learning_feedback_enabled,
         learning_feedback_window=payload.learning_feedback_window,
         use_fundamentals=payload.use_fundamentals,
+        use_price_ml=payload.use_price_ml,
+        use_news_sentiment=payload.use_news_sentiment,
         include_watchlist=payload.include_watchlist,
         rebalance_cadence=payload.rebalance_cadence.value,
     )

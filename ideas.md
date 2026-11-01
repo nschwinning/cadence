@@ -1,7 +1,7 @@
 ## Features
 
-- Use LiteLLM plus Dashboard to show token usage and costs — IN PROGRESS: `add-litellm-model-proxy` change active (proxy layer ~done); the usage/cost dashboard surface is the remaining part.
-- Show Portfolio Age on Paper Trading Page — **NEXT UP** (see pick below).
+- [x] Use LiteLLM plus Dashboard to show token usage and costs — shipped: LiteLLM proxy layer plus a per-portfolio AI cost panel on the dashboard (`/dashboard/ai-costs`), backed by the LiteLLM spend-log DB.
+- [x] Show Portfolio Age on Paper Trading Page — shipped: the portfolios table has an Age column (creation date on hover).
 - [x] Use exisiting rclone cron job to dump the database to pcloud — `scripts/backup-cadence.sh` reuses the Pi's `pcloud:` remote (both DBs + config, atomic upload, 14-day retention); add a crontab entry at 02:15.
 - Add functionality to dynamically add indicator based trading bots (without AI), has to be like a rule engine, shall use the same universe and portfolio logic but it is a separate functionality from the ai trading, needs huge redesign and exploration first.
 - Add Authentication using e.g. KeyCloak

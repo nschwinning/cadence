@@ -207,6 +207,16 @@ def _gate_failure_reason(snap: TechnicalIndicator) -> str:
 #: dict is copied per attach so callers never share one mutable object.
 _FUNDAMENTALS_UNAVAILABLE: dict[str, Any] = {"status": "unavailable"}
 
+#: The explicit marker handed to the agent for an asset with no usable price-ML
+#: signal (none computed, or stale). A fresh dict is copied per attach so callers
+#: never share one mutable object.
+_PRICE_ML_UNAVAILABLE: dict[str, Any] = {"status": "unavailable"}
+
+#: The explicit marker handed to the agent for an asset with no usable news-sentiment
+#: signal (no recent news, service unconfigured/down, or scoring failed). A fresh dict
+#: is copied per attach so callers never share one mutable object.
+_NEWS_SENTIMENT_UNAVAILABLE: dict[str, Any] = {"status": "unavailable"}
+
 
 def _derive_fundamentals_figures(figures: dict[str, Any]) -> dict[str, Any]:
     """Derive the compact per-ticker fundamentals block from a stored figures map.
@@ -280,6 +290,8 @@ def _candidates_from_universe(
     *,
     apply_gate: bool,
     fundamentals: bool = False,
+    price_ml_by_ticker: dict[str, dict[str, Any]] | None = None,
+    news_sentiment_by_ticker: dict[str, dict[str, Any]] | None = None,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """Build the candidate records the agent reasons over from the universe.
 
@@ -296,6 +308,17 @@ def _candidates_from_universe(
     ``fundamentals`` block derived from its stored fundamentals (or an explicit
     unavailable marker), attached independently of ``apply_gate`` so the two
     strategies compose.
+
+    When ``price_ml_by_ticker`` is provided (the price-ML opt-in on a price-ML-aware
+    prompt), each candidate additionally carries a ``price_ml`` block from that map,
+    falling back to the explicit unavailable marker for a ticker missing from it.
+    Attached independently of ``apply_gate`` and ``fundamentals`` so the strategies
+    compose.
+
+    When ``news_sentiment_by_ticker`` is provided (the news-sentiment opt-in on a
+    sentiment-aware prompt), each candidate additionally carries a ``news_sentiment``
+    block from that map, falling back to the explicit unavailable marker for a ticker
+    missing from it. Attached independently of the other signals so they all compose.
     """
     candidates: list[dict[str, Any]] = []
     dropped: list[dict[str, Any]] = []
@@ -309,6 +332,14 @@ def _candidates_from_universe(
         }
         if fundamentals:
             base["fundamentals"] = _fundamentals_annotation(asset.fundamentals)
+        if price_ml_by_ticker is not None:
+            base["price_ml"] = price_ml_by_ticker.get(
+                asset.ticker, dict(_PRICE_ML_UNAVAILABLE)
+            )
+        if news_sentiment_by_ticker is not None:
+            base["news_sentiment"] = news_sentiment_by_ticker.get(
+                asset.ticker, dict(_NEWS_SENTIMENT_UNAVAILABLE)
+            )
         if not apply_gate:
             candidates.append(base)
             continue
@@ -467,6 +498,8 @@ def _build_holdings(
     asset_classes: dict[str, AssetClass],
     snapshots: dict[str, TechnicalIndicator] | None = None,
     fundamentals_by_ticker: dict[str, dict[str, Any]] | None = None,
+    price_ml_by_ticker: dict[str, dict[str, Any]] | None = None,
+    news_sentiment_by_ticker: dict[str, dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     """Build the agent's current-holdings context from the session's ledger.
 
@@ -484,6 +517,16 @@ def _build_holdings(
     fundamentals-aware prompt), each holding carries its ``fundamentals`` block from
     that map, falling back to the explicit unavailable marker for a ticker missing
     from it. When ``None`` no fundamentals are attached (original behaviour).
+
+    When ``price_ml_by_ticker`` is provided (the price-ML opt-in on a price-ML-aware
+    prompt), each holding carries its ``price_ml`` block from that map, falling back to
+    the explicit unavailable marker for a ticker missing from it. When ``None`` no
+    price-ML signal is attached (original behaviour).
+
+    When ``news_sentiment_by_ticker`` is provided (the news-sentiment opt-in on a
+    sentiment-aware prompt), each holding carries its ``news_sentiment`` block from that
+    map, falling back to the explicit unavailable marker for a ticker missing from it.
+    When ``None`` no news sentiment is attached (original behaviour).
     """
     holdings: list[dict[str, Any]] = []
     for entry in ledger:
@@ -513,6 +556,14 @@ def _build_holdings(
         if fundamentals_by_ticker is not None:
             holding["fundamentals"] = fundamentals_by_ticker.get(
                 entry.ticker, dict(_FUNDAMENTALS_UNAVAILABLE)
+            )
+        if price_ml_by_ticker is not None:
+            holding["price_ml"] = price_ml_by_ticker.get(
+                entry.ticker, dict(_PRICE_ML_UNAVAILABLE)
+            )
+        if news_sentiment_by_ticker is not None:
+            holding["news_sentiment"] = news_sentiment_by_ticker.get(
+                entry.ticker, dict(_NEWS_SENTIMENT_UNAVAILABLE)
             )
         holdings.append(holding)
     return holdings

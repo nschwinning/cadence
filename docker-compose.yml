@@ -55,6 +55,27 @@ services:
       start_period: 30s
     restart: unless-stopped
 
+  sentiment-service:
+    # News-sentiment scoring sidecar. Serves a dynamically-quantized int8 FinBERT
+    # ONNX model (baked into the image) behind POST /score. Heavy (a transformer),
+    # so it lives out of process; the backend reaches it only via its
+    # SentimentScorer HTTP client. The feature is off unless a session opts in AND
+    # the backend's SENTIMENT_SERVICE_URL points here, so this service is optional
+    # — if it is absent/unhealthy the backend degrades to "sentiment unavailable".
+    build: ./sentiment-service
+    # Conservative cap so the transformer cannot starve the Raspberry Pi; ONNX
+    # int8 keeps the resident set well under this.
+    mem_limit: 1g
+    healthcheck:
+      # /health warm-loads the model and only returns 200 once it can score, so
+      # the backend's depends_on gate waits for a ready model.
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8080/health').status==200 else 1)"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 180s
+    restart: unless-stopped
+
   backend:
     build: ./backend
     environment:
@@ -103,11 +124,19 @@ services:
       # (the backend falls back to a no-op notifier and rebalances normally).
       PUSHOVER_USER: ${PUSHOVER_USER:-}
       PUSHOVER_TOKEN: ${PUSHOVER_TOKEN:-}
+      # In-network URL of the sentiment-scoring sidecar. Pinned (not interpolated)
+      # to the compose-network address, which is always this. Empty would DISABLE
+      # the news-sentiment feature (universally "unavailable"); set here so opted-in
+      # sessions can score. The backend still degrades gracefully if the sidecar
+      # is unreachable.
+      SENTIMENT_SERVICE_URL: http://sentiment-service:8080
     ports:
       # Host 8002 -> container 8000 (8000/8001 already used by other apps locally)
       - "8002:8000"
     depends_on:
       db:
+        condition: service_healthy
+      sentiment-service:
         condition: service_healthy
     volumes:
       # Live-mount source for hot reload; deps/venv stay baked in the image
@@ -154,6 +183,10 @@ services:
       # indicators over the whole universe before the market-open rebalance so the
       # trend gate reads fresh snapshots.
       INDICATORS_SCHEDULE: ${INDICATORS_SCHEDULE:-0 5 * * 1-5}
+      # Cron expression; default 05:30 on weekdays — precompute the price-ML
+      # direction signals over the whole universe AFTER the technical-indicators
+      # run so the model trains/infers on the freshest stored price history.
+      PRICE_ML_SCHEDULE: ${PRICE_ML_SCHEDULE:-30 5 * * 1-5}
       # Cron expression; default 06:00 on the 1st of Jan/Apr/Jul/Oct — re-fetch SEC
       # EDGAR fundamentals for every stock quarterly, after quarter-ends when fresh
       # 10-Q/10-K data is available.
@@ -211,14 +244,22 @@ services:
       'set -eu'
       'B=http://backend:8000/api/v1'
       'T=$$(cat /tmp/cron.token)'
+      'curl -fsS --max-time 3600 -X POST -H X-Cron-Token:$$T $$B/price-ml/refresh >/dev/null'
+      > /usr/local/bin/price-ml.sh &&
+      printf '%s\n'
+      '#!/bin/sh'
+      'set -eu'
+      'B=http://backend:8000/api/v1'
+      'T=$$(cat /tmp/cron.token)'
       'curl -fsS --max-time 3600 -X POST -H X-Cron-Token:$$T $$B/assets/fundamentals/refresh >/dev/null'
       > /usr/local/bin/fundamentals.sh &&
-      chmod +x /usr/local/bin/rebalance.sh /usr/local/bin/crypto-rebalance.sh /usr/local/bin/benchmark.sh /usr/local/bin/snapshot.sh /usr/local/bin/indicators.sh /usr/local/bin/fundamentals.sh &&
+      chmod +x /usr/local/bin/rebalance.sh /usr/local/bin/crypto-rebalance.sh /usr/local/bin/benchmark.sh /usr/local/bin/snapshot.sh /usr/local/bin/indicators.sh /usr/local/bin/price-ml.sh /usr/local/bin/fundamentals.sh &&
       echo \"$${REBALANCE_SCHEDULE} /usr/local/bin/rebalance.sh\" > /etc/crontabs/root &&
       echo \"$${CRYPTO_REBALANCE_SCHEDULE} /usr/local/bin/crypto-rebalance.sh\" >> /etc/crontabs/root &&
       echo \"$${BENCHMARK_SCHEDULE} /usr/local/bin/benchmark.sh\" >> /etc/crontabs/root &&
       echo \"$${SNAPSHOT_SCHEDULE} /usr/local/bin/snapshot.sh\" >> /etc/crontabs/root &&
       echo \"$${INDICATORS_SCHEDULE} /usr/local/bin/indicators.sh\" >> /etc/crontabs/root &&
+      echo \"$${PRICE_ML_SCHEDULE} /usr/local/bin/price-ml.sh\" >> /etc/crontabs/root &&
       echo \"$${FUNDAMENTALS_SCHEDULE} /usr/local/bin/fundamentals.sh\" >> /etc/crontabs/root &&
       crond -f -l 8"
     restart: unless-stopped

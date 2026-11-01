@@ -149,6 +149,8 @@ def run_build_event(
                 else None
             ),
             use_fundamentals=params.use_fundamentals,
+            use_price_ml=params.use_price_ml,
+            use_news_sentiment=params.use_news_sentiment,
             include_watchlist=params.include_watchlist,
         )
         session_row.session_metadata = {

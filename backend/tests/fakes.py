@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from concurrent.futures import Future
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from typing import Any
 
 from cadence.agents.gateway import run_config_for_trace
@@ -27,6 +27,7 @@ from cadence.assets.universe_agent import (
 )
 from cadence.broker.models import AssetClass, BrokerAsset
 from cadence.broker.stub import StubBroker
+from cadence.news_sentiment.models import NewsItem, SentimentScore
 from cadence.recommendations.agent import (
     EligibilityCriteria,
     RecommendationCandidate,
@@ -271,6 +272,77 @@ class FakeFundamentalsProvider:
         return Fundamentals(
             status=FundamentalsStatus.UNAVAILABLE, source=SOURCE_SEC_EDGAR
         )
+
+
+class FakeSentimentScorer:
+    """In-memory :class:`SentimentScorer` for tests (no network).
+
+    ``by_text`` maps an exact scored text to the :class:`SentimentScore` to return;
+    a text absent from the map falls back to ``default`` (a neutral score when not
+    given). Set ``error`` to raise from :meth:`score` so the service's degradation
+    guard (which must still yield "sentiment unavailable" and never fail a
+    rebalance) can be exercised. Set ``empty=True`` to return ``[]`` regardless,
+    simulating a scorer that could not score (e.g. an unreachable sidecar).
+    ``score_calls`` records each batch of texts passed.
+    """
+
+    def __init__(
+        self,
+        *,
+        by_text: dict[str, SentimentScore] | None = None,
+        default: SentimentScore | None = None,
+        error: Exception | None = None,
+        empty: bool = False,
+    ) -> None:
+        self._by_text = by_text or {}
+        self._default = default or SentimentScore(
+            positive=0.34, neutral=0.33, negative=0.33
+        )
+        self._error = error
+        self._empty = empty
+        self.score_calls: list[list[str]] = []
+
+    def score(self, texts: Sequence[str]) -> list[SentimentScore]:
+        self.score_calls.append(list(texts))
+        if self._error is not None:
+            raise self._error
+        if self._empty:
+            return []
+        return [self._by_text.get(text, self._default) for text in texts]
+
+
+class FakeNewsSource:
+    """In-memory :class:`NewsSource` for tests (no network).
+
+    ``by_ticker`` maps a ticker to the :class:`NewsItem` list to return; a ticker
+    absent from the map yields no items (the no-news degradation path). Set
+    ``error`` to raise from :meth:`fetch_news` so the service's degradation guard
+    can be exercised. ``fetch_calls`` records each ticker fetched.
+    """
+
+    def __init__(
+        self,
+        *,
+        by_ticker: dict[str, list[NewsItem]] | None = None,
+        error: Exception | None = None,
+    ) -> None:
+        self._by_ticker = {t.upper(): items for t, items in (by_ticker or {}).items()}
+        self._error = error
+        self.fetch_calls: list[str] = []
+
+    def fetch_news(
+        self, ticker: str, *, start: datetime, limit: int
+    ) -> list[NewsItem]:
+        self.fetch_calls.append(ticker)
+        if self._error is not None:
+            raise self._error
+        items = [
+            item
+            for item in self._by_ticker.get(ticker.strip().upper(), [])
+            if item.published_at >= start
+        ]
+        items.sort(key=lambda item: item.published_at, reverse=True)
+        return items[:limit]
 
 
 class FakeUniverseEvaluationAgent:

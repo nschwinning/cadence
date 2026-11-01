@@ -94,6 +94,26 @@ class FundamentalsRefreshRead(BaseModel):
     unavailable: int
 
 
+class PriceMlRefreshRead(BaseModel):
+    """Summary of a price-ML precompute run.
+
+    ``assets_processed`` is how many assets got a fresh stored signal;
+    ``assets_failed`` is how many raised during inference (isolated, not fatal);
+    ``assets_skipped`` is how many were below the minimum bar count or lacked a
+    fully-defined feature row. ``trained`` reports whether this run retrained the
+    pooled model (vs. reusing the cached one), and ``model_version`` is the
+    version the stored signals were produced with.
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    assets_processed: int
+    assets_failed: int
+    assets_skipped: int
+    trained: bool
+    model_version: str
+
+
 class AssetRead(BaseModel):
     """Full snapshot of a stored asset, including its eligibility breakdown."""
 
@@ -383,6 +403,12 @@ class PaperTradingSessionRead(BaseModel):
     # Whether the session opted into the company-fundamentals strategy (frozen at
     # build time). False for sessions built before this option existed.
     use_fundamentals: bool
+    # Whether the session opted into the learned price-direction (price-ML) strategy
+    # (frozen at build time). False for sessions built before this option existed.
+    use_price_ml: bool
+    # Whether the session opted into the news-sentiment strategy (frozen at build
+    # time). False for sessions built before this option existed.
+    use_news_sentiment: bool
     # Whether the session's candidate universe includes watchlist-membership assets
     # (frozen at build time). False for sessions built before this option existed.
     include_watchlist: bool
@@ -1021,6 +1047,20 @@ class AIPortfolioBuildRequest(BaseModel):
         "(frozen at build time). When enabled, each rebalance attaches a per-ticker "
         "company-fundamentals block to the agent's candidates and holdings. Defaults "
         "to off (opt-in).",
+    )
+    use_price_ml: bool = Field(
+        default=False,
+        description="Opt this portfolio into the learned price-direction (price-ML) "
+        "strategy (frozen at build time). When enabled, each rebalance attaches a "
+        "per-ticker learned price-direction block to the agent's candidates and "
+        "holdings. Defaults to off (opt-in).",
+    )
+    use_news_sentiment: bool = Field(
+        default=False,
+        description="Opt this portfolio into the news-sentiment strategy (frozen at "
+        "build time). When enabled, each rebalance attaches a per-ticker "
+        "recency-weighted news-tone block to the agent's candidates and holdings. "
+        "Defaults to off (opt-in).",
     )
     include_watchlist: bool = Field(
         default=False,

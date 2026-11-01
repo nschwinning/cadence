@@ -256,6 +256,24 @@ class PaperTradingSession(Base):
     use_fundamentals: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False, server_default="false"
     )
+    # Whether this session opts into the learned price-direction (price-ML) strategy,
+    # chosen at build time and frozen for the session's lifetime (like the other opt-ins).
+    # When true and the session is frozen on a price-ML-aware rebalance prompt, each
+    # rebalance attaches a per-ticker price-ML advisory block to the agent's candidates
+    # and holdings. Non-nullable and defaults to false (opt-in); backfilled to false for
+    # pre-existing sessions by the migration, so already-built sessions are unchanged.
+    use_price_ml: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="false"
+    )
+    # Whether this session opts into the news-sentiment strategy, chosen at build time
+    # and frozen for the session's lifetime (like the other opt-ins). When true and the
+    # session is frozen on a sentiment-aware rebalance prompt, each rebalance attaches a
+    # per-ticker recency-weighted news-tone block to the agent's candidates and holdings.
+    # Non-nullable and defaults to false (opt-in); backfilled to false for pre-existing
+    # sessions by the migration, so already-built sessions are unchanged.
+    use_news_sentiment: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default="false"
+    )
     # Whether this session opts into including the user's watchlist-membership assets
     # in the candidate universe the AI picks from, chosen at build time and frozen for
     # the session's lifetime (like the other opt-ins). When true, each rebalance (and

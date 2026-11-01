@@ -15,6 +15,8 @@ dependencies = [
     "yfinance>=0.2",
     "pandas>=2.2",
     "numpy>=1.26",
+    "scikit-learn>=1.5",
+    "joblib>=1.4",
     "openai-agents>=0.13.6",
     "openai>=2.31.0",
     "serpapi>=1.0.2",
@@ -53,5 +55,16 @@ packages = ["cadence"]
 strict = true
 
 [[tool.mypy.overrides]]
-module = ["yfinance", "yfinance.*", "serpapi", "serpapi.*", "pandas", "pandas.*"]
+module = [
+    "yfinance",
+    "yfinance.*",
+    "serpapi",
+    "serpapi.*",
+    "pandas",
+    "pandas.*",
+    "sklearn",
+    "sklearn.*",
+    "joblib",
+    "joblib.*",
+]
 ignore_missing_imports = true

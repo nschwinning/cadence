@@ -3126,31 +3126,56 @@ def _scoped_held_ai_session(
     return sess
 
 
+def _held_crypto_ai_session(db_session: Session, name: str) -> object:
+    """An active AI session that actually holds an open crypto position.
+
+    Seeds a crypto (``category == CRYPTO``) asset into the universe and opens a
+    ledger position in it, so the weekend snapshot gate (which keys on actual
+    crypto holdings, not configured scope) selects the session.
+    """
+    assets_service.add_asset(db_session, "BTC-USD", _crypto_provider(), StubBroker())
+    return _held_ai_session(db_session, name, "BTC-USD")
+
+
 # A Saturday and a Monday in the snapshot timezone (calendar weekend detection).
 _WEEKEND = date(2026, 1, 3)
 _WEEKDAY = date(2026, 1, 5)
 
 
-def test_snapshot_all_sessions_weekend_skips_stocks_only(db_session: Session) -> None:
+def test_snapshot_all_sessions_weekend_skips_sessions_without_crypto_holdings(
+    db_session: Session,
+) -> None:
     broker = StubBroker()
     notifier = RecordingNotifier()
     stocks_only = _scoped_held_ai_session(db_session, "AI Stocks", "AAPL", "stocks")
-    crypto = _scoped_held_ai_session(db_session, "AI Crypto", "MSFT", "both")
+    # Configured to allow crypto ("both"), but holds no crypto position: the weekend
+    # gate keys on actual holdings, not scope, so this session is skipped too.
+    crypto_allowed_no_holdings = _scoped_held_ai_session(
+        db_session, "AI Both", "MSFT", "both"
+    )
+    crypto = _held_crypto_ai_session(db_session, "AI Crypto")
 
     ids = service.snapshot_all_sessions(
         db_session, broker=broker, notifier=notifier, as_of=_WEEKEND
     )
 
-    # The stocks-only session is skipped entirely on the weekend: no snapshot...
+    # Only the session that currently holds crypto is snapshotted on the weekend...
     assert stocks_only.id not in ids
+    assert crypto_allowed_no_holdings.id not in ids
     assert crypto.id in ids
     assert (
         paper_service.list_value_snapshots(db_session, session_id=stocks_only.id) == []
     )
+    assert (
+        paper_service.list_value_snapshots(
+            db_session, session_id=crypto_allowed_no_holdings.id
+        )
+        == []
+    )
     assert len(
         paper_service.list_value_snapshots(db_session, session_id=crypto.id)
     ) == 1
-    # ...and no notification: the one push sent is for the crypto/both session only.
+    # ...and no notification is sent for the skipped sessions: the one push is crypto.
     assert len(notifier.sent) == 1
     _message, title = notifier.sent[0]
     assert title == "Cadence: AI Crypto daily P&L"
@@ -3605,13 +3630,17 @@ def test_assemble_daily_run_snapshots_best_effort_per_session(
     )
 
 
-def test_assemble_daily_run_snapshots_weekend_skips_stocks_only(
+def test_assemble_daily_run_snapshots_weekend_skips_sessions_without_crypto(
     db_session: Session,
 ) -> None:
     broker = StubBroker()
     stocks_only = _scoped_held_ai_session(db_session, "AI Stocks", "AAPL", "stocks")
-    crypto = _scoped_held_ai_session(db_session, "AI Crypto", "MSFT", "both")
-    # Only the crypto/both session is snapshotted on a weekend (mirrors the P&L job).
+    # Crypto-allowed by config but holds no crypto: skipped like the stocks-only one.
+    crypto_allowed_no_holdings = _scoped_held_ai_session(
+        db_session, "AI Both", "MSFT", "both"
+    )
+    crypto = _held_crypto_ai_session(db_session, "AI Crypto")
+    # Only the crypto-holding session is snapshotted on a weekend (mirrors P&L job).
     paper_service.record_value_snapshot(
         db_session, session_id=crypto.id, as_of=_WEEKEND, broker=broker
     )
@@ -3620,6 +3649,7 @@ def test_assemble_daily_run_snapshots_weekend_skips_stocks_only(
 
     assert recorded == [crypto.id]
     assert stocks_only.id not in recorded
+    assert crypto_allowed_no_holdings.id not in recorded
 
 
 # --------------------------------------------------------------------------- #

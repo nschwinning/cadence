@@ -60,6 +60,7 @@ from cadence.paper_trading.models import (
     SessionValueSnapshot,
     StopLossQuarantine,
 )
+from cadence.price_history.models import PriceHistory
 
 logger = logging.getLogger(__name__)
 
@@ -98,6 +99,8 @@ def create_session(
     learning_feedback_enabled: bool = False,
     learning_feedback_window: int | None = None,
     use_fundamentals: bool = False,
+    use_price_ml: bool = False,
+    use_news_sentiment: bool = False,
     include_watchlist: bool = False,
 ) -> PaperTradingSession:
     """Create a paper-trading session for a ``(portfolio, strategy)`` pair.
@@ -126,6 +129,14 @@ def create_session(
     company-fundamentals opt-in at build time (default off); when enabled and the
     session is frozen on a fundamentals-aware rebalance prompt, each rebalance attaches
     a per-ticker company-fundamentals block to the agent's candidates and holdings.
+    ``use_price_ml`` freezes the learned price-direction (price-ML) opt-in at build time
+    (default off); when enabled and the session is frozen on a price-ML-aware rebalance
+    prompt, each rebalance attaches a per-ticker price-ML advisory block to the agent's
+    candidates and holdings.
+    ``use_news_sentiment`` freezes the news-sentiment opt-in at build time (default off);
+    when enabled and the session is frozen on a sentiment-aware rebalance prompt, each
+    rebalance attaches a per-ticker recency-weighted news-tone block to the agent's
+    candidates and holdings.
     ``include_watchlist`` freezes the watchlist-inclusion opt-in at build time (default
     off); when enabled, each rebalance assembles its candidate universe from the union
     of universe- and watchlist-membership assets instead of universe-membership only.
@@ -155,6 +166,8 @@ def create_session(
         learning_feedback_enabled=learning_feedback_enabled,
         learning_feedback_window=learning_feedback_window,
         use_fundamentals=use_fundamentals,
+        use_price_ml=use_price_ml,
+        use_news_sentiment=use_news_sentiment,
         include_watchlist=include_watchlist,
     )
     session.add(row)
@@ -1106,11 +1119,54 @@ class SessionValuation:
     positions: list[dict[str, Any]]
 
 
+def _market_is_open(broker: Broker) -> bool:
+    """Whether the equity market is open, assuming open on any clock failure.
+
+    Defaulting to "open" on error preserves the pre-existing live-quote behavior
+    rather than silently freezing valuations when the broker clock is unreachable.
+    """
+    try:
+        return bool(broker.is_market_open())
+    except Exception as exc:  # noqa: BLE001 - clock is best-effort
+        logger.warning("valuation: market-clock check failed, assuming open: %s", exc)
+        return True
+
+
+def _last_official_closes(
+    session: Session, asset_id_by_ticker: dict[str, int], as_of: date
+) -> dict[str, float]:
+    """Map each ticker to its most recent stored daily close on or before ``as_of``.
+
+    Reads the ``price_history`` table (daily closes ingested per universe asset), so
+    for a weekend or market holiday this resolves to the prior trading day's official
+    close. A ticker with no stored close on or before ``as_of`` is simply absent from
+    the result (the caller falls back to a live quote, then average cost).
+    """
+    if not asset_id_by_ticker:
+        return {}
+    ids = list(set(asset_id_by_ticker.values()))
+    stmt = (
+        select(PriceHistory.asset_id, PriceHistory.close)
+        .where(PriceHistory.asset_id.in_(ids), PriceHistory.date <= as_of)
+        .order_by(PriceHistory.asset_id, PriceHistory.date)
+    )
+    # Ascending by date, so the last row seen per asset is its latest close.
+    latest_by_id: dict[int, float] = {}
+    for asset_id, close in session.execute(stmt):
+        latest_by_id[asset_id] = float(close)
+    return {
+        ticker: latest_by_id[asset_id]
+        for ticker, asset_id in asset_id_by_ticker.items()
+        if asset_id in latest_by_id
+    }
+
+
 def compute_session_value(
     session: Session,
     *,
     session_id: uuid.UUID,
     broker: Broker,
+    as_of: date | None = None,
 ) -> SessionValuation:
     """Value a session by marking its ledger positions to market.
 
@@ -1121,6 +1177,14 @@ def compute_session_value(
     (missing symbol or a quote with no usable price) is valued at its ledger
     ``avg_cost`` and the gap logged, so one bad quote never sinks the snapshot. A
     session with no open positions yields an all-cash valuation.
+
+    When the **equity market is closed** (per the broker clock) an open **equity**
+    position is marked at its **last official daily close** (from ``price_history``,
+    on or before ``as_of`` — defaulting to today) rather than a live quote, which
+    drifts on weekends/after hours; **crypto** positions are always marked at their
+    live price because crypto trades around the clock. If a closed-market equity has
+    no stored close, it falls back to a live quote, then average cost. When the market
+    is open, all positions are marked live exactly as before.
     """
     session_row = get_session(session, session_id)
     ledger = list_open_positions(session, session_id)
@@ -1136,13 +1200,33 @@ def compute_session_value(
             )
             quotes = {}
 
+    # While the equity market is closed, mark equities to their last official close
+    # (crypto stays live). Classify held tickers by the universe's Asset.category and
+    # pre-fetch closes for the equity sleeve only.
+    last_closes: dict[str, float] = {}
+    if tickers and not _market_is_open(broker):
+        as_of = as_of or datetime.now(tz=UTC).date()
+        assets = session.execute(
+            select(Asset).where(Asset.ticker.in_(tickers))
+        ).scalars()
+        equity_ids = {
+            asset.ticker: asset.id
+            for asset in assets
+            if asset.category != AssetCategory.CRYPTO.value
+        }
+        last_closes = _last_official_closes(session, equity_ids, as_of)
+
     positions: list[dict[str, Any]] = []
     positions_value = 0.0
     unrealized_total = 0.0
     for entry in ledger:
         cost = entry.avg_cost or 0.0
         cost_basis = entry.quantity * cost
-        price = quote_price(quotes.get(entry.ticker))
+        # Closed-market equities use the official close; everything else (crypto, and
+        # all positions while the market is open) uses the live quote.
+        price = last_closes.get(entry.ticker)
+        if price is None:
+            price = quote_price(quotes.get(entry.ticker))
         if price is None:
             logger.warning(
                 "snapshot: no quote for %s (session %s); valuing at avg cost",
@@ -1452,7 +1536,9 @@ def record_value_snapshot(
     divides by that baseline, guarding against a non-positive baseline.
     """
     session_row = get_session(session, session_id)
-    valuation = compute_session_value(session, session_id=session_id, broker=broker)
+    valuation = compute_session_value(
+        session, session_id=session_id, broker=broker, as_of=as_of
+    )
 
     # Capital contributed during this snapshot's period lifts total_value but is not a
     # gain, so net it out of the day's P&L. The baseline is the prior snapshot's value

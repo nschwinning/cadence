@@ -177,6 +177,56 @@ class Settings(BaseSettings):
     #: Cap on assets the agent may discover and add beyond the current universe.
     AI_PORTFOLIO_MAX_NEW_ASSETS: int = 5
 
+    # Price-ML signal: a pooled gradient-boosted classifier predicting the sign of
+    # each asset's forward-return over PRICE_ML_HORIZON_DAYS trading days. These
+    # knobs are read by the nightly precompute and the rebalance-time annotation.
+    #: Forward-return horizon the model is trained to predict (trading days).
+    PRICE_ML_HORIZON_DAYS: int = 21
+    #: Retrain cadence (calendar days). The precompute reuses the cached model
+    #: until it is older than this, then retrains — so predictions stay stable
+    #: between retrains (default weekly).
+    PRICE_ML_RETRAIN_DAYS: int = 7
+    #: Minimum stored daily bars an asset needs before it is trained/predicted on.
+    #: Must comfortably exceed the longest moving-average window plus the horizon.
+    PRICE_ML_MIN_BAR_COUNT: int = 260
+    #: A stored signal older than this many days (relative to the rebalance's
+    #: as-of date) is treated as stale and rendered "unavailable".
+    PRICE_ML_STALENESS_DAYS: int = 7
+    #: Fixed random seed for deterministic training and walk-forward evaluation.
+    PRICE_ML_SEED: int = 42
+    #: Model/feature-schema version stored with each signal and gating the cache.
+    PRICE_ML_MODEL_VERSION: str = "price-ml-v1"
+    #: Directory holding the cached trained model artifact (joblib).
+    PRICE_ML_MODEL_DIR: str = "var/price_ml"
+
+    # News sentiment: a FinBERT-lineage tone signal classifying recent headlines
+    # into positive / neutral / negative, served OUT-OF-PROCESS via a sentiment
+    # sidecar reached behind the ``SentimentScorer`` protocol (the backend never
+    # loads the model). These knobs are read at rebalance time when a session opted
+    # into the signal.
+    #: Base URL of the sentiment-scoring sidecar. Empty (the default) DISABLES the
+    #: feature entirely — every ticker degrades to "unavailable" — so the signal is
+    #: opt-in via deployment config, mirroring how an unset provider URL disables.
+    SENTIMENT_SERVICE_URL: str = ""
+    #: Per-request timeout (seconds) for calls to the sentiment-scoring sidecar.
+    SENTIMENT_SERVICE_TIMEOUT_SECONDS: float = 10.0
+    #: Trailing window (calendar days) of news scored for each ticker's tone
+    #: aggregate (default ~3 days). News older than this is ignored.
+    SENTIMENT_WINDOW_DAYS: int = 3
+    #: Exponential recency half-life (days) weighting news within the window: an
+    #: item this many days old carries half the weight of a same-day item, so more
+    #: recent headlines dominate the aggregate.
+    SENTIMENT_RECENCY_HALFLIFE_DAYS: float = 1.5
+    #: Neutral band for classifying the recency-weighted (positive − negative)
+    #: aggregate: within ±this is "neutral", strictly above "positive", strictly
+    #: below "negative".
+    SENTIMENT_NEUTRAL_BAND: float = 0.15
+    #: Maximum news items fetched per ticker per window (bounds the scoring batch).
+    SENTIMENT_MAX_ARTICLES: int = 50
+    #: Base URL of the Alpaca News API used as the news source (reuses the Alpaca
+    #: credentials above).
+    ALPACA_NEWS_BASE_URL: str = "https://data.alpaca.markets/v1beta1/news"
+
     # Shared secret guarding the daily-rebalance trigger. The cron sidecar sends
     # it in the ``X-Cron-Token`` header; the endpoint rejects any request whose
     # header does not match. Empty (the default) means no valid token exists, so

@@ -188,6 +188,8 @@ export function BuildAIPortfolioCard() {
   const [cadence, setCadence] = useState<RebalanceCadence | ''>('');
   const [useTechnicalIndicators, setUseTechnicalIndicators] = useState(false);
   const [useFundamentals, setUseFundamentals] = useState(false);
+  const [usePriceMl, setUsePriceMl] = useState(false);
+  const [useNewsSentiment, setUseNewsSentiment] = useState(false);
   const [includeWatchlist, setIncludeWatchlist] = useState(false);
   const [stopLossEnabled, setStopLossEnabled] = useState(false);
   const [stopLossPct, setStopLossPct] = useState('15');
@@ -297,6 +299,8 @@ export function BuildAIPortfolioCard() {
         model,
         use_technical_indicators: useTechnicalIndicators,
         use_fundamentals: useFundamentals,
+        use_price_ml: usePriceMl,
+        use_news_sentiment: useNewsSentiment,
         include_watchlist: includeWatchlist,
         stop_loss_enabled: stopLossEnabled,
         stop_loss_pct: stopLossEnabled ? stopLossFraction : null,
@@ -545,6 +549,42 @@ export function BuildAIPortfolioCard() {
                     When enabled, every rebalance shows the agent each candidate
                     and holding&apos;s company financials (margins, EPS, revenue,
                     cash flow).
+                  </p>
+                </div>
+
+                {/* Learned price-direction (price ML). */}
+                <div className={CONTROL_CARD_CLASS}>
+                  <label className="flex items-center gap-2 text-sm font-medium text-slate-800">
+                    <input
+                      type="checkbox"
+                      checked={usePriceMl}
+                      onChange={(e) => setUsePriceMl(e.target.checked)}
+                      className="h-4 w-4 rounded border-slate-300 text-emerald-600 focus:ring-emerald-500"
+                    />
+                    Use price ML
+                  </label>
+                  <p className="text-xs text-slate-500">
+                    When enabled, every rebalance shows the agent an advisory
+                    learned price-direction signal (up/down, confidence, recent
+                    out-of-sample accuracy) for each candidate and holding.
+                  </p>
+                </div>
+
+                {/* News sentiment. */}
+                <div className={CONTROL_CARD_CLASS}>
+                  <label className="flex items-center gap-2 text-sm font-medium text-slate-800">
+                    <input
+                      type="checkbox"
+                      checked={useNewsSentiment}
+                      onChange={(e) => setUseNewsSentiment(e.target.checked)}
+                      className="h-4 w-4 rounded border-slate-300 text-emerald-600 focus:ring-emerald-500"
+                    />
+                    Use news sentiment
+                  </label>
+                  <p className="text-xs text-slate-500">
+                    When enabled, every rebalance shows the agent a recency-weighted
+                    news-tone signal (positive/neutral/negative, score, article
+                    count) for each candidate and holding.
                   </p>
                 </div>
 

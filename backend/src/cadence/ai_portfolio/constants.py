@@ -74,3 +74,19 @@ TREND_PROMPT_VERSION = 3
 #: block to the agent's candidates and holdings; sessions frozen to an earlier
 #: version, or that opted out, keep their original behaviour and receive no block.
 FUNDAMENTALS_PROMPT_VERSION = 4
+
+#: First rebalance-prompt version that drives the price-ML direction strategy
+#: (seeded by the v5 migration). A session whose frozen prompt version is at least
+#: this AND that opted into price-ML attaches a per-ticker learned price-direction
+#: advisory block to the agent's candidates and holdings; sessions frozen to an
+#: earlier version, or that opted out, keep their original behaviour and receive no
+#: block. The block is advisory only — the agent remains long-only.
+PRICE_ML_PROMPT_VERSION = 5
+
+#: First rebalance-prompt version that drives the news-sentiment strategy (seeded
+#: by the v6 migration). A session whose frozen prompt version is at least this AND
+#: that opted into news sentiment attaches a per-ticker recency-weighted news-tone
+#: block to the agent's candidates and holdings; sessions frozen to an earlier
+#: version, or that opted out, keep their original behaviour and receive no block.
+#: The block is advisory only — the agent remains long-only.
+NEWS_SENTIMENT_PROMPT_VERSION = 6

@@ -18,7 +18,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from cadence.ai_portfolio.constants import AI_STRATEGY_KEY
-from cadence.ai_portfolio.events import session_allows_crypto
+from cadence.ai_portfolio.events import session_holds_crypto
 from cadence.ai_portfolio.models import AIPortfolioEvent
 from cadence.ai_portfolio.notifications import (
     _benchmark_suffix,
@@ -42,6 +42,15 @@ logger = logging.getLogger(__name__)
 #: Timezone the end-of-day snapshot date is anchored to (US market close), matching
 #: the cron sidecar's schedule timezone.
 _SNAPSHOT_TZ = ZoneInfo("America/New_York")
+
+
+def _today() -> date:
+    """Today's calendar date in the market-close timezone.
+
+    A single clock seam for both fan-out jobs so the day (and thus weekday/weekend
+    selection) is computed one way — and can be pinned deterministically in tests.
+    """
+    return datetime.now(tz=_SNAPSHOT_TZ).date()
 
 
 def _daily_change_holdings(
@@ -99,14 +108,16 @@ def snapshot_all_sessions(
     :func:`_notify_safely`). Returns the ids of the sessions snapshotted.
 
     On a **weekend** (Saturday/Sunday by calendar in :data:`_SNAPSHOT_TZ`, ignoring
-    exchange holidays) a session whose **configured** scope does not include crypto
-    (stocks-only) is skipped entirely — no snapshot recorded and no push sent —
-    since its holdings do not move while the equity market is closed. Crypto/both
-    sessions still snapshot and report on weekends, and weekdays are unchanged (all
-    active AI sessions).
+    exchange holidays) a session that holds **no crypto position** is skipped entirely
+    — no snapshot recorded and no push sent — since its holdings do not move while the
+    equity market is closed. Weekend selection keys off the session's *actual
+    holdings* (:func:`session_holds_crypto`), not its configured scope, so a session
+    configured to allow crypto but currently holding none is skipped just like a
+    stocks-only one. Sessions that currently hold crypto still snapshot and report on
+    weekends, and weekdays are unchanged (all active AI sessions).
     """
     if as_of is None:
-        as_of = datetime.now(tz=_SNAPSHOT_TZ).date()
+        as_of = _today()
     is_weekend = as_of.weekday() >= 5  # Sat=5, Sun=6
 
     sessions = paper_service.list_sessions(
@@ -116,10 +127,11 @@ def snapshot_all_sessions(
 
     snapshotted: list[uuid.UUID] = []
     for session_row in targets:
-        # On weekends, a stocks-only session's holdings do not move while the
-        # equity market is closed: skip it entirely (no snapshot, no push). Its
-        # scope is read from the frozen build metadata, not its current holdings.
-        if is_weekend and not session_allows_crypto(session_row):
+        # On weekends, a session holding no crypto does not move while the equity
+        # market is closed: skip it entirely (no snapshot, no push). Selection keys
+        # off actual holdings, not the frozen configured scope, so a crypto-allowed
+        # session currently holding no crypto is skipped too.
+        if is_weekend and not session_holds_crypto(session, session_row):
             continue
         snapshot = paper_service.record_value_snapshot(
             session, session_id=session_row.id, as_of=as_of, broker=broker
@@ -304,7 +316,7 @@ def assemble_daily_run_snapshots(
     for which a learning snapshot was recorded.
     """
     if as_of is None:
-        as_of = datetime.now(tz=_SNAPSHOT_TZ).date()
+        as_of = _today()
     is_weekend = as_of.weekday() >= 5  # Sat=5, Sun=6
 
     sessions = paper_service.list_sessions(
@@ -314,9 +326,9 @@ def assemble_daily_run_snapshots(
 
     recorded: list[uuid.UUID] = []
     for session_row in targets:
-        # Mirror the P&L job's weekend gating: a stocks-only session is not
+        # Mirror the P&L job's weekend gating: a session holding no crypto is not
         # snapshotted on a weekend, so it has no value snapshot and nothing to learn.
-        if is_weekend and not session_allows_crypto(session_row):
+        if is_weekend and not session_holds_crypto(session, session_row):
             continue
         try:
             if _assemble_session_daily_run(session, session_row, as_of):

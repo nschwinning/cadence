@@ -17,6 +17,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
 from tests.fakes import FakeAIPortfolioAgent, FakeMarketDataProvider, ManualExecutor
 
+from cadence.ai_portfolio import snapshots
 from cadence.ai_portfolio.agent import (
     AIPortfolioBuildResult,
     AIPortfolioStock,
@@ -572,6 +573,106 @@ def test_build_persists_learning_feedback_opt_in_via_api(
     row = next(s for s in items if s["id"] == session_id)
     assert row["learning_feedback_enabled"] is True
     assert row["learning_feedback_window"] == 6
+
+
+def test_build_persists_price_ml_opt_in_via_api(
+    client: TestClient, db_session: Session
+) -> None:
+    executor = ManualExecutor(run_immediately=True)
+    _seed_universe(db_session, _provider())
+    _wire(db_session, executor)
+
+    resp = client.post(
+        "/api/v1/ai-portfolio/build",
+        json={"allocated_capital": 100000, "use_price_ml": True},
+    )
+    assert resp.status_code == 202
+    executor.run_pending()
+    event_id = resp.json()["event_id"]
+    session_id = client.get(
+        f"/api/v1/ai-portfolio/build/status/{event_id}"
+    ).json()["session_id"]
+
+    session = paper_service.get_session(db_session, uuid.UUID(session_id))
+    assert session.use_price_ml is True
+
+    # The flag is exposed on the session read over the API.
+    items = client.get("/api/v1/paper-trading/sessions").json()["items"]
+    row = next(s for s in items if s["id"] == session_id)
+    assert row["use_price_ml"] is True
+
+
+def test_build_defaults_price_ml_opt_out_via_api(
+    client: TestClient, db_session: Session
+) -> None:
+    executor = ManualExecutor(run_immediately=True)
+    _seed_universe(db_session, _provider())
+    _wire(db_session, executor)
+
+    resp = client.post(
+        "/api/v1/ai-portfolio/build", json={"allocated_capital": 100000}
+    )
+    assert resp.status_code == 202
+    executor.run_pending()
+    event_id = resp.json()["event_id"]
+    session_id = client.get(
+        f"/api/v1/ai-portfolio/build/status/{event_id}"
+    ).json()["session_id"]
+
+    # Omitting the flag defaults it off (opt-in), surfaced on the read.
+    items = client.get("/api/v1/paper-trading/sessions").json()["items"]
+    row = next(s for s in items if s["id"] == session_id)
+    assert row["use_price_ml"] is False
+
+
+def test_build_persists_news_sentiment_opt_in_via_api(
+    client: TestClient, db_session: Session
+) -> None:
+    executor = ManualExecutor(run_immediately=True)
+    _seed_universe(db_session, _provider())
+    _wire(db_session, executor)
+
+    resp = client.post(
+        "/api/v1/ai-portfolio/build",
+        json={"allocated_capital": 100000, "use_news_sentiment": True},
+    )
+    assert resp.status_code == 202
+    executor.run_pending()
+    event_id = resp.json()["event_id"]
+    session_id = client.get(
+        f"/api/v1/ai-portfolio/build/status/{event_id}"
+    ).json()["session_id"]
+
+    session = paper_service.get_session(db_session, uuid.UUID(session_id))
+    assert session.use_news_sentiment is True
+
+    # The flag is exposed on the session read over the API.
+    items = client.get("/api/v1/paper-trading/sessions").json()["items"]
+    row = next(s for s in items if s["id"] == session_id)
+    assert row["use_news_sentiment"] is True
+
+
+def test_build_defaults_news_sentiment_opt_out_via_api(
+    client: TestClient, db_session: Session
+) -> None:
+    executor = ManualExecutor(run_immediately=True)
+    _seed_universe(db_session, _provider())
+    _wire(db_session, executor)
+
+    resp = client.post(
+        "/api/v1/ai-portfolio/build", json={"allocated_capital": 100000}
+    )
+    assert resp.status_code == 202
+    executor.run_pending()
+    event_id = resp.json()["event_id"]
+    session_id = client.get(
+        f"/api/v1/ai-portfolio/build/status/{event_id}"
+    ).json()["session_id"]
+
+    # Omitting the flag defaults it off (opt-in), surfaced on the read.
+    items = client.get("/api/v1/paper-trading/sessions").json()["items"]
+    row = next(s for s in items if s["id"] == session_id)
+    assert row["use_news_sentiment"] is False
 
 
 def test_build_status_unknown_event_404(
@@ -1462,6 +1563,9 @@ def test_snapshot_daily_fans_out_to_active_ai_sessions(
     client: TestClient, db_session: Session, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(settings, "REBALANCE_CRON_TOKEN", "secret")
+    # Pin a weekday so the weekend crypto-holdings gate does not apply: this test
+    # asserts the weekday fan-out to all active AI sessions.
+    monkeypatch.setattr(snapshots, "_today", lambda: date(2026, 1, 5))  # Monday
     executor = ManualExecutor(run_immediately=True)
     _seed_universe(db_session, _provider())
     _wire(db_session, executor)
@@ -1490,12 +1594,14 @@ def test_daily_run_snapshot_records_after_value_snapshot(
     client: TestClient, db_session: Session, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     import uuid as _uuid
-    from datetime import datetime
-    from zoneinfo import ZoneInfo
 
     from cadence.paper_trading import service as paper_service
 
     monkeypatch.setattr(settings, "REBALANCE_CRON_TOKEN", "secret")
+    # Pin a weekday so both jobs select the (stocks-only) session regardless of when
+    # the suite runs; the weekend gate keys on actual crypto holdings.
+    run_date = date(2026, 1, 5)  # Monday
+    monkeypatch.setattr(snapshots, "_today", lambda: run_date)
     executor = ManualExecutor(run_immediately=True)
     _seed_universe(db_session, _provider())
     _wire(db_session, executor)
@@ -1518,7 +1624,6 @@ def test_daily_run_snapshot_records_after_value_snapshot(
     assert session_id in body["session_ids"]
 
     # A consolidated learning row was persisted for the session's day.
-    run_date = datetime.now(tz=ZoneInfo("America/New_York")).date()
     row = paper_service.get_daily_run_snapshot(
         db_session, session_id=_uuid.UUID(session_id), run_date=run_date
     )

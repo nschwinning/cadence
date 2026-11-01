@@ -739,6 +739,22 @@ function SessionHeader({
         </div>
         <div>
           <dt className="text-xs font-semibold uppercase tracking-wide text-slate-500">
+            Price ML
+          </dt>
+          <dd className="text-sm text-slate-900">
+            {session.use_price_ml ? 'On' : 'Off'}
+          </dd>
+        </div>
+        <div>
+          <dt className="text-xs font-semibold uppercase tracking-wide text-slate-500">
+            News sentiment
+          </dt>
+          <dd className="text-sm text-slate-900">
+            {session.use_news_sentiment ? 'On' : 'Off'}
+          </dd>
+        </div>
+        <div>
+          <dt className="text-xs font-semibold uppercase tracking-wide text-slate-500">
             Watchlist assets
           </dt>
           <dd className="text-sm text-slate-900">

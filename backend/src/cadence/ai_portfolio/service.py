@@ -35,6 +35,7 @@ from cadence.ai_portfolio.events import (
     list_ai_runs,
     list_session_events,
     session_allows_crypto,
+    session_holds_crypto,
     session_involves_crypto,
 )
 from cadence.ai_portfolio.flows.build import run_build_event
@@ -78,6 +79,7 @@ __all__ = [
     "run_rebalance_event",
     "scan_stop_losses",
     "session_allows_crypto",
+    "session_holds_crypto",
     "session_involves_crypto",
     "snapshot_all_sessions",
 ]

@@ -46,6 +46,8 @@ const session: PaperTradingSession = {
   learning_feedback_enabled: false,
   learning_feedback_window: null,
   use_fundamentals: false,
+  use_price_ml: false,
+  use_news_sentiment: false,
   include_watchlist: false,
   model: 'gpt-5-mini',
   current_value: 101500,

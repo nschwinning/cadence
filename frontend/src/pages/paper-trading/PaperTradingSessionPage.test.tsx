@@ -55,6 +55,8 @@ const session: PaperTradingSession = {
   learning_feedback_enabled: false,
   learning_feedback_window: null,
   use_fundamentals: false,
+  use_price_ml: false,
+  use_news_sentiment: false,
   include_watchlist: false,
   model: 'gpt-5-mini',
   current_value: 100500,
@@ -716,9 +718,9 @@ describe('PaperTradingSessionPage', () => {
     await screen.findByRole('heading', { name: 'Aggressive Jolly Wozniak' });
 
     expect(screen.getByText('Stop-loss')).toBeInTheDocument();
-    // Stop-loss, Risk guardrails, Learning feedback, Company fundamentals,
-    // Watchlist assets, and Technical indicators all read "Off" by default.
-    expect(screen.getAllByText('Off')).toHaveLength(6);
+    // Stop-loss, Risk guardrails, Learning feedback, Company fundamentals, Price ML,
+    // Watchlist assets, News sentiment, and Technical indicators all read "Off" by default.
+    expect(screen.getAllByText('Off')).toHaveLength(8);
   });
 
   it('shows the risk-guardrail configuration when the session opted in', async () => {
@@ -763,9 +765,9 @@ describe('PaperTradingSessionPage', () => {
     await screen.findByRole('heading', { name: 'Aggressive Jolly Wozniak' });
 
     expect(screen.getByText('Risk guardrails')).toBeInTheDocument();
-    // Stop-loss, Risk guardrails, Learning feedback, Company fundamentals,
-    // Watchlist assets, and Technical indicators read "Off" by default.
-    expect(screen.getAllByText('Off')).toHaveLength(6);
+    // Stop-loss, Risk guardrails, Learning feedback, Company fundamentals, Price ML,
+    // Watchlist assets, News sentiment, and Technical indicators read "Off" by default.
+    expect(screen.getAllByText('Off')).toHaveLength(8);
   });
 
   it('shows the learning-feedback configuration when the session opted in', async () => {
@@ -804,9 +806,9 @@ describe('PaperTradingSessionPage', () => {
     await screen.findByRole('heading', { name: 'Aggressive Jolly Wozniak' });
 
     expect(screen.getByText('Learning feedback')).toBeInTheDocument();
-    // Stop-loss, Risk guardrails, Learning feedback, Company fundamentals,
-    // Watchlist assets, and Technical indicators all read "Off".
-    expect(screen.getAllByText('Off')).toHaveLength(6);
+    // Stop-loss, Risk guardrails, Learning feedback, Company fundamentals, Price ML,
+    // Watchlist assets, News sentiment, and Technical indicators all read "Off".
+    expect(screen.getAllByText('Off')).toHaveLength(8);
   });
 
   it('shows the company-fundamentals fact tile as On when the session opted in', async () => {
@@ -844,9 +846,89 @@ describe('PaperTradingSessionPage', () => {
     await screen.findByRole('heading', { name: 'Aggressive Jolly Wozniak' });
 
     expect(screen.getByText('Company fundamentals')).toBeInTheDocument();
-    // Stop-loss, Risk guardrails, Learning feedback, Company fundamentals,
-    // Watchlist assets, and Technical indicators all read "Off".
-    expect(screen.getAllByText('Off')).toHaveLength(6);
+    // Stop-loss, Risk guardrails, Learning feedback, Company fundamentals, Price ML,
+    // Watchlist assets, News sentiment, and Technical indicators all read "Off".
+    expect(screen.getAllByText('Off')).toHaveLength(8);
+  });
+
+  it('shows the price-ML fact tile as On when the session opted in', async () => {
+    const withPriceMl: PaperTradingSession = {
+      ...session,
+      use_price_ml: true,
+    };
+    mockedGet.mockImplementation((url: string) => {
+      if (url.endsWith('/paper-trading/sessions')) {
+        return Promise.resolve({ data: { items: [withPriceMl], total: 1 } });
+      }
+      if (url.endsWith('/kpis')) {
+        return Promise.resolve({ data: KPIS });
+      }
+      if (url.endsWith('/sector-performance')) {
+        return Promise.resolve({ data: { by_sector: [], by_category: [] } });
+      }
+      if (url.includes('/ai-portfolio/sessions/') && url.endsWith('/events')) {
+        return Promise.resolve({ data: { items: [], total: 0 } });
+      }
+      return Promise.resolve({ data: { items: [], total: 0 } });
+    });
+
+    renderPage(<PaperTradingSessionPage />);
+    await screen.findByRole('heading', { name: 'Aggressive Jolly Wozniak' });
+
+    expect(screen.getByText('Price ML')).toBeInTheDocument();
+    expect(screen.getByText('On')).toBeInTheDocument();
+  });
+
+  it('shows the price-ML fact tile as Off when the session did not opt in', async () => {
+    installGet(() => 'running');
+
+    renderPage(<PaperTradingSessionPage />);
+    await screen.findByRole('heading', { name: 'Aggressive Jolly Wozniak' });
+
+    expect(screen.getByText('Price ML')).toBeInTheDocument();
+    // Stop-loss, Risk guardrails, Learning feedback, Company fundamentals, Price ML,
+    // Watchlist assets, News sentiment, and Technical indicators all read "Off" by default.
+    expect(screen.getAllByText('Off')).toHaveLength(8);
+  });
+
+  it('shows the news-sentiment fact tile as On when the session opted in', async () => {
+    const withNewsSentiment: PaperTradingSession = {
+      ...session,
+      use_news_sentiment: true,
+    };
+    mockedGet.mockImplementation((url: string) => {
+      if (url.endsWith('/paper-trading/sessions')) {
+        return Promise.resolve({ data: { items: [withNewsSentiment], total: 1 } });
+      }
+      if (url.endsWith('/kpis')) {
+        return Promise.resolve({ data: KPIS });
+      }
+      if (url.endsWith('/sector-performance')) {
+        return Promise.resolve({ data: { by_sector: [], by_category: [] } });
+      }
+      if (url.includes('/ai-portfolio/sessions/') && url.endsWith('/events')) {
+        return Promise.resolve({ data: { items: [], total: 0 } });
+      }
+      return Promise.resolve({ data: { items: [], total: 0 } });
+    });
+
+    renderPage(<PaperTradingSessionPage />);
+    await screen.findByRole('heading', { name: 'Aggressive Jolly Wozniak' });
+
+    expect(screen.getByText('News sentiment')).toBeInTheDocument();
+    expect(screen.getByText('On')).toBeInTheDocument();
+  });
+
+  it('shows the news-sentiment fact tile as Off when the session did not opt in', async () => {
+    installGet(() => 'running');
+
+    renderPage(<PaperTradingSessionPage />);
+    await screen.findByRole('heading', { name: 'Aggressive Jolly Wozniak' });
+
+    expect(screen.getByText('News sentiment')).toBeInTheDocument();
+    // Stop-loss, Risk guardrails, Learning feedback, Company fundamentals, Price ML,
+    // Watchlist assets, News sentiment, and Technical indicators all read "Off" by default.
+    expect(screen.getAllByText('Off')).toHaveLength(8);
   });
 
   it('renders the rebalance-cadence fact tile with the frozen cadence', async () => {
@@ -968,9 +1050,9 @@ describe('PaperTradingSessionPage', () => {
     await screen.findByRole('heading', { name: 'Aggressive Jolly Wozniak' });
 
     expect(screen.getByText('Technical indicators')).toBeInTheDocument();
-    // Stop-loss, Risk guardrails, Learning feedback, Company fundamentals,
-    // Watchlist assets, and Technical indicators all read "Off" by default.
-    expect(screen.getAllByText('Off')).toHaveLength(6);
+    // Stop-loss, Risk guardrails, Learning feedback, Company fundamentals, Price ML,
+    // Watchlist assets, News sentiment, and Technical indicators all read "Off" by default.
+    expect(screen.getAllByText('Off')).toHaveLength(8);
   });
 
   it("shows the session's frozen model resolved to its catalog display name", async () => {

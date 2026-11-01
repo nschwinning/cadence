@@ -39,6 +39,8 @@ class AIBuildParams:
     learning_feedback_enabled: bool = False
     learning_feedback_window: int | None = None
     use_fundamentals: bool = False
+    use_price_ml: bool = False
+    use_news_sentiment: bool = False
     include_watchlist: bool = False
     rebalance_cadence: str = RebalanceCadence.DAILY.value
 
@@ -60,6 +62,8 @@ class AIBuildParams:
             "learning_feedback_enabled": self.learning_feedback_enabled,
             "learning_feedback_window": self.learning_feedback_window,
             "use_fundamentals": self.use_fundamentals,
+            "use_price_ml": self.use_price_ml,
+            "use_news_sentiment": self.use_news_sentiment,
             "include_watchlist": self.include_watchlist,
             "rebalance_cadence": self.rebalance_cadence,
         }
@@ -97,6 +101,8 @@ class AIBuildParams:
                 None if learn_window is None else int(learn_window)
             ),
             use_fundamentals=bool(payload.get("use_fundamentals", False)),
+            use_price_ml=bool(payload.get("use_price_ml", False)),
+            use_news_sentiment=bool(payload.get("use_news_sentiment", False)),
             include_watchlist=bool(payload.get("include_watchlist", False)),
             rebalance_cadence=str(
                 payload.get("rebalance_cadence", RebalanceCadence.DAILY.value)

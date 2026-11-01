@@ -25,7 +25,7 @@ from cadence.ai_portfolio.params import AIBuildParams
 from cadence.assets import service as assets_service
 from cadence.assets.category import AssetCategory, AssetScope, scope_categories
 from cadence.broker.base import Broker
-from cadence.broker.models import Position
+from cadence.broker.models import AssetClass, Position
 from cadence.paper_trading import service as paper_service
 from cadence.paper_trading.constants import TERMINAL_ORDER_STATUSES
 from cadence.paper_trading.models import PaperTradingSession
@@ -298,6 +298,27 @@ def session_involves_crypto(
     }
     portfolio = portfolios_service.get_portfolio(session, session_row.portfolio_id)
     return _involves_crypto(positions, portfolio.stocks, asset_classes)
+
+
+def session_holds_crypto(
+    session: Session, session_row: PaperTradingSession
+) -> bool:
+    """Whether a session currently holds at least one open crypto position.
+
+    Classifies each open ledger position by the universe's ``Asset.category`` and
+    returns ``True`` iff any held position is crypto. Unlike
+    :func:`session_involves_crypto` this ignores portfolio *targets* and reads only
+    actual holdings, and unlike :func:`session_allows_crypto` it ignores the
+    configured scope — it answers what the session *holds right now*. This is what
+    the weekend end-of-day snapshot gate needs: a session whose holdings do not move
+    while the equity market is closed (it holds no crypto) is skipped, regardless of
+    its configured scope.
+    """
+    asset_classes = _asset_class_map(assets_service.list_assets(session))
+    return any(
+        asset_classes.get(entry.ticker, AssetClass.EQUITY) is AssetClass.CRYPTO
+        for entry in paper_service.list_open_positions(session, session_row.id)
+    )
 
 
 def session_allows_crypto(session_row: PaperTradingSession) -> bool:
