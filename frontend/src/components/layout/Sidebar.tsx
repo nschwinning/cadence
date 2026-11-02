@@ -4,6 +4,7 @@ import { DashboardIcon } from '../icons/DashboardIcon';
 import { AssetsIcon } from '../icons/AssetsIcon';
 import { WatchlistIcon } from '../icons/WatchlistIcon';
 import { PortfoliosIcon } from '../icons/PortfoliosIcon';
+import { BotsIcon } from '../icons/BotsIcon';
 import { RunsIcon } from '../icons/RunsIcon';
 import { TechnicalIndicatorsIcon } from '../icons/TechnicalIndicatorsIcon';
 import { SystemIcon } from '../icons/SystemIcon';
@@ -32,6 +33,7 @@ const NAV_ITEMS: NavItem[] = [
     icon: <WatchlistIcon className="h-5 w-5" />,
   },
   { to: '/portfolios', label: 'Portfolios', icon: <PortfoliosIcon className="h-5 w-5" /> },
+  { to: '/bots', label: 'Bots', icon: <BotsIcon className="h-5 w-5" /> },
   { to: '/runs', label: 'Runs', icon: <RunsIcon className="h-5 w-5" /> },
   {
     to: '/technical-indicators',

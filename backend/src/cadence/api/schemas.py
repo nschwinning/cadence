@@ -5,7 +5,7 @@ from __future__ import annotations
 import uuid
 from datetime import date, datetime
 from enum import Enum
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -1356,6 +1356,10 @@ class DashboardSessionPerformance(BaseModel):
     points: list[DashboardSessionValuePoint]
     contributions: list[DashboardSessionContribution]
     benchmark_value: float | None = None
+    # Which subsystem produced this row: an AI-driven paper-trading session
+    # (``'ai'``, the default for legacy rows) or a deterministic strategy bot
+    # (``'bot'``). The client badges and routes the row by this discriminator.
+    kind: Literal["ai", "bot"] = "ai"
 
 
 class DashboardAutomationRun(BaseModel):
@@ -1523,3 +1527,142 @@ class SystemStatusRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     backends: list[BackendStatusRead]
+
+
+# --- Strategy bots -----------------------------------------------------------
+
+
+class BotStrategyCatalogEntry(BaseModel):
+    """A registered bot strategy and its default parameter schema."""
+
+    key: str
+    display_name: str
+    required_history: int
+    params_schema: dict[str, Any]
+
+
+class BotSessionCreateRequest(BaseModel):
+    """Request to create a strategy-bot session bound to one universe asset."""
+
+    strategy_key: str
+    ticker: str
+    initial_capital: float = Field(gt=0)
+    benchmark: str
+    strategy_params: dict[str, Any] | None = None
+    label: str | None = None
+    take_profit_pct: float | None = Field(default=None, gt=0)
+    stop_loss_pct: float | None = Field(default=None, gt=0)
+    drawdown_stop_pct: float | None = Field(default=None, gt=0)
+    cash_buffer_pct: float | None = Field(default=None, ge=0, lt=1)
+
+
+class BotSessionRead(BaseModel):
+    """A strategy-bot session with its configuration and running totals."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    strategy_key: str
+    asset_id: int
+    ticker: str
+    label: str | None
+    status: str
+    benchmark: str
+    initial_capital: float
+    allocated_capital: float
+    strategy_params: dict[str, Any]
+    take_profit_pct: float | None
+    stop_loss_pct: float | None
+    drawdown_stop_pct: float
+    cash_buffer_pct: float
+    peak_value: float
+    position_qty: float | None
+    position_avg_price: float | None
+    position_opened_at: datetime | None
+    total_trades: int
+    realised_pnl: float
+    total_fees: float
+    created_at: datetime
+    updated_at: datetime
+    last_tick_at: datetime | None
+    archived_at: datetime | None
+
+
+class BotSessionListResponse(BaseModel):
+    """A list of strategy-bot sessions plus the matching total."""
+
+    items: list[BotSessionRead]
+    total: int
+
+
+class BotKpisRead(BaseModel):
+    """Performance KPIs for a bot session, from its own ledger + snapshots."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    current_value: float
+    allocated_capital: float
+    total_return: float
+    total_return_pct: float
+    realised_pnl: float
+    unrealised_pnl: float
+    total_fees: float
+    total_trades: int
+    max_drawdown: float
+
+
+class BotTradeRead(BaseModel):
+    """A single fill recorded by the bot engine."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    bot_session_id: uuid.UUID
+    side: str
+    ticker: str
+    quantity: float
+    filled_price: float | None
+    fees: float
+    reason: str | None
+    order_id: str | None
+    status: str
+    created_at: datetime
+
+
+class BotTradeListResponse(BaseModel):
+    """A list of bot trades plus the matching total."""
+
+    items: list[BotTradeRead]
+    total: int
+
+
+class BotValueSnapshotRead(BaseModel):
+    """A daily portfolio-value snapshot for a bot session."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    snapshot_date: date
+    total_value: float
+    realised_pnl: float
+    unrealised_pnl: float
+
+
+class BotValueHistoryResponse(BaseModel):
+    """A bot session's value snapshots (equity curve) plus the matching total."""
+
+    items: list[BotValueSnapshotRead]
+    total: int
+
+
+class BotTickResponse(BaseModel):
+    """Outcome of one cron-triggered bot tick."""
+
+    market_open: bool
+    processed: int
+    skipped: int
+
+
+class BotSnapshotResponse(BaseModel):
+    """Outcome of one cron-triggered daily bot-snapshot run."""
+
+    snapshots: int

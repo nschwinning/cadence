@@ -6,6 +6,8 @@ import { AssetDetailPage } from './pages/assets/AssetDetailPage';
 import { WatchlistPage } from './pages/watchlist/WatchlistPage';
 import { PaperTradingPage } from './pages/paper-trading/PaperTradingPage';
 import { PaperTradingSessionPage } from './pages/paper-trading/PaperTradingSessionPage';
+import { BotsPage } from './pages/bots/BotsPage';
+import { BotSessionPage } from './pages/bots/BotSessionPage';
 import { RunsPage } from './pages/runs/RunsPage';
 import { RunDetailPage } from './pages/runs/RunDetailPage';
 import { TechnicalIndicatorsPage } from './pages/technical-indicators/TechnicalIndicatorsPage';
@@ -31,6 +33,8 @@ export function App() {
         <Route path="watchlist" element={<WatchlistPage />} />
         <Route path="portfolios" element={<PaperTradingPage />} />
         <Route path="portfolios/:id" element={<PaperTradingSessionPage />} />
+        <Route path="bots" element={<BotsPage />} />
+        <Route path="bots/:id" element={<BotSessionPage />} />
         {/* Legacy routes: the paper-trading area merged into Portfolios. */}
         <Route
           path="paper-trading"

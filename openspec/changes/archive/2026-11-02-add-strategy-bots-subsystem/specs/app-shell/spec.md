@@ -53,6 +53,11 @@ When the equity curve plots a line, it SHALL support **hover inspection**: movin
 - **WHEN** the Dashboard renders the session selection list and both AI sessions and strategy-bot sessions are active
 - **THEN** each selectable session SHALL be badged by its kind (AI or bot), and selecting a bot session SHALL include it in the summed equity line like any other session
 
+#### Scenario: Combined line extends flat over a trailing weekend
+
+- **WHEN** the latest snapshot among the selected sessions is a prior trading day and the current day is a weekend or other non-trading day
+- **THEN** the combined equity line and each drawn benchmark line SHALL extend flat from that date to the current day at their last known value, rather than ending at the latest snapshot date
+
 #### Scenario: Toggling a session re-aggregates without refetch
 
 - **WHEN** a user includes or excludes a session in the equity curve

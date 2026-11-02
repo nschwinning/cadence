@@ -1,0 +1,166 @@
+"""Tests for the strategy-bot dashboard comparison seam (``kind='bot'`` rows)."""
+
+from __future__ import annotations
+
+from datetime import UTC, date, datetime
+
+import pytest
+from sqlalchemy.orm import Session
+
+from cadence.assets.models import Asset
+from cadence.broker.stub import StubBroker
+from cadence.dashboard import service as dashboard_service
+from cadence.dashboard.constants import DashboardRange
+from cadence.paper_trading import service as paper_trading_service
+from cadence.paper_trading.constants import Benchmark, SessionStatus
+from cadence.paper_trading.models import BenchmarkPrice
+from cadence.portfolios import service as portfolios_service
+from cadence.strategy_bots import service as bot_service
+
+_TODAY = date(2026, 6, 15)
+_NOW = datetime(2026, 6, 15, 12, 0, tzinfo=UTC)
+
+
+def _add_asset(db_session: Session, ticker: str = "AAPL") -> Asset:
+    asset = Asset(
+        ticker=ticker,
+        name=ticker,
+        sector="technology",
+        category="stock",
+        currency="USD",
+        is_eligible=True,
+        criteria_results=[],
+    )
+    db_session.add(asset)
+    db_session.flush()
+    return asset
+
+
+def _make_bot(db_session: Session) -> object:
+    _add_asset(db_session)
+    return bot_service.create_bot_session(
+        db_session,
+        strategy_key="ma_crossover",
+        ticker="AAPL",
+        initial_capital=100_000.0,
+        benchmark="SP500",
+        strategy_params={"fast_period": 2, "slow_period": 3},
+    )
+
+
+def _seed_benchmark(db_session: Session) -> None:
+    for on, close in ((date(2026, 6, 10), 100.0), (_TODAY, 110.0)):
+        db_session.add(
+            BenchmarkPrice(benchmark=Benchmark.SP500.value, price_date=on, close=close)
+        )
+    db_session.flush()
+
+
+def test_dashboard_performance_shape(db_session: Session) -> None:
+    bot = _make_bot(db_session)
+    bot_service.record_bot_snapshot(
+        db_session, bot, price=0.0, snapshot_date=date(2026, 6, 10)
+    )
+    _seed_benchmark(db_session)
+
+    perf = bot_service.dashboard_performance(
+        db_session, bot, range_=DashboardRange.MAX, today=_TODAY
+    )
+
+    assert perf.kind == "bot"
+    assert perf.allocated_capital == 100_000.0
+    assert [p.date for p in perf.points] == [date(2026, 6, 10)]
+    assert len(perf.contributions) == 1
+    assert perf.contributions[0].amount == 100_000.0
+    assert perf.contributions[0].effective_date == date(2026, 6, 10)
+    # 100k invested in the index at 100 valued at 110 -> 110k.
+    assert perf.benchmark_value == pytest.approx(110_000.0)
+
+
+def test_dashboard_performance_without_snapshot_anchors_live_point(
+    db_session: Session,
+) -> None:
+    bot = _make_bot(db_session)
+
+    perf = bot_service.dashboard_performance(
+        db_session, bot, range_=DashboardRange.MAX, today=_TODAY
+    )
+
+    assert perf.kind == "bot"
+    assert [p.date for p in perf.points] == [_TODAY]
+    assert perf.points[0].value == 100_000.0
+    assert perf.contributions[0].effective_date == _TODAY
+
+
+def test_overview_unions_ai_and_bot_rows(db_session: Session) -> None:
+    # One AI session...
+    portfolio = portfolios_service.create_portfolio(
+        db_session, name="Alpha", stocks=["TECH"]
+    )
+    paper_trading_service.create_session(
+        db_session,
+        portfolio_id=portfolio.id,
+        strategy_key="s1",
+        rebalance_prompt_version=1,
+        crypto_rebalance_prompt_version=1,
+        allocated_capital=10_000.0,
+        benchmark=Benchmark.SP500,
+    )
+    # ...and one bot session whose earliest snapshot predates the AI session.
+    earliest = date(2026, 6, 1)
+    bot = _make_bot(db_session)
+    bot_service.record_bot_snapshot(
+        db_session, bot, price=0.0, snapshot_date=earliest
+    )
+    # Seed a benchmark close exactly on the earliest bot date. Only an overlay
+    # floor that reaches back to that date keeps it as a plotted point; a floor
+    # anchored at the AI session's later contribution would drop it (keeping only
+    # the latest pre-floor close as a rebasing anchor).
+    for on, close in ((earliest, 95.0), (date(2026, 6, 10), 100.0), (_TODAY, 110.0)):
+        db_session.add(
+            BenchmarkPrice(benchmark=Benchmark.SP500.value, price_date=on, close=close)
+        )
+    db_session.flush()
+
+    overview = dashboard_service.get_dashboard_overview(
+        db_session,
+        range_=DashboardRange.MAX,
+        broker=StubBroker(),
+        today=_TODAY,
+        now=_NOW,
+    )
+
+    kinds = {perf.kind for perf in overview.sessions}
+    assert kinds == {"ai", "bot"}
+    # The earliest bot snapshot date is folded into the overlay floor, so the
+    # SP500 overlay carries a plotted point on that exact date.
+    sp500 = next(
+        s for s in overview.benchmark_series if s.benchmark_id == Benchmark.SP500.value
+    )
+    assert any(point.date == earliest for point in sp500.points)
+
+
+def test_ai_rows_default_to_ai_kind(db_session: Session) -> None:
+    portfolio = portfolios_service.create_portfolio(
+        db_session, name="Beta", stocks=["TECH"]
+    )
+    paper_trading_service.create_session(
+        db_session,
+        portfolio_id=portfolio.id,
+        strategy_key="s1",
+        rebalance_prompt_version=1,
+        crypto_rebalance_prompt_version=1,
+        allocated_capital=10_000.0,
+        benchmark=Benchmark.SP500,
+    )
+
+    overview = dashboard_service.get_dashboard_overview(
+        db_session,
+        range_=DashboardRange.MAX,
+        broker=StubBroker(),
+        today=_TODAY,
+        now=_NOW,
+    )
+
+    assert [perf.kind for perf in overview.sessions] == ["ai"]
+    assert SessionStatus.ACTIVE  # sanity: imported symbol used

@@ -263,6 +263,37 @@ class Settings(BaseSettings):
     # ``CRYPTO_FEE_PCT`` = 0) to disable the reserve.
     REBALANCE_CASH_BUFFER_PCT: float = 0.015
 
+    # Strategy-bot subsystem. A parallel, deterministic (non-AI) bot domain whose
+    # cron-triggered intraday ``/tick`` runs a pure technical strategy over a single
+    # universe asset. The cron *schedule strings* live in docker-compose/env (like
+    # REBALANCE_SCHEDULE); the knobs below are tunable Pydantic settings.
+    #: Tick interval in minutes — how often ``/bots/tick`` fires. Decoupled from the
+    #: signal bar timeframe so exit checks can run more often than entry computation.
+    #: Advisory/documentation value; the actual firing cadence is the cron string.
+    BOT_TICK_INTERVAL_MINUTES: int = 5
+    #: Bar timeframe (an Alpaca ``BarTimeframe`` value) the strategy computes signals
+    #: on. Default 5-minute bars.
+    BOT_SIGNAL_BAR_TIMEFRAME: str = "5Min"
+    #: Market-data feed (a ``MarketDataFeed`` value) the tick requests bars with. The
+    #: tick ALWAYS sets this explicitly rather than relying on the account default.
+    #: ``iex`` is real-time on the free tier; ``sip`` requires a paid subscription.
+    BOT_MARKET_DATA_FEED: str = "iex"
+    #: Data-source mode: ``rest`` pulls bars on demand per tick (verified real-time
+    #: via ``feed=iex``); ``stream`` would read a collector-backed cache. v1 ships
+    #: ``rest`` only; the setting reserves the seam.
+    BOT_MARKET_DATA_MODE: str = "rest"
+    #: Freshness bound (minutes): the most-recent bar must be no older than this
+    #: many minutes past its timeframe for the tick to act; otherwise the session is
+    #: skipped (IEX can produce sparse/missing recent bars). ~2 bar widths.
+    BOT_BAR_FRESHNESS_MINUTES: int = 10
+    #: Default cash buffer reserved before a bot's all-in sizing (fraction of
+    #: allocated capital) when a session does not specify its own.
+    BOT_CASH_BUFFER_PCT: float = 0.02
+    #: Default drawdown kill-switch threshold (fraction of peak value) applied when a
+    #: session does not specify its own. A fall of this fraction from the running
+    #: peak exits the position and stops the session.
+    BOT_DRAWDOWN_STOP_PCT: float = 0.25
+
     # Per-probe timeout (seconds) for the system-status endpoint. Each external
     # backend is live-probed concurrently; a probe that exceeds this bound is
     # reported as unreachable with a timeout detail so a slow or hung backend can

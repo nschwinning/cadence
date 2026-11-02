@@ -13,6 +13,7 @@ export function makeSession(
   return {
     id: 'session-a',
     label: 'Portfolio A',
+    kind: 'ai',
     allocated_capital: 10000,
     current_value: 11000,
     pnl: 1000,
@@ -27,6 +28,18 @@ export function makeSession(
     benchmark_value: 10500,
     ...overrides,
   };
+}
+
+/** Build a deterministic-bot session performance row (kind `'bot'`). */
+export function makeBotSession(
+  overrides: Partial<DashboardSessionPerformance> = {},
+): DashboardSessionPerformance {
+  return makeSession({
+    id: 'bot-a',
+    label: 'Bot A',
+    kind: 'bot',
+    ...overrides,
+  });
 }
 
 /** Build a full overview payload with sensible defaults. */

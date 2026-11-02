@@ -3,7 +3,7 @@ import { render, screen, within } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import type { ReactNode } from 'react';
 import { PortfolioLeaderboard } from './PortfolioLeaderboard';
-import { makeSession } from './fixtures';
+import { makeSession, makeBotSession } from './fixtures';
 
 function renderWithRouter(ui: ReactNode) {
   return render(<MemoryRouter>{ui}</MemoryRouter>);
@@ -80,6 +80,26 @@ describe('PortfolioLeaderboard', () => {
       within(row as HTMLElement).getByText('$1,500.00'),
     ).toBeInTheDocument(); // realised
     expect(within(row as HTMLElement).getByText('$500.00')).toBeInTheDocument(); // unrealised
+  });
+
+  it('badges each row by kind and routes a bot row to its bot detail', () => {
+    const ai = makeSession({ id: 'ai1', label: 'AI One', kind: 'ai' });
+    const bot = makeBotSession({ id: 'bot1', label: 'Bot One' });
+    renderWithRouter(<PortfolioLeaderboard sessions={[ai, bot]} range="1M" />);
+
+    // AI row keeps the paper-trading detail route and carries an "AI" badge.
+    const aiLink = screen.getByRole('link', { name: 'AI One' });
+    expect(aiLink).toHaveAttribute('href', '/paper-trading/ai1');
+    expect(
+      within(aiLink.closest('tr') as HTMLElement).getByText('AI'),
+    ).toBeInTheDocument();
+
+    // Bot row routes to the bot detail and carries a "Bot" badge.
+    const botLink = screen.getByRole('link', { name: 'Bot One' });
+    expect(botLink).toHaveAttribute('href', '/bots/bot1');
+    expect(
+      within(botLink.closest('tr') as HTMLElement).getByText('Bot'),
+    ).toBeInTheDocument();
   });
 
   it('groups the range columns under a spanning sub-header tracking the range', () => {

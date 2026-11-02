@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { CombinedEquityChart, buildCombinedOption } from './CombinedEquityChart';
-import { makeSession } from './fixtures';
+import { makeSession, makeBotSession } from './fixtures';
 import { todayEt } from '../../lib/carryForward';
 import type { DashboardBenchmarkSeries } from '../../types/api';
 
@@ -239,6 +239,37 @@ describe('CombinedEquityChart', () => {
     );
     await userEvent.click(screen.getByRole('checkbox', { name: /Beta/ }));
     expect(onToggle).toHaveBeenCalledWith('b');
+  });
+
+  it('badges each session in the selection legend by kind', () => {
+    const ai = makeSession({ id: 'ai1', label: 'AI One', kind: 'ai' });
+    const bot = makeBotSession({ id: 'bot1', label: 'Bot One' });
+    render(
+      <CombinedEquityChart
+        sessions={[ai, bot]}
+        selectedIds={new Set(['ai1', 'bot1'])}
+        onToggle={() => {}}
+        benchmarkSeries={benchmarkSeries}
+      />,
+    );
+    expect(screen.getByText('AI')).toBeInTheDocument();
+    expect(screen.getByText('Bot')).toBeInTheDocument();
+  });
+
+  it('toggles a bot session from the legend via its checkbox', async () => {
+    const onToggle = vi.fn();
+    const ai = makeSession({ id: 'ai1', label: 'Alpha', kind: 'ai' });
+    const bot = makeBotSession({ id: 'bot1', label: 'Robo' });
+    render(
+      <CombinedEquityChart
+        sessions={[ai, bot]}
+        selectedIds={new Set(['ai1', 'bot1'])}
+        onToggle={onToggle}
+        benchmarkSeries={benchmarkSeries}
+      />,
+    );
+    await userEvent.click(screen.getByRole('checkbox', { name: /Robo/ }));
+    expect(onToggle).toHaveBeenCalledWith('bot1');
   });
 
   it('lists every catalog benchmark with only S&P 500 checked by default', () => {

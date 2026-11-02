@@ -936,7 +936,7 @@ The Dashboard SHALL also present range-scoped performance tiles showing, over th
 
 ### Requirement: Dashboard combined equity curve
 
-The Dashboard SHALL present a combined equity curve as a single line equal to the summed value of the selected active sessions over the selected range, on a common date axis. A session SHALL contribute zero before its first recorded value (carry-forward thereafter). The common date axis SHALL span the union of the selected sessions' snapshot dates extended to a trailing horizon of the current day (US Eastern), so the combined line — and the benchmark lines described below — extend flat across trailing non-trading days (for example the current weekend) at their last known value rather than ending at the latest snapshot date. The Dashboard SHALL offer a selectable list of the active sessions, all selected by default, letting the user include or exclude each session; the selection SHALL also drive the hero tiles and the leaderboard. Toggling a session SHALL re-aggregate from already-fetched per-session data without issuing a new request per toggle. When no session is selected, the chart SHALL show an empty state instead of a line.
+The Dashboard SHALL present a combined equity curve as a single line equal to the summed value of the selected active sessions over the selected range, on a common date axis. The selectable sessions SHALL include both AI paper-trading sessions and strategy-bot sessions, each visually badged by its kind (AI or bot) in the selection list. A session SHALL contribute zero before its first recorded value (carry-forward thereafter). The common date axis SHALL span the union of the selected sessions' snapshot dates extended to a trailing horizon of the current day (US Eastern), so the combined line — and the benchmark lines described below — extend flat across trailing non-trading days (for example the current weekend) at their last known value rather than ending at the latest snapshot date. The Dashboard SHALL offer a selectable list of the active sessions, all selected by default, letting the user include or exclude each session; the selection SHALL also drive the hero tiles and the leaderboard. Toggling a session SHALL re-aggregate from already-fetched per-session data without issuing a new request per toggle. When no session is selected, the chart SHALL show an empty state instead of a line.
 
 The chart SHALL also overlay **benchmark index lines** on the same dollar axis. It SHALL present a benchmark legend listing every index in the benchmark catalog, each individually selectable, with the S&P 500 selected by default and the others deselected. For each selected benchmark that has price data over the range, the chart SHALL draw a line equal to the **sum over the selected sessions of a buy-and-hold of each session's contributed capital in that index** — for each selected session, its opening capital is treated as invested in the index on the session's first date and each later capital increase as invested on its effective date, each held thereafter and valued forward by the index's price movement, and these per-session positions are summed on the common date axis. Consequently the benchmark line starts from zero before any selected session has opened and **steps up as each selected session opens** (and on each later capital increase), mirroring how the combined equity line aggregates, so the two curves are directly comparable in USD (no percent/dollar toggle). A selected benchmark that has no price data over the range SHALL draw no line, and its legend control SHALL be inert rather than erroring. Benchmark lines SHALL be visually distinguishable from the portfolio line and from one another. Toggling a benchmark SHALL add or remove its line without issuing a new request, and changing the session selection SHALL re-aggregate the benchmark lines over the newly selected sessions. When no session is selected, no benchmark lines SHALL be drawn (the empty state is shown instead).
 
@@ -946,6 +946,11 @@ When the equity curve plots a line, it SHALL support **hover inspection**: movin
 
 - **WHEN** the Dashboard renders the equity curve with one or more sessions selected
 - **THEN** it SHALL plot a single line equal to the sum of the selected sessions' values across the range, each session contributing zero before its first recorded value
+
+#### Scenario: Selection list badges AI and bot sessions
+
+- **WHEN** the Dashboard renders the session selection list and both AI sessions and strategy-bot sessions are active
+- **THEN** each selectable session SHALL be badged by its kind (AI or bot), and selecting a bot session SHALL include it in the summed equity line like any other session
 
 #### Scenario: Combined line extends flat over a trailing weekend
 
@@ -994,12 +999,17 @@ When the equity curve plots a line, it SHALL support **hover inspection**: movin
 
 ### Requirement: Dashboard portfolio leaderboard
 
-The Dashboard SHALL present a leaderboard table of the selected active sessions, sorted by return over the selected range in descending order (best first). Each row SHALL show the portfolio's name, current value, range realised profit/loss, range unrealised profit/loss, range return, and range fees, using the same money-weighted basis as the hero tiles, and SHALL link to that session's detail view. The current value column SHALL be marked as a point-in-time/live figure, and the range-scoped columns (realised profit/loss, unrealised profit/loss, return, and fees) SHALL be visually grouped under an indication of the active range, so the user can tell the point-in-time value apart from the range-scoped figures. Return direction and the realised and unrealised profit/loss SHALL be visually distinguished by sign (for example gains and losses colored differently). Deselecting a session in the equity curve SHALL remove it from the leaderboard.
+The Dashboard SHALL present a leaderboard table of the selected active sessions, sorted by return over the selected range in descending order (best first). The leaderboard SHALL include both AI paper-trading sessions and strategy-bot sessions, each row visually badged by its kind (AI or bot). Each row SHALL show the portfolio's name, current value, range realised profit/loss, range unrealised profit/loss, range return, and range fees, using the same money-weighted basis as the hero tiles, and SHALL link to that session's detail view (an AI row links to the paper-trading session detail; a bot row links to the bot session detail). The current value column SHALL be marked as a point-in-time/live figure, and the range-scoped columns (realised profit/loss, unrealised profit/loss, return, and fees) SHALL be visually grouped under an indication of the active range, so the user can tell the point-in-time value apart from the range-scoped figures. Return direction and the realised and unrealised profit/loss SHALL be visually distinguished by sign (for example gains and losses colored differently). Deselecting a session in the equity curve SHALL remove it from the leaderboard.
 
 #### Scenario: Sessions ranked by range return
 
 - **WHEN** the Dashboard renders the leaderboard for a range
 - **THEN** it SHALL list the selected sessions sorted by range return descending, each row showing name, value, range realised profit/loss, range unrealised profit/loss, range return, and range fees, and linking to that session's detail view
+
+#### Scenario: Leaderboard includes and badges bot rows
+
+- **WHEN** the Dashboard renders the leaderboard and a strategy-bot session is selected
+- **THEN** the bot session SHALL appear as a leaderboard row badged as a bot, ranked by its range return alongside AI sessions, linking to the bot session's detail view
 
 #### Scenario: Leaderboard distinguishes point-in-time value from range columns
 
@@ -1047,6 +1057,39 @@ The Dashboard SHALL present a universe section with a range-independent balance 
 
 - **WHEN** the Dashboard renders the universe section
 - **THEN** the balance summary SHALL be marked as current composition and the best/worst performers SHALL carry an indication of the active range, so the differing scopes within the one section are evident
+
+### Requirement: Strategy bots navigation entry and views
+
+The application shell SHALL provide a dedicated "Bots" navigation entry, distinct
+from the paper-trading/portfolios entry, leading to a strategy-bots area with its
+own create, list, and detail views. The create view SHALL be a dedicated bot build
+form — separate from the AI portfolio build form — letting the user pick a strategy,
+an asset from the universe, an initial capital, a benchmark, and the strategy's
+parameters (and optional take-profit / stop-loss). The list view SHALL show the
+user's bot sessions with their key status and performance figures. The detail view
+SHALL show a single bot session's KPI tiles, value chart, and trade ledger, reading
+from the strategy-bots endpoints. Bot creation and tracking SHALL be reachable only
+through this area, not through the AI paper-trading views.
+
+#### Scenario: Bots navigation entry present and distinct
+
+- **WHEN** the application shell renders its navigation
+- **THEN** it SHALL show a "Bots" entry distinct from the paper-trading/portfolios
+  entry, leading to the strategy-bots area
+
+#### Scenario: Dedicated bot build form
+
+- **WHEN** the user opens the bot create view
+- **THEN** it SHALL present a bot-specific build form (strategy, universe asset,
+  initial capital, benchmark, parameters, optional take-profit/stop-loss), not the
+  AI portfolio build form
+
+#### Scenario: Bot list and detail
+
+- **WHEN** the user opens the Bots area and selects a bot
+- **THEN** the list view SHALL show the user's bot sessions and the detail view SHALL
+  show that bot's KPI tiles, value chart, and trade ledger from the strategy-bots
+  endpoints
 
 ### Requirement: Technical Indicators navigation entry and info page
 

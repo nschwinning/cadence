@@ -17,6 +17,7 @@ import {
   benchmarkDollarSeries,
   type CombinedPoint,
 } from './aggregate';
+import { KindBadge } from './KindBadge';
 
 const CARD_CLASS = 'rounded-lg border border-slate-200 bg-white shadow-sm';
 const LINE_COLOR = '#059669'; // emerald-600 — the single summed-value line
@@ -288,6 +289,7 @@ function Legend({
                 style={{ backgroundColor: categoricalColor(i) }}
               />
               <span className="font-medium">{s.label}</span>
+              <KindBadge kind={s.kind} />
             </label>
           </li>
         );

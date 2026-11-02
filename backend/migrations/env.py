@@ -13,6 +13,7 @@ from cadence.portfolios import models as _portfolios_models  # noqa: F401
 from cadence.price_history import models as _price_history_models  # noqa: F401
 from cadence.price_ml import models as _price_ml_models  # noqa: F401
 from cadence.recommendations import models as _recommendations_models  # noqa: F401
+from cadence.strategy_bots import models as _strategy_bots_models  # noqa: F401
 from cadence.technical_indicators import models as _technical_indicator_models  # noqa: F401
 
 # this is the Alembic Config object, which provides

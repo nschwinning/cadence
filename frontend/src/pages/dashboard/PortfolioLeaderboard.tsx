@@ -3,6 +3,14 @@ import type { DashboardRange, DashboardSessionPerformance } from '../../types/ap
 import { formatCurrency, formatPercent } from '../../lib/format';
 import { sessionReturnPct } from './aggregate';
 import { spanLabel } from './rangeLabel';
+import { KindBadge } from './KindBadge';
+
+/** The detail route for a session row, by kind: bots and AI portfolios differ. */
+function sessionHref(session: DashboardSessionPerformance): string {
+  return session.kind === 'bot'
+    ? `/bots/${session.id}`
+    : `/paper-trading/${session.id}`;
+}
 
 const CARD_CLASS = 'rounded-lg border border-slate-200 bg-white shadow-sm';
 
@@ -95,12 +103,15 @@ export function PortfolioLeaderboard({
                     className="border-b border-slate-100 hover:bg-slate-50"
                   >
                     <td className="px-4 py-3">
-                      <Link
-                        to={`/paper-trading/${s.id}`}
-                        className="font-medium text-emerald-700 hover:text-emerald-800 hover:underline focus:outline-none focus:ring-1 focus:ring-emerald-500"
-                      >
-                        {s.label}
-                      </Link>
+                      <span className="inline-flex items-center gap-2">
+                        <Link
+                          to={sessionHref(s)}
+                          className="font-medium text-emerald-700 hover:text-emerald-800 hover:underline focus:outline-none focus:ring-1 focus:ring-emerald-500"
+                        >
+                          {s.label}
+                        </Link>
+                        <KindBadge kind={s.kind} />
+                      </span>
                     </td>
                     <td className="px-4 py-3 text-right tabular-nums text-slate-700">
                       {formatCurrency(s.current_value)}

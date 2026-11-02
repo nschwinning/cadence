@@ -14,6 +14,7 @@ from cadence.ai_portfolio.background import cleanup_orphaned_events_on_startup
 from cadence.api.routers import (
     ai_portfolio_router,
     assets_router,
+    bots_router,
     dashboard_router,
     health_router,
     paper_trading_router,
@@ -90,6 +91,7 @@ def create_app() -> FastAPI:
     app.include_router(portfolios_router, prefix="/api/v1")
     app.include_router(paper_trading_router, prefix="/api/v1")
     app.include_router(ai_portfolio_router, prefix="/api/v1")
+    app.include_router(bots_router, prefix="/api/v1")
     app.include_router(technical_indicators_router, prefix="/api/v1")
     app.include_router(price_ml_router, prefix="/api/v1")
     app.include_router(system_router, prefix="/api/v1")

@@ -21,12 +21,17 @@ The system SHALL provide a single endpoint returning aggregated metrics across t
 
 ### Requirement: Range-scoped dashboard overview
 
-The system SHALL provide a single endpoint returning an aggregated overview of the system scoped to a selected time range, where the range is one of `1D`, `1W`, `1M`, `YTD`, `1Y`, or `Max`. The overview SHALL aggregate over active paper-trading sessions only. It SHALL return, for the selected range, per-session performance data, an automation summary, a recent-activity list, a universe-balance summary, and universe performers. This overview SHALL be provided in addition to the existing aggregated dashboard metrics, which remain unchanged. When no active sessions or assets exist, the overview SHALL return empty collections and zeroed aggregates rather than an error.
+The system SHALL provide a single endpoint returning an aggregated overview of the system scoped to a selected time range, where the range is one of `1D`, `1W`, `1M`, `YTD`, `1Y`, or `Max`. The overview SHALL aggregate over active paper-trading sessions and active strategy-bot sessions together. It SHALL return, for the selected range, per-session performance data, an automation summary, a recent-activity list, a universe-balance summary, and universe performers. This overview SHALL be provided in addition to the existing aggregated dashboard metrics, which remain unchanged. When no active sessions or assets exist, the overview SHALL return empty collections and zeroed aggregates rather than an error.
 
 #### Scenario: Fetch the overview for a range
 
 - **WHEN** a client requests the dashboard overview for a given range
 - **THEN** the system SHALL return the per-session performance data, automation summary, recent activity, universe balance, and universe performers computed for that range over the active sessions
+
+#### Scenario: Overview includes active bot sessions
+
+- **WHEN** a client requests the dashboard overview and active strategy-bot sessions exist
+- **THEN** the returned per-session performance data SHALL include the active bot sessions alongside the active AI paper-trading sessions, computed for the selected range
 
 #### Scenario: Unsupported range value
 
@@ -40,7 +45,7 @@ The system SHALL provide a single endpoint returning an aggregated overview of t
 
 ### Requirement: Per-session performance data for the overview
 
-For each active session the overview SHALL return the data needed to render aggregate performance, compare sessions, and compute per-session benchmark comparison lines over the selected range, without requiring the client to re-fetch when it changes which sessions are included. For each session this SHALL include a stable identifier, a display label, the allocated capital, the current value, the profit/loss and fees attributable to the selected range, the realised and unrealised profit/loss attributable to the selected range, a value series over the range suitable for plotting, the session's capital contributions — the session's opening capital effective at its start date plus any later capital-increase events, each a contribution amount and the date it became effective — and a since-inception benchmark buy-and-hold current value. The value series SHALL be windowed to the selected range; a session that has no value before the range start SHALL be represented as contributing zero until its first recorded value.
+For each active session the overview SHALL return the data needed to render aggregate performance, compare sessions, and compute per-session benchmark comparison lines over the selected range, without requiring the client to re-fetch when it changes which sessions are included. For each session this SHALL include a stable identifier, a display label, a `kind` discriminator identifying the session as either an AI paper-trading session or a strategy bot, the allocated capital, the current value, the profit/loss and fees attributable to the selected range, the realised and unrealised profit/loss attributable to the selected range, a value series over the range suitable for plotting, the session's capital contributions — the session's opening capital effective at its start date plus any later capital-increase events, each a contribution amount and the date it became effective — and a since-inception benchmark buy-and-hold current value. The value series SHALL be windowed to the selected range; a session that has no value before the range start SHALL be represented as contributing zero until its first recorded value. Both AI sessions and strategy-bot sessions SHALL be returned in this same shape, distinguished only by the `kind` discriminator.
 
 The session's **range realised profit/loss** SHALL be the sum of the realised profit/loss of the closed positions whose close falls within the selected range; for the maximum range this SHALL equal the session's cumulative realised profit/loss. The session's **range unrealised profit/loss** SHALL be the session's current live unrealised profit/loss on its open positions (valued at current market quotes) minus the unrealised profit/loss recorded in the session's daily value snapshot at the start of the range; when the session has no value snapshot at or before the range start — including the maximum range — the range-start unrealised baseline SHALL be zero, so the figure equals the current live unrealised profit/loss. The realised figure SHALL be gross of fees, and the realised and unrealised figures SHALL be returned as two independent amounts rather than as an additive decomposition of the range profit/loss.
 
@@ -50,6 +55,11 @@ The session's **since-inception benchmark value** SHALL be the current USD value
 
 - **WHEN** the overview is requested for a range
 - **THEN** each active session's returned value series SHALL cover the selected range and the session SHALL contribute zero for dates before its first recorded value
+
+#### Scenario: Each row carries a kind discriminator
+
+- **WHEN** the overview is requested
+- **THEN** each returned session row SHALL carry a `kind` discriminator identifying it as an AI paper-trading session or a strategy bot, and bot rows SHALL be returned in the same shape as AI rows
 
 #### Scenario: Range-relative profit/loss and fees
 

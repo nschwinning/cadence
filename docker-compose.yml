@@ -191,6 +191,14 @@ services:
       # EDGAR fundamentals for every stock quarterly, after quarter-ends when fresh
       # 10-Q/10-K data is available.
       FUNDAMENTALS_SCHEDULE: ${FUNDAMENTALS_SCHEDULE:-0 6 1 1,4,7,10 *}
+      # Cron expression; default every 5 minutes during US market hours on weekdays
+      # (13:00-20:59 UTC ≈ 09:00-16:59 ET) — the strategy-bot tick recomputes each
+      # active bot's signal and runs its risk/execution engine. The runner is
+      # market-hours gated via the broker clock, so off-hours ticks are cheap no-ops.
+      BOT_TICK_SCHEDULE: ${BOT_TICK_SCHEDULE:-*/5 13-20 * * 1-5}
+      # Cron expression; default 16:15 on weekdays (just after the US close) — record
+      # the end-of-day value snapshot for each active bot session.
+      BOT_SNAPSHOT_SCHEDULE: ${BOT_SNAPSHOT_SCHEDULE:-15 16 * * 1-5}
       # Must match the backend's REBALANCE_CRON_TOKEN.
       REBALANCE_CRON_TOKEN: ${REBALANCE_CRON_TOKEN:-}
     depends_on:
@@ -253,7 +261,21 @@ services:
       'T=$$(cat /tmp/cron.token)'
       'curl -fsS --max-time 3600 -X POST -H X-Cron-Token:$$T $$B/assets/fundamentals/refresh >/dev/null'
       > /usr/local/bin/fundamentals.sh &&
-      chmod +x /usr/local/bin/rebalance.sh /usr/local/bin/crypto-rebalance.sh /usr/local/bin/benchmark.sh /usr/local/bin/snapshot.sh /usr/local/bin/indicators.sh /usr/local/bin/price-ml.sh /usr/local/bin/fundamentals.sh &&
+      printf '%s\n'
+      '#!/bin/sh'
+      'set -eu'
+      'B=http://backend:8000/api/v1'
+      'T=$$(cat /tmp/cron.token)'
+      'curl -fsS -X POST -H X-Cron-Token:$$T $$B/bots/tick >/dev/null'
+      > /usr/local/bin/bot-tick.sh &&
+      printf '%s\n'
+      '#!/bin/sh'
+      'set -eu'
+      'B=http://backend:8000/api/v1'
+      'T=$$(cat /tmp/cron.token)'
+      'curl -fsS -X POST -H X-Cron-Token:$$T $$B/bots/snapshot-daily >/dev/null'
+      > /usr/local/bin/bot-snapshot.sh &&
+      chmod +x /usr/local/bin/rebalance.sh /usr/local/bin/crypto-rebalance.sh /usr/local/bin/benchmark.sh /usr/local/bin/snapshot.sh /usr/local/bin/indicators.sh /usr/local/bin/price-ml.sh /usr/local/bin/fundamentals.sh /usr/local/bin/bot-tick.sh /usr/local/bin/bot-snapshot.sh &&
       echo \"$${REBALANCE_SCHEDULE} /usr/local/bin/rebalance.sh\" > /etc/crontabs/root &&
       echo \"$${CRYPTO_REBALANCE_SCHEDULE} /usr/local/bin/crypto-rebalance.sh\" >> /etc/crontabs/root &&
       echo \"$${BENCHMARK_SCHEDULE} /usr/local/bin/benchmark.sh\" >> /etc/crontabs/root &&
@@ -261,6 +283,8 @@ services:
       echo \"$${INDICATORS_SCHEDULE} /usr/local/bin/indicators.sh\" >> /etc/crontabs/root &&
       echo \"$${PRICE_ML_SCHEDULE} /usr/local/bin/price-ml.sh\" >> /etc/crontabs/root &&
       echo \"$${FUNDAMENTALS_SCHEDULE} /usr/local/bin/fundamentals.sh\" >> /etc/crontabs/root &&
+      echo \"$${BOT_TICK_SCHEDULE} /usr/local/bin/bot-tick.sh\" >> /etc/crontabs/root &&
+      echo \"$${BOT_SNAPSHOT_SCHEDULE} /usr/local/bin/bot-snapshot.sh\" >> /etc/crontabs/root &&
       crond -f -l 8"
     restart: unless-stopped
 

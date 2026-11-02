@@ -1063,6 +1063,12 @@ export interface DashboardSessionContribution {
 export interface DashboardSessionPerformance {
   id: string;
   label: string;
+  /**
+   * Which engine runs this session: an AI-managed portfolio (`ai`) or a
+   * deterministic strategy bot (`bot`). Drives the leaderboard/legend badge and
+   * where a row's link points (`/portfolios/:id` vs `/bots/:id`).
+   */
+  kind: 'ai' | 'bot';
   allocated_capital: number;
   current_value: number;
   pnl: number;
@@ -1300,4 +1306,112 @@ export interface SystemBackendStatus {
 /** Response of `GET /api/v1/system/status`: one entry per external backend. */
 export interface SystemStatusResponse {
   backends: SystemBackendStatus[];
+}
+
+// --- Strategy bots ----------------------------------------------------------
+
+/** A registered bot strategy and its default parameter schema. Mirrors `BotStrategyCatalogEntry`. */
+export interface BotStrategyCatalogEntry {
+  key: string;
+  display_name: string;
+  required_history: number;
+  /** JSON Schema of the strategy's parameters (from the backend Pydantic model). */
+  params_schema: Record<string, unknown>;
+}
+
+/** A strategy-bot session with its configuration and running totals. Mirrors `BotSessionRead`. */
+export interface BotSession {
+  id: string;
+  strategy_key: string;
+  asset_id: number;
+  ticker: string;
+  label: string | null;
+  status: string;
+  benchmark: string;
+  initial_capital: number;
+  allocated_capital: number;
+  strategy_params: Record<string, unknown>;
+  take_profit_pct: number | null;
+  stop_loss_pct: number | null;
+  drawdown_stop_pct: number;
+  cash_buffer_pct: number;
+  peak_value: number;
+  position_qty: number | null;
+  position_avg_price: number | null;
+  position_opened_at: string | null;
+  total_trades: number;
+  realised_pnl: number;
+  total_fees: number;
+  created_at: string;
+  updated_at: string;
+  last_tick_at: string | null;
+  archived_at: string | null;
+}
+
+/** A list of strategy-bot sessions plus the matching total. Mirrors `BotSessionListResponse`. */
+export interface BotSessionListResponse {
+  items: BotSession[];
+  total: number;
+}
+
+/** Performance KPIs for a bot session, from its own ledger + snapshots. Mirrors `BotKpisRead`. */
+export interface BotKpis {
+  current_value: number;
+  allocated_capital: number;
+  total_return: number;
+  total_return_pct: number;
+  realised_pnl: number;
+  unrealised_pnl: number;
+  total_fees: number;
+  total_trades: number;
+  max_drawdown: number;
+}
+
+/** A single fill recorded by the bot engine. Mirrors `BotTradeRead`. */
+export interface BotTrade {
+  id: string;
+  bot_session_id: string;
+  side: string;
+  ticker: string;
+  quantity: number;
+  filled_price: number | null;
+  fees: number;
+  reason: string | null;
+  order_id: string | null;
+  status: string;
+  created_at: string;
+}
+
+/** A list of bot trades plus the matching total. Mirrors `BotTradeListResponse`. */
+export interface BotTradeListResponse {
+  items: BotTrade[];
+  total: number;
+}
+
+/** A daily portfolio-value snapshot for a bot session. Mirrors `BotValueSnapshotRead`. */
+export interface BotValueSnapshot {
+  snapshot_date: string; // ISO YYYY-MM-DD
+  total_value: number;
+  realised_pnl: number;
+  unrealised_pnl: number;
+}
+
+/** A bot session's value snapshots (equity curve) plus the total. Mirrors `BotValueHistoryResponse`. */
+export interface BotValueHistoryResponse {
+  items: BotValueSnapshot[];
+  total: number;
+}
+
+/** Request to create a strategy-bot session. Mirrors `BotSessionCreateRequest`. */
+export interface BotSessionCreateRequest {
+  strategy_key: string;
+  ticker: string;
+  initial_capital: number;
+  benchmark: string;
+  strategy_params?: Record<string, unknown> | null;
+  label?: string | null;
+  take_profit_pct?: number | null;
+  stop_loss_pct?: number | null;
+  drawdown_stop_pct?: number | null;
+  cash_buffer_pct?: number | null;
 }

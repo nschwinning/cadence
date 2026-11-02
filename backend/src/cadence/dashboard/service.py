@@ -17,6 +17,7 @@ from __future__ import annotations
 import uuid
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
+from typing import Literal
 from zoneinfo import ZoneInfo
 
 from sqlalchemy import String, cast, func, select
@@ -286,7 +287,9 @@ class SessionPerformance:
     ``benchmark_value`` is the since-inception, range-independent current USD value of
     a contribution-aware buy-and-hold of ``contributions`` in the session's own
     benchmark (``None`` when unpriceable), which the client aggregates into the live
-    excess-return tile.
+    excess-return tile. ``kind`` discriminates an AI-driven paper-trading session
+    (``'ai'``, the default) from a deterministic strategy bot (``'bot'``), so the
+    combined overview can union both row sources while the client badges/routes them.
     """
 
     id: uuid.UUID
@@ -300,6 +303,7 @@ class SessionPerformance:
     points: list[SessionValuePoint]
     contributions: list[SessionContribution]
     benchmark_value: float | None
+    kind: Literal["ai", "bot"] = "ai"
 
 
 @dataclass(frozen=True)
@@ -853,6 +857,19 @@ def get_dashboard_overview(
         )
         for row in active_sessions
     ]
+
+    # Union the deterministic strategy-bot rows (``kind='bot'``) into the same
+    # overview. Imported lazily so the dashboard module never imports strategy_bots
+    # at load time (which would close an import cycle: strategy_bots.service imports
+    # the SessionPerformance dataclass from here). Their value-series and
+    # contribution dates fold into the overlay floor below, exactly like AI rows.
+    from cadence.strategy_bots import service as strategy_bots_service
+
+    sessions.extend(
+        strategy_bots_service.dashboard_performances(
+            session, range_=range_, today=today
+        )
+    )
 
     label_map = {
         row.id: (row.portfolio_name or row.strategy_key)
