@@ -293,6 +293,19 @@ class Settings(BaseSettings):
     #: session does not specify its own. A fall of this fraction from the running
     #: peak exits the position and stops the session.
     BOT_DRAWDOWN_STOP_PCT: float = 0.25
+    #: Default position-sizing method (a ``SizingMethod`` value) for a new bot that
+    #: does not specify its own. New multi-asset bots default to ATR risk-based sizing.
+    BOT_SIZING_METHOD: str = "atr_risk"
+    #: Default fraction of the budget risked per position under ATR sizing.
+    BOT_RISK_PCT: float = 0.01
+    #: Default ATR lookback period (number of bars) for ATR risk-based sizing.
+    BOT_ATR_PERIOD: int = 14
+    #: Default ATR multiple defining per-share risk under ATR risk-based sizing.
+    BOT_ATR_K: float = 2.0
+    #: Default maximum fraction of the budget any single position may consume.
+    BOT_MAX_POSITION_PCT: float = 0.25
+    #: Default maximum number of concurrent open positions per bot session.
+    BOT_MAX_POSITIONS: int = 10
 
     # Per-probe timeout (seconds) for the system-status endpoint. Each external
     # backend is live-probed concurrently; a probe that exceeds this bound is

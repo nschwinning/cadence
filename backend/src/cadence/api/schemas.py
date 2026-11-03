@@ -1533,19 +1533,26 @@ class SystemStatusRead(BaseModel):
 
 
 class BotStrategyCatalogEntry(BaseModel):
-    """A registered bot strategy and its default parameter schema."""
+    """A registered bot strategy, its explanation, and its default parameter schema."""
 
     key: str
     display_name: str
+    explanation: str
     required_history: int
     params_schema: dict[str, Any]
 
 
 class BotSessionCreateRequest(BaseModel):
-    """Request to create a strategy-bot session bound to one universe asset."""
+    """Request to create a strategy-bot session over a set of universe equities.
+
+    The traded set is either an explicit ``tickers`` list or, when ``whole_universe``
+    is set, the currently eligible universe equities resolved at creation. The sizing
+    fields are optional; each falls back to the configured default when omitted.
+    """
 
     strategy_key: str
-    ticker: str
+    tickers: list[str] | None = None
+    whole_universe: bool = False
     initial_capital: float = Field(gt=0)
     benchmark: str
     strategy_params: dict[str, Any] | None = None
@@ -1554,31 +1561,64 @@ class BotSessionCreateRequest(BaseModel):
     stop_loss_pct: float | None = Field(default=None, gt=0)
     drawdown_stop_pct: float | None = Field(default=None, gt=0)
     cash_buffer_pct: float | None = Field(default=None, ge=0, lt=1)
+    sizing_method: str | None = None
+    risk_pct: float | None = Field(default=None, gt=0, lt=1)
+    atr_period: int | None = Field(default=None, gt=0)
+    atr_k: float | None = Field(default=None, gt=0)
+    max_position_pct: float | None = Field(default=None, gt=0, le=1)
+    max_positions: int | None = Field(default=None, gt=0)
+
+
+class BotSymbolRead(BaseModel):
+    """One eligible universe equity in a session's tradable symbol set."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    asset_id: int
+    ticker: str
+    alpaca_symbol: str
+
+
+class BotPositionRead(BaseModel):
+    """One open long position held by a bot session."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    asset_id: int
+    ticker: str
+    alpaca_symbol: str
+    quantity: float
+    avg_price: float
+    opened_at: datetime
 
 
 class BotSessionRead(BaseModel):
-    """A strategy-bot session with its configuration and running totals."""
+    """A strategy-bot session with its configuration, symbol set, and open positions."""
 
     model_config = ConfigDict(from_attributes=True)
 
     id: uuid.UUID
     strategy_key: str
-    asset_id: int
-    ticker: str
     label: str | None
     status: str
     benchmark: str
     initial_capital: float
     allocated_capital: float
+    cash: float
+    sizing_method: str
+    risk_pct: float
+    atr_period: int
+    atr_k: float
+    max_position_pct: float
+    max_positions: int
     strategy_params: dict[str, Any]
     take_profit_pct: float | None
     stop_loss_pct: float | None
     drawdown_stop_pct: float
     cash_buffer_pct: float
     peak_value: float
-    position_qty: float | None
-    position_avg_price: float | None
-    position_opened_at: datetime | None
+    symbols: list[BotSymbolRead]
+    positions: list[BotPositionRead]
     total_trades: int
     realised_pnl: float
     total_fees: float

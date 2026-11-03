@@ -4,6 +4,7 @@ import {
   useQueryClient,
   type QueryClient,
 } from '@tanstack/react-query';
+import { useNavigate } from 'react-router-dom';
 import { apiClient } from './client';
 import { dashboardKeys } from './dashboard';
 import type {
@@ -187,14 +188,19 @@ export function useBotTrades(sessionId: string) {
   });
 }
 
-/** Mutation creating a bot session; refreshes the bot and dashboard views. */
+/**
+ * Mutation creating a bot session; refreshes the bot and dashboard views and
+ * navigates to the new bot's detail page so the user lands on it immediately.
+ */
 export function useCreateBotSession() {
   const queryClient = useQueryClient();
+  const navigate = useNavigate();
   return useMutation<BotSession, unknown, BotSessionCreateRequest>({
     mutationFn: (request: BotSessionCreateRequest) => createBotSession(request),
-    onSuccess: () => {
+    onSuccess: (session) => {
       // A new bot adds a row to the lists and the dashboard leaderboard/equity.
       invalidateBotDependents(queryClient);
+      navigate(`/bots/${session.id}`);
     },
   });
 }

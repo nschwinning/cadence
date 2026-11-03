@@ -18,22 +18,38 @@ const mockedPost = vi.mocked(apiClient.post);
 const bot: BotSession = {
   id: 'b1',
   strategy_key: 'ma_crossover',
-  asset_id: 1,
-  ticker: 'AAPL',
   label: 'Apple crossover',
   status: 'active',
   benchmark: 'SP500',
   initial_capital: 10000,
   allocated_capital: 10000,
+  cash: 500,
+  sizing_method: 'atr_risk',
+  risk_pct: 0.01,
+  atr_period: 14,
+  atr_k: 2.0,
+  max_position_pct: 0.25,
+  max_positions: 10,
   strategy_params: { fast_period: 20, slow_period: 50 },
   take_profit_pct: 0.2,
   stop_loss_pct: null,
   drawdown_stop_pct: 0.25,
   cash_buffer_pct: 0.02,
   peak_value: 10500,
-  position_qty: 50,
-  position_avg_price: 190,
-  position_opened_at: '2026-10-02T13:35:00Z',
+  symbols: [
+    { asset_id: 1, ticker: 'AAPL', alpaca_symbol: 'AAPL' },
+    { asset_id: 2, ticker: 'MSFT', alpaca_symbol: 'MSFT' },
+  ],
+  positions: [
+    {
+      asset_id: 1,
+      ticker: 'AAPL',
+      alpaca_symbol: 'AAPL',
+      quantity: 50,
+      avg_price: 190,
+      opened_at: '2026-10-02T13:35:00Z',
+    },
+  ],
   total_trades: 3,
   realised_pnl: 125,
   total_fees: 2,
@@ -131,6 +147,43 @@ describe('BotSessionPage', () => {
     await waitFor(() => {
       expect(mockedPost).toHaveBeenCalledWith('/api/v1/bots/sessions/b1/stop', {});
     });
+  });
+
+  it('renders the open positions table for a multi-position bot', async () => {
+    const multi: BotSession = {
+      ...bot,
+      positions: [
+        {
+          asset_id: 1,
+          ticker: 'AAPL',
+          alpaca_symbol: 'AAPL',
+          quantity: 50,
+          avg_price: 190,
+          opened_at: '2026-10-02T13:35:00Z',
+        },
+        {
+          asset_id: 2,
+          ticker: 'MSFT',
+          alpaca_symbol: 'MSFT',
+          quantity: 10,
+          avg_price: 300,
+          opened_at: '2026-10-03T13:35:00Z',
+        },
+      ],
+    };
+    mockedGet.mockImplementation(routeGet({ session: multi }));
+
+    renderDetail(<BotSessionPage />);
+
+    await screen.findByRole('heading', { name: 'Open positions' });
+    // Scope to the positions table via its distinctive "Avg price" column header
+    // (the table body renders only after the session query resolves).
+    const table = (await screen.findByText('Avg price')).closest(
+      'table',
+    ) as HTMLElement;
+    expect(within(table).getByText('AAPL')).toBeInTheDocument();
+    expect(within(table).getByText('MSFT')).toBeInTheDocument();
+    expect(within(table).getByText('$190.00')).toBeInTheDocument();
   });
 
   it('offers Archive instead of Stop for a stopped bot', async () => {

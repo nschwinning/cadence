@@ -41,7 +41,7 @@ def _make_bot(db_session: Session) -> object:
     return bot_service.create_bot_session(
         db_session,
         strategy_key="ma_crossover",
-        ticker="AAPL",
+        tickers=["AAPL"],
         initial_capital=100_000.0,
         benchmark="SP500",
         strategy_params={"fast_period": 2, "slow_period": 3},
@@ -59,7 +59,7 @@ def _seed_benchmark(db_session: Session) -> None:
 def test_dashboard_performance_shape(db_session: Session) -> None:
     bot = _make_bot(db_session)
     bot_service.record_bot_snapshot(
-        db_session, bot, price=0.0, snapshot_date=date(2026, 6, 10)
+        db_session, bot, marks={}, snapshot_date=date(2026, 6, 10)
     )
     _seed_benchmark(db_session)
 
@@ -92,6 +92,49 @@ def test_dashboard_performance_without_snapshot_anchors_live_point(
     assert perf.contributions[0].effective_date == _TODAY
 
 
+def test_dashboard_performance_multi_position_value(db_session: Session) -> None:
+    _add_asset(db_session, "AAPL")
+    _add_asset(db_session, "MSFT")
+    bot = bot_service.create_bot_session(
+        db_session,
+        strategy_key="ma_crossover",
+        tickers=["AAPL", "MSFT"],
+        initial_capital=100_000.0,
+        benchmark="SP500",
+        strategy_params={"fast_period": 2, "slow_period": 3},
+    )
+    from cadence.strategy_bots.models import BotPosition
+
+    for ticker, asset_id, qty, avg in (
+        ("AAPL", bot.symbols[0].asset_id, 100.0, 50.0),
+        ("MSFT", bot.symbols[1].asset_id, 50.0, 20.0),
+    ):
+        bot.positions.append(
+            BotPosition(
+                asset_id=asset_id, ticker=ticker, alpaca_symbol=ticker,
+                quantity=qty, avg_price=avg, opened_at=_NOW,
+            )
+        )
+        bot.cash -= qty * avg
+    db_session.flush()
+    bot_service.record_bot_snapshot(
+        db_session,
+        bot,
+        marks={"AAPL": 60.0, "MSFT": 15.0},
+        snapshot_date=date(2026, 6, 10),
+    )
+    _seed_benchmark(db_session)
+
+    perf = bot_service.dashboard_performance(
+        db_session, bot, range_=DashboardRange.MAX, today=_TODAY
+    )
+
+    # cash = 100k - 5000 - 1000 = 94000; + 100*60 + 50*15 = 94000 + 6750 = 100750.
+    assert perf.kind == "bot"
+    assert perf.current_value == pytest.approx(100_750.0)
+    assert "2 symbols" in perf.label
+
+
 def test_overview_unions_ai_and_bot_rows(db_session: Session) -> None:
     # One AI session...
     portfolio = portfolios_service.create_portfolio(
@@ -110,7 +153,7 @@ def test_overview_unions_ai_and_bot_rows(db_session: Session) -> None:
     earliest = date(2026, 6, 1)
     bot = _make_bot(db_session)
     bot_service.record_bot_snapshot(
-        db_session, bot, price=0.0, snapshot_date=earliest
+        db_session, bot, marks={}, snapshot_date=earliest
     )
     # Seed a benchmark close exactly on the earliest bot date. Only an overlay
     # floor that reaches back to that date keeps it as a plotted point; a floor

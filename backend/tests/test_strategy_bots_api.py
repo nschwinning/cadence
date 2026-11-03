@@ -43,7 +43,7 @@ def stub_market_data() -> Iterator[None]:
 def _create_payload(**overrides: object) -> dict[str, object]:
     payload: dict[str, object] = {
         "strategy_key": "ma_crossover",
-        "ticker": "AAPL",
+        "tickers": ["AAPL"],
         "initial_capital": 100_000.0,
         "benchmark": "SP500",
         "strategy_params": {"fast_period": 2, "slow_period": 3},
@@ -57,9 +57,33 @@ def test_create_bot_session(client: TestClient, eligible_asset: Asset) -> None:
     resp = client.post("/api/v1/bots/sessions", json=_create_payload())
     assert resp.status_code == 201
     body = resp.json()
-    assert body["ticker"] == "AAPL"
+    assert [s["ticker"] for s in body["symbols"]] == ["AAPL"]
+    assert body["positions"] == []
+    assert body["cash"] == 100_000.0
+    assert body["sizing_method"] == "atr_risk"
     assert body["status"] == "active"
     assert body["strategy_key"] == "ma_crossover"
+
+
+def test_create_bot_session_whole_universe(
+    client: TestClient, eligible_asset: Asset
+) -> None:
+    resp = client.post(
+        "/api/v1/bots/sessions",
+        json=_create_payload(tickers=None, whole_universe=True),
+    )
+    assert resp.status_code == 201
+    assert {s["ticker"] for s in resp.json()["symbols"]} == {"AAPL"}
+
+
+def test_create_rejects_unknown_sizing_method(
+    client: TestClient, eligible_asset: Asset
+) -> None:
+    resp = client.post(
+        "/api/v1/bots/sessions",
+        json=_create_payload(sizing_method="moon_math"),
+    )
+    assert resp.status_code == 422
 
 
 def test_create_rejects_unknown_strategy(

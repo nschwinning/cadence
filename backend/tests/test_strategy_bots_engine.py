@@ -1,28 +1,34 @@
-"""Unit tests for the strategy-bot risk / execution engine against StubBroker."""
+"""Unit tests for the strategy-bot execution engine + pure value helpers.
+
+The engine is now a primitive layer: ``enter`` buys and creates a position debiting
+the shared cash pool; ``exit`` sells a position fully, crediting cash and realised
+P&L. Orchestration (TP/SL, drawdown, ordering) lives in the service tick, tested
+separately. The pure ``unrealised_pnl`` / ``total_value`` / ``take_profit_stop_loss_reason``
+helpers are covered here too.
+"""
 
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from math import floor
 
 from sqlalchemy.orm import Session
 
 from cadence.assets.models import Asset
 from cadence.broker.stub import StubBroker
 from cadence.strategy_bots.engine import (
-    REASON_DRAWDOWN,
     REASON_STOP_LOSS,
     REASON_TAKE_PROFIT,
     ExecutionEngine,
+    take_profit_stop_loss_reason,
+    total_value,
+    unrealised_pnl,
 )
-from cadence.strategy_bots.models import BotSession
-from cadence.strategy_bots.strategy import Signal
+from cadence.strategy_bots.models import BotPosition, BotSession
 
 _NOW = datetime(2026, 1, 2, 15, 0, tzinfo=UTC)
 
 
-def _make_bot(db_session: Session, ticker: str = "AAPL", **overrides: object) -> BotSession:
-    """Create a flat bot session bound to a freshly-inserted universe asset."""
+def _add_asset(db_session: Session, ticker: str) -> Asset:
     asset = Asset(
         ticker=ticker,
         name=ticker,
@@ -34,13 +40,16 @@ def _make_bot(db_session: Session, ticker: str = "AAPL", **overrides: object) ->
     )
     db_session.add(asset)
     db_session.flush()
+    return asset
 
+
+def _make_bot(db_session: Session, **overrides: object) -> BotSession:
+    """A flat multi-asset bot with a full shared cash pool."""
     fields: dict[str, object] = {
         "strategy_key": "ma_crossover",
-        "asset_id": asset.id,
-        "ticker": ticker,
         "initial_capital": 100_000.0,
         "allocated_capital": 100_000.0,
+        "cash": 100_000.0,
         "strategy_params": {"fast_period": 2, "slow_period": 3},
         "drawdown_stop_pct": 0.25,
         "cash_buffer_pct": 0.02,
@@ -53,134 +62,155 @@ def _make_bot(db_session: Session, ticker: str = "AAPL", **overrides: object) ->
     return bot
 
 
-def _enter(engine: ExecutionEngine, bot: BotSession, broker: StubBroker) -> float:
-    """Drive a full entry through the engine; return the entry price."""
-    price = broker.get_quote(bot.ticker).last
-    assert price is not None
-    engine.run(bot, Signal.enter_long("test entry"), price, now=_NOW)
-    return price
-
-
-def test_enter_sizes_whole_shares_within_buffer(db_session: Session) -> None:
+def test_enter_creates_position_and_debits_cash(db_session: Session) -> None:
     broker = StubBroker()
     engine = ExecutionEngine(db_session, broker)
+    asset = _add_asset(db_session, "AAPL")
     bot = _make_bot(db_session)
+    price = broker.get_quote("AAPL").last
+    assert price is not None
 
-    price = _enter(engine, bot, broker)
-    expected_qty = floor((100_000.0 * 0.98) / price)
+    outcome = engine.enter(
+        bot,
+        asset_id=asset.id,
+        ticker="AAPL",
+        symbol="AAPL",
+        shares=10,
+        price=price,
+        now=_NOW,
+        reason="up cross",
+    )
 
-    assert bot.position_qty == expected_qty
-    assert bot.position_avg_price == price
-    assert bot.position_opened_at == _NOW
+    assert outcome.action == "enter"
+    assert len(bot.positions) == 1
+    pos = bot.positions[0]
+    assert pos.quantity == 10
+    assert pos.avg_price == price
+    assert bot.cash == 100_000.0 - 10 * price
     assert bot.total_trades == 1
-    assert len(bot.trades) == 1
     assert bot.trades[0].side == "buy"
-    assert bot.trades[0].quantity == expected_qty
 
 
-def test_no_pyramiding_when_already_long(db_session: Session) -> None:
+def test_enter_zero_shares_is_noop(db_session: Session) -> None:
     broker = StubBroker()
     engine = ExecutionEngine(db_session, broker)
+    asset = _add_asset(db_session, "AAPL")
     bot = _make_bot(db_session)
 
-    _enter(engine, bot, broker)
-    qty_before = bot.position_qty
-    price = broker.get_quote(bot.ticker).last
+    outcome = engine.enter(
+        bot,
+        asset_id=asset.id,
+        ticker="AAPL",
+        symbol="AAPL",
+        shares=0,
+        price=100.0,
+        now=_NOW,
+        reason="x",
+    )
+
+    assert outcome.action == "noop"
+    assert bot.is_flat
+    assert bot.cash == 100_000.0
+
+
+def test_exit_sells_fully_credits_cash_and_realises_pnl(
+    db_session: Session,
+) -> None:
+    broker = StubBroker()
+    engine = ExecutionEngine(db_session, broker)
+    asset = _add_asset(db_session, "AAPL")
+    bot = _make_bot(db_session)
+    price = broker.get_quote("AAPL").last
     assert price is not None
 
-    outcome = engine.run(bot, Signal.enter_long("again"), price, now=_NOW)
+    engine.enter(
+        bot,
+        asset_id=asset.id,
+        ticker="AAPL",
+        symbol="AAPL",
+        shares=10,
+        price=price,
+        now=_NOW,
+        reason="up cross",
+    )
+    cash_after_buy = bot.cash
+    pos = bot.positions[0]
+    # Pretend the entry was below the current quote so the sale realises a gain.
+    pos.avg_price = price - 5.0
 
-    assert outcome.action == "hold"
-    assert bot.position_qty == qty_before
-    assert bot.total_trades == 1
-
-
-def test_exit_sells_whole_position(db_session: Session) -> None:
-    broker = StubBroker()
-    engine = ExecutionEngine(db_session, broker)
-    bot = _make_bot(db_session)
-
-    price = _enter(engine, bot, broker)
-    outcome = engine.run(bot, Signal.exit("down cross"), price, now=_NOW)
+    outcome = engine.exit(bot, pos, now=_NOW, reason="down cross")
 
     assert outcome.action == "exit"
     assert bot.is_flat
-    assert bot.position_qty is None
+    assert bot.cash == cash_after_buy + 10 * price
+    assert bot.realised_pnl == (price - (price - 5.0)) * 10
     assert bot.total_trades == 2
     assert bot.trades[-1].side == "sell"
 
 
-def test_exit_while_flat_never_opens_short(db_session: Session) -> None:
-    broker = StubBroker()
-    engine = ExecutionEngine(db_session, broker)
-    bot = _make_bot(db_session)
-    price = broker.get_quote(bot.ticker).last
-    assert price is not None
+# Pure value helpers ------------------------------------------------------
+def test_unrealised_and_total_value_sum_across_positions(
+    db_session: Session,
+) -> None:
+    bot = _make_bot(db_session, cash=1_000.0)
+    bot.positions.append(
+        BotPosition(
+            asset_id=1, ticker="AAA", alpaca_symbol="AAA",
+            quantity=10, avg_price=50.0, opened_at=_NOW,
+        )
+    )
+    bot.positions.append(
+        BotPosition(
+            asset_id=2, ticker="BBB", alpaca_symbol="BBB",
+            quantity=5, avg_price=20.0, opened_at=_NOW,
+        )
+    )
+    marks = {"AAA": 60.0, "BBB": 15.0}
 
-    outcome = engine.run(bot, Signal.exit("down cross"), price, now=_NOW)
-
-    assert outcome.action == "hold"
-    assert outcome.trade is None
-    assert bot.is_flat
-    assert bot.total_trades == 0
-
-
-def test_take_profit_exits_regardless_of_signal(db_session: Session) -> None:
-    broker = StubBroker()
-    engine = ExecutionEngine(db_session, broker)
-    # High drawdown bound so only the take-profit fires.
-    bot = _make_bot(db_session, take_profit_pct=0.05, drawdown_stop_pct=0.99)
-
-    entry = _enter(engine, bot, broker)
-    outcome = engine.run(bot, Signal.hold("no cross"), entry * 1.10, now=_NOW)
-
-    assert outcome.action == "exit"
-    assert outcome.trade is not None
-    assert outcome.trade.reason == REASON_TAKE_PROFIT
-    assert bot.is_flat
+    # (60-50)*10 + (15-20)*5 = 100 - 25 = 75
+    assert unrealised_pnl(bot, marks) == 75.0
+    # cash 1000 + 60*10 + 15*5 = 1000 + 600 + 75 = 1675
+    assert total_value(bot, marks) == 1_675.0
 
 
-def test_stop_loss_exits_regardless_of_signal(db_session: Session) -> None:
-    broker = StubBroker()
-    engine = ExecutionEngine(db_session, broker)
-    bot = _make_bot(db_session, stop_loss_pct=0.05, drawdown_stop_pct=0.99)
-
-    entry = _enter(engine, bot, broker)
-    outcome = engine.run(bot, Signal.hold("no cross"), entry * 0.90, now=_NOW)
-
-    assert outcome.action == "exit"
-    assert outcome.trade is not None
-    assert outcome.trade.reason == REASON_STOP_LOSS
-    assert bot.is_flat
-
-
-def test_thresholds_unset_never_trigger(db_session: Session) -> None:
-    broker = StubBroker()
-    engine = ExecutionEngine(db_session, broker)
-    bot = _make_bot(db_session, drawdown_stop_pct=0.99)
-
-    entry = _enter(engine, bot, broker)
-    qty = bot.position_qty
-    # Big swings in both directions, but no TP/SL configured and no exit signal.
-    engine.run(bot, Signal.hold("no cross"), entry * 1.50, now=_NOW)
-    engine.run(bot, Signal.hold("no cross"), entry * 0.60, now=_NOW)
-
-    assert not bot.is_flat
-    assert bot.position_qty == qty
-    assert bot.total_trades == 1
+def test_total_value_falls_back_to_avg_price_when_unmarked(
+    db_session: Session,
+) -> None:
+    bot = _make_bot(db_session, cash=500.0)
+    bot.positions.append(
+        BotPosition(
+            asset_id=1, ticker="AAA", alpaca_symbol="AAA",
+            quantity=10, avg_price=50.0, opened_at=_NOW,
+        )
+    )
+    # No mark for AAA → valued at cost, zero unrealised.
+    assert unrealised_pnl(bot, {}) == 0.0
+    assert total_value(bot, {}) == 500.0 + 10 * 50.0
 
 
-def test_drawdown_kill_switch_stops_and_flattens(db_session: Session) -> None:
-    broker = StubBroker()
-    engine = ExecutionEngine(db_session, broker)
-    bot = _make_bot(db_session, drawdown_stop_pct=0.10)
-
-    entry = _enter(engine, bot, broker)
-    # A 20% price drop pushes total value well below the 10% drawdown floor.
-    outcome = engine.run(bot, Signal.hold("no cross"), entry * 0.80, now=_NOW)
-
-    assert outcome.action == "drawdown_stop"
-    assert outcome.stopped is True
-    assert bot.status == "stopped"
-    assert bot.is_flat
-    assert bot.trades[-1].reason == REASON_DRAWDOWN
+def test_take_profit_stop_loss_reason() -> None:
+    assert (
+        take_profit_stop_loss_reason(
+            avg_price=100.0, price=110.0, take_profit_pct=0.05, stop_loss_pct=0.05
+        )
+        == REASON_TAKE_PROFIT
+    )
+    assert (
+        take_profit_stop_loss_reason(
+            avg_price=100.0, price=90.0, take_profit_pct=0.05, stop_loss_pct=0.05
+        )
+        == REASON_STOP_LOSS
+    )
+    assert (
+        take_profit_stop_loss_reason(
+            avg_price=100.0, price=102.0, take_profit_pct=0.05, stop_loss_pct=0.05
+        )
+        is None
+    )
+    # Thresholds unset never trigger.
+    assert (
+        take_profit_stop_loss_reason(
+            avg_price=100.0, price=500.0, take_profit_pct=None, stop_loss_pct=None
+        )
+        is None
+    )

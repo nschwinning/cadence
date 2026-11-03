@@ -31,9 +31,18 @@ function StatusBadge({ status }: { status: string }) {
   );
 }
 
-/** A bot's display label: its explicit label, else strategy + ticker. */
+/** Compact summary of a bot's traded symbol set: `AAPL`, `AAPL +2`, or a count. */
+function symbolsSummary(bot: BotSession): string {
+  const tickers = bot.symbols.map((s) => s.ticker);
+  if (tickers.length === 0) return '—';
+  if (tickers.length === 1) return tickers[0];
+  if (tickers.length <= 3) return tickers.join(', ');
+  return `${tickers[0]} +${tickers.length - 1}`;
+}
+
+/** A bot's display label: its explicit label, else strategy + symbol summary. */
 function botLabel(bot: BotSession): string {
-  return bot.label || `${bot.strategy_key} · ${bot.ticker}`;
+  return bot.label || `${bot.strategy_key} · ${symbolsSummary(bot)}`;
 }
 
 function BotRow({ bot }: { bot: BotSession }) {
@@ -65,13 +74,19 @@ function BotRow({ bot }: { bot: BotSession }) {
       >
         {formatAge(bot.created_at)}
       </td>
-      <td className="px-4 py-3 font-semibold">
-        <Link
-          to={`/assets/${bot.ticker}`}
-          className="text-emerald-700 hover:underline"
-        >
-          {bot.ticker}
-        </Link>
+      <td className="px-4 py-3 font-semibold text-slate-700">
+        {bot.symbols.length === 1 ? (
+          <Link
+            to={`/assets/${bot.symbols[0].ticker}`}
+            className="text-emerald-700 hover:underline"
+          >
+            {bot.symbols[0].ticker}
+          </Link>
+        ) : (
+          <span title={bot.symbols.map((s) => s.ticker).join(', ')}>
+            {symbolsSummary(bot)}
+          </span>
+        )}
       </td>
       <td className="px-4 py-3 text-right tabular-nums text-slate-700">
         {formatCurrency(bot.allocated_capital)}
@@ -111,13 +126,21 @@ export function BotsPage() {
     <section className="flex flex-col gap-6">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <h1 className="text-2xl font-bold tracking-tight text-slate-900">Bots</h1>
-        <button
-          type="button"
-          onClick={() => setBuildOpen(true)}
-          className="rounded bg-emerald-500 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-600 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 focus-visible:ring-offset-1"
-        >
-          Build a bot
-        </button>
+        <div className="flex items-center gap-3">
+          <Link
+            to="/bots/strategies"
+            className="rounded border border-slate-300 px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 focus-visible:ring-offset-1"
+          >
+            Strategy guide
+          </Link>
+          <button
+            type="button"
+            onClick={() => setBuildOpen(true)}
+            className="rounded bg-emerald-500 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-600 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 focus-visible:ring-offset-1"
+          >
+            Build a bot
+          </button>
+        </div>
       </div>
 
       <Modal open={buildOpen} onClose={() => setBuildOpen(false)} title="Build a bot">
@@ -171,7 +194,7 @@ export function BotsPage() {
                   <th className="px-4 py-3">Bot</th>
                   <th className="px-4 py-3">Status</th>
                   <th className="px-4 py-3">Age</th>
-                  <th className="px-4 py-3">Ticker</th>
+                  <th className="px-4 py-3">Symbols</th>
                   <th className="px-4 py-3 text-right">Capital</th>
                   <th className="px-4 py-3 text-right">Trades</th>
                   <th className="px-4 py-3 text-right">Realised P&amp;L</th>

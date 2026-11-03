@@ -39,9 +39,11 @@ from cadence.paper_trading.benchmark import (
 )
 from cadence.paper_trading.constants import Benchmark
 from cadence.strategy_bots import registry
-from cadence.strategy_bots.constants import BotSessionStatus
+from cadence.strategy_bots.constants import BotSessionStatus, SizingMethod
 from cadence.strategy_bots.engine import (
+    REASON_DRAWDOWN,
     ExecutionEngine,
+    take_profit_stop_loss_reason,
     total_value,
     unrealised_pnl,
 )
@@ -50,13 +52,20 @@ from cadence.strategy_bots.errors import (
     BotSessionNotFoundError,
     IneligibleAssetError,
     InvalidBotBenchmarkError,
+    InvalidBotConfigError,
 )
 from cadence.strategy_bots.market_data import MarketData
 from cadence.strategy_bots.models import (
     BotSession,
+    BotSymbol,
     BotValueSnapshot,
 )
-from cadence.strategy_bots.strategy import PositionView
+from cadence.strategy_bots.sizing import (
+    EntryCandidate,
+    atr,
+    plan_entries,
+)
+from cadence.strategy_bots.strategy import Bar, PositionView, SignalAction
 
 
 @dataclass(frozen=True)
@@ -90,6 +99,13 @@ def _trade_symbol(asset: Asset) -> str:
     return asset.alpaca_symbol or asset.ticker
 
 
+def _traded_set_label(bot: BotSession) -> str:
+    """A short label for a session's traded set: the ticker if one, else a count."""
+    if len(bot.symbols) == 1:
+        return bot.symbols[0].ticker
+    return f"{len(bot.symbols)} symbols"
+
+
 # Lifecycle ---------------------------------------------------------------
 def _resolve_equity_asset(session: Session, ticker: str) -> Asset:
     """Resolve an eligible equity in the universe by ticker, or reject it."""
@@ -109,26 +125,48 @@ def _resolve_equity_asset(session: Session, ticker: str) -> Asset:
     return asset
 
 
+def _resolve_universe_equities(session: Session) -> list[Asset]:
+    """Every currently eligible universe equity (the whole-universe traded set)."""
+    assets = assets_service.list_assets(
+        session,
+        membership=AssetMembership.UNIVERSE,
+        categories=[AssetCategory.STOCK.value],
+        limit=None,
+    )
+    return [asset for asset in assets if asset.is_eligible]
+
+
 def create_bot_session(
     session: Session,
     *,
     strategy_key: str,
-    ticker: str,
     initial_capital: float,
     benchmark: str,
+    tickers: list[str] | None = None,
+    whole_universe: bool = False,
     strategy_params: dict[str, object] | None = None,
     label: str | None = None,
     take_profit_pct: float | None = None,
     stop_loss_pct: float | None = None,
     drawdown_stop_pct: float | None = None,
     cash_buffer_pct: float | None = None,
+    sizing_method: str | None = None,
+    risk_pct: float | None = None,
+    atr_period: int | None = None,
+    atr_k: float | None = None,
+    max_position_pct: float | None = None,
+    max_positions: int | None = None,
 ) -> BotSession:
-    """Create and persist an active bot session, validating every input.
+    """Create and persist an active multi-asset bot session, validating every input.
 
-    Raises ``UnknownStrategyError`` for an unregistered strategy,
-    ``InvalidStrategyParamsError`` for bad params, ``InvalidBotBenchmarkError`` for
-    an unknown benchmark, and ``IneligibleAssetError`` for a non-eligible or
-    non-equity asset. No AI model is invoked.
+    The traded set is either the given ``tickers`` (each validated as an eligible
+    universe equity) or, when ``whole_universe`` is set, the currently eligible universe
+    equities resolved at creation. ``initial_capital`` becomes the session's shared cash
+    pool and hard budget. Raises ``UnknownStrategyError`` for an unregistered strategy,
+    ``InvalidStrategyParamsError`` for bad params, ``InvalidBotBenchmarkError`` for an
+    unknown benchmark, ``IneligibleAssetError`` for a non-eligible / non-equity asset,
+    and ``InvalidBotConfigError`` for an empty set or an unknown sizing method. No AI
+    model is invoked.
     """
     registration = registry.get_strategy(strategy_key)
     params = registration.parse_params(strategy_params or {})
@@ -140,7 +178,30 @@ def create_bot_session(
             f"{benchmark!r} is not a known benchmark"
         ) from exc
 
-    asset = _resolve_equity_asset(session, ticker)
+    method_value = sizing_method or settings.BOT_SIZING_METHOD
+    try:
+        method = SizingMethod(method_value)
+    except ValueError as exc:
+        raise InvalidBotConfigError(
+            f"{method_value!r} is not a known sizing method"
+        ) from exc
+
+    # Resolve the traded set (deduped, deterministic by ticker).
+    if whole_universe:
+        assets = _resolve_universe_equities(session)
+        if not assets:
+            raise InvalidBotConfigError(
+                "the eligible universe has no equities to trade"
+            )
+    else:
+        if not tickers:
+            raise InvalidBotConfigError("at least one ticker is required")
+        resolved: dict[str, Asset] = {}
+        for ticker in tickers:
+            asset = _resolve_equity_asset(session, ticker)
+            resolved[asset.ticker] = asset
+        assets = list(resolved.values())
+    assets.sort(key=lambda a: a.ticker)
 
     drawdown = (
         drawdown_stop_pct
@@ -155,13 +216,28 @@ def create_bot_session(
 
     bot = BotSession(
         strategy_key=registration.key.value,
-        asset_id=asset.id,
-        ticker=asset.ticker,
         label=label,
         status=BotSessionStatus.ACTIVE.value,
         benchmark=benchmark_enum.value,
         initial_capital=initial_capital,
         allocated_capital=initial_capital,
+        cash=initial_capital,
+        sizing_method=method.value,
+        risk_pct=risk_pct if risk_pct is not None else settings.BOT_RISK_PCT,
+        atr_period=(
+            atr_period if atr_period is not None else settings.BOT_ATR_PERIOD
+        ),
+        atr_k=atr_k if atr_k is not None else settings.BOT_ATR_K,
+        max_position_pct=(
+            max_position_pct
+            if max_position_pct is not None
+            else settings.BOT_MAX_POSITION_PCT
+        ),
+        max_positions=(
+            max_positions
+            if max_positions is not None
+            else settings.BOT_MAX_POSITIONS
+        ),
         strategy_params=params.model_dump(),
         take_profit_pct=take_profit_pct,
         stop_loss_pct=stop_loss_pct,
@@ -169,6 +245,14 @@ def create_bot_session(
         cash_buffer_pct=buffer,
         peak_value=initial_capital,
     )
+    bot.symbols = [
+        BotSymbol(
+            asset_id=asset.id,
+            ticker=asset.ticker,
+            alpaca_symbol=_trade_symbol(asset),
+        )
+        for asset in assets
+    ]
     session.add(bot)
     session.flush()
     return bot
@@ -229,6 +313,145 @@ def archive_bot_session(session: Session, bot_id: uuid.UUID) -> BotSession:
 
 
 # Tick runner -------------------------------------------------------------
+def _fetch_session_bars(
+    bot: BotSession,
+    market_data: MarketData,
+    *,
+    history: int,
+    timeframe: str,
+    now: datetime,
+) -> dict[str, list[Bar]]:
+    """Fetch fresh bars for each traded symbol, keyed by ticker (stale symbols omitted)."""
+    bars_by_ticker: dict[str, list[Bar]] = {}
+    for symbol in bot.symbols:
+        result = market_data.latest_bars(
+            symbol.alpaca_symbol, timeframe, history, now=now
+        )
+        if result.fresh and result.bars:
+            bars_by_ticker[symbol.ticker] = result.bars
+    return bars_by_ticker
+
+
+def _tick_session(
+    bot: BotSession,
+    *,
+    engine: ExecutionEngine,
+    market_data: MarketData,
+    tick_now: datetime,
+) -> bool:
+    """Advance one active session; return whether it was processed (not fully skipped).
+
+    Stateless recompute: fetch each symbol's bars, then process the drawdown kill-switch,
+    then per-position exits (take-profit / stop-loss / EXIT signal), then deterministic
+    budget-bounded entries. A symbol with stale/missing fresh data is skipped this tick;
+    if no symbol has fresh data the whole session is skipped.
+    """
+    registration = registry.get_strategy(bot.strategy_key)
+    params = registration.parse_params(bot.strategy_params)
+    history = max(params.required_history, bot.atr_period + 1)
+    timeframe = settings.BOT_SIGNAL_BAR_TIMEFRAME
+
+    bars_by_ticker = _fetch_session_bars(
+        bot, market_data, history=history, timeframe=timeframe, now=tick_now
+    )
+    if not bars_by_ticker:
+        return False
+
+    # Marks for valuation: the fresh close where available, else the position's
+    # average cost (a neutral mark for a symbol with no fresh bar this tick).
+    marks = {ticker: bars[-1].close for ticker, bars in bars_by_ticker.items()}
+    bot.peak_value = max(bot.peak_value, total_value(bot, marks))
+
+    # 1. Whole-session drawdown kill-switch — exit everything and stop.
+    if total_value(bot, marks) <= bot.peak_value * (1.0 - bot.drawdown_stop_pct):
+        for position in list(bot.positions):
+            engine.exit(bot, position, now=tick_now, reason=REASON_DRAWDOWN)
+        bot.status = BotSessionStatus.STOPPED.value
+        bot.last_tick_at = tick_now
+        return True
+
+    # 2. Exits before entries — per open position, in deterministic ticker order.
+    for position in sorted(bot.positions, key=lambda p: p.ticker):
+        bars = bars_by_ticker.get(position.ticker)
+        if bars is None:  # stale this tick: leave the position untouched.
+            continue
+        price = bars[-1].close
+        risk_reason = take_profit_stop_loss_reason(
+            avg_price=position.avg_price,
+            price=price,
+            take_profit_pct=bot.take_profit_pct,
+            stop_loss_pct=bot.stop_loss_pct,
+        )
+        if risk_reason is not None:
+            engine.exit(bot, position, now=tick_now, reason=risk_reason)
+            continue
+        signal = registration.strategy.evaluate(
+            bars,
+            PositionView(quantity=position.quantity, avg_price=position.avg_price),
+            params,
+        )
+        if signal.action is SignalAction.EXIT:
+            engine.exit(bot, position, now=tick_now, reason=signal.reason)
+
+    # 3. Entries — deterministic ascending-ticker order, budget- and slot-bounded.
+    method = SizingMethod(bot.sizing_method)
+    open_tickers = {p.ticker for p in bot.positions}
+    candidates: list[EntryCandidate] = []
+    reasons: dict[str, str] = {}
+    for symbol in bot.symbols:
+        if symbol.ticker in open_tickers:
+            continue
+        bars = bars_by_ticker.get(symbol.ticker)
+        if bars is None:
+            continue
+        signal = registration.strategy.evaluate(bars, None, params)
+        if signal.action is not SignalAction.ENTER_LONG:
+            continue
+        atr_value = (
+            atr(bars, bot.atr_period)
+            if method is SizingMethod.ATR_RISK
+            else None
+        )
+        candidates.append(
+            EntryCandidate(
+                ticker=symbol.ticker,
+                symbol=symbol.alpaca_symbol,
+                asset_id=symbol.asset_id,
+                price=bars[-1].close,
+                atr_value=atr_value,
+            )
+        )
+        reasons[symbol.ticker] = signal.reason
+    candidates.sort(key=lambda c: c.ticker)
+
+    planned = plan_entries(
+        candidates,
+        budget=bot.initial_capital,
+        available_cash=bot.cash,
+        open_positions=len(bot.positions),
+        max_positions=bot.max_positions,
+        sizing_method=method,
+        risk_pct=bot.risk_pct,
+        atr_k=bot.atr_k,
+        max_position_pct=bot.max_position_pct,
+        cash_buffer_pct=bot.cash_buffer_pct,
+    )
+    for entry in planned:
+        engine.enter(
+            bot,
+            asset_id=entry.candidate.asset_id,
+            ticker=entry.candidate.ticker,
+            symbol=entry.candidate.symbol,
+            shares=entry.shares,
+            price=entry.candidate.price,
+            now=tick_now,
+            reason=reasons[entry.candidate.ticker],
+        )
+
+    bot.last_tick_at = tick_now
+    return True
+
+
 def run_tick(
     session: Session,
     *,
@@ -238,72 +461,57 @@ def run_tick(
 ) -> TickResult:
     """Advance every active bot session once (stateless recompute).
 
-    No-op when the equity market is closed. For each active session it fetches the
-    strategy's required bar history from ``market_data`` at the configured
-    timeframe, skips the session if the data is not fresh, recomputes indicators,
-    evaluates the strategy, and runs the execution engine.
+    No-op when the equity market is closed. For each active session it fetches each
+    traded symbol's required bar history from ``market_data`` at the configured
+    timeframe, processes exits before entries, and sizes entries from the shared cash
+    pool. A session with no fresh symbol data is counted as skipped.
     """
     if not broker.is_market_open():
         return TickResult(market_open=False)
 
     tick_now = now or datetime.now(UTC)
-    timeframe = settings.BOT_SIGNAL_BAR_TIMEFRAME
     engine = ExecutionEngine(session, broker)
 
     processed = 0
     skipped = 0
     for bot in active_bot_sessions(session):
-        registration = registry.get_strategy(bot.strategy_key)
-        params = registration.parse_params(bot.strategy_params)
-        asset = session.get(Asset, bot.asset_id)
-        symbol = _trade_symbol(asset) if asset is not None else bot.ticker
-
-        result = market_data.latest_bars(
-            symbol, timeframe, params.required_history, now=tick_now
-        )
-        if not result.fresh or not result.bars:
-            # Stale/missing data: skip, leaving position + ledger unchanged.
+        if _tick_session(
+            bot, engine=engine, market_data=market_data, tick_now=tick_now
+        ):
+            processed += 1
+        else:
             skipped += 1
-            continue
-
-        price = result.bars[-1].close
-        position = (
-            None
-            if bot.is_flat
-            else PositionView(
-                quantity=bot.position_qty or 0.0,
-                avg_price=bot.position_avg_price or 0.0,
-            )
-        )
-        signal = registration.strategy.evaluate(result.bars, position, params)
-        engine.run(bot, signal, price, now=tick_now, symbol=symbol)
-        processed += 1
 
     session.flush()
     return TickResult(market_open=True, processed=processed, skipped=skipped)
 
 
 # Snapshots & KPIs --------------------------------------------------------
-def _session_mark_price(bot: BotSession, broker: Broker) -> float:
-    """Latest price to mark the position (0 is fine when the session is flat)."""
-    if bot.is_flat:
-        return 0.0
-    quote = broker.get_quote(bot.ticker, AssetClass.EQUITY)
-    price = quote.last if quote.last is not None else quote.mid
-    return price if price is not None else (bot.position_avg_price or 0.0)
+def _mark_positions(bot: BotSession, broker: Broker) -> dict[str, float]:
+    """Latest mark prices for the session's open positions, keyed by ticker."""
+    marks: dict[str, float] = {}
+    for position in bot.positions:
+        quote = broker.get_quote(position.alpaca_symbol, AssetClass.EQUITY)
+        price = quote.last if quote.last is not None else quote.mid
+        marks[position.ticker] = price if price is not None else position.avg_price
+    return marks
 
 
 def record_bot_snapshot(
     session: Session,
     bot: BotSession,
     *,
-    price: float,
+    marks: dict[str, float],
     snapshot_date: date | None = None,
 ) -> BotValueSnapshot:
-    """Upsert the daily value snapshot for ``bot`` (one row per session per day)."""
+    """Upsert the daily value snapshot for ``bot`` (one row per session per day).
+
+    ``marks`` maps a held position's ticker to its mark price; a position absent from
+    ``marks`` is marked at its average cost (zero unrealised contribution).
+    """
     when = snapshot_date or datetime.now(UTC).date()
-    value = total_value(bot, price)
-    unrealised = unrealised_pnl(bot, price)
+    value = total_value(bot, marks)
+    unrealised = unrealised_pnl(bot, marks)
 
     bot.peak_value = max(bot.peak_value, value)
 
@@ -343,8 +551,8 @@ def run_bot_snapshots(
     when = (now or datetime.now(UTC)).date()
     count = 0
     for bot in active_bot_sessions(session):
-        price = _session_mark_price(bot, broker)
-        record_bot_snapshot(session, bot, price=price, snapshot_date=when)
+        marks = _mark_positions(bot, broker)
+        record_bot_snapshot(session, bot, marks=marks, snapshot_date=when)
         count += 1
     session.flush()
     return count
@@ -381,10 +589,8 @@ def bot_session_kpis(session: Session, bot: BotSession) -> BotKpis:
         current_value = latest.total_value
         unrealised = latest.unrealised_pnl
     else:
-        # No snapshot yet: value is cash only (flat at inception).
-        current_value = (
-            bot.allocated_capital + bot.realised_pnl - bot.total_fees
-        )
+        # No snapshot yet: cash plus positions marked at cost (zero unrealised).
+        current_value = total_value(bot, {})
         unrealised = 0.0
 
     total_return = current_value - bot.allocated_capital
@@ -431,7 +637,7 @@ def dashboard_performance(
         current_value = snapshots[-1].total_value
         unrealised = snapshots[-1].unrealised_pnl
     else:
-        current_value = allocated + bot.realised_pnl - bot.total_fees
+        current_value = total_value(bot, {})
         unrealised = 0.0
 
     # Value series windowed to the range (oldest first). With no snapshot yet,
@@ -471,7 +677,7 @@ def dashboard_performance(
     )
 
     registration = registry.get_strategy(bot.strategy_key)
-    label = bot.label or f"{registration.display_name} · {bot.ticker}"
+    label = bot.label or f"{registration.display_name} · {_traded_set_label(bot)}"
 
     return SessionPerformance(
         id=bot.id,

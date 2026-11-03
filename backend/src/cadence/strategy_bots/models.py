@@ -1,19 +1,22 @@
 """SQLAlchemy 2.0 ORM models for the strategy-bot subsystem.
 
 Schema is owned by Alembic; these models are the source of truth for autogenerate.
-Three tables, deliberately independent of the paper-trading tables (no cross-domain
-foreign keys):
+Deliberately independent of the paper-trading tables (no cross-domain foreign keys):
 
-- ``bot_sessions`` — one row per bot, binding a strategy to a single universe
-  asset, carrying its capital, risk parameters, and **inline position state**
-  (``position_qty``/``position_avg_price``/``position_opened_at``, null when flat).
-  v1 holds at most one position per session, so columns beat a positions table.
+- ``bot_sessions`` — one row per bot, binding a strategy to a **set** of universe
+  equities traded from a single shared ``cash`` pool (the hard budget ceiling),
+  carrying its sizing config and risk parameters.
+- ``bot_symbols`` — the session's traded symbol set (one row per eligible universe
+  asset the bot may trade), unique on ``(bot_session_id, asset_id)``.
+- ``bot_positions`` — one row per **open** long position (at most one per symbol, no
+  pyramiding), unique on ``(bot_session_id, asset_id)``; deleted on full exit.
 - ``bot_trades`` — individual fills recorded by the engine (buys and sells).
 - ``bot_value_snapshots`` — one daily portfolio-value snapshot per session per day
   (the equity curve), unique on ``(bot_session_id, snapshot_date)``.
 
-``bot_sessions`` references ``assets`` by ``asset_id`` (the shared-universe read
-seam); the child tables FK to the session and cascade-delete with it.
+``bot_sessions`` references ``assets`` through ``bot_symbols``/``bot_positions`` (the
+shared-universe read seam); the child tables FK to the session and cascade-delete
+with it.
 """
 
 from __future__ import annotations
@@ -39,7 +42,7 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from cadence.broker.models import OrderSide, OrderStatus
 from cadence.database import Base
-from cadence.strategy_bots.constants import BotSessionStatus
+from cadence.strategy_bots.constants import BotSessionStatus, SizingMethod
 
 
 def _enum_column(enum: type[Enum]) -> SQLEnum:
@@ -52,16 +55,17 @@ def _enum_column(enum: type[Enum]) -> SQLEnum:
 
 
 class BotSession(Base):
-    """A strategy bot: one deterministic strategy applied to one universe asset.
+    """A strategy bot: one deterministic strategy applied to a set of universe equities.
 
-    Long-only, equities-only, single all-in whole-share position in v1. The
-    position state lives inline (``position_qty``/``position_avg_price``/
-    ``position_opened_at``, all null when flat) rather than in a separate table,
-    because a session holds at most one position. ``peak_value`` tracks the running
-    high-water mark used by the drawdown kill-switch. ``allocated_capital`` is the
-    running total of contributed capital (equal to ``initial_capital`` in v1, which
-    has no capital-increase path), surfaced so the dashboard contribution math
-    matches the AI sessions.
+    Long-only, equities-only. The session trades a set of symbols (``symbols``) from a
+    single shared ``cash`` pool whose starting balance is ``initial_capital`` — a hard
+    budget ceiling the sum of open-position cost can never exceed. Open positions live in
+    the ``positions`` collection (at most one per symbol, no pyramiding), each sized by
+    the configured ``sizing_method`` and bounded by ``max_position_pct`` and
+    ``max_positions``. ``peak_value`` tracks the running high-water mark used by the
+    drawdown kill-switch. ``allocated_capital`` is the running total of contributed
+    capital (equal to ``initial_capital``; no capital-increase path), surfaced so the
+    dashboard contribution math matches the AI sessions.
     """
 
     __tablename__ = "bot_sessions"
@@ -75,16 +79,7 @@ class BotSession(Base):
     # free text (like paper_trading.strategy_key) so a new strategy is additive;
     # creation rejects an unregistered key.
     strategy_key: Mapped[str] = mapped_column(Text, nullable=False)
-    # The single universe asset this bot trades (the shared-universe read seam).
-    asset_id: Mapped[int] = mapped_column(
-        ForeignKey("assets.id", ondelete="RESTRICT"),
-        index=True,
-        nullable=False,
-    )
-    # The asset's canonical ticker, frozen at creation for display and ordering
-    # without re-reading the asset row.
-    ticker: Mapped[str] = mapped_column(Text, nullable=False)
-    # Optional human-facing label; falls back to "<strategy> · <ticker>" in reads.
+    # Optional human-facing label; falls back to "<strategy> · <n symbols>" in reads.
     label: Mapped[str | None] = mapped_column(Text, nullable=True)
     # One of cadence.strategy_bots.constants.BotSessionStatus values.
     status: Mapped[str] = mapped_column(
@@ -102,19 +97,50 @@ class BotSession(Base):
     allocated_capital: Mapped[float] = mapped_column(
         Float, nullable=False, server_default="100000"
     )
+    # The shared cash pool (uninvested capital). Starts at ``initial_capital``;
+    # decremented on a buy and incremented on a sell. Authoritative cash balance.
+    cash: Mapped[float] = mapped_column(
+        Float, nullable=False, server_default="100000"
+    )
+    # Position-sizing method (a SizingMethod value).
+    sizing_method: Mapped[str] = mapped_column(
+        _enum_column(SizingMethod),
+        nullable=False,
+        server_default=SizingMethod.ATR_RISK.value,
+    )
+    # Fraction of the budget risked per position under ATR sizing.
+    risk_pct: Mapped[float] = mapped_column(
+        Float, nullable=False, server_default="0.01"
+    )
+    # ATR lookback period (bars) used by ATR risk-based sizing.
+    atr_period: Mapped[int] = mapped_column(
+        Integer, nullable=False, server_default="14"
+    )
+    # ATR multiple defining per-share risk under ATR risk-based sizing.
+    atr_k: Mapped[float] = mapped_column(
+        Float, nullable=False, server_default="2.0"
+    )
+    # Maximum fraction of the budget any single position may consume.
+    max_position_pct: Mapped[float] = mapped_column(
+        Float, nullable=False, server_default="0.25"
+    )
+    # Maximum number of concurrent open positions.
+    max_positions: Mapped[int] = mapped_column(
+        Integer, nullable=False, server_default="10"
+    )
     # Strategy parameters (e.g. fast/slow SMA windows), validated against the
     # strategy's params schema at creation and read back verbatim by the runner.
     strategy_params: Mapped[dict[str, object]] = mapped_column(
         JSONB, nullable=False, server_default="{}"
     )
-    # Optional risk exits, as fractions of the position's average cost. Null = off.
+    # Optional risk exits, as fractions of each position's average cost. Null = off.
     take_profit_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
     stop_loss_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
     # Drawdown kill-switch threshold (fraction of peak value). Non-null: always on.
     drawdown_stop_pct: Mapped[float] = mapped_column(
         Float, nullable=False, server_default="0.25"
     )
-    # Cash buffer reserved before all-in sizing (fraction of allocated capital).
+    # Cash buffer reserved before sizing (fraction of the budget).
     cash_buffer_pct: Mapped[float] = mapped_column(
         Float, nullable=False, server_default="0.02"
     )
@@ -122,12 +148,6 @@ class BotSession(Base):
     # to the initial capital at creation; updated by the tick/snapshot path.
     peak_value: Mapped[float] = mapped_column(
         Float, nullable=False, server_default="100000"
-    )
-    # Inline single-position state. All null when the session is flat.
-    position_qty: Mapped[float | None] = mapped_column(Float, nullable=True)
-    position_avg_price: Mapped[float | None] = mapped_column(Float, nullable=True)
-    position_opened_at: Mapped[datetime | None] = mapped_column(
-        DateTime(timezone=True), nullable=True
     )
     # Running totals maintained by the engine as trades are recorded.
     total_trades: Mapped[int] = mapped_column(
@@ -155,6 +175,18 @@ class BotSession(Base):
         DateTime(timezone=True), nullable=True
     )
 
+    symbols: Mapped[list[BotSymbol]] = relationship(
+        back_populates="session",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+        order_by="BotSymbol.ticker",
+    )
+    positions: Mapped[list[BotPosition]] = relationship(
+        back_populates="session",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+        order_by="BotPosition.ticker",
+    )
     trades: Mapped[list[BotTrade]] = relationship(
         back_populates="session",
         cascade="all, delete-orphan",
@@ -168,8 +200,90 @@ class BotSession(Base):
 
     @property
     def is_flat(self) -> bool:
-        """Whether the session currently holds no position."""
-        return not self.position_qty
+        """Whether the session currently holds no open positions."""
+        return not self.positions
+
+
+class BotSymbol(Base):
+    """One eligible universe equity in a session's tradable symbol set.
+
+    The set is fixed at creation (hand-picked or snapshotted from the whole eligible
+    universe). ``ticker``/``alpaca_symbol`` are frozen at creation for ordering and the
+    broker/market-data calls without re-reading the asset row.
+    """
+
+    __tablename__ = "bot_symbols"
+    __table_args__ = (
+        UniqueConstraint(
+            "bot_session_id",
+            "asset_id",
+            name="uq_bot_symbols_session_asset",
+        ),
+        Index("idx_bot_symbols_session", "bot_session_id"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        server_default=func.gen_random_uuid(),
+    )
+    bot_session_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("bot_sessions.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    asset_id: Mapped[int] = mapped_column(
+        ForeignKey("assets.id", ondelete="RESTRICT"),
+        index=True,
+        nullable=False,
+    )
+    # The asset's canonical ticker, frozen at creation for display and ordering.
+    ticker: Mapped[str] = mapped_column(Text, nullable=False)
+    # The broker/market-data symbol (Alpaca form when known), frozen at creation.
+    alpaca_symbol: Mapped[str] = mapped_column(Text, nullable=False)
+
+    session: Mapped[BotSession] = relationship(back_populates="symbols")
+
+
+class BotPosition(Base):
+    """A single open long position held by a bot session (at most one per symbol)."""
+
+    __tablename__ = "bot_positions"
+    __table_args__ = (
+        UniqueConstraint(
+            "bot_session_id",
+            "asset_id",
+            name="uq_bot_positions_session_asset",
+        ),
+        Index("idx_bot_positions_session", "bot_session_id"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        server_default=func.gen_random_uuid(),
+    )
+    bot_session_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("bot_sessions.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    asset_id: Mapped[int] = mapped_column(
+        ForeignKey("assets.id", ondelete="RESTRICT"),
+        index=True,
+        nullable=False,
+    )
+    # The asset's canonical ticker, frozen at open for display and ordering.
+    ticker: Mapped[str] = mapped_column(Text, nullable=False)
+    # The broker/market-data symbol (Alpaca form when known), frozen at open.
+    alpaca_symbol: Mapped[str] = mapped_column(Text, nullable=False)
+    quantity: Mapped[float] = mapped_column(Float, nullable=False)
+    avg_price: Mapped[float] = mapped_column(Float, nullable=False)
+    opened_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    session: Mapped[BotSession] = relationship(back_populates="positions")
 
 
 class BotTrade(Base):

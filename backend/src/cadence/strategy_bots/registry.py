@@ -18,6 +18,7 @@ from pydantic import ValidationError
 
 from cadence.strategy_bots.constants import (
     STRATEGY_DISPLAY_NAMES,
+    STRATEGY_EXPLANATIONS,
     StrategyKey,
 )
 from cadence.strategy_bots.errors import (
@@ -37,6 +38,7 @@ class StrategyRegistration:
 
     key: StrategyKey
     display_name: str
+    explanation: str
     strategy: Strategy
     params_schema: type[StrategyParams]
 
@@ -56,6 +58,7 @@ _REGISTRY: dict[StrategyKey, StrategyRegistration] = {
     StrategyKey.MA_CROSSOVER: StrategyRegistration(
         key=StrategyKey.MA_CROSSOVER,
         display_name=STRATEGY_DISPLAY_NAMES[StrategyKey.MA_CROSSOVER],
+        explanation=STRATEGY_EXPLANATIONS[StrategyKey.MA_CROSSOVER],
         strategy=MACrossoverStrategy(),
         params_schema=MACrossoverParams,
     ),

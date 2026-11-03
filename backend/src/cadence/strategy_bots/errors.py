@@ -35,5 +35,13 @@ class BotSessionNotArchivableError(StrategyBotError):
     """The session cannot be archived because it is not stopped."""
 
 
+class InvalidBotConfigError(StrategyBotError):
+    """The session's sizing/capital configuration is invalid.
+
+    Raised for an unknown sizing method or an empty traded set (including a
+    whole-universe selection that resolves to no eligible equities). Surfaced as 422.
+    """
+
+
 class InvalidBotBenchmarkError(StrategyBotError):
     """The requested benchmark id is not in the fixed benchmark catalog."""

@@ -1,34 +1,32 @@
-"""Risk / execution engine — layer 2 of the three-layer execution model.
+"""Risk / execution engine — order execution and value accounting.
 
-Shared by every strategy: given a strategy :class:`Signal`, the latest price, and a
-session's live state, it sizes and submits orders through the :class:`Broker`
-protocol, polls fills to a terminal state, records trades, maintains inline
-position state, and enforces the risk rules that sit *above* the strategy —
-optional take-profit / stop-loss and the drawdown kill-switch. It is long-only and
-holds at most one all-in whole-share position per session (no pyramiding, no
-shorting).
+Given sized entries and exit decisions from the tick runner, this layer submits and
+polls orders through the :class:`Broker` protocol, records trades, and maintains the
+session's shared ``cash`` pool and its ``positions`` collection. It is long-only and
+holds at most one position per symbol (no pyramiding, no shorting). The *orchestration*
+— exits before entries, deterministic ordering, the drawdown kill-switch, and
+budget-bounded sizing — lives in the tick runner (:mod:`.service`); this layer provides
+the primitives it drives plus the pure value helpers.
 
-Capital accounting (v1, single position, no capital increase):
+Capital accounting (shared pool across the basket):
 
-    cash            = allocated_capital + realised_pnl - total_fees - qty*avg_price
-    unrealised_pnl  = qty * (price - avg_price)
-    total_value     = allocated_capital + realised_pnl - total_fees + unrealised_pnl
+    cash           starts at initial_capital; -= cost on a buy, += proceeds on a sell
+    unrealised_pnl = Σ qty * (mark - avg_price)   over open positions
+    total_value    = cash + Σ qty * mark          over open positions
 """
 
 from __future__ import annotations
 
 import time
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime
-from math import floor
 
 from sqlalchemy.orm import Session
 
 from cadence.broker.base import Broker
 from cadence.broker.models import AssetClass, Order, OrderSide, OrderStatus
-from cadence.strategy_bots.constants import BotSessionStatus
-from cadence.strategy_bots.models import BotSession, BotTrade
-from cadence.strategy_bots.strategy import Signal, SignalAction
+from cadence.strategy_bots.models import BotPosition, BotSession, BotTrade
 
 #: Reasons recorded on the trade ledger for an engine-initiated exit.
 REASON_TAKE_PROFIT = "take_profit"
@@ -36,45 +34,53 @@ REASON_STOP_LOSS = "stop_loss"
 REASON_DRAWDOWN = "drawdown_kill_switch"
 
 
-@dataclass(frozen=True)
-class EngineOutcome:
-    """What the engine did on one tick for one session."""
-
-    #: One of "enter", "exit", "hold", "drawdown_stop", or "noop".
-    action: str
-    #: The trade recorded this tick, if any.
-    trade: BotTrade | None = None
-    #: Whether the session was stopped by the drawdown kill-switch.
-    stopped: bool = False
+def _mark(position: BotPosition, marks: Mapping[str, float]) -> float:
+    """Mark price for ``position`` — its fresh price this tick, else its avg cost."""
+    return marks.get(position.ticker, position.avg_price)
 
 
-def current_cash(bot: BotSession) -> float:
-    """Uninvested cash available to the session right now."""
-    invested = 0.0
-    if not bot.is_flat and bot.position_avg_price is not None:
-        invested = (bot.position_qty or 0.0) * bot.position_avg_price
-    return bot.allocated_capital + bot.realised_pnl - bot.total_fees - invested
-
-
-def unrealised_pnl(bot: BotSession, price: float) -> float:
-    """Mark-to-market profit/loss on the open position (0 when flat)."""
-    if bot.is_flat or bot.position_avg_price is None:
-        return 0.0
-    return (bot.position_qty or 0.0) * (price - bot.position_avg_price)
-
-
-def total_value(bot: BotSession, price: float) -> float:
-    """Total session value: cash plus the marked-to-market position."""
-    return (
-        bot.allocated_capital
-        + bot.realised_pnl
-        - bot.total_fees
-        + unrealised_pnl(bot, price)
+def unrealised_pnl(bot: BotSession, marks: Mapping[str, float]) -> float:
+    """Mark-to-market profit/loss summed across all open positions."""
+    return sum(
+        position.quantity * (_mark(position, marks) - position.avg_price)
+        for position in bot.positions
     )
 
 
+def total_value(bot: BotSession, marks: Mapping[str, float]) -> float:
+    """Total session value: shared cash plus all marked-to-market positions."""
+    return bot.cash + sum(
+        position.quantity * _mark(position, marks) for position in bot.positions
+    )
+
+
+def take_profit_stop_loss_reason(
+    *,
+    avg_price: float,
+    price: float,
+    take_profit_pct: float | None,
+    stop_loss_pct: float | None,
+) -> str | None:
+    """Return the TP/SL exit reason if a threshold is hit for a position, else ``None``."""
+    if take_profit_pct is not None and price >= avg_price * (1.0 + take_profit_pct):
+        return REASON_TAKE_PROFIT
+    if stop_loss_pct is not None and price <= avg_price * (1.0 - stop_loss_pct):
+        return REASON_STOP_LOSS
+    return None
+
+
+@dataclass(frozen=True)
+class EngineOutcome:
+    """What the engine did for one order (an enter or an exit)."""
+
+    #: One of "enter", "exit", or "noop".
+    action: str
+    #: The trade recorded, if any.
+    trade: BotTrade | None = None
+
+
 class ExecutionEngine:
-    """Sizes, submits, and records bot trades and enforces the risk rules."""
+    """Submits and records bot trades and maintains cash + the positions collection."""
 
     def __init__(
         self,
@@ -89,143 +95,79 @@ class ExecutionEngine:
         self._poll_attempts = poll_attempts
         self._poll_interval = poll_interval_seconds
 
-    def run(
+    def enter(
         self,
         bot: BotSession,
-        signal: Signal,
-        price: float,
         *,
-        now: datetime,
-        symbol: str | None = None,
-    ) -> EngineOutcome:
-        """Apply the risk rules then the strategy signal to ``bot`` at ``price``.
-
-        Risk exits (drawdown, take-profit, stop-loss) are evaluated independently
-        of — and take precedence over — the strategy signal. ``symbol`` overrides
-        the broker symbol (defaults to the session's ticker).
-        """
-        trade_symbol = symbol or bot.ticker
-
-        # Peak high-water mark, for the drawdown kill-switch.
-        value = total_value(bot, price)
-        bot.peak_value = max(bot.peak_value, value)
-
-        # 1. Drawdown kill-switch — exit any position and stop the session. Applies
-        #    whether or not a position is currently open.
-        if value <= bot.peak_value * (1.0 - bot.drawdown_stop_pct):
-            trade = None
-            if not bot.is_flat:
-                trade = self._exit(bot, trade_symbol, price, now, REASON_DRAWDOWN)
-            bot.status = BotSessionStatus.STOPPED.value
-            bot.last_tick_at = now
-            return EngineOutcome(action="drawdown_stop", trade=trade, stopped=True)
-
-        outcome = EngineOutcome(action="hold")
-        if not bot.is_flat:
-            # 2. Take-profit / stop-loss, independent of the strategy signal.
-            risk_reason = self._take_profit_stop_loss_reason(bot, price)
-            if risk_reason is not None:
-                trade = self._exit(bot, trade_symbol, price, now, risk_reason)
-                outcome = EngineOutcome(action="exit", trade=trade)
-            elif signal.action is SignalAction.EXIT:
-                trade = self._exit(bot, trade_symbol, price, now, signal.reason)
-                outcome = EngineOutcome(action="exit", trade=trade)
-        elif signal.action is SignalAction.ENTER_LONG:
-            # 3. Strategy entry — only when flat (no pyramiding).
-            trade = self._enter(bot, trade_symbol, price, now, signal.reason)
-            outcome = EngineOutcome(
-                action="enter" if trade is not None else "noop", trade=trade
-            )
-
-        bot.last_tick_at = now
-        return outcome
-
-    # Risk rules ----------------------------------------------------------
-    def _take_profit_stop_loss_reason(
-        self, bot: BotSession, price: float
-    ) -> str | None:
-        """Return the TP/SL exit reason if a threshold is hit, else ``None``."""
-        avg = bot.position_avg_price
-        if avg is None:
-            return None
-        if bot.take_profit_pct is not None and price >= avg * (
-            1.0 + bot.take_profit_pct
-        ):
-            return REASON_TAKE_PROFIT
-        if bot.stop_loss_pct is not None and price <= avg * (
-            1.0 - bot.stop_loss_pct
-        ):
-            return REASON_STOP_LOSS
-        return None
-
-    # Order execution -----------------------------------------------------
-    def _enter(
-        self,
-        bot: BotSession,
+        asset_id: int,
+        ticker: str,
         symbol: str,
+        shares: int,
         price: float,
         now: datetime,
         reason: str,
-    ) -> BotTrade | None:
-        """Size and submit an all-in whole-share long entry; record the fill."""
-        capital = current_cash(bot)
-        affordable = capital * (1.0 - bot.cash_buffer_pct)
-        quantity = floor(affordable / price) if price > 0 else 0
-        if quantity <= 0:
-            return None
+    ) -> EngineOutcome:
+        """Submit a whole-share long entry; on fill create the position and debit cash."""
+        if shares < 1:
+            return EngineOutcome(action="noop")
 
         order = self._submit_and_poll(
             self._broker.buy(
                 symbol=symbol,
-                quantity=float(quantity),
+                quantity=float(shares),
                 asset_class=AssetClass.EQUITY,
             )
         )
         if order.status is not OrderStatus.FILLED or order.filled_price is None:
-            return None
+            return EngineOutcome(action="noop")
 
-        filled_qty = order.filled_quantity or float(quantity)
-        trade = self._record_trade(
-            bot, symbol, OrderSide.BUY, filled_qty, order, reason
+        filled_qty = order.filled_quantity or float(shares)
+        trade = self._record_trade(bot, symbol, OrderSide.BUY, filled_qty, order, reason)
+        position = BotPosition(
+            session=bot,
+            asset_id=asset_id,
+            ticker=ticker,
+            alpaca_symbol=symbol,
+            quantity=filled_qty,
+            avg_price=order.filled_price,
+            opened_at=now,
         )
-        bot.position_qty = filled_qty
-        bot.position_avg_price = order.filled_price
-        bot.position_opened_at = now
-        return trade
+        self._db.add(position)
+        bot.cash -= filled_qty * order.filled_price + trade.fees
+        return EngineOutcome(action="enter", trade=trade)
 
-    def _exit(
+    def exit(
         self,
         bot: BotSession,
-        symbol: str,
-        price: float,
+        position: BotPosition,
+        *,
         now: datetime,
         reason: str,
-    ) -> BotTrade | None:
-        """Sell the entire position, record the fill, and realise the P&L."""
-        quantity = bot.position_qty or 0.0
-        avg = bot.position_avg_price or 0.0
+    ) -> EngineOutcome:
+        """Sell the entire position, record the fill, realise P&L, and credit cash."""
+        quantity = position.quantity
         if quantity <= 0:
-            return None
+            bot.positions.remove(position)
+            return EngineOutcome(action="noop")
 
         order = self._submit_and_poll(
             self._broker.sell(
-                symbol=symbol,
+                symbol=position.alpaca_symbol,
                 quantity=quantity,
                 asset_class=AssetClass.EQUITY,
             )
         )
         if order.status is not OrderStatus.FILLED or order.filled_price is None:
-            return None
+            return EngineOutcome(action="noop")
 
         filled_qty = order.filled_quantity or quantity
         trade = self._record_trade(
-            bot, symbol, OrderSide.SELL, filled_qty, order, reason
+            bot, position.alpaca_symbol, OrderSide.SELL, filled_qty, order, reason
         )
-        bot.realised_pnl += (order.filled_price - avg) * filled_qty
-        bot.position_qty = None
-        bot.position_avg_price = None
-        bot.position_opened_at = None
-        return trade
+        bot.realised_pnl += (order.filled_price - position.avg_price) * filled_qty
+        bot.cash += filled_qty * order.filled_price - trade.fees
+        bot.positions.remove(position)
+        return EngineOutcome(action="exit", trade=trade)
 
     def _record_trade(
         self,

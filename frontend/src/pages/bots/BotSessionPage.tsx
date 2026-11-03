@@ -55,9 +55,17 @@ function PnlValue({ value }: { value: number }) {
   return <span className={pnlClass(value)}>{formatCurrency(value)}</span>;
 }
 
-/** A bot's display label: its explicit label, else strategy + ticker. */
+/** Compact summary of a bot's traded symbol set. */
+function symbolsSummary(bot: BotSession): string {
+  const tickers = bot.symbols.map((s) => s.ticker);
+  if (tickers.length === 0) return '—';
+  if (tickers.length <= 3) return tickers.join(', ');
+  return `${tickers[0]} +${tickers.length - 1}`;
+}
+
+/** A bot's display label: its explicit label, else strategy + symbol summary. */
 function botLabel(bot: BotSession): string {
-  return bot.label || `${bot.strategy_key} · ${bot.ticker}`;
+  return bot.label || `${bot.strategy_key} · ${symbolsSummary(bot)}`;
 }
 
 /** Render a strategy-param object as a compact `key: value` list. */
@@ -160,19 +168,30 @@ function SessionHeader({ sessionId }: { sessionId: string }) {
       </div>
       <dl className="mt-4 grid grid-cols-2 gap-4 sm:grid-cols-4">
         <Fact
-          label="Ticker"
+          label="Symbols"
           value={
-            <Link
-              to={`/assets/${bot.ticker}`}
-              className="text-emerald-700 hover:underline"
-            >
-              {bot.ticker}
-            </Link>
+            <span title={bot.symbols.map((s) => s.ticker).join(', ')}>
+              {bot.symbols.length} ({symbolsSummary(bot)})
+            </span>
           }
         />
         <Fact label="Capital" value={formatCurrency(bot.allocated_capital)} />
+        <Fact label="Cash" value={formatCurrency(bot.cash)} />
         <Fact label="Benchmark" value={bot.benchmark} />
         <Fact label="Parameters" value={paramsSummary(bot.strategy_params)} />
+        <Fact
+          label="Sizing"
+          value={
+            bot.sizing_method === 'atr_risk'
+              ? `ATR risk ${(bot.risk_pct * 100).toFixed(1)}% · k=${bot.atr_k}`
+              : 'All-in'
+          }
+        />
+        <Fact
+          label="Max per-name"
+          value={`${(bot.max_position_pct * 100).toFixed(0)}%`}
+        />
+        <Fact label="Max positions" value={String(bot.max_positions)} />
         <Fact
           label="Take-profit"
           value={
@@ -197,16 +216,7 @@ function SessionHeader({ sessionId }: { sessionId: string }) {
           label="Cash buffer"
           value={`${(bot.cash_buffer_pct * 100).toFixed(0)}%`}
         />
-        <Fact
-          label="Position"
-          value={
-            bot.position_qty == null || bot.position_qty === 0
-              ? 'Flat (cash)'
-              : `${formatQuantity(bot.position_qty)} @ ${formatCurrency(
-                  bot.position_avg_price ?? 0,
-                )}`
-          }
-        />
+        <Fact label="Open positions" value={String(bot.positions.length)} />
         <Fact label="Last tick" value={ts(bot.last_tick_at)} />
         <Fact label="Created" value={ts(bot.created_at)} />
       </dl>
@@ -286,6 +296,62 @@ function KpiRow({ sessionId }: { sessionId: string }) {
   );
 }
 
+function PositionsPanel({ sessionId }: { sessionId: string }) {
+  const { data: bot, isPending, isError } = useBotSession(sessionId);
+  const positions = bot?.positions ?? [];
+  // Stable order: ascending ticker, matching the deterministic tick entry order.
+  const sorted = [...positions].sort((a, b) => a.ticker.localeCompare(b.ticker));
+  return (
+    <Panel
+      title="Open positions"
+      count={positions.length}
+      isPending={isPending}
+      isError={isError}
+      isEmpty={positions.length === 0}
+      emptyText="No open positions — the bot is holding cash."
+    >
+      <table className="w-full min-w-[520px] border-collapse text-sm">
+        <thead>
+          <tr className="border-b border-slate-200 bg-slate-50 text-left text-xs font-semibold uppercase tracking-wide text-slate-500">
+            <th className="px-4 py-3">Ticker</th>
+            <th className="px-4 py-3 text-right">Quantity</th>
+            <th className="px-4 py-3 text-right">Avg price</th>
+            <th className="px-4 py-3 text-right">Cost basis</th>
+            <th className="px-4 py-3">Opened</th>
+          </tr>
+        </thead>
+        <tbody>
+          {sorted.map((p) => (
+            <tr
+              key={p.asset_id}
+              className="border-b border-slate-100 hover:bg-slate-50"
+            >
+              <td className="px-4 py-3 font-semibold">
+                <Link
+                  to={`/assets/${p.ticker}`}
+                  className="text-emerald-700 hover:underline"
+                >
+                  {p.ticker}
+                </Link>
+              </td>
+              <td className="px-4 py-3 text-right tabular-nums text-slate-700">
+                {formatQuantity(p.quantity)}
+              </td>
+              <td className="px-4 py-3 text-right tabular-nums text-slate-700">
+                {formatCurrency(p.avg_price)}
+              </td>
+              <td className="px-4 py-3 text-right tabular-nums text-slate-700">
+                {formatCurrency(p.quantity * p.avg_price)}
+              </td>
+              <td className="px-4 py-3 text-slate-500">{ts(p.opened_at)}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </Panel>
+  );
+}
+
 function TradesPanel({ sessionId }: { sessionId: string }) {
   const { data, isPending, isError } = useBotTrades(sessionId);
   const trades = data?.items ?? [];
@@ -351,6 +417,7 @@ export function BotSessionPage() {
       <BackLink />
       <SessionHeader sessionId={id} />
       <KpiRow sessionId={id} />
+      <PositionsPanel sessionId={id} />
       <BotValueChart sessionId={id} />
       <TradesPanel sessionId={id} />
     </section>

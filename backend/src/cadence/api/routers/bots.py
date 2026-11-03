@@ -38,6 +38,7 @@ from cadence.strategy_bots.errors import (
     BotSessionNotFoundError,
     IneligibleAssetError,
     InvalidBotBenchmarkError,
+    InvalidBotConfigError,
     InvalidStrategyParamsError,
     UnknownStrategyError,
 )
@@ -57,6 +58,7 @@ def list_strategies() -> list[BotStrategyCatalogEntry]:
         BotStrategyCatalogEntry(
             key=registration.key.value,
             display_name=registration.display_name,
+            explanation=registration.explanation,
             required_history=registration.params_schema().required_history,
             params_schema=registration.params_schema.model_json_schema(),
         )
@@ -72,16 +74,17 @@ def list_strategies() -> list[BotStrategyCatalogEntry]:
 def create_bot_session(
     payload: BotSessionCreateRequest, db: DbSession
 ) -> BotSessionRead:
-    """Create an active bot session bound to one eligible universe equity.
+    """Create an active bot session over a set of eligible universe equities.
 
-    422 for an unknown strategy, invalid strategy params, an unknown benchmark, or
-    a non-eligible / non-equity asset.
+    422 for an unknown strategy, invalid strategy params, an unknown benchmark, a
+    non-eligible / non-equity asset, an empty traded set, or an unknown sizing method.
     """
     try:
         row = service.create_bot_session(
             db,
             strategy_key=payload.strategy_key,
-            ticker=payload.ticker,
+            tickers=payload.tickers,
+            whole_universe=payload.whole_universe,
             initial_capital=payload.initial_capital,
             benchmark=payload.benchmark,
             strategy_params=payload.strategy_params,
@@ -90,12 +93,19 @@ def create_bot_session(
             stop_loss_pct=payload.stop_loss_pct,
             drawdown_stop_pct=payload.drawdown_stop_pct,
             cash_buffer_pct=payload.cash_buffer_pct,
+            sizing_method=payload.sizing_method,
+            risk_pct=payload.risk_pct,
+            atr_period=payload.atr_period,
+            atr_k=payload.atr_k,
+            max_position_pct=payload.max_position_pct,
+            max_positions=payload.max_positions,
         )
     except (
         UnknownStrategyError,
         InvalidStrategyParamsError,
         InvalidBotBenchmarkError,
         IneligibleAssetError,
+        InvalidBotConfigError,
     ) as exc:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)

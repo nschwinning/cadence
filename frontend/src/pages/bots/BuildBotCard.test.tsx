@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { MemoryRouter } from 'react-router-dom';
 import type { ReactNode } from 'react';
 import { BuildBotCard } from './BuildBotCard';
 import { apiClient } from '../../api/client';
@@ -13,7 +14,7 @@ vi.mock('../../api/client', () => ({
 const mockedGet = vi.mocked(apiClient.get);
 const mockedPost = vi.mocked(apiClient.post);
 
-/** Route the catalog GETs the form issues on mount. */
+/** Route the catalog GETs the form issues on mount plus the picker's asset search. */
 function routeCatalogs() {
   mockedGet.mockImplementation((url: string) => {
     if (url.endsWith('/bots/strategies')) {
@@ -22,6 +23,7 @@ function routeCatalogs() {
           {
             key: 'ma_crossover',
             display_name: 'MA Crossover',
+            explanation: 'Fast crosses slow.',
             required_history: 51,
             params_schema: {},
           },
@@ -33,6 +35,33 @@ function routeCatalogs() {
         data: [{ id: 'SP500', name: 'S&P 500' }],
       });
     }
+    if (url.endsWith('/assets')) {
+      return Promise.resolve({
+        data: {
+          items: [
+            {
+              id: 1,
+              ticker: 'AAPL',
+              name: 'Apple',
+              alpaca_symbol: 'AAPL',
+              category: 'stock',
+              sector: 'technology',
+              exchange: 'NASDAQ',
+              currency: 'USD',
+              membership: 'universe',
+              market_cap_usd: null,
+              avg_daily_turnover_usd: null,
+              history_years: null,
+              is_eligible: true,
+              criteria_results: [],
+              created_at: '2026-01-01T00:00:00Z',
+              fundamentals: null,
+            },
+          ],
+          total: 1,
+        },
+      });
+    }
     return Promise.resolve({ data: [] });
   });
 }
@@ -41,7 +70,21 @@ function renderCard(ui: ReactNode) {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
   });
-  return render(<QueryClientProvider client={queryClient}>{ui}</QueryClientProvider>);
+  return render(
+    <QueryClientProvider client={queryClient}>
+      <MemoryRouter>{ui}</MemoryRouter>
+    </QueryClientProvider>,
+  );
+}
+
+/** Type into the picker and choose the AAPL option it returns. */
+async function pickAAPL(user: ReturnType<typeof userEvent.setup>) {
+  await user.type(
+    screen.getByRole('combobox', { name: 'Search universe equities' }),
+    'AAPL',
+  );
+  const option = await screen.findByRole('button', { name: /AAPL/ });
+  await user.click(option);
 }
 
 describe('BuildBotCard', () => {
@@ -50,41 +93,75 @@ describe('BuildBotCard', () => {
     routeCatalogs();
   });
 
-  it('renders the build form with its strategy, ticker and SMA period fields', async () => {
+  it('renders the build form with its strategy, picker and sizing fields', async () => {
     renderCard(<BuildBotCard />);
 
     expect(
       await screen.findByRole('heading', { name: 'Build a bot' }),
     ).toBeInTheDocument();
     expect(screen.getByLabelText('Strategy')).toBeInTheDocument();
-    expect(screen.getByLabelText('Ticker')).toBeInTheDocument();
+    expect(
+      screen.getByRole('combobox', { name: 'Search universe equities' }),
+    ).toBeInTheDocument();
+    expect(screen.getByLabelText('Sizing method')).toBeInTheDocument();
+    expect(screen.getByLabelText('Max concurrent positions')).toHaveValue(10);
     expect(screen.getByLabelText('Fast SMA period')).toHaveValue(20);
-    expect(screen.getByLabelText('Slow SMA period')).toHaveValue(50);
   });
 
-  it('submits strategy params and uppercased ticker, then confirms success', async () => {
+  it('submits a symbol set and ATR sizing params, then navigates away', async () => {
     mockedPost.mockResolvedValue({ data: { id: 'b1' } });
     const user = userEvent.setup();
 
     renderCard(<BuildBotCard />);
 
-    await screen.findByLabelText('Ticker');
-    await user.type(screen.getByLabelText('Ticker'), 'aapl');
+    await screen.findByRole('combobox', { name: 'Search universe equities' });
+    await pickAAPL(user);
     await user.click(screen.getByRole('button', { name: 'Create bot' }));
 
     await waitFor(() => {
-      expect(mockedPost).toHaveBeenCalledWith('/api/v1/bots/sessions', {
-        strategy_key: 'ma_crossover',
-        ticker: 'AAPL',
-        initial_capital: 10000,
-        benchmark: 'SP500',
-        strategy_params: { fast_period: 20, slow_period: 50 },
-        label: null,
-        take_profit_pct: null,
-        stop_loss_pct: null,
-      });
+      expect(mockedPost).toHaveBeenCalledWith(
+        '/api/v1/bots/sessions',
+        expect.objectContaining({
+          strategy_key: 'ma_crossover',
+          tickers: ['AAPL'],
+          whole_universe: false,
+          initial_capital: 10000,
+          benchmark: 'SP500',
+          sizing_method: 'atr_risk',
+          risk_pct: 0.01,
+          atr_period: 14,
+          atr_k: 2,
+          max_position_pct: 0.25,
+          max_positions: 10,
+          strategy_params: { fast_period: 20, slow_period: 50 },
+        }),
+      );
     });
-    expect(await screen.findByText('Bot created')).toBeInTheDocument();
+  });
+
+  it('submits whole_universe with a null ticker set', async () => {
+    mockedPost.mockResolvedValue({ data: { id: 'b1' } });
+    const user = userEvent.setup();
+
+    renderCard(<BuildBotCard />);
+
+    await screen.findByText('Trade the whole eligible universe');
+    await user.click(screen.getByLabelText('Trade the whole eligible universe'));
+    await user.click(screen.getByRole('button', { name: 'Create bot' }));
+
+    await waitFor(() => {
+      expect(mockedPost).toHaveBeenCalledWith(
+        '/api/v1/bots/sessions',
+        expect.objectContaining({ whole_universe: true, tickers: null }),
+      );
+    });
+  });
+
+  it('blocks submission until at least one symbol is chosen', async () => {
+    renderCard(<BuildBotCard />);
+
+    await screen.findByRole('combobox', { name: 'Search universe equities' });
+    expect(screen.getByRole('button', { name: 'Create bot' })).toBeDisabled();
   });
 
   it('blocks submission when the fast period is not below the slow period', async () => {
@@ -92,8 +169,8 @@ describe('BuildBotCard', () => {
 
     renderCard(<BuildBotCard />);
 
-    await screen.findByLabelText('Ticker');
-    await user.type(screen.getByLabelText('Ticker'), 'AAPL');
+    await screen.findByRole('combobox', { name: 'Search universe equities' });
+    await pickAAPL(user);
     const fast = screen.getByLabelText('Fast SMA period');
     await user.clear(fast);
     await user.type(fast, '60');
@@ -109,8 +186,8 @@ describe('BuildBotCard', () => {
 
     renderCard(<BuildBotCard />);
 
-    await screen.findByLabelText('Ticker');
-    await user.type(screen.getByLabelText('Ticker'), 'AAPL');
+    await screen.findByRole('combobox', { name: 'Search universe equities' });
+    await pickAAPL(user);
     await user.click(screen.getByLabelText('Enable take-profit'));
     await user.click(screen.getByRole('button', { name: 'Create bot' }));
 

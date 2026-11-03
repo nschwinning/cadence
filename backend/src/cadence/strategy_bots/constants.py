@@ -34,9 +34,38 @@ class StrategyKey(StrEnum):
     MA_CROSSOVER = "ma_crossover"
 
 
+class SizingMethod(StrEnum):
+    """How a bot sizes a new long position within its shared capital pool.
+
+    ``ATR_RISK`` targets an equal dollar risk per name (risk dollars divided by a
+    multiple of the symbol's Average True Range); ``ALL_IN`` buys the greatest whole
+    number of shares affordable from available cash. Both are additionally bounded by
+    the per-name cap and remaining cash. ``ALL_IN`` reproduces the legacy single-asset
+    behaviour and is what migrated single-asset sessions use.
+    """
+
+    ATR_RISK = "atr_risk"
+    ALL_IN = "all_in"
+
+
 #: Human-facing display names for the strategy catalog (``/api/v1/bots`` reads).
 STRATEGY_DISPLAY_NAMES: dict[StrategyKey, str] = {
     StrategyKey.MA_CROSSOVER: "Moving-Average Crossover",
+}
+
+#: Human-readable explanations for the strategy catalog, shown on the strategy
+#: explanation page. Describes what each strategy does in plain language.
+STRATEGY_EXPLANATIONS: dict[StrategyKey, str] = {
+    StrategyKey.MA_CROSSOVER: (
+        "The Moving-Average Crossover strategy follows trends using two simple "
+        "moving averages of the closing price — a faster, shorter-window average and "
+        "a slower, longer-window average. When the fast average crosses above the "
+        "slow average it reads as upward momentum and the bot enters a long position; "
+        "when the fast average crosses back below the slow average the trend is "
+        "considered over and the bot exits. Between crossovers it holds its current "
+        "state. It is a deterministic, long-only trend-following rule: it never "
+        "shorts, and it waits for a confirmed cross rather than predicting turns."
+    ),
 }
 
 

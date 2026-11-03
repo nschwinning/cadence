@@ -1310,35 +1310,57 @@ export interface SystemStatusResponse {
 
 // --- Strategy bots ----------------------------------------------------------
 
-/** A registered bot strategy and its default parameter schema. Mirrors `BotStrategyCatalogEntry`. */
+/** A registered bot strategy, its explanation, and its default parameter schema. Mirrors `BotStrategyCatalogEntry`. */
 export interface BotStrategyCatalogEntry {
   key: string;
   display_name: string;
+  explanation: string;
   required_history: number;
   /** JSON Schema of the strategy's parameters (from the backend Pydantic model). */
   params_schema: Record<string, unknown>;
+}
+
+/** One eligible universe equity in a bot session's tradable symbol set. Mirrors `BotSymbolRead`. */
+export interface BotSymbol {
+  asset_id: number;
+  ticker: string;
+  alpaca_symbol: string;
+}
+
+/** One open long position held by a bot session. Mirrors `BotPositionRead`. */
+export interface BotPosition {
+  asset_id: number;
+  ticker: string;
+  alpaca_symbol: string;
+  quantity: number;
+  avg_price: number;
+  opened_at: string;
 }
 
 /** A strategy-bot session with its configuration and running totals. Mirrors `BotSessionRead`. */
 export interface BotSession {
   id: string;
   strategy_key: string;
-  asset_id: number;
-  ticker: string;
   label: string | null;
   status: string;
   benchmark: string;
   initial_capital: number;
   allocated_capital: number;
+  cash: number;
+  sizing_method: string;
+  risk_pct: number;
+  atr_period: number;
+  atr_k: number;
+  max_position_pct: number;
+  max_positions: number;
   strategy_params: Record<string, unknown>;
   take_profit_pct: number | null;
   stop_loss_pct: number | null;
   drawdown_stop_pct: number;
   cash_buffer_pct: number;
   peak_value: number;
-  position_qty: number | null;
-  position_avg_price: number | null;
-  position_opened_at: string | null;
+  symbols: BotSymbol[];
+  positions: BotPosition[];
   total_trades: number;
   realised_pnl: number;
   total_fees: number;
@@ -1405,7 +1427,8 @@ export interface BotValueHistoryResponse {
 /** Request to create a strategy-bot session. Mirrors `BotSessionCreateRequest`. */
 export interface BotSessionCreateRequest {
   strategy_key: string;
-  ticker: string;
+  tickers?: string[] | null;
+  whole_universe?: boolean;
   initial_capital: number;
   benchmark: string;
   strategy_params?: Record<string, unknown> | null;
@@ -1414,4 +1437,10 @@ export interface BotSessionCreateRequest {
   stop_loss_pct?: number | null;
   drawdown_stop_pct?: number | null;
   cash_buffer_pct?: number | null;
+  sizing_method?: string | null;
+  risk_pct?: number | null;
+  atr_period?: number | null;
+  atr_k?: number | null;
+  max_position_pct?: number | null;
+  max_positions?: number | null;
 }
