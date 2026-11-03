@@ -109,6 +109,9 @@ export function BuildBotCard() {
   const [takeProfitPct, setTakeProfitPct] = useState('20');
   const [stopLossEnabled, setStopLossEnabled] = useState(false);
   const [stopLossPct, setStopLossPct] = useState('10');
+  // The drawdown kill-switch is always on. The field defaults to the configured
+  // default (25%); the user can lower it. Entered as a percent, sent as a fraction.
+  const [drawdownStopPct, setDrawdownStopPct] = useState('25');
 
   const capitalValue = Number.parseFloat(capital);
   const capitalValid = Number.isFinite(capitalValue) && capitalValue >= 1000;
@@ -152,6 +155,14 @@ export function BuildBotCard() {
     !stopLossEnabled ||
     (Number.isFinite(stopLossFraction) && stopLossFraction > 0);
 
+  // Drawdown kill-switch: always on, entered as a percent (e.g. 5 → 0.05); must be a
+  // fraction strictly between 0 and 1.
+  const drawdownFraction = Number.parseFloat(drawdownStopPct) / 100;
+  const drawdownValid =
+    Number.isFinite(drawdownFraction) &&
+    drawdownFraction > 0 &&
+    drawdownFraction < 1;
+
   const canSubmit =
     strategyKey.length > 0 &&
     symbolsValid &&
@@ -165,7 +176,8 @@ export function BuildBotCard() {
     maxPositionValid &&
     maxPositionsValid &&
     takeProfitValid &&
-    stopLossValid;
+    stopLossValid &&
+    drawdownValid;
 
   const capitalInvalid = !capitalValid;
   const fastInvalid = fastPeriod.length > 0 && (!fastValid || !periodsOrdered);
@@ -177,6 +189,7 @@ export function BuildBotCard() {
   const maxPositionsInvalid = maxPositions.length > 0 && !maxPositionsValid;
   const takeProfitInvalid = takeProfitEnabled && !takeProfitValid;
   const stopLossInvalid = stopLossEnabled && !stopLossValid;
+  const drawdownInvalid = drawdownStopPct.length > 0 && !drawdownValid;
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -197,6 +210,7 @@ export function BuildBotCard() {
       max_positions: maxPositionsValue,
       take_profit_pct: takeProfitEnabled ? takeProfitFraction : null,
       stop_loss_pct: stopLossEnabled ? stopLossFraction : null,
+      drawdown_stop_pct: drawdownFraction,
     };
     create.mutate(request);
   };
@@ -495,6 +509,22 @@ export function BuildBotCard() {
                   </div>
                 )}
               </div>
+            </div>
+
+            <h3 className="text-xs font-semibold uppercase tracking-wide text-slate-500">
+              Drawdown kill-switch
+            </h3>
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+              <NumberField
+                id="bot-drawdown-pct"
+                label="Drawdown kill-switch (%)"
+                min={0.1}
+                step={0.1}
+                value={drawdownStopPct}
+                onChange={setDrawdownStopPct}
+                hint="Liquidates all positions and stops the bot when total value falls this far from its peak. Always on; defaults to the configured default."
+                invalid={drawdownInvalid}
+              />
             </div>
           </div>
         </div>

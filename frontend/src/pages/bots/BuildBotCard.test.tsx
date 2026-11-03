@@ -198,4 +198,43 @@ describe('BuildBotCard', () => {
       );
     });
   });
+
+  it('defaults the drawdown kill-switch to 25% and sends it as a fraction', async () => {
+    mockedPost.mockResolvedValue({ data: { id: 'b1' } });
+    const user = userEvent.setup();
+
+    renderCard(<BuildBotCard />);
+
+    await screen.findByRole('combobox', { name: 'Search universe equities' });
+    expect(screen.getByLabelText('Drawdown kill-switch (%)')).toHaveValue(25);
+
+    await pickAAPL(user);
+    const drawdown = screen.getByLabelText('Drawdown kill-switch (%)');
+    await user.clear(drawdown);
+    await user.type(drawdown, '5');
+    await user.click(screen.getByRole('button', { name: 'Create bot' }));
+
+    await waitFor(() => {
+      expect(mockedPost).toHaveBeenCalledWith(
+        '/api/v1/bots/sessions',
+        expect.objectContaining({ drawdown_stop_pct: 0.05 }),
+      );
+    });
+  });
+
+  it('blocks submission when the drawdown kill-switch is out of range', async () => {
+    const user = userEvent.setup();
+
+    renderCard(<BuildBotCard />);
+
+    await screen.findByRole('combobox', { name: 'Search universe equities' });
+    await pickAAPL(user);
+    const drawdown = screen.getByLabelText('Drawdown kill-switch (%)');
+    await user.clear(drawdown);
+    await user.type(drawdown, '150');
+
+    expect(screen.getByRole('button', { name: 'Create bot' })).toBeDisabled();
+    expect(drawdown).toHaveAttribute('aria-invalid', 'true');
+    expect(mockedPost).not.toHaveBeenCalled();
+  });
 });
