@@ -15,9 +15,10 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
+from itertools import pairwise
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from cadence.assets import service as assets_service
@@ -32,12 +33,19 @@ from cadence.dashboard.service import (
     SessionPerformance,
     SessionValuePoint,
 )
+from cadence.notify.base import Notifier
+from cadence.paper_trading import service as paper_service
 from cadence.paper_trading.benchmark import (
     Contribution,
+    benchmark_return_fraction,
     load_benchmark_series,
     rebased_benchmark_value,
 )
-from cadence.paper_trading.constants import Benchmark
+from cadence.paper_trading.constants import (
+    SHARPE_TRADING_DAYS_PER_YEAR,
+    Benchmark,
+    benchmark_display_name,
+)
 from cadence.strategy_bots import registry
 from cadence.strategy_bots.constants import BotSessionStatus, SizingMethod
 from cadence.strategy_bots.engine import (
@@ -58,7 +66,14 @@ from cadence.strategy_bots.market_data import MarketData
 from cadence.strategy_bots.models import (
     BotSession,
     BotSymbol,
+    BotTrade,
     BotValueSnapshot,
+)
+from cadence.strategy_bots.notifications import (
+    _bot_summary_message,
+    _kill_switch_message,
+    _notify_safely,
+    _signed_pct,
 )
 from cadence.strategy_bots.sizing import (
     EntryCandidate,
@@ -92,6 +107,9 @@ class BotKpis:
     total_fees: float
     total_trades: int
     max_drawdown: float
+    #: Annualised Sharpe from the session's daily snapshot series; ``None`` until
+    #: there are enough daily observations (mirrors the paper-trading contract).
+    sharpe_ratio: float | None
 
 
 def _trade_symbol(asset: Asset) -> str:
@@ -104,6 +122,14 @@ def _traded_set_label(bot: BotSession) -> str:
     if len(bot.symbols) == 1:
         return bot.symbols[0].ticker
     return f"{len(bot.symbols)} symbols"
+
+
+def _bot_label(bot: BotSession) -> str:
+    """The session's display label (explicit label, else strategy · traded set)."""
+    if bot.label:
+        return bot.label
+    registration = registry.get_strategy(bot.strategy_key)
+    return f"{registration.display_name} · {_traded_set_label(bot)}"
 
 
 # Lifecycle ---------------------------------------------------------------
@@ -338,6 +364,7 @@ def _tick_session(
     engine: ExecutionEngine,
     market_data: MarketData,
     tick_now: datetime,
+    notifier: Notifier | None = None,
 ) -> bool:
     """Advance one active session; return whether it was processed (not fully skipped).
 
@@ -364,10 +391,19 @@ def _tick_session(
 
     # 1. Whole-session drawdown kill-switch — exit everything and stop.
     if total_value(bot, marks) <= bot.peak_value * (1.0 - bot.drawdown_stop_pct):
+        liquidated = [position.ticker for position in bot.positions]
+        realised_before = bot.realised_pnl
         for position in list(bot.positions):
             engine.exit(bot, position, now=tick_now, reason=REASON_DRAWDOWN)
         bot.status = BotSessionStatus.STOPPED.value
         bot.last_tick_at = tick_now
+        _notify_safely(
+            notifier,
+            title=f"Cadence bot: {_bot_label(bot)} drawdown kill-switch",
+            message=_kill_switch_message(
+                liquidated, bot.realised_pnl - realised_before
+            ),
+        )
         return True
 
     # 2. Exits before entries — per open position, in deterministic ticker order.
@@ -458,13 +494,16 @@ def run_tick(
     broker: Broker,
     market_data: MarketData,
     now: datetime | None = None,
+    notifier: Notifier | None = None,
 ) -> TickResult:
     """Advance every active bot session once (stateless recompute).
 
     No-op when the equity market is closed. For each active session it fetches each
     traded symbol's required bar history from ``market_data`` at the configured
     timeframe, processes exits before entries, and sizes entries from the shared cash
-    pool. A session with no fresh symbol data is counted as skipped.
+    pool. A session with no fresh symbol data is counted as skipped. When a session's
+    drawdown kill-switch trips, a best-effort notification is sent via ``notifier``
+    (a ``None`` notifier stays silent and a notifier failure never fails the tick).
     """
     if not broker.is_market_open():
         return TickResult(market_open=False)
@@ -476,7 +515,11 @@ def run_tick(
     skipped = 0
     for bot in active_bot_sessions(session):
         if _tick_session(
-            bot, engine=engine, market_data=market_data, tick_now=tick_now
+            bot,
+            engine=engine,
+            market_data=market_data,
+            tick_now=tick_now,
+            notifier=notifier,
         ):
             processed += 1
         else:
@@ -541,19 +584,144 @@ def record_bot_snapshot(
     return snapshot
 
 
+def count_bot_trades_on(session: Session, bot: BotSession, day: date) -> int:
+    """Number of trades the session executed on ``day`` (UTC calendar day).
+
+    Counts ``BotTrade`` rows whose ``created_at`` falls within the UTC day, matching
+    the basis on which the daily snapshot date is derived. Distinct from the lifetime
+    ``total_trades`` the KPIs expose.
+    """
+    start = datetime(day.year, day.month, day.day, tzinfo=UTC)
+    end = start + timedelta(days=1)
+    stmt = (
+        select(func.count())
+        .select_from(BotTrade)
+        .where(
+            BotTrade.bot_session_id == bot.id,
+            BotTrade.created_at >= start,
+            BotTrade.created_at < end,
+        )
+    )
+    return int(session.execute(stmt).scalar_one())
+
+
+def get_previous_bot_value_snapshot(
+    session: Session, *, session_id: uuid.UUID, before: date
+) -> BotValueSnapshot | None:
+    """The session's most recent value snapshot strictly before ``before``, if any."""
+    stmt = (
+        select(BotValueSnapshot)
+        .where(
+            BotValueSnapshot.bot_session_id == session_id,
+            BotValueSnapshot.snapshot_date < before,
+        )
+        .order_by(BotValueSnapshot.snapshot_date.desc())
+        .limit(1)
+    )
+    return session.execute(stmt).scalar_one_or_none()
+
+
+def _bot_daily_pnl(
+    session: Session, bot: BotSession, snapshot: BotValueSnapshot
+) -> tuple[float, float | None]:
+    """Day-over-day P&L (amount, percent) for a session's snapshot.
+
+    Diffs the snapshot's total value against the prior snapshot's (or, on day one, the
+    session's allocated capital). The percent uses that baseline and is ``None`` when
+    the baseline is non-positive, mirroring the AI daily report's guard.
+    """
+    prior = get_previous_bot_value_snapshot(
+        session, session_id=bot.id, before=snapshot.snapshot_date
+    )
+    baseline = prior.total_value if prior is not None else bot.allocated_capital
+    daily_pnl = snapshot.total_value - baseline
+    daily_pnl_pct = daily_pnl / baseline if baseline > 0 else None
+    return daily_pnl, daily_pnl_pct
+
+
+def _bot_benchmark_suffix(
+    session: Session,
+    bot: BotSession,
+    snapshots: list[BotValueSnapshot],
+    *,
+    total_return_pct: float,
+    as_of: date,
+) -> str | None:
+    """Benchmark comparison suffix for a bot's daily summary line, or ``None``.
+
+    A simple since-inception buy-and-hold benchmark return (bots have no capital-
+    increase events, so no time-weighting is needed) compared against the bot's own
+    total return. Returns ``None`` when the session has no snapshots or the benchmark
+    lacks usable stored closes, so the caller omits the suffix.
+    """
+    if not snapshots:
+        return None
+    series = load_benchmark_series(session, bot.benchmark)
+    benchmark_return = benchmark_return_fraction(
+        series, start_date=snapshots[0].snapshot_date, as_of=as_of
+    )
+    if benchmark_return is None:
+        return None
+    excess = total_return_pct - benchmark_return
+    name = benchmark_display_name(Benchmark(bot.benchmark))
+    return (
+        f"vs {name}: {_signed_pct(benchmark_return)} "
+        f"(excess {_signed_pct(excess)})"
+    )
+
+
 def run_bot_snapshots(
     session: Session,
     *,
     broker: Broker,
     now: datetime | None = None,
+    notifier: Notifier | None = None,
 ) -> int:
-    """Record a daily value snapshot for every active session; return the count."""
+    """Record a daily value snapshot for every active session; return the count.
+
+    For each snapshotted session it also sends one best-effort daily-summary push via
+    ``notifier`` (one per bot, no cross-bot roll-up) mirroring the AI daily report —
+    value and day-over-day change, total return, realised/unrealised P&L, cash, fees,
+    Sharpe, a benchmark comparison, the best/worst open position, and the number of
+    trades executed that day. A ``None`` notifier stays silent and a notifier failure
+    never fails the snapshot job.
+    """
     when = (now or datetime.now(UTC)).date()
     count = 0
     for bot in active_bot_sessions(session):
         marks = _mark_positions(bot, broker)
-        record_bot_snapshot(session, bot, marks=marks, snapshot_date=when)
+        snapshot = record_bot_snapshot(
+            session, bot, marks=marks, snapshot_date=when
+        )
         count += 1
+
+        kpis = bot_session_kpis(session, bot)
+        daily_pnl, daily_pnl_pct = _bot_daily_pnl(session, bot, snapshot)
+        benchmark_suffix = _bot_benchmark_suffix(
+            session,
+            bot,
+            list_bot_snapshots(session, bot),
+            total_return_pct=kpis.total_return_pct,
+            as_of=when,
+        )
+        holdings = [
+            (position.ticker, marks[position.ticker] / position.avg_price - 1.0)
+            for position in bot.positions
+            if position.avg_price > 0 and position.ticker in marks
+        ]
+        _notify_safely(
+            notifier,
+            title=f"Cadence bot: {_bot_label(bot)} daily P&L",
+            message=_bot_summary_message(
+                kpis,
+                daily_pnl=daily_pnl,
+                daily_pnl_pct=daily_pnl_pct,
+                cash=bot.cash,
+                trades_today=count_bot_trades_on(session, bot, when),
+                benchmark_suffix=benchmark_suffix,
+                holdings=holdings,
+            ),
+        )
     session.flush()
     return count
 
@@ -579,6 +747,23 @@ def list_bot_snapshots(
         .order_by(BotValueSnapshot.snapshot_date)
     )
     return list(session.execute(stmt).scalars())
+
+
+def _bot_sharpe(snapshots: list[BotValueSnapshot]) -> float | None:
+    """Annualised Sharpe from a session's daily value-snapshot series, or ``None``.
+
+    Builds the daily fractional-return series from consecutive ``total_value`` diffs
+    (bots have no mid-life capital-increase events, so total-value diffs are clean
+    returns) and reuses the paper-trading Sharpe helper, which returns ``None`` until
+    there are enough observations or when the series is flat.
+    """
+    returns = [
+        curr.total_value / prev.total_value - 1.0
+        for prev, curr in pairwise(snapshots)
+        if prev.total_value > 0
+    ]
+    daily_risk_free = settings.SHARPE_RISK_FREE_RATE / SHARPE_TRADING_DAYS_PER_YEAR
+    return paper_service.sharpe_ratio(returns, risk_free=daily_risk_free)
 
 
 def bot_session_kpis(session: Session, bot: BotSession) -> BotKpis:
@@ -609,6 +794,7 @@ def bot_session_kpis(session: Session, bot: BotSession) -> BotKpis:
         total_fees=bot.total_fees,
         total_trades=bot.total_trades,
         max_drawdown=_max_drawdown([s.total_value for s in snapshots]),
+        sharpe_ratio=_bot_sharpe(snapshots),
     )
 
 
@@ -676,8 +862,7 @@ def dashboard_performance(
         as_of=as_of,
     )
 
-    registration = registry.get_strategy(bot.strategy_key)
-    label = bot.label or f"{registration.display_name} · {_traded_set_label(bot)}"
+    label = _bot_label(bot)
 
     return SessionPerformance(
         id=bot.id,

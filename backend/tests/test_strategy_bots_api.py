@@ -7,10 +7,12 @@ from collections.abc import Iterator
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
+from tests.fakes import RecordingNotifier
 
 from cadence.api.app import app
 from cadence.assets.models import Asset
 from cadence.config import settings
+from cadence.notify import get_notifier
 from cadence.strategy_bots.market_data import StubMarketData, get_market_data
 
 
@@ -38,6 +40,17 @@ def stub_market_data() -> Iterator[None]:
         yield
     finally:
         app.dependency_overrides.pop(get_market_data, None)
+
+
+@pytest.fixture
+def recording_notifier() -> Iterator[RecordingNotifier]:
+    """Override the notifier DI so tests can assert it is threaded into the jobs."""
+    notifier = RecordingNotifier()
+    app.dependency_overrides[get_notifier] = lambda: notifier
+    try:
+        yield notifier
+    finally:
+        app.dependency_overrides.pop(get_notifier, None)
 
 
 def _create_payload(**overrides: object) -> dict[str, object]:
@@ -160,6 +173,8 @@ def test_kpis_value_history_and_trades(
     kpis = client.get(f"/api/v1/bots/sessions/{sid}/kpis")
     assert kpis.status_code == 200
     assert kpis.json()["current_value"] == 100_000.0
+    # Sharpe is serialized; null until the session has enough snapshot history.
+    assert kpis.json()["sharpe_ratio"] is None
 
     history = client.get(f"/api/v1/bots/sessions/{sid}/value-history")
     assert history.status_code == 200
@@ -190,6 +205,7 @@ def test_tick_authorized(
     client: TestClient,
     eligible_asset: Asset,
     stub_market_data: None,
+    recording_notifier: RecordingNotifier,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(settings, "REBALANCE_CRON_TOKEN", "secret")
@@ -200,6 +216,8 @@ def test_tick_authorized(
     )
     assert resp.status_code == 200
     assert resp.json()["market_open"] is True
+    # Notifier is threaded (no kill-switch trips here, so nothing is pushed).
+    assert recording_notifier.sent == []
 
 
 def test_snapshot_daily_rejects_without_token(
@@ -213,6 +231,7 @@ def test_snapshot_daily_rejects_without_token(
 def test_snapshot_daily_authorized(
     client: TestClient,
     eligible_asset: Asset,
+    recording_notifier: RecordingNotifier,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(settings, "REBALANCE_CRON_TOKEN", "secret")
@@ -223,3 +242,6 @@ def test_snapshot_daily_authorized(
     )
     assert resp.status_code == 200
     assert resp.json()["snapshots"] == 1
+    # Notifier is threaded: one daily-summary push for the single active bot.
+    assert len(recording_notifier.sent) == 1
+    assert "daily P&L" in recording_notifier.sent[0][1]

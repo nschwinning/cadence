@@ -1649,6 +1649,7 @@ class BotKpisRead(BaseModel):
     total_fees: float
     total_trades: int
     max_drawdown: float
+    sharpe_ratio: float | None
 
 
 class BotTradeRead(BaseModel):

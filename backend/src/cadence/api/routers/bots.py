@@ -32,6 +32,8 @@ from cadence.api.schemas import (
 from cadence.broker import get_broker
 from cadence.broker.base import Broker
 from cadence.database import get_db
+from cadence.notify import get_notifier
+from cadence.notify.base import Notifier
 from cadence.strategy_bots import registry, service
 from cadence.strategy_bots.errors import (
     BotSessionNotArchivableError,
@@ -49,6 +51,7 @@ router = APIRouter(prefix="/bots", tags=["bots"])
 DbSession = Annotated[Session, Depends(get_db)]
 BrokerDep = Annotated[Broker, Depends(get_broker)]
 MarketDataDep = Annotated[MarketData, Depends(get_market_data)]
+NotifierDep = Annotated[Notifier, Depends(get_notifier)]
 
 
 @router.get("/strategies", response_model=list[BotStrategyCatalogEntry])
@@ -224,10 +227,13 @@ def run_tick(
     db: DbSession,
     broker: BrokerDep,
     market_data: MarketDataDep,
+    notifier: NotifierDep,
     _token: Annotated[None, Depends(require_valid_cron_token)],
 ) -> BotTickResponse:
     """Advance every active bot session once (cron-guarded, market-hours gated)."""
-    result = service.run_tick(db, broker=broker, market_data=market_data)
+    result = service.run_tick(
+        db, broker=broker, market_data=market_data, notifier=notifier
+    )
     return BotTickResponse(
         market_open=result.market_open,
         processed=result.processed,
@@ -239,8 +245,9 @@ def run_tick(
 def run_snapshot_daily(
     db: DbSession,
     broker: BrokerDep,
+    notifier: NotifierDep,
     _token: Annotated[None, Depends(require_valid_cron_token)],
 ) -> BotSnapshotResponse:
     """Record a daily value snapshot for every active session (cron-guarded)."""
-    count = service.run_bot_snapshots(db, broker=broker)
+    count = service.run_bot_snapshots(db, broker=broker, notifier=notifier)
     return BotSnapshotResponse(snapshots=count)

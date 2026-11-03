@@ -1387,6 +1387,7 @@ export interface BotKpis {
   total_fees: number;
   total_trades: number;
   max_drawdown: number;
+  sharpe_ratio: number | null;
 }
 
 /** A single fill recorded by the bot engine. Mirrors `BotTradeRead`. */

@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 
 import pytest
 from sqlalchemy.orm import Session
+from tests.fakes import RecordingNotifier
 
 from cadence.assets.models import Asset
+from cadence.broker.models import OrderSide
 from cadence.broker.stub import StubBroker
 from cadence.strategy_bots import service
 from cadence.strategy_bots.errors import (
@@ -18,7 +20,12 @@ from cadence.strategy_bots.errors import (
     UnknownStrategyError,
 )
 from cadence.strategy_bots.market_data import BarsResult
-from cadence.strategy_bots.models import BotPosition, BotSession
+from cadence.strategy_bots.models import (
+    BotPosition,
+    BotSession,
+    BotTrade,
+    BotValueSnapshot,
+)
 from cadence.strategy_bots.strategy import Bar
 
 _NOW = datetime(2026, 1, 2, 15, 0, tzinfo=UTC)
@@ -495,3 +502,264 @@ def test_kpis_without_snapshots_fall_back_to_cash(db_session: Session) -> None:
     assert kpis.current_value == 100_000.0
     assert kpis.total_return == 0.0
     assert kpis.max_drawdown == 0.0
+    assert kpis.sharpe_ratio is None
+
+
+# Trades-on-day count (Task 2.1) -----------------------------------------
+def _add_trade(
+    db_session: Session, bot: BotSession, *, when: datetime, ticker: str = "AAPL"
+) -> None:
+    db_session.add(
+        BotTrade(
+            bot_session_id=bot.id,
+            side=OrderSide.BUY.value,
+            ticker=ticker,
+            quantity=1.0,
+            filled_price=10.0,
+            fees=0.0,
+            created_at=when,
+        )
+    )
+    db_session.flush()
+
+
+def test_count_bot_trades_on_only_counts_the_day(db_session: Session) -> None:
+    _add_asset(db_session)
+    bot = _create(db_session)
+    day = date(2026, 1, 6)
+    _add_trade(db_session, bot, when=datetime(2026, 1, 6, 0, 0, tzinfo=UTC))
+    _add_trade(db_session, bot, when=datetime(2026, 1, 6, 23, 59, tzinfo=UTC))
+    _add_trade(db_session, bot, when=datetime(2026, 1, 5, 23, 59, tzinfo=UTC))
+    _add_trade(db_session, bot, when=datetime(2026, 1, 7, 0, 1, tzinfo=UTC))
+
+    assert service.count_bot_trades_on(db_session, bot, day) == 2
+
+
+# Daily P&L vs prior snapshot (Task 2.2) ---------------------------------
+def test_bot_daily_pnl_diffs_prior_snapshot(db_session: Session) -> None:
+    _add_asset(db_session)
+    bot = _create(db_session)
+    service.record_bot_snapshot(
+        db_session, bot, marks={}, snapshot_date=date(2026, 1, 5)
+    )
+    _add_position(db_session, bot, "AAPL", qty=100.0, avg=50.0)
+    today = service.record_bot_snapshot(
+        db_session, bot, marks={"AAPL": 60.0}, snapshot_date=date(2026, 1, 6)
+    )
+
+    prior = service.get_previous_bot_value_snapshot(
+        db_session, session_id=bot.id, before=date(2026, 1, 6)
+    )
+    assert prior is not None and prior.snapshot_date == date(2026, 1, 5)
+    pnl, pct = service._bot_daily_pnl(db_session, bot, today)
+    # value today 101000 vs prior 100000.
+    assert pnl == pytest.approx(1_000.0)
+    assert pct == pytest.approx(0.01)
+
+
+def test_bot_daily_pnl_day_one_uses_allocated_capital(db_session: Session) -> None:
+    _add_asset(db_session)
+    bot = _create(db_session)
+    _add_position(db_session, bot, "AAPL", qty=100.0, avg=50.0)
+    snap = service.record_bot_snapshot(
+        db_session, bot, marks={"AAPL": 60.0}, snapshot_date=date(2026, 1, 6)
+    )
+
+    pnl, pct = service._bot_daily_pnl(db_session, bot, snap)
+    # No prior snapshot: baseline is allocated capital (100000).
+    assert pnl == pytest.approx(1_000.0)
+    assert pct == pytest.approx(0.01)
+
+
+def test_bot_daily_pnl_guards_non_positive_baseline(db_session: Session) -> None:
+    _add_asset(db_session)
+    bot = _create(db_session)
+    db_session.add(
+        BotValueSnapshot(
+            session=bot,
+            snapshot_date=date(2026, 1, 5),
+            total_value=0.0,
+            realised_pnl=0.0,
+            unrealised_pnl=0.0,
+        )
+    )
+    db_session.flush()
+    today = service.record_bot_snapshot(
+        db_session, bot, marks={}, snapshot_date=date(2026, 1, 6)
+    )
+
+    pnl, pct = service._bot_daily_pnl(db_session, bot, today)
+    assert pnl == pytest.approx(100_000.0)
+    assert pct is None  # baseline 0 → percent omitted
+
+
+# Bot Sharpe from the snapshot series (Task 2.3) -------------------------
+def _seed_snapshots(
+    db_session: Session, bot: BotSession, values: list[float]
+) -> None:
+    base = date(2026, 1, 1)
+    for i, value in enumerate(values):
+        db_session.add(
+            BotValueSnapshot(
+                session=bot,
+                snapshot_date=base + timedelta(days=i),
+                total_value=value,
+                realised_pnl=0.0,
+                unrealised_pnl=0.0,
+            )
+        )
+    db_session.flush()
+
+
+def test_sharpe_none_below_min_history(db_session: Session) -> None:
+    _add_asset(db_session)
+    bot = _create(db_session)
+    # A handful of varying snapshots — fewer than the 20-observation minimum.
+    _seed_snapshots(db_session, bot, [100_000.0 + i * 100 for i in range(5)])
+
+    assert service.bot_session_kpis(db_session, bot).sharpe_ratio is None
+
+
+def test_sharpe_finite_with_enough_history(db_session: Session) -> None:
+    _add_asset(db_session)
+    bot = _create(db_session)
+    # 25 snapshots → 24 returns (> 20) with non-zero variance.
+    values = [100_000.0 * (1.01 if i % 2 else 1.02) ** i for i in range(25)]
+    _seed_snapshots(db_session, bot, values)
+
+    sharpe = service.bot_session_kpis(db_session, bot).sharpe_ratio
+    assert sharpe is not None
+    assert isinstance(sharpe, float)
+
+
+# Kill-switch notification (Tasks 3.1 / 3.2) -----------------------------
+def _arm_drawdown(db_session: Session, bot: BotSession, broker: _OpenableBroker) -> float:
+    """Open a high-cost position so a halving tick blows the drawdown floor."""
+    price = broker.get_quote("AAPL").last
+    assert price is not None
+    broker.buy(symbol="AAPL", quantity=100.0)
+    bot.positions.append(
+        BotPosition(
+            asset_id=bot.symbols[0].asset_id,
+            ticker="AAPL",
+            alpaca_symbol="AAPL",
+            quantity=100.0,
+            avg_price=price,
+            opened_at=_NOW,
+        )
+    )
+    bot.cash = bot.initial_capital - 100.0 * price
+    bot.peak_value = bot.initial_capital
+    db_session.flush()
+    return price
+
+
+def test_kill_switch_sends_one_push(db_session: Session) -> None:
+    _add_asset(db_session, "AAPL")
+    bot = _create(db_session, drawdown_stop_pct=0.10)
+    broker = _OpenableBroker()
+    price = _arm_drawdown(db_session, bot, broker)
+    notifier = RecordingNotifier()
+
+    service.run_tick(
+        db_session,
+        broker=broker,
+        market_data=_PerSymbolMarketData({"AAPL": [price * 0.5] * 5}),
+        now=_NOW,
+        notifier=notifier,
+    )
+
+    assert bot.status == "stopped"
+    assert len(notifier.sent) == 1
+    message, title = notifier.sent[0]
+    assert "drawdown kill-switch" in title
+    assert "Liquidated 1 position(s): AAPL" in message
+    assert "Bot is now stopped." in message
+
+
+def test_no_kill_switch_sends_no_push(db_session: Session) -> None:
+    _add_asset(db_session)
+    _create(db_session)
+    broker = _OpenableBroker()
+    notifier = RecordingNotifier()
+
+    service.run_tick(
+        db_session,
+        broker=broker,
+        market_data=_PerSymbolMarketData({"AAPL": [10.0, 10.0, 10.0, 10.0]}),
+        now=_NOW,
+        notifier=notifier,
+    )
+
+    assert notifier.sent == []
+
+
+def test_kill_switch_raising_notifier_still_stops(db_session: Session) -> None:
+    _add_asset(db_session, "AAPL")
+    bot = _create(db_session, drawdown_stop_pct=0.10)
+    broker = _OpenableBroker()
+    price = _arm_drawdown(db_session, bot, broker)
+
+    # A raising notifier and a None notifier both leave the session stopped+flat.
+    service.run_tick(
+        db_session,
+        broker=broker,
+        market_data=_PerSymbolMarketData({"AAPL": [price * 0.5] * 5}),
+        now=_NOW,
+        notifier=RecordingNotifier(raises=True),
+    )
+
+    assert bot.status == "stopped"
+    assert bot.is_flat
+
+
+# Evening summary notification (Tasks 4.1 / 4.2) -------------------------
+def test_snapshot_job_sends_one_summary_per_bot(db_session: Session) -> None:
+    _add_asset(db_session, "AAPL")
+    bot = _create(db_session, tickers=["AAPL"])
+    _add_position(db_session, bot, "AAPL", qty=100.0, avg=50.0)
+    # Yesterday's snapshot so the summary can diff a prior value.
+    db_session.add(
+        BotValueSnapshot(
+            session=bot,
+            snapshot_date=date(2026, 1, 5),
+            total_value=100_000.0,
+            realised_pnl=0.0,
+            unrealised_pnl=0.0,
+        )
+    )
+    # Two trades today, one on an earlier day (must be excluded from the count).
+    _add_trade(db_session, bot, when=datetime(2026, 1, 6, 10, 0, tzinfo=UTC))
+    _add_trade(db_session, bot, when=datetime(2026, 1, 6, 11, 0, tzinfo=UTC))
+    _add_trade(db_session, bot, when=datetime(2026, 1, 4, 11, 0, tzinfo=UTC))
+
+    broker = _OpenableBroker()
+    notifier = RecordingNotifier()
+    service.run_bot_snapshots(
+        db_session,
+        broker=broker,
+        now=datetime(2026, 1, 6, 21, 0, tzinfo=UTC),
+        notifier=notifier,
+    )
+
+    assert len(notifier.sent) == 1
+    message, title = notifier.sent[0]
+    assert "daily P&L" in title
+    assert "Total return:" in message
+    assert "Trades today: 2" in message
+
+
+def test_snapshot_job_raising_notifier_still_records(db_session: Session) -> None:
+    _add_asset(db_session)
+    bot = _create(db_session)
+    broker = _OpenableBroker()
+
+    count = service.run_bot_snapshots(
+        db_session,
+        broker=broker,
+        now=datetime(2026, 1, 6, 21, 0, tzinfo=UTC),
+        notifier=RecordingNotifier(raises=True),
+    )
+
+    assert count == 1
+    assert len(service.list_bot_snapshots(db_session, bot)) == 1

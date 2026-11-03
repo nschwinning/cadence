@@ -69,6 +69,7 @@ const kpis: BotKpis = {
   total_fees: 2,
   total_trades: 3,
   max_drawdown: 0.012,
+  sharpe_ratio: 1.42,
 };
 
 const trade: BotTrade = {
@@ -132,6 +133,34 @@ describe('BotSessionPage', () => {
     const row = screen.getByText('fast SMA crossed above slow').closest('tr') as HTMLElement;
     expect(within(row).getByText('buy')).toBeInTheDocument();
     expect(within(row).getByText('filled')).toBeInTheDocument();
+  });
+
+  it('renders the Sharpe ratio tile when a value is present', async () => {
+    mockedGet.mockImplementation(routeGet());
+
+    renderDetail(<BotSessionPage />);
+
+    expect(await screen.findByText('Sharpe ratio')).toBeInTheDocument();
+    expect(screen.getByText('1.42')).toBeInTheDocument();
+    expect(screen.getByText('Annualised, from daily NAV')).toBeInTheDocument();
+  });
+
+  it('shows the not-yet-available Sharpe state when the value is null', async () => {
+    mockedGet.mockImplementation((url: string) => {
+      if (url.endsWith('/kpis'))
+        return Promise.resolve({ data: { ...kpis, sharpe_ratio: null } });
+      if (url.endsWith('/value-history'))
+        return Promise.resolve({ data: { items: [], total: 0 } });
+      if (url.endsWith('/trades'))
+        return Promise.resolve({ data: { items: [], total: 0 } });
+      return Promise.resolve({ data: bot });
+    });
+
+    renderDetail(<BotSessionPage />);
+
+    expect(await screen.findByText('Sharpe ratio')).toBeInTheDocument();
+    expect(screen.getByText('Not yet available')).toBeInTheDocument();
+    expect(screen.getByText('Needs more daily history')).toBeInTheDocument();
   });
 
   it('stops an active bot through the stop action', async () => {

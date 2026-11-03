@@ -247,6 +247,11 @@ function KpiRow({ sessionId }: { sessionId: string }) {
       <span className="text-red-700">−{formatPercent(data.max_drawdown)}</span>
     );
 
+  const sharpe =
+    data.sharpe_ratio === null
+      ? 'Not yet available'
+      : data.sharpe_ratio.toFixed(2);
+
   return (
     <section role="group" aria-labelledby="bot-kpi-performance">
       <div className="mb-3 flex items-center gap-2">
@@ -277,6 +282,15 @@ function KpiRow({ sessionId }: { sessionId: string }) {
           label="Maximum drawdown"
           value={maxDrawdown}
           hint="Peak-to-trough, daily NAV"
+        />
+        <KpiTile
+          label="Sharpe ratio"
+          value={sharpe}
+          hint={
+            data.sharpe_ratio === null
+              ? 'Needs more daily history'
+              : 'Annualised, from daily NAV'
+          }
         />
         <KpiTile
           label="Realised P&L"
