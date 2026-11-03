@@ -191,11 +191,13 @@ services:
       # EDGAR fundamentals for every stock quarterly, after quarter-ends when fresh
       # 10-Q/10-K data is available.
       FUNDAMENTALS_SCHEDULE: ${FUNDAMENTALS_SCHEDULE:-0 6 1 1,4,7,10 *}
-      # Cron expression; default every 5 minutes during US market hours on weekdays
-      # (13:00-20:59 UTC ≈ 09:00-16:59 ET) — the strategy-bot tick recomputes each
-      # active bot's signal and runs its risk/execution engine. The runner is
-      # market-hours gated via the broker clock, so off-hours ticks are cheap no-ops.
-      BOT_TICK_SCHEDULE: ${BOT_TICK_SCHEDULE:-*/5 13-20 * * 1-5}
+      # Cron expression; default every 5 minutes during US market hours on weekdays.
+      # Interpreted in the container's TZ (America/New_York by default, like the
+      # rebalance/snapshot schedules above), so the hours are ET: 09:00-16:59 ET
+      # brackets the 09:30-16:00 regular session. The strategy-bot tick recomputes
+      # each active bot's signal and runs its risk/execution engine; it is market-hours
+      # gated via the broker clock, so the pre-open/after-close edges are cheap no-ops.
+      BOT_TICK_SCHEDULE: ${BOT_TICK_SCHEDULE:-*/5 9-16 * * 1-5}
       # Cron expression; default 16:15 on weekdays (just after the US close) — record
       # the end-of-day value snapshot for each active bot session.
       BOT_SNAPSHOT_SCHEDULE: ${BOT_SNAPSHOT_SCHEDULE:-15 16 * * 1-5}
