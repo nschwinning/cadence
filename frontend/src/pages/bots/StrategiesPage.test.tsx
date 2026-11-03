@@ -4,7 +4,6 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { MemoryRouter } from 'react-router-dom';
 import type { ReactNode } from 'react';
 import { StrategiesPage } from './StrategiesPage';
-import { buildCrossoverChartOption, crossoverSignals } from './crossoverChart';
 import { apiClient } from '../../api/client';
 
 vi.mock('../../api/client', () => ({
@@ -12,6 +11,17 @@ vi.mock('../../api/client', () => ({
 }));
 
 const mockedGet = vi.mocked(apiClient.get);
+
+const CATALOG = [
+  {
+    key: 'ma_crossover',
+    display_name: 'MA Crossover',
+    explanation:
+      'Buys when the fast SMA crosses above the slow SMA. More detail follows here.',
+    required_history: 51,
+    params_schema: {},
+  },
+];
 
 function renderPage(ui: ReactNode) {
   const queryClient = new QueryClient({
@@ -24,57 +34,34 @@ function renderPage(ui: ReactNode) {
   );
 }
 
-describe('crossoverChart', () => {
-  it('detects one entry up-cross and one exit down-cross', () => {
-    const signals = crossoverSignals();
-    expect(signals.some((s) => s.kind === 'entry')).toBe(true);
-    expect(signals.some((s) => s.kind === 'exit')).toBe(true);
-  });
-
-  it('builds a two-line option with entry/exit mark-lines', () => {
-    const option = buildCrossoverChartOption() as {
-      series: { name: string; markLine?: { data: unknown[] } }[];
-    };
-    expect(option.series).toHaveLength(2);
-    expect(option.series.map((s) => s.name)).toEqual(['Fast SMA', 'Slow SMA']);
-    const markLine = option.series[0].markLine;
-    expect(markLine?.data.length).toBeGreaterThanOrEqual(2);
-  });
-});
-
-describe('StrategiesPage', () => {
+describe('StrategiesPage (index)', () => {
   beforeEach(() => {
     vi.clearAllMocks();
   });
 
-  it('renders the catalog explanation and the illustrative chart', async () => {
-    mockedGet.mockResolvedValue({
-      data: [
-        {
-          key: 'ma_crossover',
-          display_name: 'MA Crossover',
-          explanation: 'Buys when the fast SMA crosses above the slow SMA.',
-          required_history: 51,
-          params_schema: {},
-        },
-      ],
-    });
+  it('lists catalog strategies, links each to its detail page, and documents capital & risk once', async () => {
+    mockedGet.mockResolvedValue({ data: CATALOG });
 
     renderPage(<StrategiesPage />);
 
+    const link = await screen.findByRole('link', { name: /MA Crossover/i });
+    expect(link).toHaveAttribute('href', '/bots/strategies/ma_crossover');
+    // Blurb = first sentence of the explanation.
     expect(
-      await screen.findByText(
-        'Buys when the fast SMA crosses above the slow SMA.',
-      ),
+      screen.getByText('Buys when the fast SMA crosses above the slow SMA.'),
     ).toBeInTheDocument();
-    expect(
-      screen.getByRole('img', {
-        name: /crossover with entry and exit markers/i,
-      }),
-    ).toBeInTheDocument();
-    // Risk-control docs are present too.
+    // Shared capital & risk docs render once on the index.
     expect(screen.getByText('Shared budget ceiling')).toBeInTheDocument();
     expect(screen.getByText('ATR position sizing')).toBeInTheDocument();
+    expect(screen.getAllByText('Per-name cap')).toHaveLength(1);
+  });
+
+  it('shows a loading state while the catalog is pending', () => {
+    mockedGet.mockReturnValue(new Promise(() => {}));
+
+    renderPage(<StrategiesPage />);
+
+    expect(screen.getByRole('status')).toBeInTheDocument();
   });
 
   it('shows an error state when the catalog fails to load', async () => {
@@ -82,8 +69,6 @@ describe('StrategiesPage', () => {
 
     renderPage(<StrategiesPage />);
 
-    expect(
-      await screen.findByText(/Could not load the strategy catalog/i),
-    ).toBeInTheDocument();
+    expect(await screen.findByRole('alert')).toBeInTheDocument();
   });
 });

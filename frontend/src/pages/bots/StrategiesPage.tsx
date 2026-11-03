@@ -1,11 +1,6 @@
-import { useMemo } from 'react';
 import { Link } from 'react-router-dom';
 import { useStrategies } from '../../api/bots';
-import { EChart } from '../../components/charts/EChart';
-import { buildCrossoverChartOption } from './crossoverChart';
-
-/** Strategy key whose explanation this page highlights. */
-const MA_CROSSOVER = 'ma_crossover';
+import type { BotStrategyCatalogEntry } from '../../types/api';
 
 function BackLink() {
   return (
@@ -34,33 +29,43 @@ function RiskControl({
   );
 }
 
-function IllustrativeChart() {
-  const option = useMemo(() => buildCrossoverChartOption(), []);
+/** A short one-line blurb derived from a strategy's explanation (its first sentence). */
+function strategyBlurb(explanation: string): string {
+  const trimmed = explanation.trim();
+  const sentenceEnd = trimmed.indexOf('. ');
+  if (sentenceEnd !== -1) return trimmed.slice(0, sentenceEnd + 1);
+  return trimmed.split('\n')[0];
+}
+
+/** A catalog strategy rendered as a card linking to its own detail page. */
+function StrategyCard({ strategy }: { strategy: BotStrategyCatalogEntry }) {
   return (
-    <div className="rounded-lg border border-slate-200 bg-white p-4 shadow-sm">
+    <Link
+      to={`/bots/strategies/${strategy.key}`}
+      className="flex flex-col rounded-lg border border-slate-200 bg-white p-4 shadow-sm transition hover:border-emerald-300 hover:shadow focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 focus-visible:ring-offset-1"
+    >
       <h2 className="text-base font-semibold text-slate-900">
-        How the crossover works
+        {strategy.display_name}
       </h2>
-      <p className="mt-1 text-xs text-slate-500">
-        Illustrative only — synthetic data. The bot enters when the fast SMA
-        crosses above the slow SMA (green) and exits when it crosses back below
-        (red).
+      <p className="mt-1 text-sm text-slate-600">
+        {strategyBlurb(strategy.explanation)}
       </p>
-      <div className="mt-3">
-        <EChart
-          option={option}
-          height={260}
-          className="w-full"
-          ariaLabel="Illustrative moving-average crossover with entry and exit markers"
-        />
-      </div>
-    </div>
+      <span className="mt-3 text-sm font-medium text-emerald-700">
+        View strategy →
+      </span>
+    </Link>
   );
 }
 
+/**
+ * Strategy guide **index**: lists every strategy in the bots catalog as a card
+ * linking to its own detail page, plus a shared "Capital & risk" section that
+ * documents the strategy-agnostic capital and risk controls once (not repeated on
+ * the individual strategy pages).
+ */
 export function StrategiesPage() {
   const { data, isPending, isError } = useStrategies();
-  const maCrossover = data?.find((s) => s.key === MA_CROSSOVER);
+  const strategies = data ?? [];
 
   return (
     <section className="flex flex-col gap-6">
@@ -70,17 +75,20 @@ export function StrategiesPage() {
           Strategy guide
         </h1>
         <p className="mt-1 text-sm text-slate-500">
-          How the deterministic bot strategy and its risk controls work.
+          Browse the deterministic bot strategies and how the shared capital
+          controls work.
         </p>
       </div>
 
-      <div className="rounded-lg border border-slate-200 bg-white p-6 shadow-sm">
-        <h2 className="text-base font-semibold text-slate-900">
-          {maCrossover?.display_name ?? 'MA Crossover'}
-        </h2>
+      <div>
+        <h2 className="text-base font-semibold text-slate-900">Strategies</h2>
         {isPending && (
-          <p role="status" aria-live="polite" className="mt-2 text-sm text-slate-500">
-            Loading strategy details…
+          <p
+            role="status"
+            aria-live="polite"
+            className="mt-2 text-sm text-slate-500"
+          >
+            Loading strategies…
           </p>
         )}
         {isError && (
@@ -91,18 +99,22 @@ export function StrategiesPage() {
             Could not load the strategy catalog. Please try again later.
           </p>
         )}
-        {!isPending && !isError && (
-          <p className="mt-2 whitespace-pre-line text-sm text-slate-700">
-            {maCrossover?.explanation ??
-              'No explanation is available for this strategy.'}
+        {!isPending && !isError && strategies.length === 0 && (
+          <p className="mt-2 text-sm text-slate-500">
+            No strategies are registered yet.
           </p>
+        )}
+        {!isPending && !isError && strategies.length > 0 && (
+          <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2">
+            {strategies.map((strategy) => (
+              <StrategyCard key={strategy.key} strategy={strategy} />
+            ))}
+          </div>
         )}
       </div>
 
-      <IllustrativeChart />
-
       <div>
-        <h2 className="text-base font-semibold text-slate-900">Risk controls</h2>
+        <h2 className="text-base font-semibold text-slate-900">Capital & risk</h2>
         <p className="mt-1 text-sm text-slate-500">
           These apply across the shared capital pool, regardless of strategy.
         </p>

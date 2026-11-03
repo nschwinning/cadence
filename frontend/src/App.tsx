@@ -9,6 +9,7 @@ import { PaperTradingSessionPage } from './pages/paper-trading/PaperTradingSessi
 import { BotsPage } from './pages/bots/BotsPage';
 import { BotSessionPage } from './pages/bots/BotSessionPage';
 import { StrategiesPage } from './pages/bots/StrategiesPage';
+import { StrategyDetailPage } from './pages/bots/StrategyDetailPage';
 import { RunsPage } from './pages/runs/RunsPage';
 import { RunDetailPage } from './pages/runs/RunDetailPage';
 import { TechnicalIndicatorsPage } from './pages/technical-indicators/TechnicalIndicatorsPage';
@@ -35,8 +36,9 @@ export function App() {
         <Route path="portfolios" element={<PaperTradingPage />} />
         <Route path="portfolios/:id" element={<PaperTradingSessionPage />} />
         <Route path="bots" element={<BotsPage />} />
-        {/* Static route must precede the `:id` param route. */}
+        {/* Static strategy routes must precede the `:id` param route. */}
         <Route path="bots/strategies" element={<StrategiesPage />} />
+        <Route path="bots/strategies/:key" element={<StrategyDetailPage />} />
         <Route path="bots/:id" element={<BotSessionPage />} />
         {/* Legacy routes: the paper-trading area merged into Portfolios. */}
         <Route
