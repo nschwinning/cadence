@@ -12,6 +12,8 @@ from cadence.assets.models import Asset
 from cadence.broker.models import OrderSide
 from cadence.broker.stub import StubBroker
 from cadence.config import settings
+from cadence.paper_trading.constants import Benchmark
+from cadence.paper_trading.models import BenchmarkPrice
 from cadence.strategy_bots import service
 from cadence.strategy_bots.constants import BotValueResolution
 from cadence.strategy_bots.errors import (
@@ -517,6 +519,42 @@ def test_kpis_include_available_cash(db_session: Session) -> None:
     # Buying 100 @ 50 leaves 100000 - 5000 = 95000 free cash.
     assert kpis.cash == pytest.approx(95_000.0)
     assert kpis.cash == bot.cash
+
+
+def test_kpis_include_benchmark_and_excess_return(db_session: Session) -> None:
+    _add_asset(db_session)
+    bot = _create(db_session)
+    start = date(2026, 1, 5)
+    service.record_bot_snapshot(db_session, bot, marks={}, snapshot_date=start)
+    _add_position(db_session, bot, "AAPL", qty=100.0, avg=50.0)
+    service.record_bot_snapshot(
+        db_session, bot, marks={"AAPL": 60.0}, snapshot_date=date(2026, 1, 6)
+    )
+    # Benchmark +10% from the first snapshot date (anchor) to today (as_of).
+    today = datetime.now(UTC).date()
+    for on, close in ((start, 100.0), (today, 110.0)):
+        db_session.add(
+            BenchmarkPrice(
+                benchmark=Benchmark.SP500.value, price_date=on, close=close
+            )
+        )
+    db_session.flush()
+
+    kpis = service.bot_session_kpis(db_session, bot)
+    assert kpis.benchmark == "SP500"
+    assert kpis.benchmark_return_pct == pytest.approx(0.10)
+    # Excess is the session's own total return minus the benchmark's return.
+    assert kpis.excess_return_pct == pytest.approx(kpis.total_return_pct - 0.10)
+
+
+def test_kpis_benchmark_absent_without_snapshots(db_session: Session) -> None:
+    _add_asset(db_session)
+    bot = _create(db_session)
+
+    kpis = service.bot_session_kpis(db_session, bot)
+    assert kpis.benchmark == "SP500"
+    assert kpis.benchmark_return_pct is None
+    assert kpis.excess_return_pct is None
 
 
 def test_bot_current_value_uses_latest_snapshot(db_session: Session) -> None:

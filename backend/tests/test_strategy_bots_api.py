@@ -187,6 +187,10 @@ def test_kpis_value_history_and_trades(
     # No closed round-trip yet → best/worst trade null.
     assert kpis.json()["best_trade"] is None
     assert kpis.json()["worst_trade"] is None
+    # Benchmark id is serialized; its return/excess are null until a snapshot exists.
+    assert kpis.json()["benchmark"] == "SP500"
+    assert kpis.json()["benchmark_return_pct"] is None
+    assert kpis.json()["excess_return_pct"] is None
 
     history = client.get(f"/api/v1/bots/sessions/{sid}/value-history")
     assert history.status_code == 200

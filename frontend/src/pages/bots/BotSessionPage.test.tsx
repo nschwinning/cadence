@@ -74,6 +74,9 @@ const kpis: BotKpis = {
   sharpe_ratio: 1.42,
   best_trade: { ticker: 'AAPL', realised_pnl: 412 },
   worst_trade: { ticker: 'MSFT', realised_pnl: -88 },
+  benchmark: 'SP500',
+  benchmark_return_pct: 0.02,
+  excess_return_pct: 0.0125,
 };
 
 const trade: BotTrade = {
@@ -94,6 +97,8 @@ const trade: BotTrade = {
 function routeGet(overrides: { session?: BotSession } = {}) {
   return (url: string) => {
     if (url.endsWith('/kpis')) return Promise.resolve({ data: kpis });
+    if (url.endsWith('/benchmarks'))
+      return Promise.resolve({ data: [{ id: 'SP500', name: 'S&P 500' }] });
     if (url.endsWith('/value-history'))
       return Promise.resolve({ data: { items: [], total: 0 } });
     if (url.endsWith('/trades'))
@@ -142,6 +147,15 @@ describe('BotSessionPage', () => {
     const worst = screen.getByText('Worst trade').closest('div') as HTMLElement;
     expect(within(worst).getByText('-$88.00')).toBeInTheDocument();
     expect(within(worst).getByText('MSFT')).toBeInTheDocument();
+    // Benchmark-comparison tile replaces the (always-$0) transaction-fees tile.
+    const benchmarkTile = (
+      await screen.findByText('vs S&P 500')
+    ).closest('div') as HTMLElement;
+    expect(within(benchmarkTile).getByText('1.25%')).toBeInTheDocument(); // excess
+    expect(
+      within(benchmarkTile).getByText('Benchmark 2.00%, buy & hold'),
+    ).toBeInTheDocument();
+    expect(screen.queryByText('Transaction fees')).not.toBeInTheDocument();
     // Trade ledger row.
     const row = screen.getByText('fast SMA crossed above slow').closest('tr') as HTMLElement;
     expect(within(row).getByText('buy')).toBeInTheDocument();
@@ -195,6 +209,32 @@ describe('BotSessionPage', () => {
     expect(screen.getByText('Worst trade')).toBeInTheDocument();
     // Both tiles fall back to the empty state.
     expect(screen.getAllByText('No closed trades yet')).toHaveLength(2);
+  });
+
+  it('shows the benchmark tile placeholder when the comparison is unavailable', async () => {
+    mockedGet.mockImplementation((url: string) => {
+      if (url.endsWith('/kpis'))
+        return Promise.resolve({
+          data: { ...kpis, benchmark_return_pct: null, excess_return_pct: null },
+        });
+      if (url.endsWith('/benchmarks'))
+        return Promise.resolve({ data: [{ id: 'SP500', name: 'S&P 500' }] });
+      if (url.endsWith('/value-history'))
+        return Promise.resolve({ data: { items: [], total: 0 } });
+      if (url.endsWith('/trades'))
+        return Promise.resolve({ data: { items: [], total: 0 } });
+      return Promise.resolve({ data: bot });
+    });
+
+    renderDetail(<BotSessionPage />);
+
+    const benchmarkTile = (
+      await screen.findByText('vs S&P 500')
+    ).closest('div') as HTMLElement;
+    expect(within(benchmarkTile).getByText('—')).toBeInTheDocument();
+    expect(
+      within(benchmarkTile).getByText('Needs a daily snapshot'),
+    ).toBeInTheDocument();
   });
 
   it('sorts open positions by ticker by default and by opened timestamp on demand', async () => {

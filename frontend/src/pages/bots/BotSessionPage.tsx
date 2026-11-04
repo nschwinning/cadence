@@ -8,6 +8,7 @@ import {
   useStopBotSession,
   useArchiveBotSession,
 } from '../../api/bots';
+import { useBenchmarks } from '../../api/paperTrading';
 import { BotValueChart } from './BotValueChart';
 import { StatTile } from '../../components/dashboard/StatTile';
 import {
@@ -110,6 +111,42 @@ function TradeExtremeTile({
       label={label}
       value={<PnlValue value={trade.realised_pnl} />}
       hint={trade.ticker}
+    />
+  );
+}
+
+/**
+ * A benchmark-comparison tile: the session's excess return as the primary figure
+ * and the benchmark's own buy-and-hold return as the hint, headed "vs {name}".
+ * Renders an em-dash when the comparison is unavailable (no snapshot yet / no closes).
+ */
+function BenchmarkTile({
+  benchmark,
+  benchmarkReturnPct,
+  excessReturnPct,
+}: {
+  benchmark: string;
+  benchmarkReturnPct: number | null;
+  excessReturnPct: number | null;
+}) {
+  const { data: benchmarks } = useBenchmarks();
+  const catalog = Array.isArray(benchmarks) ? benchmarks : [];
+  const name = catalog.find((b) => b.id === benchmark)?.name ?? benchmark;
+
+  if (benchmarkReturnPct === null || excessReturnPct === null) {
+    return (
+      <KpiTile label={`vs ${name}`} value="—" hint="Needs a daily snapshot" />
+    );
+  }
+  return (
+    <KpiTile
+      label={`vs ${name}`}
+      value={
+        <span className={pnlClass(excessReturnPct)}>
+          {formatPercent(excessReturnPct)}
+        </span>
+      }
+      hint={`Benchmark ${formatPercent(benchmarkReturnPct)}, buy & hold`}
     />
   );
 }
@@ -329,9 +366,10 @@ function KpiRow({ sessionId }: { sessionId: string }) {
         />
         <TradeExtremeTile label="Best trade" trade={data.best_trade} />
         <TradeExtremeTile label="Worst trade" trade={data.worst_trade} />
-        <KpiTile
-          label="Transaction fees"
-          value={formatCurrency(data.total_fees)}
+        <BenchmarkTile
+          benchmark={data.benchmark}
+          benchmarkReturnPct={data.benchmark_return_pct}
+          excessReturnPct={data.excess_return_pct}
         />
         <KpiTile label="Total trades" value={String(data.total_trades)} />
       </div>

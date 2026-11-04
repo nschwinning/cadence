@@ -1395,6 +1395,12 @@ export interface BotKpis {
   /** Best and worst closed round-trip by realized P&L; null until a position has been closed. */
   best_trade: TradeExtreme | null;
   worst_trade: TradeExtreme | null;
+  /** The session's benchmark id. */
+  benchmark: string;
+  /** The benchmark's since-inception buy-and-hold return fraction; null until a snapshot exists. */
+  benchmark_return_pct: number | null;
+  /** The session's excess return fraction (total return minus the benchmark's); null until a snapshot exists. */
+  excess_return_pct: number | null;
 }
 
 /** A single closed round-trip trade: its ticker and realized P&L. Mirrors `TradeExtremeRead`. */

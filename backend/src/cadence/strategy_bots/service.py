@@ -143,6 +143,13 @@ class BotKpis:
     #: has been closed (no completed exit yet).
     best_trade: TradeExtreme | None
     worst_trade: TradeExtreme | None
+    #: The session's benchmark id, its since-inception buy-and-hold return fraction,
+    #: and the session's excess return fraction (total return minus the benchmark's).
+    #: The two fractions are ``None`` until the session has a snapshot and the benchmark
+    #: has usable stored closes.
+    benchmark: str
+    benchmark_return_pct: float | None
+    excess_return_pct: float | None
 
 
 def _trade_symbol(asset: Asset) -> str:
@@ -701,6 +708,33 @@ def _bot_daily_pnl(
     return daily_pnl, daily_pnl_pct
 
 
+def _bot_benchmark_returns(
+    session: Session,
+    bot: BotSession,
+    snapshots: list[BotValueSnapshot],
+    *,
+    total_return_pct: float,
+    as_of: date,
+) -> tuple[float | None, float | None]:
+    """The bot's since-inception benchmark return and excess return, as fractions.
+
+    A simple since-inception buy-and-hold benchmark return (bots have no capital-
+    increase events, so no time-weighting is needed) compared against the bot's own
+    total return. Both are ``None`` when the session has no snapshots or the benchmark
+    lacks usable stored closes for the period. Shared by the per-session KPIs and the
+    daily-summary benchmark suffix so the two never diverge.
+    """
+    if not snapshots:
+        return None, None
+    series = load_benchmark_series(session, bot.benchmark)
+    benchmark_return = benchmark_return_fraction(
+        series, start_date=snapshots[0].snapshot_date, as_of=as_of
+    )
+    if benchmark_return is None:
+        return None, None
+    return benchmark_return, total_return_pct - benchmark_return
+
+
 def _bot_benchmark_suffix(
     session: Session,
     bot: BotSession,
@@ -711,20 +745,15 @@ def _bot_benchmark_suffix(
 ) -> str | None:
     """Benchmark comparison suffix for a bot's daily summary line, or ``None``.
 
-    A simple since-inception buy-and-hold benchmark return (bots have no capital-
-    increase events, so no time-weighting is needed) compared against the bot's own
-    total return. Returns ``None`` when the session has no snapshots or the benchmark
-    lacks usable stored closes, so the caller omits the suffix.
+    Formats the shared ``_bot_benchmark_returns`` figures. Returns ``None`` when the
+    session has no snapshots or the benchmark lacks usable stored closes, so the caller
+    omits the suffix.
     """
-    if not snapshots:
-        return None
-    series = load_benchmark_series(session, bot.benchmark)
-    benchmark_return = benchmark_return_fraction(
-        series, start_date=snapshots[0].snapshot_date, as_of=as_of
+    benchmark_return, excess = _bot_benchmark_returns(
+        session, bot, snapshots, total_return_pct=total_return_pct, as_of=as_of
     )
-    if benchmark_return is None:
+    if benchmark_return is None or excess is None:
         return None
-    excess = total_return_pct - benchmark_return
     name = benchmark_display_name(Benchmark(bot.benchmark))
     return (
         f"vs {name}: {_signed_pct(benchmark_return)} "
@@ -1024,6 +1053,13 @@ def bot_session_kpis(session: Session, bot: BotSession) -> BotKpis:
         else 0.0
     )
     best_trade, worst_trade = bot_trade_extremes(session, bot)
+    benchmark_return_pct, excess_return_pct = _bot_benchmark_returns(
+        session,
+        bot,
+        snapshots,
+        total_return_pct=total_return_pct,
+        as_of=datetime.now(UTC).date(),
+    )
     return BotKpis(
         current_value=current_value,
         cash=bot.cash,
@@ -1038,6 +1074,9 @@ def bot_session_kpis(session: Session, bot: BotSession) -> BotKpis:
         sharpe_ratio=_bot_sharpe(snapshots),
         best_trade=best_trade,
         worst_trade=worst_trade,
+        benchmark=bot.benchmark,
+        benchmark_return_pct=benchmark_return_pct,
+        excess_return_pct=excess_return_pct,
     )
 
 

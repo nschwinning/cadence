@@ -1669,6 +1669,13 @@ class BotKpisRead(BaseModel):
     #: has been closed (no completed exit yet).
     best_trade: TradeExtremeRead | None = None
     worst_trade: TradeExtremeRead | None = None
+    #: The session's benchmark id, its since-inception buy-and-hold return fraction,
+    #: and the session's excess return fraction (total return minus the benchmark's).
+    #: The two fractions are ``None`` until the session has a snapshot and the benchmark
+    #: has usable stored closes.
+    benchmark: str
+    benchmark_return_pct: float | None = None
+    excess_return_pct: float | None = None
 
 
 class BotTradeRead(BaseModel):
