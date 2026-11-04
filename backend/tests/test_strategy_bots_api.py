@@ -184,6 +184,9 @@ def test_kpis_value_history_and_trades(
     assert kpis.json()["cash"] == 100_000.0
     # Sharpe is serialized; null until the session has enough snapshot history.
     assert kpis.json()["sharpe_ratio"] is None
+    # No closed round-trip yet → best/worst trade null.
+    assert kpis.json()["best_trade"] is None
+    assert kpis.json()["worst_trade"] is None
 
     history = client.get(f"/api/v1/bots/sessions/{sid}/value-history")
     assert history.status_code == 200
@@ -192,6 +195,42 @@ def test_kpis_value_history_and_trades(
     trades = client.get(f"/api/v1/bots/sessions/{sid}/trades")
     assert trades.status_code == 200
     assert trades.json()["total"] == 0
+
+
+def test_kpis_report_best_and_worst_closed_trade(
+    client: TestClient, eligible_asset: Asset, db_session: Session
+) -> None:
+    sid = client.post("/api/v1/bots/sessions", json=_create_payload()).json()[
+        "id"
+    ]
+    # One closed round-trip: buy 10 @ 50, sell 10 @ 56 → +60 realized.
+    db_session.add_all(
+        [
+            BotTrade(
+                bot_session_id=uuid.UUID(sid),
+                side=OrderSide.BUY.value,
+                ticker="AAPL",
+                quantity=10.0,
+                filled_price=50.0,
+                fees=0.0,
+                created_at=datetime(2026, 1, 6, 9, 0, tzinfo=UTC),
+            ),
+            BotTrade(
+                bot_session_id=uuid.UUID(sid),
+                side=OrderSide.SELL.value,
+                ticker="AAPL",
+                quantity=10.0,
+                filled_price=56.0,
+                fees=0.0,
+                created_at=datetime(2026, 1, 7, 9, 0, tzinfo=UTC),
+            ),
+        ]
+    )
+    db_session.flush()
+
+    body = client.get(f"/api/v1/bots/sessions/{sid}/kpis").json()
+    assert body["best_trade"] == {"ticker": "AAPL", "realised_pnl": 60.0}
+    assert body["worst_trade"] == {"ticker": "AAPL", "realised_pnl": 60.0}
 
 
 def test_trades_pagination(

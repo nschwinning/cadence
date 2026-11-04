@@ -1639,6 +1639,15 @@ class BotSessionListResponse(BaseModel):
     total: int
 
 
+class TradeExtremeRead(BaseModel):
+    """A single closed round-trip trade: its ticker and realized P&L."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    ticker: str
+    realised_pnl: float
+
+
 class BotKpisRead(BaseModel):
     """Performance KPIs for a bot session, from its own ledger + snapshots."""
 
@@ -1656,6 +1665,10 @@ class BotKpisRead(BaseModel):
     total_trades: int
     max_drawdown: float
     sharpe_ratio: float | None
+    #: Best and worst closed round-trip by realized P&L; ``None`` until a position
+    #: has been closed (no completed exit yet).
+    best_trade: TradeExtremeRead | None = None
+    worst_trade: TradeExtremeRead | None = None
 
 
 class BotTradeRead(BaseModel):

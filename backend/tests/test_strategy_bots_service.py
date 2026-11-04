@@ -596,6 +596,124 @@ def test_list_bot_trades_page_windows_and_totals(db_session: Session) -> None:
     assert [t.created_at.minute for t in last] == [0]
 
 
+# Best/worst closed round-trip ------------------------------------------
+def _add_fill(
+    db_session: Session,
+    bot: BotSession,
+    *,
+    side: OrderSide,
+    ticker: str,
+    qty: float,
+    price: float,
+    when: datetime,
+    fees: float = 0.0,
+) -> None:
+    db_session.add(
+        BotTrade(
+            bot_session_id=bot.id,
+            side=side.value,
+            ticker=ticker,
+            quantity=qty,
+            filled_price=price,
+            fees=fees,
+            created_at=when,
+        )
+    )
+    db_session.flush()
+
+
+def test_trade_extremes_none_without_closed_round_trip(db_session: Session) -> None:
+    _add_asset(db_session)
+    bot = _create(db_session)
+    # An open buy with no matching sell yet → no closed round-trip.
+    _add_fill(
+        db_session, bot, side=OrderSide.BUY, ticker="AAPL", qty=10.0, price=50.0,
+        when=datetime(2026, 1, 6, 9, 0, tzinfo=UTC),
+    )
+
+    best, worst = service.bot_trade_extremes(db_session, bot)
+    assert best is None
+    assert worst is None
+    kpis = service.bot_session_kpis(db_session, bot)
+    assert kpis.best_trade is None
+    assert kpis.worst_trade is None
+
+
+def test_trade_extremes_single_round_trip_is_best_and_worst(
+    db_session: Session,
+) -> None:
+    _add_asset(db_session)
+    bot = _create(db_session)
+    _add_fill(
+        db_session, bot, side=OrderSide.BUY, ticker="AAPL", qty=10.0, price=50.0,
+        when=datetime(2026, 1, 6, 9, 0, tzinfo=UTC),
+    )
+    _add_fill(
+        db_session, bot, side=OrderSide.SELL, ticker="AAPL", qty=10.0, price=55.0,
+        when=datetime(2026, 1, 7, 9, 0, tzinfo=UTC),
+    )
+
+    best, worst = service.bot_trade_extremes(db_session, bot)
+    # (55 - 50) * 10 = 50 realized; the lone round-trip is both best and worst.
+    assert best is not None and worst is not None
+    assert best.ticker == "AAPL"
+    assert best.realised_pnl == pytest.approx(50.0)
+    assert worst.realised_pnl == pytest.approx(50.0)
+
+
+def test_trade_extremes_picks_max_and_min_across_tickers(
+    db_session: Session,
+) -> None:
+    _add_asset(db_session)
+    bot = _create(db_session)
+    # AAPL: +100 winner. MSFT: -60 loser. Fees reduce each round-trip's P&L.
+    _add_fill(
+        db_session, bot, side=OrderSide.BUY, ticker="AAPL", qty=10.0, price=50.0,
+        when=datetime(2026, 1, 6, 9, 0, tzinfo=UTC),
+    )
+    _add_fill(
+        db_session, bot, side=OrderSide.SELL, ticker="AAPL", qty=10.0, price=60.0,
+        when=datetime(2026, 1, 7, 9, 0, tzinfo=UTC),
+    )
+    _add_fill(
+        db_session, bot, side=OrderSide.BUY, ticker="MSFT", qty=5.0, price=100.0,
+        when=datetime(2026, 1, 6, 9, 5, tzinfo=UTC),
+    )
+    _add_fill(
+        db_session, bot, side=OrderSide.SELL, ticker="MSFT", qty=5.0, price=88.0,
+        when=datetime(2026, 1, 7, 9, 5, tzinfo=UTC),
+    )
+
+    best, worst = service.bot_trade_extremes(db_session, bot)
+    assert best is not None and worst is not None
+    assert best.ticker == "AAPL"
+    assert best.realised_pnl == pytest.approx(100.0)  # (60-50)*10
+    assert worst.ticker == "MSFT"
+    assert worst.realised_pnl == pytest.approx(-60.0)  # (88-100)*5
+
+    kpis = service.bot_session_kpis(db_session, bot)
+    assert kpis.best_trade is not None and kpis.best_trade.ticker == "AAPL"
+    assert kpis.worst_trade is not None and kpis.worst_trade.ticker == "MSFT"
+
+
+def test_trade_extremes_nets_entry_and_exit_fees(db_session: Session) -> None:
+    _add_asset(db_session)
+    bot = _create(db_session)
+    _add_fill(
+        db_session, bot, side=OrderSide.BUY, ticker="AAPL", qty=10.0, price=50.0,
+        when=datetime(2026, 1, 6, 9, 0, tzinfo=UTC), fees=2.0,
+    )
+    _add_fill(
+        db_session, bot, side=OrderSide.SELL, ticker="AAPL", qty=10.0, price=55.0,
+        when=datetime(2026, 1, 7, 9, 0, tzinfo=UTC), fees=3.0,
+    )
+
+    best, _ = service.bot_trade_extremes(db_session, bot)
+    # (55 - 50) * 10 - 2 - 3 = 45 net of both fills' fees.
+    assert best is not None
+    assert best.realised_pnl == pytest.approx(45.0)
+
+
 def test_list_bot_trades_page_empty_session(db_session: Session) -> None:
     _add_asset(db_session)
     bot = _create(db_session)

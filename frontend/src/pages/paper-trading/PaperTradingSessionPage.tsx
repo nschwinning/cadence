@@ -237,6 +237,7 @@ export function Panel({
   children,
   footer,
   badge,
+  actions,
 }: {
   title: string;
   count?: number;
@@ -249,6 +250,8 @@ export function Panel({
   footer?: React.ReactNode;
   /** Optional badge shown beside the title (e.g. a data-freshness indicator). */
   badge?: React.ReactNode;
+  /** Optional controls shown right-aligned in the header (e.g. a sort selector). */
+  actions?: React.ReactNode;
 }) {
   return (
     <div className="rounded-lg border border-slate-200 bg-white shadow-sm">
@@ -258,6 +261,7 @@ export function Panel({
         {!isPending && !isError && typeof count === 'number' && count > 0 && (
           <span className="text-sm text-slate-500">{count} total</span>
         )}
+        {actions && <div className="ml-auto">{actions}</div>}
       </div>
       {isPending && (
         <p role="status" aria-live="polite" className="p-6 text-slate-500">

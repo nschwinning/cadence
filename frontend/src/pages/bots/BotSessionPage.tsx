@@ -19,7 +19,7 @@ import {
   formatPercent,
   formatQuantity,
 } from '../../lib/format';
-import type { BotSession, BotTrade } from '../../types/api';
+import type { BotSession, BotTrade, TradeExtreme } from '../../types/api';
 
 /** Status pill colors per bot status. */
 const STATUS_STYLES: Record<string, string> = {
@@ -90,6 +90,28 @@ function BackLink() {
 // Bot KPI tiles are always rendered at the compact density.
 function KpiTile(props: Omit<ComponentProps<typeof StatTile>, 'size'>) {
   return <StatTile size="compact" {...props} />;
+}
+
+/** A best/worst closed round-trip tile: realized P&L with the ticker as hint. */
+function TradeExtremeTile({
+  label,
+  trade,
+}: {
+  label: string;
+  trade: TradeExtreme | null;
+}) {
+  if (trade === null) {
+    return (
+      <KpiTile label={label} value="—" hint="No closed trades yet" />
+    );
+  }
+  return (
+    <KpiTile
+      label={label}
+      value={<PnlValue value={trade.realised_pnl} />}
+      hint={trade.ticker}
+    />
+  );
 }
 
 function Fact({ label, value }: { label: string; value: React.ReactNode }) {
@@ -305,6 +327,8 @@ function KpiRow({ sessionId }: { sessionId: string }) {
           label="Unrealised P&L"
           value={<PnlValue value={data.unrealised_pnl} />}
         />
+        <TradeExtremeTile label="Best trade" trade={data.best_trade} />
+        <TradeExtremeTile label="Worst trade" trade={data.worst_trade} />
         <KpiTile
           label="Transaction fees"
           value={formatCurrency(data.total_fees)}
@@ -315,11 +339,33 @@ function KpiRow({ sessionId }: { sessionId: string }) {
   );
 }
 
+/** How the open-positions table is ordered. */
+type PositionSort = 'ticker' | 'opened';
+
 function PositionsPanel({ sessionId }: { sessionId: string }) {
   const { data: bot, isPending, isError } = useBotSession(sessionId);
+  const [sort, setSort] = useState<PositionSort>('ticker');
   const positions = bot?.positions ?? [];
-  // Stable order: ascending ticker, matching the deterministic tick entry order.
-  const sorted = [...positions].sort((a, b) => a.ticker.localeCompare(b.ticker));
+  // Default: ascending ticker (matching the deterministic tick entry order);
+  // alternatively by the time each position was opened, oldest first.
+  const sorted = [...positions].sort((a, b) =>
+    sort === 'opened'
+      ? a.opened_at.localeCompare(b.opened_at)
+      : a.ticker.localeCompare(b.ticker),
+  );
+  const sortControl = (
+    <label className="flex items-center gap-2 text-xs font-medium text-slate-600">
+      Sort by
+      <select
+        value={sort}
+        onChange={(event) => setSort(event.target.value as PositionSort)}
+        className="rounded border border-slate-300 bg-white px-2 py-1 text-sm text-slate-700 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500"
+      >
+        <option value="ticker">Ticker</option>
+        <option value="opened">Opened</option>
+      </select>
+    </label>
+  );
   return (
     <Panel
       title="Open positions"
@@ -328,6 +374,7 @@ function PositionsPanel({ sessionId }: { sessionId: string }) {
       isError={isError}
       isEmpty={positions.length === 0}
       emptyText="No open positions — the bot is holding cash."
+      actions={sortControl}
     >
       <table className="w-full min-w-[520px] border-collapse text-sm">
         <thead>

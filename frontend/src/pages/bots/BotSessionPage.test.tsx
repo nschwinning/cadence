@@ -72,6 +72,8 @@ const kpis: BotKpis = {
   total_trades: 3,
   max_drawdown: 0.012,
   sharpe_ratio: 1.42,
+  best_trade: { ticker: 'AAPL', realised_pnl: 412 },
+  worst_trade: { ticker: 'MSFT', realised_pnl: -88 },
 };
 
 const trade: BotTrade = {
@@ -133,6 +135,13 @@ describe('BotSessionPage', () => {
     expect(screen.getByText('Available cash')).toBeInTheDocument();
     expect(screen.getByText('$737.00')).toBeInTheDocument(); // available cash
     expect(screen.getByText('3.25%')).toBeInTheDocument(); // total return pct
+    // Best/worst closed round-trip tiles.
+    const best = screen.getByText('Best trade').closest('div') as HTMLElement;
+    expect(within(best).getByText('$412.00')).toBeInTheDocument();
+    expect(within(best).getByText('AAPL')).toBeInTheDocument();
+    const worst = screen.getByText('Worst trade').closest('div') as HTMLElement;
+    expect(within(worst).getByText('-$88.00')).toBeInTheDocument();
+    expect(within(worst).getByText('MSFT')).toBeInTheDocument();
     // Trade ledger row.
     const row = screen.getByText('fast SMA crossed above slow').closest('tr') as HTMLElement;
     expect(within(row).getByText('buy')).toBeInTheDocument();
@@ -165,6 +174,71 @@ describe('BotSessionPage', () => {
     expect(await screen.findByText('Sharpe ratio')).toBeInTheDocument();
     expect(screen.getByText('Not yet available')).toBeInTheDocument();
     expect(screen.getByText('Needs more daily history')).toBeInTheDocument();
+  });
+
+  it('shows a no-closed-trades state when best/worst trade are absent', async () => {
+    mockedGet.mockImplementation((url: string) => {
+      if (url.endsWith('/kpis'))
+        return Promise.resolve({
+          data: { ...kpis, best_trade: null, worst_trade: null },
+        });
+      if (url.endsWith('/value-history'))
+        return Promise.resolve({ data: { items: [], total: 0 } });
+      if (url.endsWith('/trades'))
+        return Promise.resolve({ data: { items: [], total: 0 } });
+      return Promise.resolve({ data: bot });
+    });
+
+    renderDetail(<BotSessionPage />);
+
+    expect(await screen.findByText('Best trade')).toBeInTheDocument();
+    expect(screen.getByText('Worst trade')).toBeInTheDocument();
+    // Both tiles fall back to the empty state.
+    expect(screen.getAllByText('No closed trades yet')).toHaveLength(2);
+  });
+
+  it('sorts open positions by ticker by default and by opened timestamp on demand', async () => {
+    // Ticker order (AAPL, MSFT) differs from opened order (MSFT earlier) so the
+    // two sorts are distinguishable.
+    const multi: BotSession = {
+      ...bot,
+      positions: [
+        {
+          asset_id: 1,
+          ticker: 'AAPL',
+          alpaca_symbol: 'AAPL',
+          quantity: 50,
+          avg_price: 190,
+          opened_at: '2026-10-05T13:35:00Z',
+        },
+        {
+          asset_id: 2,
+          ticker: 'MSFT',
+          alpaca_symbol: 'MSFT',
+          quantity: 10,
+          avg_price: 300,
+          opened_at: '2026-10-02T13:35:00Z',
+        },
+      ],
+    };
+    mockedGet.mockImplementation(routeGet({ session: multi }));
+    const user = userEvent.setup();
+
+    renderDetail(<BotSessionPage />);
+
+    const table = (await screen.findByText('Avg price')).closest(
+      'table',
+    ) as HTMLElement;
+    const tickerOrder = () =>
+      within(table)
+        .getAllByRole('link')
+        .map((a) => a.textContent);
+    // Default: by ticker → AAPL before MSFT.
+    expect(tickerOrder()).toEqual(['AAPL', 'MSFT']);
+
+    // Switch to opened-timestamp order → MSFT (opened earlier) first.
+    await user.selectOptions(screen.getByLabelText('Sort by'), 'opened');
+    expect(tickerOrder()).toEqual(['MSFT', 'AAPL']);
   });
 
   it('paginates the trade ledger with Previous/Next controls', async () => {

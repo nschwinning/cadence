@@ -25,7 +25,7 @@ from cadence.assets import service as assets_service
 from cadence.assets.category import AssetCategory, AssetMembership
 from cadence.assets.models import Asset
 from cadence.broker.base import Broker
-from cadence.broker.models import AssetClass
+from cadence.broker.models import AssetClass, OrderSide
 from cadence.config import settings
 from cadence.dashboard.constants import DashboardRange, resolve_range_start
 from cadence.dashboard.service import (
@@ -114,6 +114,14 @@ class BotValueHistoryPoint:
 
 
 @dataclass(frozen=True)
+class TradeExtreme:
+    """A single closed round-trip trade, identified by ticker and its realized P&L."""
+
+    ticker: str
+    realised_pnl: float
+
+
+@dataclass(frozen=True)
 class BotKpis:
     """Performance figures for a bot session, from its own ledger + snapshots."""
 
@@ -131,6 +139,10 @@ class BotKpis:
     #: Annualised Sharpe from the session's daily snapshot series; ``None`` until
     #: there are enough daily observations (mirrors the paper-trading contract).
     sharpe_ratio: float | None
+    #: Best and worst closed round-trip by realized P&L; ``None`` until a position
+    #: has been closed (no completed exit yet).
+    best_trade: TradeExtreme | None
+    worst_trade: TradeExtreme | None
 
 
 def _trade_symbol(asset: Asset) -> str:
@@ -946,6 +958,53 @@ def bot_current_value(session: Session, bot: BotSession) -> float:
     return total_value(bot, {})
 
 
+def bot_trade_extremes(
+    session: Session, bot: BotSession
+) -> tuple[TradeExtreme | None, TradeExtreme | None]:
+    """The session's best and worst closed round-trip by realized P&L.
+
+    Walks the ledger oldest-first, pairing each sell (a full exit) with its ticker's
+    open entry basis; a round-trip's realized P&L is the exit proceeds minus the entry
+    cost, net of both fills' fees. Returns ``(best, worst)`` — the max- and min-P&L
+    round-trips — or ``(None, None)`` when no position has been closed yet. Relies on
+    the one-position-per-symbol + full-exit invariants, so each ticker's fills strictly
+    alternate buy → sell.
+    """
+    stmt = (
+        select(BotTrade)
+        .where(BotTrade.bot_session_id == bot.id)
+        .order_by(BotTrade.created_at, BotTrade.id)
+    )
+    # ticker -> (entry price, entry quantity, entry fees) for its open position.
+    open_basis: dict[str, tuple[float, float, float]] = {}
+    round_trips: list[TradeExtreme] = []
+    for trade in session.execute(stmt).scalars():
+        if trade.filled_price is None:
+            continue
+        if trade.side == OrderSide.BUY.value:
+            open_basis[trade.ticker] = (
+                trade.filled_price,
+                trade.quantity,
+                trade.fees,
+            )
+        else:  # sell — closes this ticker's open position
+            entry = open_basis.pop(trade.ticker, None)
+            if entry is None:
+                continue
+            entry_price, _entry_qty, entry_fees = entry
+            pnl = (
+                (trade.filled_price - entry_price) * trade.quantity
+                - entry_fees
+                - trade.fees
+            )
+            round_trips.append(TradeExtreme(ticker=trade.ticker, realised_pnl=pnl))
+    if not round_trips:
+        return None, None
+    best = max(round_trips, key=lambda t: t.realised_pnl)
+    worst = min(round_trips, key=lambda t: t.realised_pnl)
+    return best, worst
+
+
 def bot_session_kpis(session: Session, bot: BotSession) -> BotKpis:
     """Compute KPIs for a session from its own ledger and value snapshots."""
     snapshots = list_bot_snapshots(session, bot)
@@ -964,6 +1023,7 @@ def bot_session_kpis(session: Session, bot: BotSession) -> BotKpis:
         if bot.allocated_capital
         else 0.0
     )
+    best_trade, worst_trade = bot_trade_extremes(session, bot)
     return BotKpis(
         current_value=current_value,
         cash=bot.cash,
@@ -976,6 +1036,8 @@ def bot_session_kpis(session: Session, bot: BotSession) -> BotKpis:
         total_trades=bot.total_trades,
         max_drawdown=_max_drawdown([s.total_value for s in snapshots]),
         sharpe_ratio=_bot_sharpe(snapshots),
+        best_trade=best_trade,
+        worst_trade=worst_trade,
     )
 
 

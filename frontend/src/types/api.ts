@@ -1392,6 +1392,15 @@ export interface BotKpis {
   total_trades: number;
   max_drawdown: number;
   sharpe_ratio: number | null;
+  /** Best and worst closed round-trip by realized P&L; null until a position has been closed. */
+  best_trade: TradeExtreme | null;
+  worst_trade: TradeExtreme | null;
+}
+
+/** A single closed round-trip trade: its ticker and realized P&L. Mirrors `TradeExtremeRead`. */
+export interface TradeExtreme {
+  ticker: string;
+  realised_pnl: number;
 }
 
 /** A single fill recorded by the bot engine. Mirrors `BotTradeRead`. */
