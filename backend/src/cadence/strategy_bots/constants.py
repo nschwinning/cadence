@@ -69,6 +69,22 @@ STRATEGY_EXPLANATIONS: dict[StrategyKey, str] = {
 }
 
 
+class BotValueResolution(StrEnum):
+    """Resolution of a bot session's value-history read.
+
+    ``FIVE_MIN`` and ``HOURLY`` are downsampled from the intraday
+    ``bot_value_points`` (so they span roughly the retention window);
+    ``DAILY`` and ``MONTHLY`` come from the daily ``bot_value_snapshots``
+    equity curve. ``DAILY`` is the default. The value is part of the API
+    contract (the ``resolution`` query param and response field).
+    """
+
+    FIVE_MIN = "5min"
+    HOURLY = "hourly"
+    DAILY = "daily"
+    MONTHLY = "monthly"
+
+
 class BarTimeframe(StrEnum):
     """Intraday bar timeframe for signal computation.
 

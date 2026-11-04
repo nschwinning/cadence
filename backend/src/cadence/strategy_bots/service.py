@@ -15,10 +15,10 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, date, datetime, time, timedelta
 from itertools import pairwise
 
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
 from cadence.assets import service as assets_service
@@ -47,7 +47,11 @@ from cadence.paper_trading.constants import (
     benchmark_display_name,
 )
 from cadence.strategy_bots import registry
-from cadence.strategy_bots.constants import BotSessionStatus, SizingMethod
+from cadence.strategy_bots.constants import (
+    BotSessionStatus,
+    BotValueResolution,
+    SizingMethod,
+)
 from cadence.strategy_bots.engine import (
     REASON_DRAWDOWN,
     ExecutionEngine,
@@ -67,6 +71,7 @@ from cadence.strategy_bots.models import (
     BotSession,
     BotSymbol,
     BotTrade,
+    BotValuePoint,
     BotValueSnapshot,
 )
 from cadence.strategy_bots.notifications import (
@@ -95,10 +100,26 @@ class TickResult:
 
 
 @dataclass(frozen=True)
+class BotValueHistoryPoint:
+    """One timestamped point of a bot session's value history at some resolution.
+
+    Resolution-agnostic: intraday points carry their ``bot_value_points.captured_at``;
+    daily/monthly points carry an end-of-day timestamp derived from the snapshot date.
+    """
+
+    timestamp: datetime
+    total_value: float
+    realised_pnl: float
+    unrealised_pnl: float
+
+
+@dataclass(frozen=True)
 class BotKpis:
     """Performance figures for a bot session, from its own ledger + snapshots."""
 
     current_value: float
+    #: Available (free, uninvested) cash — the balance not deployed in open positions.
+    cash: float
     allocated_capital: float
     total_return: float
     total_return_pct: float
@@ -358,9 +379,35 @@ def _fetch_session_bars(
     return bars_by_ticker
 
 
+def _record_value_point(
+    session: Session,
+    bot: BotSession,
+    marks: dict[str, float],
+    *,
+    captured_at: datetime,
+) -> None:
+    """Persist an intraday value point for ``bot`` at ``captured_at``.
+
+    Records the session's total value (cash plus positions marked at ``marks``, or
+    average cost where a mark is absent) and its realised/unrealised P&L — the same
+    basis as the daily snapshot, at tick granularity. Additive to the trading path:
+    it reads already-updated state and does not alter positions, cash, or the ledger.
+    """
+    session.add(
+        BotValuePoint(
+            session=bot,
+            captured_at=captured_at,
+            total_value=total_value(bot, marks),
+            realised_pnl=bot.realised_pnl,
+            unrealised_pnl=unrealised_pnl(bot, marks),
+        )
+    )
+
+
 def _tick_session(
     bot: BotSession,
     *,
+    session: Session,
     engine: ExecutionEngine,
     market_data: MarketData,
     tick_now: datetime,
@@ -397,6 +444,7 @@ def _tick_session(
             engine.exit(bot, position, now=tick_now, reason=REASON_DRAWDOWN)
         bot.status = BotSessionStatus.STOPPED.value
         bot.last_tick_at = tick_now
+        _record_value_point(session, bot, marks, captured_at=tick_now)
         _notify_safely(
             notifier,
             title=f"Cadence bot: {_bot_label(bot)} drawdown kill-switch",
@@ -485,6 +533,7 @@ def _tick_session(
         )
 
     bot.last_tick_at = tick_now
+    _record_value_point(session, bot, marks, captured_at=tick_now)
     return True
 
 
@@ -516,6 +565,7 @@ def run_tick(
     for bot in active_bot_sessions(session):
         if _tick_session(
             bot,
+            session=session,
             engine=engine,
             market_data=market_data,
             tick_now=tick_now,
@@ -722,8 +772,23 @@ def run_bot_snapshots(
                 holdings=holdings,
             ),
         )
+    _prune_value_points(session, now=now or datetime.now(UTC))
     session.flush()
     return count
+
+
+def _prune_value_points(session: Session, *, now: datetime) -> None:
+    """Delete intraday value points older than the retention window, all sessions.
+
+    A single bulk delete bounds the ``bot_value_points`` table: the ``5min`` and
+    ``hourly`` chart resolutions read these points, so they span roughly the
+    retention window; ``daily``/``monthly`` come from daily snapshots and are
+    unaffected. Called from the daily snapshot job.
+    """
+    cutoff = now - timedelta(days=settings.BOT_VALUE_POINT_RETENTION_DAYS)
+    session.execute(
+        delete(BotValuePoint).where(BotValuePoint.captured_at < cutoff)
+    )
 
 
 def _max_drawdown(values: list[float]) -> float:
@@ -749,6 +814,106 @@ def list_bot_snapshots(
     return list(session.execute(stmt).scalars())
 
 
+def list_bot_trades_page(
+    session: Session, bot: BotSession, *, limit: int, offset: int
+) -> tuple[list[BotTrade], int]:
+    """A single page of a session's trade ledger plus the full trade count.
+
+    Returns ``(items, total)`` where ``items`` is the requested window ordered
+    most-recent-first (ties broken by ``id`` for a stable order across pages) and
+    ``total`` is the session's full trade count. Serves one page without loading the
+    whole ``trades`` relationship into memory.
+    """
+    total = int(
+        session.execute(
+            select(func.count())
+            .select_from(BotTrade)
+            .where(BotTrade.bot_session_id == bot.id)
+        ).scalar_one()
+    )
+    stmt = (
+        select(BotTrade)
+        .where(BotTrade.bot_session_id == bot.id)
+        .order_by(BotTrade.created_at.desc(), BotTrade.id.desc())
+        .limit(limit)
+        .offset(offset)
+    )
+    return list(session.execute(stmt).scalars()), total
+
+
+#: End-of-day clock time stamped onto daily/monthly value-history points so an
+#: intraday and a daily series share one timeline (a day's point sorts after its
+#: own intraday points).
+_END_OF_DAY = time(23, 59, 59)
+
+
+def _point_from_snapshot(snapshot: BotValueSnapshot) -> BotValueHistoryPoint:
+    """Map a daily snapshot to an end-of-day timestamped history point."""
+    return BotValueHistoryPoint(
+        timestamp=datetime.combine(snapshot.snapshot_date, _END_OF_DAY, tzinfo=UTC),
+        total_value=snapshot.total_value,
+        realised_pnl=snapshot.realised_pnl,
+        unrealised_pnl=snapshot.unrealised_pnl,
+    )
+
+
+def list_bot_value_history(
+    session: Session, bot: BotSession, *, resolution: BotValueResolution
+) -> list[BotValueHistoryPoint]:
+    """A session's value history at ``resolution``, oldest-first (empty when no data).
+
+    - ``5min``: raw ``bot_value_points`` (one per processed tick).
+    - ``hourly``: the last intraday point in each clock hour.
+    - ``daily``: the daily ``bot_value_snapshots`` equity curve.
+    - ``monthly``: the last daily snapshot in each calendar month.
+
+    Intraday resolutions read the retention-bounded ``bot_value_points`` table, so they
+    span roughly the retention window; daily/monthly read the unbounded snapshot series.
+    Downsampling is deterministic: grouping keys are derived from the timestamp and the
+    last point per group wins.
+    """
+    if resolution in (BotValueResolution.FIVE_MIN, BotValueResolution.HOURLY):
+        points = list(
+            session.execute(
+                select(BotValuePoint)
+                .where(BotValuePoint.bot_session_id == bot.id)
+                .order_by(BotValuePoint.captured_at, BotValuePoint.id)
+            ).scalars()
+        )
+        if resolution is BotValueResolution.FIVE_MIN:
+            return [
+                BotValueHistoryPoint(
+                    timestamp=p.captured_at,
+                    total_value=p.total_value,
+                    realised_pnl=p.realised_pnl,
+                    unrealised_pnl=p.unrealised_pnl,
+                )
+                for p in points
+            ]
+        # Hourly: last point per clock hour, preserving chronological order.
+        by_hour: dict[datetime, BotValuePoint] = {}
+        for p in points:
+            by_hour[p.captured_at.replace(minute=0, second=0, microsecond=0)] = p
+        return [
+            BotValueHistoryPoint(
+                timestamp=p.captured_at,
+                total_value=p.total_value,
+                realised_pnl=p.realised_pnl,
+                unrealised_pnl=p.unrealised_pnl,
+            )
+            for p in by_hour.values()
+        ]
+
+    snapshots = list_bot_snapshots(session, bot)
+    if resolution is BotValueResolution.DAILY:
+        return [_point_from_snapshot(s) for s in snapshots]
+    # Monthly: last daily snapshot per calendar month, preserving order.
+    by_month: dict[tuple[int, int], BotValueSnapshot] = {}
+    for s in snapshots:
+        by_month[(s.snapshot_date.year, s.snapshot_date.month)] = s
+    return [_point_from_snapshot(s) for s in by_month.values()]
+
+
 def _bot_sharpe(snapshots: list[BotValueSnapshot]) -> float | None:
     """Annualised Sharpe from a session's daily value-snapshot series, or ``None``.
 
@@ -764,6 +929,21 @@ def _bot_sharpe(snapshots: list[BotValueSnapshot]) -> float | None:
     ]
     daily_risk_free = settings.SHARPE_RISK_FREE_RATE / SHARPE_TRADING_DAYS_PER_YEAR
     return paper_service.sharpe_ratio(returns, risk_free=daily_risk_free)
+
+
+def bot_current_value(session: Session, bot: BotSession) -> float:
+    """A session's current value: cash plus its marked-to-market open positions.
+
+    Reads the session's latest recorded value snapshot when one exists (already
+    marked-to-market at capture); before any snapshot exists it falls back to cash
+    plus open positions valued at cost. This is the single source of truth for a
+    session's current value, shared by the per-session KPIs and the session list.
+    """
+    snapshots = list_bot_snapshots(session, bot)
+    if snapshots:
+        return snapshots[-1].total_value
+    # No snapshot yet: cash plus positions marked at cost.
+    return total_value(bot, {})
 
 
 def bot_session_kpis(session: Session, bot: BotSession) -> BotKpis:
@@ -786,6 +966,7 @@ def bot_session_kpis(session: Session, bot: BotSession) -> BotKpis:
     )
     return BotKpis(
         current_value=current_value,
+        cash=bot.cash,
         allocated_capital=bot.allocated_capital,
         total_return=total_return,
         total_return_pct=total_return_pct,

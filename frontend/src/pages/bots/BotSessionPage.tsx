@@ -1,6 +1,7 @@
-import type { ComponentProps } from 'react';
+import { useState, type ComponentProps } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import {
+  BOT_TRADES_PAGE_SIZE,
   useBotSession,
   useBotKpis,
   useBotTrades,
@@ -176,7 +177,6 @@ function SessionHeader({ sessionId }: { sessionId: string }) {
           }
         />
         <Fact label="Capital" value={formatCurrency(bot.allocated_capital)} />
-        <Fact label="Cash" value={formatCurrency(bot.cash)} />
         <Fact label="Benchmark" value={bot.benchmark} />
         <Fact label="Parameters" value={paramsSummary(bot.strategy_params)} />
         <Fact
@@ -197,7 +197,7 @@ function SessionHeader({ sessionId }: { sessionId: string }) {
           value={
             bot.take_profit_pct == null
               ? 'Off'
-              : `${(bot.take_profit_pct * 100).toFixed(0)}% above entry`
+              : `${+(bot.take_profit_pct * 100).toFixed(2)}% above entry`
           }
         />
         <Fact
@@ -205,7 +205,7 @@ function SessionHeader({ sessionId }: { sessionId: string }) {
           value={
             bot.stop_loss_pct == null
               ? 'Off'
-              : `${(bot.stop_loss_pct * 100).toFixed(0)}% below entry`
+              : `${+(bot.stop_loss_pct * 100).toFixed(2)}% below entry`
           }
         />
         <Fact
@@ -265,6 +265,11 @@ function KpiRow({ sessionId }: { sessionId: string }) {
       </div>
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
         <KpiTile label="Current value" value={formatCurrency(data.current_value)} />
+        <KpiTile
+          label="Available cash"
+          value={formatCurrency(data.cash)}
+          hint="Free cash not deployed in open positions"
+        />
         <KpiTile
           label="Allocated capital"
           value={formatCurrency(data.allocated_capital)}
@@ -367,9 +372,15 @@ function PositionsPanel({ sessionId }: { sessionId: string }) {
 }
 
 function TradesPanel({ sessionId }: { sessionId: string }) {
-  const { data, isPending, isError } = useBotTrades(sessionId);
+  const [page, setPage] = useState(0);
+  const { data, isPending, isError } = useBotTrades(sessionId, {
+    offset: page * BOT_TRADES_PAGE_SIZE,
+  });
   const trades = data?.items ?? [];
   const total = data?.total ?? 0;
+  const pageCount = Math.max(1, Math.ceil(total / BOT_TRADES_PAGE_SIZE));
+  const hasPrev = page > 0;
+  const hasNext = (page + 1) * BOT_TRADES_PAGE_SIZE < total;
   return (
     <Panel
       title="Trades"
@@ -420,6 +431,30 @@ function TradesPanel({ sessionId }: { sessionId: string }) {
           ))}
         </tbody>
       </table>
+      <nav
+        aria-label="Trade ledger pagination"
+        className="flex items-center justify-between gap-4 px-4 py-3 text-sm text-slate-600"
+      >
+        <button
+          type="button"
+          onClick={() => setPage((p) => Math.max(0, p - 1))}
+          disabled={!hasPrev}
+          className="rounded border border-slate-300 px-3 py-1 font-medium text-slate-700 enabled:hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40"
+        >
+          Previous
+        </button>
+        <span className="tabular-nums">
+          Page {page + 1} of {pageCount}
+        </span>
+        <button
+          type="button"
+          onClick={() => setPage((p) => p + 1)}
+          disabled={!hasNext}
+          className="rounded border border-slate-300 px-3 py-1 font-medium text-slate-700 enabled:hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40"
+        >
+          Next
+        </button>
+      </nav>
     </Panel>
   );
 }

@@ -1347,6 +1347,8 @@ export interface BotSession {
   initial_capital: number;
   allocated_capital: number;
   cash: number;
+  /** Current value: cash plus marked-to-market positions (latest snapshot, cost fallback). */
+  current_value: number;
   sizing_method: string;
   risk_pct: number;
   atr_period: number;
@@ -1379,6 +1381,8 @@ export interface BotSessionListResponse {
 /** Performance KPIs for a bot session, from its own ledger + snapshots. Mirrors `BotKpisRead`. */
 export interface BotKpis {
   current_value: number;
+  /** Available (free, uninvested) cash — the balance not deployed in open positions. */
+  cash: number;
   allocated_capital: number;
   total_return: number;
   total_return_pct: number;
@@ -1411,18 +1415,22 @@ export interface BotTradeListResponse {
   total: number;
 }
 
-/** A daily portfolio-value snapshot for a bot session. Mirrors `BotValueSnapshotRead`. */
-export interface BotValueSnapshot {
-  snapshot_date: string; // ISO YYYY-MM-DD
+/** Resolution of a bot session's value-history read. Mirrors `BotValueResolution`. */
+export type BotValueResolution = '5min' | 'hourly' | 'daily' | 'monthly';
+
+/** One timestamped value-history point for a bot session. Mirrors `BotValuePointRead`. */
+export interface BotValuePoint {
+  timestamp: string; // ISO datetime
   total_value: number;
   realised_pnl: number;
   unrealised_pnl: number;
 }
 
-/** A bot session's value snapshots (equity curve) plus the total. Mirrors `BotValueHistoryResponse`. */
+/** A bot session's value history at a resolution plus the total. Mirrors `BotValueHistoryResponse`. */
 export interface BotValueHistoryResponse {
-  items: BotValueSnapshot[];
+  items: BotValuePoint[];
   total: number;
+  resolution: BotValueResolution;
 }
 
 /** Request to create a strategy-bot session. Mirrors `BotSessionCreateRequest`. */

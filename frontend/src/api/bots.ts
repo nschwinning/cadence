@@ -15,6 +15,7 @@ import type {
   BotStrategyCatalogEntry,
   BotTradeListResponse,
   BotValueHistoryResponse,
+  BotValueResolution,
 } from '../types/api';
 
 /** Typed query keys for strategy-bot queries. */
@@ -25,10 +26,10 @@ export const botKeys = {
     ['bots', 'sessions', includeArchived] as const,
   session: (sessionId: string) => ['bots', 'session', sessionId] as const,
   kpis: (sessionId: string) => ['bots', 'session', sessionId, 'kpis'] as const,
-  valueHistory: (sessionId: string) =>
-    ['bots', 'session', sessionId, 'value-history'] as const,
-  trades: (sessionId: string) =>
-    ['bots', 'session', sessionId, 'trades'] as const,
+  valueHistory: (sessionId: string, resolution?: BotValueResolution) =>
+    ['bots', 'session', sessionId, 'value-history', resolution ?? null] as const,
+  trades: (sessionId: string, limit?: number, offset?: number) =>
+    ['bots', 'session', sessionId, 'trades', limit ?? null, offset ?? null] as const,
 };
 
 /**
@@ -107,12 +108,17 @@ export async function getBotKpis(sessionId: string): Promise<BotKpis> {
   return data;
 }
 
-/** Fetch a bot session's daily value snapshots, oldest date first. */
+/**
+ * Fetch a bot session's value history at the given resolution, oldest first.
+ * `resolution` defaults to `daily` (the server default) when omitted.
+ */
 export async function getBotValueHistory(
   sessionId: string,
+  resolution?: BotValueResolution,
 ): Promise<BotValueHistoryResponse> {
   const { data } = await apiClient.get<BotValueHistoryResponse>(
     `/api/v1/bots/sessions/${encodeURIComponent(sessionId)}/value-history`,
+    resolution ? { params: { resolution } } : undefined,
   );
   return data;
 }
@@ -170,21 +176,36 @@ export function useBotKpis(sessionId: string) {
   });
 }
 
-/** React Query hook fetching a bot session's daily value history. */
-export function useBotValueHistory(sessionId: string) {
+/** React Query hook fetching a bot session's value history at a resolution. */
+export function useBotValueHistory(
+  sessionId: string,
+  resolution: BotValueResolution = 'daily',
+) {
   return useQuery<BotValueHistoryResponse>({
-    queryKey: botKeys.valueHistory(sessionId),
-    queryFn: () => getBotValueHistory(sessionId),
+    queryKey: botKeys.valueHistory(sessionId, resolution),
+    queryFn: () => getBotValueHistory(sessionId, resolution),
     enabled: sessionId.length > 0,
+    placeholderData: (prev) => prev,
   });
 }
 
-/** React Query hook fetching a bot session's trade ledger. */
-export function useBotTrades(sessionId: string) {
+/** Default trade-ledger page size on the detail page. */
+export const BOT_TRADES_PAGE_SIZE = 20;
+
+/**
+ * React Query hook fetching one page of a bot session's trade ledger. The page
+ * is part of the query key so pages cache independently; `keepPreviousData`
+ * keeps the table populated while the next page loads.
+ */
+export function useBotTrades(
+  sessionId: string,
+  { limit = BOT_TRADES_PAGE_SIZE, offset = 0 }: { limit?: number; offset?: number } = {},
+) {
   return useQuery<BotTradeListResponse>({
-    queryKey: botKeys.trades(sessionId),
-    queryFn: () => listBotTrades(sessionId),
+    queryKey: botKeys.trades(sessionId, limit, offset),
+    queryFn: () => listBotTrades(sessionId, { limit, offset }),
     enabled: sessionId.length > 0,
+    placeholderData: (prev) => prev,
   });
 }
 

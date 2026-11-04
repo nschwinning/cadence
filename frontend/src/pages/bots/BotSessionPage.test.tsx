@@ -24,6 +24,7 @@ const bot: BotSession = {
   initial_capital: 10000,
   allocated_capital: 10000,
   cash: 500,
+  current_value: 10325,
   sizing_method: 'atr_risk',
   risk_pct: 0.01,
   atr_period: 14,
@@ -61,6 +62,7 @@ const bot: BotSession = {
 
 const kpis: BotKpis = {
   current_value: 10325,
+  cash: 737,
   allocated_capital: 10000,
   total_return: 325,
   total_return_pct: 0.0325,
@@ -128,6 +130,8 @@ describe('BotSessionPage', () => {
     ).toBeInTheDocument();
     // KPI tiles.
     expect(screen.getByText('$10,325.00')).toBeInTheDocument(); // current value
+    expect(screen.getByText('Available cash')).toBeInTheDocument();
+    expect(screen.getByText('$737.00')).toBeInTheDocument(); // available cash
     expect(screen.getByText('3.25%')).toBeInTheDocument(); // total return pct
     // Trade ledger row.
     const row = screen.getByText('fast SMA crossed above slow').closest('tr') as HTMLElement;
@@ -161,6 +165,44 @@ describe('BotSessionPage', () => {
     expect(await screen.findByText('Sharpe ratio')).toBeInTheDocument();
     expect(screen.getByText('Not yet available')).toBeInTheDocument();
     expect(screen.getByText('Needs more daily history')).toBeInTheDocument();
+  });
+
+  it('paginates the trade ledger with Previous/Next controls', async () => {
+    // 25 trades over a page size of 20 → two pages. Items differ by page so we
+    // can tell which page is showing; total drives the "Page X of N" indicator.
+    mockedGet.mockImplementation((url: string, config?: { params?: { offset?: number } }) => {
+      if (url.endsWith('/kpis')) return Promise.resolve({ data: kpis });
+      if (url.endsWith('/value-history'))
+        return Promise.resolve({ data: { items: [], total: 0 } });
+      if (url.endsWith('/trades')) {
+        const offset = config?.params?.offset ?? 0;
+        const reason = offset === 0 ? 'page-one-trade' : 'page-two-trade';
+        return Promise.resolve({
+          data: { items: [{ ...trade, id: `t-${offset}`, reason }], total: 25 },
+        });
+      }
+      return Promise.resolve({ data: bot });
+    });
+    const user = userEvent.setup();
+
+    renderDetail(<BotSessionPage />);
+
+    await screen.findByRole('heading', { name: 'Apple crossover' });
+    // Page 1: indicator, Previous disabled, first-page content.
+    expect(screen.getByText('Page 1 of 2')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Previous' })).toBeDisabled();
+    expect(await screen.findByText('page-one-trade')).toBeInTheDocument();
+
+    // Advance → offset 20 requested, page 2 content, Next now disabled.
+    await user.click(screen.getByRole('button', { name: 'Next' }));
+    expect(await screen.findByText('page-two-trade')).toBeInTheDocument();
+    expect(screen.getByText('Page 2 of 2')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Next' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Previous' })).toBeEnabled();
+    expect(mockedGet).toHaveBeenCalledWith(
+      expect.stringContaining('/trades'),
+      expect.objectContaining({ params: expect.objectContaining({ offset: 20 }) }),
+    );
   });
 
   it('stops an active bot through the stop action', async () => {

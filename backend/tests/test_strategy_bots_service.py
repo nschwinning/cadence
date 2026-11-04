@@ -11,7 +11,9 @@ from tests.fakes import RecordingNotifier
 from cadence.assets.models import Asset
 from cadence.broker.models import OrderSide
 from cadence.broker.stub import StubBroker
+from cadence.config import settings
 from cadence.strategy_bots import service
+from cadence.strategy_bots.constants import BotValueResolution
 from cadence.strategy_bots.errors import (
     BotSessionNotArchivableError,
     IneligibleAssetError,
@@ -24,6 +26,7 @@ from cadence.strategy_bots.models import (
     BotPosition,
     BotSession,
     BotTrade,
+    BotValuePoint,
     BotValueSnapshot,
 )
 from cadence.strategy_bots.strategy import Bar
@@ -505,6 +508,40 @@ def test_kpis_without_snapshots_fall_back_to_cash(db_session: Session) -> None:
     assert kpis.sharpe_ratio is None
 
 
+def test_kpis_include_available_cash(db_session: Session) -> None:
+    _add_asset(db_session)
+    bot = _create(db_session)
+    _add_position(db_session, bot, "AAPL", qty=100.0, avg=50.0)
+
+    kpis = service.bot_session_kpis(db_session, bot)
+    # Buying 100 @ 50 leaves 100000 - 5000 = 95000 free cash.
+    assert kpis.cash == pytest.approx(95_000.0)
+    assert kpis.cash == bot.cash
+
+
+def test_bot_current_value_uses_latest_snapshot(db_session: Session) -> None:
+    _add_asset(db_session)
+    bot = _create(db_session)
+    _add_position(db_session, bot, "AAPL", qty=100.0, avg=50.0)
+    service.record_bot_snapshot(
+        db_session, bot, marks={"AAPL": 60.0}, snapshot_date=date(2026, 1, 6)
+    )
+
+    # cash 95000 + 100 * 60 = 101000, from the marked snapshot.
+    assert service.bot_current_value(db_session, bot) == pytest.approx(101_000.0)
+
+
+def test_bot_current_value_falls_back_to_cost_without_snapshot(
+    db_session: Session,
+) -> None:
+    _add_asset(db_session)
+    bot = _create(db_session)
+    _add_position(db_session, bot, "AAPL", qty=100.0, avg=50.0)
+
+    # No snapshot: cash 95000 + 100 * 50 (cost) = 100000.
+    assert service.bot_current_value(db_session, bot) == pytest.approx(100_000.0)
+
+
 # Trades-on-day count (Task 2.1) -----------------------------------------
 def _add_trade(
     db_session: Session, bot: BotSession, *, when: datetime, ticker: str = "AAPL"
@@ -533,6 +570,38 @@ def test_count_bot_trades_on_only_counts_the_day(db_session: Session) -> None:
     _add_trade(db_session, bot, when=datetime(2026, 1, 7, 0, 1, tzinfo=UTC))
 
     assert service.count_bot_trades_on(db_session, bot, day) == 2
+
+
+# Paginated trade ledger -------------------------------------------------
+def test_list_bot_trades_page_windows_and_totals(db_session: Session) -> None:
+    _add_asset(db_session)
+    bot = _create(db_session)
+    # Five trades at increasing times → most-recent-first is t5..t1.
+    for minute in range(5):
+        _add_trade(
+            db_session, bot, when=datetime(2026, 1, 6, 9, minute, tzinfo=UTC)
+        )
+
+    first, total = service.list_bot_trades_page(db_session, bot, limit=2, offset=0)
+    assert total == 5
+    assert len(first) == 2
+    # Most-recent-first: the two latest timestamps.
+    assert [t.created_at.minute for t in first] == [4, 3]
+
+    second, total2 = service.list_bot_trades_page(db_session, bot, limit=2, offset=2)
+    assert total2 == 5
+    assert [t.created_at.minute for t in second] == [2, 1]
+
+    last, _ = service.list_bot_trades_page(db_session, bot, limit=2, offset=4)
+    assert [t.created_at.minute for t in last] == [0]
+
+
+def test_list_bot_trades_page_empty_session(db_session: Session) -> None:
+    _add_asset(db_session)
+    bot = _create(db_session)
+    items, total = service.list_bot_trades_page(db_session, bot, limit=20, offset=0)
+    assert items == []
+    assert total == 0
 
 
 # Daily P&L vs prior snapshot (Task 2.2) ---------------------------------
@@ -763,3 +832,183 @@ def test_snapshot_job_raising_notifier_still_records(db_session: Session) -> Non
 
     assert count == 1
     assert len(service.list_bot_snapshots(db_session, bot)) == 1
+
+
+# Multi-resolution value history -----------------------------------------
+def _add_value_point(
+    db_session: Session, bot: BotSession, *, when: datetime, value: float
+) -> None:
+    db_session.add(
+        BotValuePoint(
+            session=bot,
+            captured_at=when,
+            total_value=value,
+            realised_pnl=0.0,
+            unrealised_pnl=0.0,
+        )
+    )
+    db_session.flush()
+
+
+def test_value_history_5min_is_raw_points_oldest_first(
+    db_session: Session,
+) -> None:
+    _add_asset(db_session)
+    bot = _create(db_session)
+    # Insert out of order to prove the query orders ascending by capture time.
+    _add_value_point(db_session, bot, when=datetime(2026, 1, 6, 15, 5, tzinfo=UTC), value=102.0)
+    _add_value_point(db_session, bot, when=datetime(2026, 1, 6, 15, 0, tzinfo=UTC), value=100.0)
+    _add_value_point(db_session, bot, when=datetime(2026, 1, 6, 15, 10, tzinfo=UTC), value=101.0)
+
+    points = service.list_bot_value_history(
+        db_session, bot, resolution=BotValueResolution.FIVE_MIN
+    )
+    assert [p.total_value for p in points] == [100.0, 102.0, 101.0]
+    assert [p.timestamp.minute for p in points] == [0, 5, 10]
+
+
+def test_value_history_hourly_keeps_last_point_per_hour(
+    db_session: Session,
+) -> None:
+    _add_asset(db_session)
+    bot = _create(db_session)
+    _add_value_point(db_session, bot, when=datetime(2026, 1, 6, 15, 0, tzinfo=UTC), value=100.0)
+    _add_value_point(db_session, bot, when=datetime(2026, 1, 6, 15, 55, tzinfo=UTC), value=105.0)
+    _add_value_point(db_session, bot, when=datetime(2026, 1, 6, 16, 10, tzinfo=UTC), value=110.0)
+
+    points = service.list_bot_value_history(
+        db_session, bot, resolution=BotValueResolution.HOURLY
+    )
+    # One point per clock hour: the last of 15:00/15:55, then 16:10.
+    assert [p.total_value for p in points] == [105.0, 110.0]
+    assert [(p.timestamp.hour, p.timestamp.minute) for p in points] == [(15, 55), (16, 10)]
+
+
+def test_value_history_daily_maps_snapshots_to_end_of_day(
+    db_session: Session,
+) -> None:
+    _add_asset(db_session)
+    bot = _create(db_session)
+    _seed_snapshots(db_session, bot, [100.0, 101.0, 102.0])
+
+    points = service.list_bot_value_history(
+        db_session, bot, resolution=BotValueResolution.DAILY
+    )
+    assert [p.total_value for p in points] == [100.0, 101.0, 102.0]
+    assert points[0].timestamp == datetime(2026, 1, 1, 23, 59, 59, tzinfo=UTC)
+
+
+def test_value_history_monthly_keeps_last_snapshot_per_month(
+    db_session: Session,
+) -> None:
+    _add_asset(db_session)
+    bot = _create(db_session)
+    for d, value in [
+        (date(2026, 1, 10), 100.0),
+        (date(2026, 1, 31), 110.0),
+        (date(2026, 2, 15), 120.0),
+    ]:
+        db_session.add(
+            BotValueSnapshot(
+                session=bot,
+                snapshot_date=d,
+                total_value=value,
+                realised_pnl=0.0,
+                unrealised_pnl=0.0,
+            )
+        )
+    db_session.flush()
+
+    points = service.list_bot_value_history(
+        db_session, bot, resolution=BotValueResolution.MONTHLY
+    )
+    # Last snapshot of January, then February.
+    assert [p.total_value for p in points] == [110.0, 120.0]
+    assert [p.timestamp.month for p in points] == [1, 2]
+
+
+def test_value_history_empty_series_per_resolution(db_session: Session) -> None:
+    _add_asset(db_session)
+    bot = _create(db_session)
+    for resolution in BotValueResolution:
+        assert service.list_bot_value_history(
+            db_session, bot, resolution=resolution
+        ) == []
+
+
+def test_tick_persists_one_value_point_per_processed_session(
+    db_session: Session,
+) -> None:
+    _add_asset(db_session)
+    bot = _create(db_session)
+    broker = _OpenableBroker()
+    price = broker.get_quote("AAPL").last
+    assert price is not None
+
+    service.run_tick(
+        db_session,
+        broker=broker,
+        market_data=_PerSymbolMarketData({"AAPL": _up_cross(price)}),
+        now=_NOW,
+    )
+
+    points = service.list_bot_value_history(
+        db_session, bot, resolution=BotValueResolution.FIVE_MIN
+    )
+    assert len(points) == 1
+    assert points[0].timestamp == _NOW
+    # Total value after the entry = cash + marked position; a flat mark to cost
+    # leaves total at the initial capital.
+    assert points[0].total_value == pytest.approx(bot.initial_capital)
+
+
+def test_tick_market_closed_persists_no_value_point(db_session: Session) -> None:
+    _add_asset(db_session)
+    bot = _create(db_session)
+
+    service.run_tick(
+        db_session,
+        broker=_OpenableBroker(market_open=False),
+        market_data=_PerSymbolMarketData({"AAPL": [10.0] * 4}),
+        now=_NOW,
+    )
+
+    assert (
+        service.list_bot_value_history(
+            db_session, bot, resolution=BotValueResolution.FIVE_MIN
+        )
+        == []
+    )
+
+
+def test_snapshot_job_prunes_value_points_past_retention(
+    db_session: Session,
+) -> None:
+    _add_asset(db_session)
+    bot = _create(db_session)
+    now = datetime(2026, 3, 1, 21, 0, tzinfo=UTC)
+    retention = settings.BOT_VALUE_POINT_RETENTION_DAYS
+    # One point well inside the window, one just past it.
+    _add_value_point(
+        db_session, bot, when=now - timedelta(days=1), value=100.0
+    )
+    _add_value_point(
+        db_session, bot, when=now - timedelta(days=retention + 1), value=90.0
+    )
+    # A daily snapshot predating the window must survive (snapshots are unbounded).
+    _seed_snapshots(db_session, bot, [100.0])
+
+    service.run_bot_snapshots(db_session, broker=_OpenableBroker(), now=now)
+
+    kept = service.list_bot_value_history(
+        db_session, bot, resolution=BotValueResolution.FIVE_MIN
+    )
+    assert [p.total_value for p in kept] == [100.0]
+    # Daily history untouched by intraday pruning: the pre-window snapshot
+    # survives (alongside the one this job run records).
+    daily = service.list_bot_value_history(
+        db_session, bot, resolution=BotValueResolution.DAILY
+    )
+    assert datetime(2026, 1, 1, 23, 59, 59, tzinfo=UTC) in [
+        p.timestamp for p in daily
+    ]

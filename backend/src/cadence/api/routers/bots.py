@@ -27,7 +27,7 @@ from cadence.api.schemas import (
     BotTradeListResponse,
     BotTradeRead,
     BotValueHistoryResponse,
-    BotValueSnapshotRead,
+    BotValuePointRead,
 )
 from cadence.broker import get_broker
 from cadence.broker.base import Broker
@@ -35,6 +35,7 @@ from cadence.database import get_db
 from cadence.notify import get_notifier
 from cadence.notify.base import Notifier
 from cadence.strategy_bots import registry, service
+from cadence.strategy_bots.constants import BotValueResolution
 from cadence.strategy_bots.errors import (
     BotSessionNotArchivableError,
     BotSessionNotFoundError,
@@ -45,6 +46,7 @@ from cadence.strategy_bots.errors import (
     UnknownStrategyError,
 )
 from cadence.strategy_bots.market_data import MarketData, get_market_data
+from cadence.strategy_bots.models import BotSession
 
 router = APIRouter(prefix="/bots", tags=["bots"])
 
@@ -52,6 +54,13 @@ DbSession = Annotated[Session, Depends(get_db)]
 BrokerDep = Annotated[Broker, Depends(get_broker)]
 MarketDataDep = Annotated[MarketData, Depends(get_market_data)]
 NotifierDep = Annotated[Notifier, Depends(get_notifier)]
+
+
+def _to_read(db: Session, row: BotSession) -> BotSessionRead:
+    """Serialise a bot session, marking its current value from the service."""
+    read = BotSessionRead.model_validate(row)
+    read.current_value = service.bot_current_value(db, row)
+    return read
 
 
 @router.get("/strategies", response_model=list[BotStrategyCatalogEntry])
@@ -113,7 +122,7 @@ def create_bot_session(
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
         ) from exc
-    return BotSessionRead.model_validate(row)
+    return _to_read(db, row)
 
 
 @router.get("/sessions", response_model=BotSessionListResponse)
@@ -125,7 +134,7 @@ def list_bot_sessions(
 ) -> BotSessionListResponse:
     """Return bot sessions, newest first, hiding archived ones by default."""
     rows = service.list_bot_sessions(db, include_archived=include_archived)
-    items = [BotSessionRead.model_validate(row) for row in rows]
+    items = [_to_read(db, row) for row in rows]
     return BotSessionListResponse(items=items, total=len(items))
 
 
@@ -136,7 +145,7 @@ def _get_session_or_404(db: Session, session_id: uuid.UUID) -> BotSessionRead:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)
         ) from exc
-    return BotSessionRead.model_validate(row)
+    return _to_read(db, row)
 
 
 @router.get("/sessions/{session_id}", response_model=BotSessionRead)
@@ -154,7 +163,7 @@ def stop_bot_session(session_id: uuid.UUID, db: DbSession) -> BotSessionRead:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)
         ) from exc
-    return BotSessionRead.model_validate(row)
+    return _to_read(db, row)
 
 
 @router.post("/sessions/{session_id}/archive", response_model=BotSessionRead)
@@ -170,7 +179,7 @@ def archive_bot_session(session_id: uuid.UUID, db: DbSession) -> BotSessionRead:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT, detail=str(exc)
         ) from exc
-    return BotSessionRead.model_validate(row)
+    return _to_read(db, row)
 
 
 @router.get("/sessions/{session_id}/kpis", response_model=BotKpisRead)
@@ -190,9 +199,16 @@ def get_bot_session_kpis(session_id: uuid.UUID, db: DbSession) -> BotKpisRead:
     response_model=BotValueHistoryResponse,
 )
 def list_bot_value_history(
-    session_id: uuid.UUID, db: DbSession
+    session_id: uuid.UUID,
+    db: DbSession,
+    resolution: BotValueResolution = BotValueResolution.DAILY,
 ) -> BotValueHistoryResponse:
-    """Return a session's daily value snapshots, oldest first (404 if unknown)."""
+    """Return a session's value history at ``resolution``, oldest first (404 if unknown).
+
+    ``resolution`` defaults to ``daily``; ``5min``/``hourly`` read the intraday
+    value points, ``daily``/``monthly`` the daily snapshot curve. An unknown
+    resolution is rejected with ``422`` by enum validation.
+    """
     try:
         row = service.get_bot_session(db, session_id)
     except BotSessionNotFoundError as exc:
@@ -200,26 +216,35 @@ def list_bot_value_history(
             status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)
         ) from exc
     items = [
-        BotValueSnapshotRead.model_validate(snap)
-        for snap in service.list_bot_snapshots(db, row)
+        BotValuePointRead.model_validate(point)
+        for point in service.list_bot_value_history(db, row, resolution=resolution)
     ]
-    return BotValueHistoryResponse(items=items, total=len(items))
+    return BotValueHistoryResponse(items=items, total=len(items), resolution=resolution)
 
 
 @router.get("/sessions/{session_id}/trades", response_model=BotTradeListResponse)
 def list_bot_trades(
-    session_id: uuid.UUID, db: DbSession
+    session_id: uuid.UUID,
+    db: DbSession,
+    limit: Annotated[int, Query(ge=1, le=100)] = 20,
+    offset: Annotated[int, Query(ge=0)] = 0,
 ) -> BotTradeListResponse:
-    """Return a session's trade ledger, most recent first (404 if unknown)."""
+    """Return one page of a session's trade ledger, most recent first (404 if unknown).
+
+    ``total`` is the session's full trade count so the client can page; ``limit``
+    defaults to 20 and is capped at 100.
+    """
     try:
         row = service.get_bot_session(db, session_id)
     except BotSessionNotFoundError as exc:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)
         ) from exc
-    trades = sorted(row.trades, key=lambda t: t.created_at, reverse=True)
+    trades, total = service.list_bot_trades_page(
+        db, row, limit=limit, offset=offset
+    )
     items = [BotTradeRead.model_validate(trade) for trade in trades]
-    return BotTradeListResponse(items=items, total=len(items))
+    return BotTradeListResponse(items=items, total=total)
 
 
 @router.post("/tick", response_model=BotTickResponse)

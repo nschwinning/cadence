@@ -23,6 +23,7 @@ const bot: BotSession = {
   initial_capital: 10000,
   allocated_capital: 10000,
   cash: 10000,
+  current_value: 10250,
   sizing_method: 'atr_risk',
   risk_pct: 0.01,
   atr_period: 14,
@@ -86,6 +87,20 @@ describe('BotsPage', () => {
     expect(within(row).getByText('active')).toBeInTheDocument();
     expect(within(row).getByText('3')).toBeInTheDocument();
     expect(within(row).getByText('$125.00')).toBeInTheDocument();
+    // The capital column shows current value, not the allocated-capital baseline.
+    expect(within(row).getByText('$10,250.00')).toBeInTheDocument();
+    expect(within(row).queryByText('$10,000.00')).not.toBeInTheDocument();
+  });
+
+  it('labels the value column "Current value"', async () => {
+    mockedGet.mockImplementation(routeGet([bot]));
+
+    renderWithClient(<BotsPage />);
+
+    await screen.findByRole('link', { name: 'Apple crossover' });
+    expect(
+      screen.getByRole('columnheader', { name: 'Current value' }),
+    ).toBeInTheDocument();
   });
 
   it('falls back to strategy + ticker when the bot has no label', async () => {

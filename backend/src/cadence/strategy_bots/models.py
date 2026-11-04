@@ -197,6 +197,11 @@ class BotSession(Base):
         cascade="all, delete-orphan",
         passive_deletes=True,
     )
+    value_points: Mapped[list[BotValuePoint]] = relationship(
+        back_populates="session",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+    )
 
     @property
     def is_flat(self) -> bool:
@@ -372,3 +377,42 @@ class BotValueSnapshot(Base):
     )
 
     session: Mapped[BotSession] = relationship(back_populates="value_snapshots")
+
+
+class BotValuePoint(Base):
+    """An intraday portfolio-value point for a bot session — one row per tick.
+
+    Captured by the five-minute tick for each session it processes: records the
+    session's ``total_value`` (equity) plus cumulative ``realised_pnl`` and live
+    ``unrealised_pnl`` at the tick time. These feed the chart's intraday (``5min``)
+    and ``hourly`` resolutions; the daily snapshot job prunes points older than the
+    retention window so this table stays bounded.
+    """
+
+    __tablename__ = "bot_value_points"
+    __table_args__ = (
+        Index(
+            "idx_bot_value_points_session_time",
+            "bot_session_id",
+            "captured_at",
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        server_default=func.gen_random_uuid(),
+    )
+    bot_session_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("bot_sessions.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    captured_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    total_value: Mapped[float] = mapped_column(Float, nullable=False)
+    realised_pnl: Mapped[float] = mapped_column(Float, nullable=False)
+    unrealised_pnl: Mapped[float] = mapped_column(Float, nullable=False)
+
+    session: Mapped[BotSession] = relationship(back_populates="value_points")

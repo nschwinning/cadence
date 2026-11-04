@@ -20,6 +20,7 @@ from cadence.paper_trading.constants import (
 )
 from cadence.portfolios.constants import PortfolioSource, RiskProfile
 from cadence.recommendations.constants import RunTarget
+from cadence.strategy_bots.constants import BotValueResolution
 
 
 class ServiceStatus(str, Enum):
@@ -1605,6 +1606,9 @@ class BotSessionRead(BaseModel):
     initial_capital: float
     allocated_capital: float
     cash: float
+    #: Current value (cash + marked-to-market positions). Not an ORM attribute; the
+    #: router sets it per row from ``service.bot_current_value`` (default until set).
+    current_value: float = 0.0
     sizing_method: str
     risk_pct: float
     atr_period: int
@@ -1641,6 +1645,8 @@ class BotKpisRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     current_value: float
+    #: Available (free, uninvested) cash — the balance not deployed in open positions.
+    cash: float
     allocated_capital: float
     total_return: float
     total_return_pct: float
@@ -1677,22 +1683,27 @@ class BotTradeListResponse(BaseModel):
     total: int
 
 
-class BotValueSnapshotRead(BaseModel):
-    """A daily portfolio-value snapshot for a bot session."""
+class BotValuePointRead(BaseModel):
+    """One timestamped portfolio-value point of a bot session's value history.
+
+    Resolution-agnostic: intraday points carry their capture time, daily/monthly
+    points carry an end-of-day timestamp derived from the snapshot date.
+    """
 
     model_config = ConfigDict(from_attributes=True)
 
-    snapshot_date: date
+    timestamp: datetime
     total_value: float
     realised_pnl: float
     unrealised_pnl: float
 
 
 class BotValueHistoryResponse(BaseModel):
-    """A bot session's value snapshots (equity curve) plus the matching total."""
+    """A bot session's value history at a resolution, plus the matching total."""
 
-    items: list[BotValueSnapshotRead]
+    items: list[BotValuePointRead]
     total: int
+    resolution: BotValueResolution
 
 
 class BotTickResponse(BaseModel):

@@ -89,7 +89,7 @@ function BotRow({ bot }: { bot: BotSession }) {
         )}
       </td>
       <td className="px-4 py-3 text-right tabular-nums text-slate-700">
-        {formatCurrency(bot.allocated_capital)}
+        {formatCurrency(bot.current_value)}
       </td>
       <td className="px-4 py-3 text-right tabular-nums text-slate-700">
         {bot.total_trades}
@@ -195,7 +195,7 @@ export function BotsPage() {
                   <th className="px-4 py-3">Status</th>
                   <th className="px-4 py-3">Age</th>
                   <th className="px-4 py-3">Symbols</th>
-                  <th className="px-4 py-3 text-right">Capital</th>
+                  <th className="px-4 py-3 text-right">Current value</th>
                   <th className="px-4 py-3 text-right">Trades</th>
                   <th className="px-4 py-3 text-right">Realised P&amp;L</th>
                   <th className="px-4 py-3">Last Tick</th>

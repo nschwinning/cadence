@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import uuid
 from collections.abc import Iterator
+from datetime import UTC, date, datetime
 
 import pytest
 from fastapi.testclient import TestClient
@@ -11,9 +13,11 @@ from tests.fakes import RecordingNotifier
 
 from cadence.api.app import app
 from cadence.assets.models import Asset
+from cadence.broker.models import OrderSide
 from cadence.config import settings
 from cadence.notify import get_notifier
 from cadence.strategy_bots.market_data import StubMarketData, get_market_data
+from cadence.strategy_bots.models import BotTrade, BotValuePoint, BotValueSnapshot
 
 
 @pytest.fixture
@@ -124,10 +128,13 @@ def test_list_and_get_session(
     listed = client.get("/api/v1/bots/sessions")
     assert listed.status_code == 200
     assert listed.json()["total"] == 1
+    # Each listed session carries its current value (cost-basis before any snapshot).
+    assert listed.json()["items"][0]["current_value"] == 100_000.0
 
     detail = client.get(f"/api/v1/bots/sessions/{created['id']}")
     assert detail.status_code == 200
     assert detail.json()["id"] == created["id"]
+    assert detail.json()["current_value"] == 100_000.0
 
 
 def test_get_unknown_session_404(client: TestClient) -> None:
@@ -173,6 +180,8 @@ def test_kpis_value_history_and_trades(
     kpis = client.get(f"/api/v1/bots/sessions/{sid}/kpis")
     assert kpis.status_code == 200
     assert kpis.json()["current_value"] == 100_000.0
+    # Available cash is surfaced on the KPIs (all cash before any position opens).
+    assert kpis.json()["cash"] == 100_000.0
     # Sharpe is serialized; null until the session has enough snapshot history.
     assert kpis.json()["sharpe_ratio"] is None
 
@@ -183,6 +192,149 @@ def test_kpis_value_history_and_trades(
     trades = client.get(f"/api/v1/bots/sessions/{sid}/trades")
     assert trades.status_code == 200
     assert trades.json()["total"] == 0
+
+
+def test_trades_pagination(
+    client: TestClient, eligible_asset: Asset, db_session: Session
+) -> None:
+    sid = client.post("/api/v1/bots/sessions", json=_create_payload()).json()[
+        "id"
+    ]
+    for minute in range(3):
+        db_session.add(
+            BotTrade(
+                bot_session_id=uuid.UUID(sid),
+                side=OrderSide.BUY.value,
+                ticker="AAPL",
+                quantity=1.0,
+                filled_price=10.0,
+                fees=0.0,
+                created_at=datetime(2026, 1, 6, 9, minute, tzinfo=UTC),
+            )
+        )
+    db_session.flush()
+
+    # Default page: full total, bounded items, most-recent-first.
+    first = client.get(f"/api/v1/bots/sessions/{sid}/trades", params={"limit": 2})
+    assert first.status_code == 200
+    body = first.json()
+    assert body["total"] == 3
+    assert len(body["items"]) == 2
+
+    # Second page via offset.
+    second = client.get(
+        f"/api/v1/bots/sessions/{sid}/trades", params={"limit": 2, "offset": 2}
+    )
+    assert second.json()["total"] == 3
+    assert len(second.json()["items"]) == 1
+
+
+def test_trades_pagination_rejects_bad_params(
+    client: TestClient, eligible_asset: Asset
+) -> None:
+    sid = client.post("/api/v1/bots/sessions", json=_create_payload()).json()[
+        "id"
+    ]
+    assert (
+        client.get(
+            f"/api/v1/bots/sessions/{sid}/trades", params={"limit": 0}
+        ).status_code
+        == 422
+    )
+    assert (
+        client.get(
+            f"/api/v1/bots/sessions/{sid}/trades", params={"limit": 101}
+        ).status_code
+        == 422
+    )
+    assert (
+        client.get(
+            f"/api/v1/bots/sessions/{sid}/trades", params={"offset": -1}
+        ).status_code
+        == 422
+    )
+
+
+def test_trades_unknown_session_404(client: TestClient) -> None:
+    resp = client.get(
+        "/api/v1/bots/sessions/00000000-0000-0000-0000-000000000000/trades"
+    )
+    assert resp.status_code == 404
+
+
+def test_value_history_honours_resolution(
+    client: TestClient, eligible_asset: Asset, db_session: Session
+) -> None:
+    sid = client.post("/api/v1/bots/sessions", json=_create_payload()).json()[
+        "id"
+    ]
+    bot_id = uuid.UUID(sid)
+    # Two intraday points in one hour; one daily snapshot.
+    db_session.add_all(
+        [
+            BotValuePoint(
+                bot_session_id=bot_id,
+                captured_at=datetime(2026, 1, 6, 15, 0, tzinfo=UTC),
+                total_value=100.0,
+                realised_pnl=0.0,
+                unrealised_pnl=0.0,
+            ),
+            BotValuePoint(
+                bot_session_id=bot_id,
+                captured_at=datetime(2026, 1, 6, 15, 30, tzinfo=UTC),
+                total_value=105.0,
+                realised_pnl=0.0,
+                unrealised_pnl=0.0,
+            ),
+            BotValueSnapshot(
+                bot_session_id=bot_id,
+                snapshot_date=date(2026, 1, 6),
+                total_value=105.0,
+                realised_pnl=0.0,
+                unrealised_pnl=0.0,
+            ),
+        ]
+    )
+    db_session.flush()
+
+    five = client.get(
+        f"/api/v1/bots/sessions/{sid}/value-history", params={"resolution": "5min"}
+    )
+    assert five.status_code == 200
+    assert five.json()["resolution"] == "5min"
+    assert len(five.json()["items"]) == 2
+    assert "timestamp" in five.json()["items"][0]
+
+    hourly = client.get(
+        f"/api/v1/bots/sessions/{sid}/value-history", params={"resolution": "hourly"}
+    )
+    assert len(hourly.json()["items"]) == 1
+    assert hourly.json()["items"][0]["total_value"] == 105.0
+
+    # Default resolution is daily (reads the snapshot curve, not the points).
+    default = client.get(f"/api/v1/bots/sessions/{sid}/value-history")
+    assert default.json()["resolution"] == "daily"
+    assert len(default.json()["items"]) == 1
+
+
+def test_value_history_rejects_unknown_resolution(
+    client: TestClient, eligible_asset: Asset
+) -> None:
+    sid = client.post("/api/v1/bots/sessions", json=_create_payload()).json()[
+        "id"
+    ]
+    resp = client.get(
+        f"/api/v1/bots/sessions/{sid}/value-history",
+        params={"resolution": "weekly"},
+    )
+    assert resp.status_code == 422
+
+
+def test_value_history_unknown_session_404(client: TestClient) -> None:
+    resp = client.get(
+        "/api/v1/bots/sessions/00000000-0000-0000-0000-000000000000/value-history"
+    )
+    assert resp.status_code == 404
 
 
 def test_list_strategies(client: TestClient) -> None:

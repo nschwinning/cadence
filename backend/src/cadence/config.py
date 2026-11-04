@@ -274,6 +274,11 @@ class Settings(BaseSettings):
     #: Bar timeframe (an Alpaca ``BarTimeframe`` value) the strategy computes signals
     #: on. Default 5-minute bars.
     BOT_SIGNAL_BAR_TIMEFRAME: str = "5Min"
+    #: Retention window (days) for intraday ``bot_value_points``. The daily snapshot
+    #: job prunes points older than this, bounding intraday storage. Because the
+    #: ``5min`` and ``hourly`` chart resolutions read these points, both span roughly
+    #: this window; ``daily``/``monthly`` come from daily snapshots and stay unbounded.
+    BOT_VALUE_POINT_RETENTION_DAYS: int = 30
     #: Market-data feed (a ``MarketDataFeed`` value) the tick requests bars with. The
     #: tick ALWAYS sets this explicitly rather than relying on the account default.
     #: ``iex`` is real-time on the free tier; ``sip`` requires a paid subscription.
