@@ -155,4 +155,37 @@ describe('BotValueChart', () => {
       'true',
     );
   });
+
+  it('marks the badge end-of-day for coarse resolutions and intraday for 5m', async () => {
+    mockedGet.mockImplementation((_url: string, config?: { params?: { resolution?: string } }) => {
+      const resolution = config?.params?.resolution ?? 'daily';
+      return Promise.resolve({
+        data: {
+          items: [dailyPoint('2026-01-04', 10000), dailyPoint('2026-01-05', 10100)],
+          total: 2,
+          resolution,
+        },
+      });
+    });
+    const user = userEvent.setup();
+
+    renderChart(<BotValueChart sessionId="b1" />);
+
+    // Default daily resolution reads the end-of-day snapshot curve.
+    await screen.findByRole('img', { name: /daily points/i });
+    expect(screen.getByTestId('freshness-eod')).toHaveTextContent(/end of day/i);
+    expect(screen.queryByTestId('freshness-intraday')).not.toBeInTheDocument();
+
+    // Switching to an intraday resolution flips the badge to "Intraday".
+    await user.click(screen.getByRole('button', { name: '5m' }));
+    expect(await screen.findByTestId('freshness-intraday')).toHaveTextContent(/intraday/i);
+    expect(screen.queryByTestId('freshness-eod')).not.toBeInTheDocument();
+    // Wait for the intraday load to settle so the switcher is back on screen.
+    await screen.findByRole('img', { name: /5min points/i });
+
+    // Switching back to a coarse resolution restores the end-of-day marker.
+    await user.click(screen.getByRole('button', { name: '1D' }));
+    expect(await screen.findByTestId('freshness-eod')).toHaveTextContent(/end of day/i);
+    expect(screen.queryByTestId('freshness-intraday')).not.toBeInTheDocument();
+  });
 });

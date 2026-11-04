@@ -202,16 +202,25 @@ function BackLink() {
  * the end-of-day value chart can legitimately differ intraday. The explanatory text is
  * exposed as a `title` tooltip so hovering the badge reveals the reason.
  */
-export function FreshnessBadge({ kind }: { kind: 'live' | 'eod' }) {
+export function FreshnessBadge({ kind }: { kind: 'live' | 'eod' | 'intraday' }) {
   const live = kind === 'live';
-  const label = live ? 'Live' : 'End of day';
-  const hint = live
-    ? 'These figures are marked to market against current quotes, so they can differ from the end-of-day value chart intraday.'
-    : 'This chart shows end-of-day snapshots; its latest point is the prior close, so it can lag the live performance tiles intraday.';
+  const label = live ? 'Live' : kind === 'intraday' ? 'Intraday' : 'End of day';
+  const hint =
+    kind === 'live'
+      ? 'These figures are marked to market against current quotes, so they can differ from the end-of-day value chart intraday.'
+      : kind === 'intraday'
+        ? 'This chart shows per-tick intraday points; its latest point is the most recently captured tick, so it can lag the live performance tiles.'
+        : 'This chart shows end-of-day snapshots; its latest point is the prior close, so it can lag the live performance tiles intraday.';
+  const testId =
+    kind === 'live'
+      ? 'freshness-live'
+      : kind === 'intraday'
+        ? 'freshness-intraday'
+        : 'freshness-eod';
   return (
     <span
       title={hint}
-      data-testid={live ? 'freshness-live' : 'freshness-eod'}
+      data-testid={testId}
       className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium ${
         live ? 'bg-emerald-50 text-emerald-700' : 'bg-slate-100 text-slate-600'
       }`}

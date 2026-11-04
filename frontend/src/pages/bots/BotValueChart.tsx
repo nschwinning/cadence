@@ -223,7 +223,9 @@ export function BotValueChart({ sessionId }: { sessionId: string }) {
       isError={isError}
       isEmpty={false}
       emptyText="No value history yet."
-      badge={<FreshnessBadge kind="eod" />}
+      badge={
+        <FreshnessBadge kind={isIntradayResolution(resolution) ? 'intraday' : 'eod'} />
+      }
     >
       <div className="space-y-3 p-4">
         <div className="flex justify-end">
