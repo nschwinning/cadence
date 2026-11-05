@@ -72,6 +72,49 @@ describe('buildBotValueOption', () => {
     ]);
   });
 
+  it('labels intraday axis ticks and tooltips in the local timezone', () => {
+    const ms = Date.parse('2026-01-06T15:05:00Z');
+    const option = buildBotValueOption(
+      [intradayPoint('2026-01-06T15:05:00Z', 10000)],
+      { resolution: '5min' },
+    ) as {
+      xAxis: { axisLabel: { formatter: (v: number) => string } };
+      tooltip: { formatter: (p: unknown) => string };
+    };
+
+    // Expected labels derived from the same Date via LOCAL getters, so the test
+    // passes in any CI timezone.
+    const d = new Date(ms);
+    const p2 = (n: number) => String(n).padStart(2, '0');
+    const expectedAxis = `${p2(d.getDate())}.${p2(d.getMonth() + 1)} ${p2(d.getHours())}:${p2(d.getMinutes())}`;
+    const expectedTooltip = `${p2(d.getDate())}.${p2(d.getMonth() + 1)}.${d.getFullYear()} ${p2(d.getHours())}:${p2(d.getMinutes())}`;
+
+    const axisLabel = option.xAxis.axisLabel.formatter(ms);
+    const tooltip = option.tooltip.formatter([
+      { axisValue: ms, value: [ms, 10000] },
+    ]);
+
+    expect(axisLabel).toBe(expectedAxis);
+    expect(tooltip).toContain(expectedTooltip);
+
+    // When local time differs from UTC, the label must NOT be the UTC clock value.
+    if (d.getTimezoneOffset() !== 0) {
+      expect(axisLabel).not.toBe('06.01 15:05'); // UTC-sliced form
+    }
+  });
+
+  it('labels daily ticks by calendar date with no clock-time or day shift', () => {
+    const option = buildBotValueOption(
+      [dailyPoint('2026-01-06', 10000), dailyPoint('2026-01-07', 10100)],
+      { resolution: 'daily' },
+    ) as { xAxis: { axisLabel: { formatter: (v: number) => string } } };
+
+    const label = option.xAxis.axisLabel.formatter(Date.parse('2026-01-06'));
+    // Date-only (no HH:mm), on the correct calendar day.
+    expect(label).not.toMatch(/\d{2}:\d{2}/);
+    expect(label).toContain('06');
+  });
+
   it('plots intraday points raw off their timestamps without carry-forward', () => {
     const series = (
       buildBotValueOption(
@@ -98,16 +141,20 @@ describe('BotValueChart', () => {
   it('renders the chart for at least two points', async () => {
     mockedGet.mockResolvedValue({
       data: {
-        items: [dailyPoint('2026-01-04', 10000), dailyPoint('2026-01-05', 10100)],
+        items: [
+          intradayPoint('2026-01-06T15:00:00Z', 10000),
+          intradayPoint('2026-01-06T15:05:00Z', 10100),
+        ],
         total: 2,
-        resolution: 'daily',
+        resolution: '5min',
       },
     });
 
     renderChart(<BotValueChart sessionId="b1" />);
 
+    // The chart opens at the 5-minute intraday resolution by default.
     expect(
-      await screen.findByRole('img', { name: /bot value over 2 daily points/i }),
+      await screen.findByRole('img', { name: /bot value over 2 5min points/i }),
     ).toBeInTheDocument();
   });
 
@@ -123,10 +170,10 @@ describe('BotValueChart', () => {
     ).toBeInTheDocument();
   });
 
-  it('refetches with the new resolution when the switcher changes', async () => {
-    // Route the mock by the requested resolution param (default = daily).
+  it('defaults to 5m and refetches with the new resolution when the switcher changes', async () => {
+    // Route the mock by the requested resolution param (default = 5min).
     mockedGet.mockImplementation((_url: string, config?: { params?: { resolution?: string } }) => {
-      const resolution = config?.params?.resolution ?? 'daily';
+      const resolution = config?.params?.resolution ?? '5min';
       return Promise.resolve({
         data: {
           items: [dailyPoint('2026-01-04', 10000), dailyPoint('2026-01-05', 10100)],
@@ -139,26 +186,34 @@ describe('BotValueChart', () => {
 
     renderChart(<BotValueChart sessionId="b1" />);
 
-    // Default load is daily.
-    await screen.findByRole('img', { name: /daily points/i });
+    // Default load is the 5-minute intraday resolution.
+    await screen.findByRole('img', { name: /5min points/i });
+    expect(mockedGet).toHaveBeenCalledWith(
+      expect.stringContaining('/value-history'),
+      expect.objectContaining({ params: { resolution: '5min' } }),
+    );
+    expect(screen.getByRole('button', { name: '5m' })).toHaveAttribute(
+      'aria-pressed',
+      'true',
+    );
 
-    await user.click(screen.getByRole('button', { name: '5m' }));
+    await user.click(screen.getByRole('button', { name: '1D' }));
 
     await waitFor(() => {
       expect(mockedGet).toHaveBeenCalledWith(
         expect.stringContaining('/value-history'),
-        expect.objectContaining({ params: { resolution: '5min' } }),
+        expect.objectContaining({ params: { resolution: 'daily' } }),
       );
     });
-    expect(screen.getByRole('button', { name: '5m' })).toHaveAttribute(
+    expect(screen.getByRole('button', { name: '1D' })).toHaveAttribute(
       'aria-pressed',
       'true',
     );
   });
 
-  it('marks the badge end-of-day for coarse resolutions and intraday for 5m', async () => {
+  it('marks the badge intraday for 5m by default and end-of-day for coarse resolutions', async () => {
     mockedGet.mockImplementation((_url: string, config?: { params?: { resolution?: string } }) => {
-      const resolution = config?.params?.resolution ?? 'daily';
+      const resolution = config?.params?.resolution ?? '5min';
       return Promise.resolve({
         data: {
           items: [dailyPoint('2026-01-04', 10000), dailyPoint('2026-01-05', 10100)],
@@ -171,21 +226,21 @@ describe('BotValueChart', () => {
 
     renderChart(<BotValueChart sessionId="b1" />);
 
-    // Default daily resolution reads the end-of-day snapshot curve.
-    await screen.findByRole('img', { name: /daily points/i });
-    expect(screen.getByTestId('freshness-eod')).toHaveTextContent(/end of day/i);
-    expect(screen.queryByTestId('freshness-intraday')).not.toBeInTheDocument();
-
-    // Switching to an intraday resolution flips the badge to "Intraday".
-    await user.click(screen.getByRole('button', { name: '5m' }));
-    expect(await screen.findByTestId('freshness-intraday')).toHaveTextContent(/intraday/i);
-    expect(screen.queryByTestId('freshness-eod')).not.toBeInTheDocument();
-    // Wait for the intraday load to settle so the switcher is back on screen.
+    // Default 5-minute resolution reads per-tick intraday points.
     await screen.findByRole('img', { name: /5min points/i });
+    expect(screen.getByTestId('freshness-intraday')).toHaveTextContent(/intraday/i);
+    expect(screen.queryByTestId('freshness-eod')).not.toBeInTheDocument();
 
-    // Switching back to a coarse resolution restores the end-of-day marker.
+    // Switching to a coarse resolution flips the badge to "End of day".
     await user.click(screen.getByRole('button', { name: '1D' }));
     expect(await screen.findByTestId('freshness-eod')).toHaveTextContent(/end of day/i);
     expect(screen.queryByTestId('freshness-intraday')).not.toBeInTheDocument();
+    // Wait for the daily load to settle so the switcher is back on screen.
+    await screen.findByRole('img', { name: /daily points/i });
+
+    // Switching back to an intraday resolution restores the intraday marker.
+    await user.click(screen.getByRole('button', { name: '5m' }));
+    expect(await screen.findByTestId('freshness-intraday')).toHaveTextContent(/intraday/i);
+    expect(screen.queryByTestId('freshness-eod')).not.toBeInTheDocument();
   });
 });

@@ -37,18 +37,24 @@ function isIntradayResolution(resolution: BotValueResolution): boolean {
   return resolution === '5min' || resolution === 'hourly';
 }
 
-/** `dd.MM HH:mm` axis label for an intraday epoch-ms point (UTC parts, no tz drift). */
+const pad2 = (n: number): string => String(n).padStart(2, '0');
+
+/**
+ * `dd.MM HH:mm` axis label for an intraday epoch-ms point, rendered in the
+ * viewer's local timezone so the chart's clock times match the trade timestamps
+ * shown elsewhere on the page (an intraday point is a true captured instant).
+ */
 function formatIntradayAxis(ms: number): string {
   if (!Number.isFinite(ms)) return '';
-  const iso = new Date(ms).toISOString();
-  return `${iso.slice(8, 10)}.${iso.slice(5, 7)} ${iso.slice(11, 16)}`;
+  const d = new Date(ms);
+  return `${pad2(d.getDate())}.${pad2(d.getMonth() + 1)} ${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
 }
 
-/** `dd.MM.yyyy HH:mm` tooltip label for an intraday epoch-ms point. */
+/** `dd.MM.yyyy HH:mm` tooltip label for an intraday epoch-ms point, in local time. */
 function formatIntradayTooltip(ms: number): string {
   if (!Number.isFinite(ms)) return '';
-  const iso = new Date(ms).toISOString();
-  return `${iso.slice(8, 10)}.${iso.slice(5, 7)}.${iso.slice(0, 4)} ${iso.slice(11, 16)}`;
+  const d = new Date(ms);
+  return `${pad2(d.getDate())}.${pad2(d.getMonth() + 1)}.${d.getFullYear()} ${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
 }
 
 export function trendOf(points: BotValuePoint[]): Trend {
@@ -212,7 +218,7 @@ function ResolutionSwitcher({
 
 /** Panel showing the bot session's value as a line chart at a chosen resolution. */
 export function BotValueChart({ sessionId }: { sessionId: string }) {
-  const [resolution, setResolution] = useState<BotValueResolution>('daily');
+  const [resolution, setResolution] = useState<BotValueResolution>('5min');
   const { data, isPending, isError } = useBotValueHistory(sessionId, resolution);
   const points = data?.items ?? [];
   return (

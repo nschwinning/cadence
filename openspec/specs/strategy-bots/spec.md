@@ -284,6 +284,16 @@ profit/loss, the session's **best and worst closed round-trip trade**, and a
 be computed within the strategy-bots subsystem and SHALL NOT depend on the paper-trading
 subsystem's persistence.
 
+The session's **current value** — and the unrealised profit/loss reported alongside it —
+SHALL reflect the **most recently captured value observation**: the latest per-tick
+intraday value point when it is more recent than the latest daily snapshot, otherwise the
+latest daily snapshot, otherwise cash plus open positions valued at cost when the session
+has neither. The KPIs SHALL additionally expose the **as-of timestamp** of that
+observation and whether it came from an intraday value point, and SHALL expose a separate
+**end-of-day value** equal to the session's latest daily snapshot total value, reported as
+absent when the session has no snapshot yet. No live broker or quote call SHALL be made to
+produce these figures.
+
 A closed round-trip trade is an entry (buy) paired with the exit (sell) that fully closes
 that position; its realized P&L is the exit proceeds minus the entry cost (net of fees).
 The **best** closed round-trip is the one with the highest realized P&L and the **worst**
@@ -311,6 +321,41 @@ comparison.
 - **WHEN** a client requests a bot session's KPIs
 - **THEN** the system SHALL return figures computed from that session's own ledger
   and snapshots, aggregated across its positions
+
+#### Scenario: Current value and unrealised P&L track the freshest observation
+
+- **WHEN** a client requests a bot session's KPIs and the session's latest intraday value
+  point is more recent than its latest daily snapshot
+- **THEN** the returned current value and unrealised profit/loss SHALL be taken from that
+  intraday value point, and the KPIs SHALL mark the value as intraday with the value
+  point's capture time as its as-of timestamp
+
+#### Scenario: Current value falls back to the latest snapshot
+
+- **WHEN** a client requests a bot session's KPIs and the latest daily snapshot is at
+  least as recent as any intraday value point (for example after the end-of-day snapshot
+  job, or when no intraday point exists)
+- **THEN** the returned current value and unrealised profit/loss SHALL be taken from that
+  daily snapshot, and the KPIs SHALL mark the value as not intraday with the snapshot's
+  timestamp as its as-of timestamp
+
+#### Scenario: Current value before any snapshot or value point
+
+- **WHEN** a client requests the KPIs for a session that has neither a daily snapshot nor
+  an intraday value point yet
+- **THEN** the returned current value SHALL be cash plus open positions valued at cost,
+  its unrealised profit/loss SHALL be zero, and its as-of timestamp SHALL be absent
+
+#### Scenario: KPIs include a separate end-of-day value
+
+- **WHEN** a client requests the KPIs for a session that has at least one daily snapshot
+- **THEN** the returned KPIs SHALL include an end-of-day value equal to the session's
+  latest daily snapshot total value, distinct from the (possibly intraday) current value
+
+#### Scenario: End-of-day value absent before any snapshot
+
+- **WHEN** a client requests the KPIs for a session that has no daily snapshot yet
+- **THEN** the returned end-of-day value SHALL be reported as absent
 
 #### Scenario: KPIs include available cash
 
@@ -348,23 +393,32 @@ comparison.
 
 ### Requirement: Session-list current value
 
-When the system lists bot sessions, each listed session SHALL include its current value —
-cash plus the marked-to-market value of its open positions — computed on the same basis as
-the per-session current-value KPI. The current value SHALL be derived from the session's
-latest recorded value snapshot when one exists, and SHALL fall back to cash plus open
-positions valued at cost when the session has no snapshot yet.
+When the system lists bot sessions, each listed session SHALL include a **live value** —
+cash plus the marked-to-market value of its open positions — derived from the most recently
+captured value observation on the same basis as the per-session current-value KPI: the
+latest intraday value point when more recent than the latest daily snapshot, otherwise the
+latest daily snapshot, otherwise cash plus open positions valued at cost. Each listed
+session SHALL additionally include a separate **end-of-day value** equal to its latest
+daily snapshot total value, reported as absent when the session has no snapshot yet.
 
 #### Scenario: Listed session carries its current value
 
 - **WHEN** a client lists bot sessions
-- **THEN** each listed session SHALL include its current value, computed as cash plus the
-  marked-to-market value of its open positions
+- **THEN** each listed session SHALL include its live value, derived from the most recently
+  captured value observation (latest intraday value point when more recent than the latest
+  daily snapshot, otherwise the latest snapshot)
+
+#### Scenario: Listed session carries its end-of-day value
+
+- **WHEN** a client lists bot sessions and a session has at least one daily snapshot
+- **THEN** that listed session SHALL include an end-of-day value equal to its latest daily
+  snapshot total value, distinct from its live value
 
 #### Scenario: Current value before any snapshot exists
 
 - **WHEN** a session that has not yet recorded a value snapshot is listed
-- **THEN** its current value SHALL be reported as cash plus its open positions valued at
-  cost
+- **THEN** its live value SHALL be reported as cash plus its open positions valued at cost,
+  and its end-of-day value SHALL be reported as absent
 
 ### Requirement: Open-positions sort order on the bot detail view
 
@@ -387,14 +441,57 @@ shown or any position's data.
 ### Requirement: Bot detail performance tiles
 
 The bot detail view's performance section SHALL present the session's KPIs as tiles,
-including a **benchmark-comparison tile** that shows the session's excess return as its
-primary figure and the benchmark's own return as a secondary figure, labelled with the
-benchmark's display name. The performance section SHALL NOT present a transaction-fees
-tile.
+including a distinct **live-value tile** (the session's most recently captured value,
+annotated with its as-of basis) and **end-of-day-value tile** (the session's latest daily
+snapshot value, or a neutral placeholder when no snapshot exists yet), and a
+**benchmark-comparison tile** that shows the session's excess return as its primary figure
+and the benchmark's own return as a secondary figure, labelled with the benchmark's display
+name. The performance section SHALL NOT present a transaction-fees tile, SHALL NOT present a
+separate allocated-capital tile (the allocated capital is already shown in the session
+header), and SHALL NOT label the whole performance section with a single freshness
+indicator — instead **each performance tile** SHALL carry its own freshness badge.
+
+Each performance tile's badge SHALL mark its figure as either **live** (marked-to-market
+and updating through the trading day) or **end-of-day** (derived from the latest daily
+snapshot, updating once per day after the close). Tiles whose figures derive from the
+daily snapshot series — the end-of-day-value, maximum-drawdown, Sharpe-ratio, and
+benchmark-comparison tiles — SHALL be marked end-of-day; the remaining current /
+marked-to-market tiles SHALL be marked live. The live-value, total-return, and
+unrealised-P&L tiles — whose figures come from the most recently captured value
+observation — SHALL reflect that observation's actual basis: live when it came from an
+intraday value point, end-of-day otherwise.
 
 When the benchmark comparison is unavailable (the session has no snapshot yet or the
 benchmark lacks usable closes), the benchmark-comparison tile SHALL render a neutral
 placeholder in place of the figures rather than an error.
+
+#### Scenario: Distinct live and end-of-day value tiles shown
+
+- **WHEN** a client views the performance section for a session
+- **THEN** the section SHALL show a live-value tile and a separate end-of-day-value tile,
+  and SHALL NOT show an allocated-capital tile or a single section-level freshness badge
+
+#### Scenario: Each performance tile carries a freshness badge
+
+- **WHEN** a client views the performance section for a session
+- **THEN** every performance tile SHALL carry a badge marking it as either live or
+  end-of-day, with the end-of-day-value, maximum-drawdown, Sharpe-ratio, and
+  benchmark-comparison tiles marked end-of-day and the remaining marked-to-market tiles
+  marked live
+
+#### Scenario: Observation-derived tiles reflect the live value's basis
+
+- **WHEN** a client views the performance section and the session's current value came
+  from an intraday value point
+- **THEN** the live-value, total-return, and unrealised-P&L tiles SHALL be badged live;
+  and when the current value instead came from a daily snapshot, those tiles SHALL be
+  badged end-of-day
+
+#### Scenario: End-of-day-value tile placeholder before any snapshot
+
+- **WHEN** a client views the performance section for a session that has no daily snapshot
+  yet
+- **THEN** the end-of-day-value tile SHALL render a neutral placeholder instead of a value
 
 #### Scenario: Benchmark-comparison tile shown
 
@@ -591,3 +688,52 @@ resolution SHALL update the indicator accordingly.
 - **WHEN** the user switches from an intraday resolution back to `daily` or
   `monthly`
 - **THEN** the freshness indicator SHALL mark the series as end-of-day again
+
+### Requirement: Bot value chart local-timezone labels
+
+The bot detail value chart SHALL label its intraday (`5min` and `hourly`) axis ticks and
+tooltips using the viewer's local timezone, so the chart's clock times agree with the trade
+timestamps and live-value times shown elsewhere on the same page (which already render in
+local time). For intraday resolutions the axis label SHALL be the point's local-time
+`dd.MM HH:mm` and the tooltip SHALL be its local-time `dd.MM.yyyy HH:mm`, derived from the
+point's captured instant rather than from UTC clock parts. The `daily` and `monthly`
+resolutions SHALL continue to label each point by its snapshot's calendar date (no clock
+time), unchanged by this requirement.
+
+#### Scenario: Intraday axis and tooltip use local time
+
+- **WHEN** the bot value chart is shown at `5min` or `hourly` resolution and a point was
+  captured at an instant whose local-timezone clock time differs from its UTC clock time
+- **THEN** the point's axis label SHALL be its local-time `dd.MM HH:mm` and its tooltip
+  SHALL be its local-time `dd.MM.yyyy HH:mm` — matching the page's trade timestamps — and
+  NOT the UTC clock value
+
+#### Scenario: Daily and monthly remain calendar-date labels
+
+- **WHEN** the bot value chart is shown at `daily` or `monthly` resolution
+- **THEN** each point SHALL continue to be labelled by its snapshot's calendar date, with
+  no clock-time component and no day shift
+
+### Requirement: Bot value chart default resolution
+
+When a viewer enters the bot detail page, the "Bot value" chart SHALL open at the
+`5min` intraday resolution by default, so the first view is the live intraday series
+rather than the coarse end-of-day snapshot curve. On this initial load the resolution
+switcher SHALL reflect `5m` as the active selection and the freshness indicator SHALL
+mark the series as intraday. The viewer SHALL still be able to switch to any other
+supported resolution (`hourly`, `daily`, `monthly`); the chosen default does not remove
+or reorder any switcher option.
+
+#### Scenario: Chart opens at the 5-minute resolution
+
+- **WHEN** a viewer enters the bot detail page and the value chart first loads
+- **THEN** the chart SHALL request and display the `5min` intraday resolution, the
+  resolution switcher SHALL show `5m` as the active selection, and the freshness
+  indicator SHALL mark the series as intraday
+
+#### Scenario: Viewer can still switch away from the default
+
+- **WHEN** the value chart has opened at its `5min` default and the viewer selects a
+  coarser resolution such as `daily`
+- **THEN** the chart SHALL load that resolution and its freshness indicator SHALL mark
+  the series as end-of-day, exactly as when any resolution is selected

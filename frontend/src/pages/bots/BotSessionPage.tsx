@@ -1,4 +1,4 @@
-import { useState, type ComponentProps } from 'react';
+import { useState, type ComponentProps, type ReactNode } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import {
   BOT_TRADES_PAGE_SIZE,
@@ -11,16 +11,18 @@ import {
 import { useBenchmarks } from '../../api/paperTrading';
 import { BotValueChart } from './BotValueChart';
 import { StatTile } from '../../components/dashboard/StatTile';
-import {
-  FreshnessBadge,
-  Panel,
-} from '../paper-trading/PaperTradingSessionPage';
+import { Panel } from '../paper-trading/PaperTradingSessionPage';
 import {
   formatCurrency,
   formatPercent,
   formatQuantity,
 } from '../../lib/format';
-import type { BotSession, BotTrade, TradeExtreme } from '../../types/api';
+import type {
+  BotKpis,
+  BotSession,
+  BotTrade,
+  TradeExtreme,
+} from '../../types/api';
 
 /** Status pill colors per bot status. */
 const STATUS_STYLES: Record<string, string> = {
@@ -43,6 +45,53 @@ function StatusBadge({ status }: { status: string }) {
 /** Format an ISO timestamp for display, or an em dash when absent. */
 function ts(value: string | null | undefined): string {
   return value ? new Date(value).toLocaleString() : '—';
+}
+
+/**
+ * Describe the freshness basis of the live-value figure: an intraday value point
+ * reads "as of HH:MM"; a daily snapshot reads "end-of-day basis"; before any
+ * observation the figure is marked at cost.
+ */
+function liveValueHint(kpis: BotKpis): string {
+  if (kpis.value_as_of === null) return 'Marked at cost';
+  if (!kpis.value_is_intraday) return 'End-of-day basis';
+  const time = new Date(kpis.value_as_of).toLocaleTimeString([], {
+    hour: '2-digit',
+    minute: '2-digit',
+  });
+  return `Intraday, as of ${time}`;
+}
+
+/**
+ * Freshness of an observation-derived figure (live value, total return, unrealised
+ * P&L): `live` when the current value came from an intraday value point, else `eod`.
+ */
+function valueFreshness(kpis: BotKpis): 'live' | 'eod' {
+  return kpis.value_is_intraday ? 'live' : 'eod';
+}
+
+/**
+ * A per-tile freshness badge: `live` (emerald) marks a marked-to-market figure that
+ * updates through the trading day; `eod` (grey) marks a figure derived from the latest
+ * daily snapshot. Shown on every performance tile so each figure's basis is explicit.
+ */
+function TileFreshnessBadge({ kind }: { kind: 'live' | 'eod' }) {
+  const live = kind === 'live';
+  return (
+    <span
+      data-testid={`tile-freshness-${kind}`}
+      title={
+        live
+          ? 'Live: marked to market from the most recent intraday value, so it updates through the trading day.'
+          : 'End of day: derived from the latest daily snapshot, so it updates once per day after the close.'
+      }
+      className={`inline-flex shrink-0 items-center rounded-full px-1.5 py-0.5 text-[0.6rem] font-medium ${
+        live ? 'bg-emerald-50 text-emerald-700' : 'bg-slate-100 text-slate-600'
+      }`}
+    >
+      {live ? 'Live' : 'EOD'}
+    </span>
+  );
 }
 
 /** Colour a P&L value green/red/neutral. */
@@ -97,13 +146,15 @@ function KpiTile(props: Omit<ComponentProps<typeof StatTile>, 'size'>) {
 function TradeExtremeTile({
   label,
   trade,
+  badge,
 }: {
   label: string;
   trade: TradeExtreme | null;
+  badge?: ReactNode;
 }) {
   if (trade === null) {
     return (
-      <KpiTile label={label} value="—" hint="No closed trades yet" />
+      <KpiTile label={label} value="—" hint="No closed trades yet" badge={badge} />
     );
   }
   return (
@@ -111,6 +162,7 @@ function TradeExtremeTile({
       label={label}
       value={<PnlValue value={trade.realised_pnl} />}
       hint={trade.ticker}
+      badge={badge}
     />
   );
 }
@@ -124,10 +176,12 @@ function BenchmarkTile({
   benchmark,
   benchmarkReturnPct,
   excessReturnPct,
+  badge,
 }: {
   benchmark: string;
   benchmarkReturnPct: number | null;
   excessReturnPct: number | null;
+  badge?: ReactNode;
 }) {
   const { data: benchmarks } = useBenchmarks();
   const catalog = Array.isArray(benchmarks) ? benchmarks : [];
@@ -135,7 +189,12 @@ function BenchmarkTile({
 
   if (benchmarkReturnPct === null || excessReturnPct === null) {
     return (
-      <KpiTile label={`vs ${name}`} value="—" hint="Needs a daily snapshot" />
+      <KpiTile
+        label={`vs ${name}`}
+        value="—"
+        hint="Needs a daily snapshot"
+        badge={badge}
+      />
     );
   }
   return (
@@ -147,6 +206,7 @@ function BenchmarkTile({
         </span>
       }
       hint={`Benchmark ${formatPercent(benchmarkReturnPct)}, buy & hold`}
+      badge={badge}
     />
   );
 }
@@ -313,25 +373,36 @@ function KpiRow({ sessionId }: { sessionId: string }) {
 
   return (
     <section role="group" aria-labelledby="bot-kpi-performance">
-      <div className="mb-3 flex items-center gap-2">
-        <h3
-          id="bot-kpi-performance"
-          className="text-sm font-semibold uppercase tracking-wide text-slate-500"
-        >
-          Performance
-        </h3>
-        <FreshnessBadge kind="live" />
-      </div>
+      <h3
+        id="bot-kpi-performance"
+        className="mb-3 text-sm font-semibold uppercase tracking-wide text-slate-500"
+      >
+        Performance
+      </h3>
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
-        <KpiTile label="Current value" value={formatCurrency(data.current_value)} />
+        <KpiTile
+          label="Live value"
+          value={formatCurrency(data.current_value)}
+          hint={liveValueHint(data)}
+          badge={<TileFreshnessBadge kind={valueFreshness(data)} />}
+        />
+        <KpiTile
+          label="End of day value"
+          value={
+            data.eod_value === null ? '—' : formatCurrency(data.eod_value)
+          }
+          hint={
+            data.eod_value === null
+              ? 'Needs a daily snapshot'
+              : 'Last daily snapshot'
+          }
+          badge={<TileFreshnessBadge kind="eod" />}
+        />
         <KpiTile
           label="Available cash"
           value={formatCurrency(data.cash)}
           hint="Free cash not deployed in open positions"
-        />
-        <KpiTile
-          label="Allocated capital"
-          value={formatCurrency(data.allocated_capital)}
+          badge={<TileFreshnessBadge kind="live" />}
         />
         <KpiTile
           label="Total return"
@@ -341,11 +412,13 @@ function KpiRow({ sessionId }: { sessionId: string }) {
             </span>
           }
           hint={<PnlValue value={data.total_return} />}
+          badge={<TileFreshnessBadge kind={valueFreshness(data)} />}
         />
         <KpiTile
           label="Maximum drawdown"
           value={maxDrawdown}
           hint="Peak-to-trough, daily NAV"
+          badge={<TileFreshnessBadge kind="eod" />}
         />
         <KpiTile
           label="Sharpe ratio"
@@ -355,23 +428,39 @@ function KpiRow({ sessionId }: { sessionId: string }) {
               ? 'Needs more daily history'
               : 'Annualised, from daily NAV'
           }
+          badge={<TileFreshnessBadge kind="eod" />}
         />
         <KpiTile
           label="Realised P&L"
           value={<PnlValue value={data.realised_pnl} />}
+          badge={<TileFreshnessBadge kind="live" />}
         />
         <KpiTile
           label="Unrealised P&L"
           value={<PnlValue value={data.unrealised_pnl} />}
+          badge={<TileFreshnessBadge kind={valueFreshness(data)} />}
         />
-        <TradeExtremeTile label="Best trade" trade={data.best_trade} />
-        <TradeExtremeTile label="Worst trade" trade={data.worst_trade} />
+        <TradeExtremeTile
+          label="Best trade"
+          trade={data.best_trade}
+          badge={<TileFreshnessBadge kind="live" />}
+        />
+        <TradeExtremeTile
+          label="Worst trade"
+          trade={data.worst_trade}
+          badge={<TileFreshnessBadge kind="live" />}
+        />
         <BenchmarkTile
           benchmark={data.benchmark}
           benchmarkReturnPct={data.benchmark_return_pct}
           excessReturnPct={data.excess_return_pct}
+          badge={<TileFreshnessBadge kind="eod" />}
         />
-        <KpiTile label="Total trades" value={String(data.total_trades)} />
+        <KpiTile
+          label="Total trades"
+          value={String(data.total_trades)}
+          badge={<TileFreshnessBadge kind="live" />}
+        />
       </div>
     </section>
   );

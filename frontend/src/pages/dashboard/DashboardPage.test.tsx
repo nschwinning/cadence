@@ -221,7 +221,7 @@ describe('DashboardPage', () => {
 
     // the Total value hero tile recomputes to just Portfolio A
     const totalTile = () =>
-      screen.getByText('Total value').closest('div') as HTMLElement;
+      screen.getByText('Total value').closest('div')!.parentElement as HTMLElement;
     await waitFor(() =>
       expect(within(totalTile()).getByText('$11,000.00')).toBeInTheDocument(),
     );

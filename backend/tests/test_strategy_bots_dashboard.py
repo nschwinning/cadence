@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 
 import pytest
 from sqlalchemy.orm import Session
@@ -16,6 +16,7 @@ from cadence.paper_trading.constants import Benchmark, SessionStatus
 from cadence.paper_trading.models import BenchmarkPrice
 from cadence.portfolios import service as portfolios_service
 from cadence.strategy_bots import service as bot_service
+from cadence.strategy_bots.models import BotValuePoint
 
 _TODAY = date(2026, 6, 15)
 _NOW = datetime(2026, 6, 15, 12, 0, tzinfo=UTC)
@@ -54,6 +55,105 @@ def _seed_benchmark(db_session: Session) -> None:
             BenchmarkPrice(benchmark=Benchmark.SP500.value, price_date=on, close=close)
         )
     db_session.flush()
+
+
+def _add_value_point(
+    db_session: Session,
+    bot: object,
+    *,
+    when: datetime,
+    value: float,
+    unrealised: float,
+) -> None:
+    db_session.add(
+        BotValuePoint(
+            session=bot,
+            captured_at=when,
+            total_value=value,
+            realised_pnl=0.0,
+            unrealised_pnl=unrealised,
+        )
+    )
+    db_session.flush()
+
+
+def test_dashboard_performance_uses_fresher_intraday_value(
+    db_session: Session,
+) -> None:
+    # A daily snapshot (value 100k, unrealised 0) plus a newer intraday point
+    # (value 105k, unrealised 5k): the row's live value comes from the point...
+    bot = _make_bot(db_session)
+    bot_service.record_bot_snapshot(
+        db_session, bot, marks={}, snapshot_date=date(2026, 6, 10)
+    )
+    _add_value_point(
+        db_session,
+        bot,
+        when=datetime.now(UTC) + timedelta(hours=1),
+        value=105_000.0,
+        unrealised=5_000.0,
+    )
+
+    perf = bot_service.dashboard_performance(
+        db_session, bot, range_=DashboardRange.MAX, today=_TODAY
+    )
+
+    assert perf.current_value == pytest.approx(105_000.0)
+    assert perf.unrealised_pnl == pytest.approx(5_000.0)
+    # ...while the plotted series stays the end-of-day daily snapshot.
+    assert [p.date for p in perf.points] == [date(2026, 6, 10)]
+    assert perf.points[0].value == pytest.approx(100_000.0)
+
+
+def test_dashboard_performance_value_fallbacks(db_session: Session) -> None:
+    # Snapshot only (no newer point): the row reports the latest snapshot value.
+    bot = _make_bot(db_session)
+    bot_service.record_bot_snapshot(
+        db_session, bot, marks={}, snapshot_date=date(2026, 6, 10)
+    )
+    perf = bot_service.dashboard_performance(
+        db_session, bot, range_=DashboardRange.MAX, today=_TODAY
+    )
+    assert perf.current_value == pytest.approx(100_000.0)
+
+    # Neither snapshot nor point: cost-marked value with a zero unrealised baseline.
+    # Reuse the already-inserted AAPL asset — a second bot, no new snapshot/point.
+    fresh = bot_service.create_bot_session(
+        db_session,
+        strategy_key="ma_crossover",
+        tickers=["AAPL"],
+        initial_capital=100_000.0,
+        benchmark="SP500",
+        strategy_params={"fast_period": 2, "slow_period": 3},
+    )
+    perf_fresh = bot_service.dashboard_performance(
+        db_session, fresh, range_=DashboardRange.MAX, today=_TODAY
+    )
+    assert perf_fresh.current_value == pytest.approx(100_000.0)
+    assert perf_fresh.unrealised_pnl == pytest.approx(0.0)
+
+
+def test_dashboard_performance_pnl_tracks_live_value(db_session: Session) -> None:
+    # On the MAX range the baseline is the allocated capital, so the range pnl
+    # follows the live (freshest-observation) current value, not the snapshot.
+    bot = _make_bot(db_session)
+    bot_service.record_bot_snapshot(
+        db_session, bot, marks={}, snapshot_date=date(2026, 6, 10)
+    )
+    _add_value_point(
+        db_session,
+        bot,
+        when=datetime.now(UTC) + timedelta(hours=1),
+        value=105_000.0,
+        unrealised=5_000.0,
+    )
+
+    perf = bot_service.dashboard_performance(
+        db_session, bot, range_=DashboardRange.MAX, today=_TODAY
+    )
+
+    assert perf.current_value == pytest.approx(105_000.0)
+    assert perf.pnl == pytest.approx(perf.current_value - 100_000.0)
 
 
 def test_dashboard_performance_shape(db_session: Session) -> None:

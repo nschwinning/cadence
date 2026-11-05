@@ -128,13 +128,16 @@ def test_list_and_get_session(
     listed = client.get("/api/v1/bots/sessions")
     assert listed.status_code == 200
     assert listed.json()["total"] == 1
-    # Each listed session carries its current value (cost-basis before any snapshot).
+    # Each listed session carries its live value (cost-basis before any snapshot) and
+    # a separate end-of-day value that is null until a daily snapshot exists.
     assert listed.json()["items"][0]["current_value"] == 100_000.0
+    assert listed.json()["items"][0]["eod_value"] is None
 
     detail = client.get(f"/api/v1/bots/sessions/{created['id']}")
     assert detail.status_code == 200
     assert detail.json()["id"] == created["id"]
     assert detail.json()["current_value"] == 100_000.0
+    assert detail.json()["eod_value"] is None
 
 
 def test_get_unknown_session_404(client: TestClient) -> None:
@@ -191,6 +194,10 @@ def test_kpis_value_history_and_trades(
     assert kpis.json()["benchmark"] == "SP500"
     assert kpis.json()["benchmark_return_pct"] is None
     assert kpis.json()["excess_return_pct"] is None
+    # Live-value freshness + separate end-of-day value: all absent before any snapshot.
+    assert kpis.json()["eod_value"] is None
+    assert kpis.json()["value_as_of"] is None
+    assert kpis.json()["value_is_intraday"] is False
 
     history = client.get(f"/api/v1/bots/sessions/{sid}/value-history")
     assert history.status_code == 200

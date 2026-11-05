@@ -150,6 +150,33 @@ class BotKpis:
     benchmark: str
     benchmark_return_pct: float | None
     excess_return_pct: float | None
+    #: End-of-day value: the session's latest daily snapshot total value, or ``None``
+    #: until a snapshot exists. Distinct from ``current_value``, which tracks the
+    #: freshest observation (an intraday value point when newer than the snapshot).
+    eod_value: float | None
+    #: When the current value was captured (an intraday value point's ``captured_at``
+    #: or a daily snapshot's ``created_at``), or ``None`` before any observation.
+    value_as_of: datetime | None
+    #: True when the current value came from an intraday value point rather than the
+    #: daily snapshot.
+    value_is_intraday: bool
+
+
+@dataclass(frozen=True)
+class ValueObservation:
+    """The most recently captured marked-to-market value of a session.
+
+    Either the latest per-tick ``bot_value_points`` row or the latest daily
+    ``bot_value_snapshots`` row — whichever was captured more recently.
+    """
+
+    total_value: float
+    realised_pnl: float
+    unrealised_pnl: float
+    #: When the observation was captured, normalised to UTC.
+    as_of: datetime
+    #: True when the observation came from an intraday value point.
+    is_intraday: bool
 
 
 def _trade_symbol(asset: Asset) -> str:
@@ -972,19 +999,87 @@ def _bot_sharpe(snapshots: list[BotValueSnapshot]) -> float | None:
     return paper_service.sharpe_ratio(returns, risk_free=daily_risk_free)
 
 
-def bot_current_value(session: Session, bot: BotSession) -> float:
-    """A session's current value: cash plus its marked-to-market open positions.
+def _as_utc(moment: datetime) -> datetime:
+    """Treat a naive timestamp as UTC so value observations compare safely."""
+    return moment if moment.tzinfo is not None else moment.replace(tzinfo=UTC)
 
-    Reads the session's latest recorded value snapshot when one exists (already
-    marked-to-market at capture); before any snapshot exists it falls back to cash
-    plus open positions valued at cost. This is the single source of truth for a
-    session's current value, shared by the per-session KPIs and the session list.
+
+def latest_value_observation(
+    session: Session, bot: BotSession
+) -> ValueObservation | None:
+    """The session's most recently captured value observation, or ``None``.
+
+    Compares the latest intraday ``bot_value_points`` row (by ``captured_at``) with the
+    latest daily ``bot_value_snapshots`` row (by ``created_at``) and returns whichever was
+    captured more recently — already marked-to-market at capture, so it carries a
+    consistent ``total_value``/``unrealised_pnl`` pair. The intraday point wins an
+    exact-timestamp tie. Returns ``None`` when the session has neither, making no live
+    broker or quote call. Shared by the per-session current value and KPIs.
+    """
+    latest_point = session.execute(
+        select(BotValuePoint)
+        .where(BotValuePoint.bot_session_id == bot.id)
+        .order_by(BotValuePoint.captured_at.desc(), BotValuePoint.id.desc())
+        .limit(1)
+    ).scalar_one_or_none()
+    snapshots = list_bot_snapshots(session, bot)
+    latest_snapshot = snapshots[-1] if snapshots else None
+
+    point_obs = (
+        ValueObservation(
+            total_value=latest_point.total_value,
+            realised_pnl=latest_point.realised_pnl,
+            unrealised_pnl=latest_point.unrealised_pnl,
+            as_of=_as_utc(latest_point.captured_at),
+            is_intraday=True,
+        )
+        if latest_point is not None
+        else None
+    )
+    snapshot_obs = (
+        ValueObservation(
+            total_value=latest_snapshot.total_value,
+            realised_pnl=latest_snapshot.realised_pnl,
+            unrealised_pnl=latest_snapshot.unrealised_pnl,
+            as_of=_as_utc(latest_snapshot.created_at),
+            is_intraday=False,
+        )
+        if latest_snapshot is not None
+        else None
+    )
+    if point_obs is None:
+        return snapshot_obs
+    if snapshot_obs is None:
+        return point_obs
+    # Both exist: the more recent wins; the intraday point wins an exact tie.
+    return point_obs if point_obs.as_of >= snapshot_obs.as_of else snapshot_obs
+
+
+def bot_current_value(session: Session, bot: BotSession) -> float:
+    """A session's live value: cash plus its marked-to-market open positions.
+
+    Returns the most recently captured value observation (the latest intraday value
+    point when newer than the latest daily snapshot, otherwise the latest snapshot —
+    both marked-to-market at capture); before any observation exists it falls back to
+    cash plus open positions valued at cost. This is the single source of truth for a
+    session's live value, shared by the per-session KPIs and the session list.
+    """
+    observation = latest_value_observation(session, bot)
+    if observation is not None:
+        return observation.total_value
+    # No snapshot or value point yet: cash plus positions marked at cost.
+    return total_value(bot, {})
+
+
+def bot_eod_value(session: Session, bot: BotSession) -> float | None:
+    """A session's end-of-day value: its latest daily snapshot total value, or ``None``.
+
+    Always the latest daily ``bot_value_snapshots`` row (independent of any newer
+    intraday value point), so it is the last end-of-day close rather than the live mark.
+    ``None`` until the session has recorded at least one snapshot.
     """
     snapshots = list_bot_snapshots(session, bot)
-    if snapshots:
-        return snapshots[-1].total_value
-    # No snapshot yet: cash plus positions marked at cost.
-    return total_value(bot, {})
+    return snapshots[-1].total_value if snapshots else None
 
 
 def bot_trade_extremes(
@@ -1037,14 +1132,18 @@ def bot_trade_extremes(
 def bot_session_kpis(session: Session, bot: BotSession) -> BotKpis:
     """Compute KPIs for a session from its own ledger and value snapshots."""
     snapshots = list_bot_snapshots(session, bot)
-    if snapshots:
-        latest = snapshots[-1]
-        current_value = latest.total_value
-        unrealised = latest.unrealised_pnl
+    observation = latest_value_observation(session, bot)
+    if observation is not None:
+        current_value = observation.total_value
+        unrealised = observation.unrealised_pnl
+        value_as_of: datetime | None = observation.as_of
+        value_is_intraday = observation.is_intraday
     else:
-        # No snapshot yet: cash plus positions marked at cost (zero unrealised).
+        # No snapshot or value point yet: cash plus positions marked at cost.
         current_value = total_value(bot, {})
         unrealised = 0.0
+        value_as_of = None
+        value_is_intraday = False
 
     total_return = current_value - bot.allocated_capital
     total_return_pct = (
@@ -1077,6 +1176,9 @@ def bot_session_kpis(session: Session, bot: BotSession) -> BotKpis:
         benchmark=bot.benchmark,
         benchmark_return_pct=benchmark_return_pct,
         excess_return_pct=excess_return_pct,
+        eod_value=snapshots[-1].total_value if snapshots else None,
+        value_as_of=value_as_of,
+        value_is_intraday=value_is_intraday,
     )
 
 
@@ -1101,9 +1203,14 @@ def dashboard_performance(
     snapshots = list_bot_snapshots(session, bot)
     allocated = bot.allocated_capital
 
-    if snapshots:
-        current_value = snapshots[-1].total_value
-        unrealised = snapshots[-1].unrealised_pnl
+    # Point-in-time value is the session's freshest captured observation (latest
+    # intraday value point when newer than the latest daily snapshot, else the
+    # snapshot), so bot rows are live on the same basis as AI rows — not pinned
+    # to the last end-of-day snapshot. The plotted series below stays daily.
+    observation = latest_value_observation(session, bot)
+    if observation is not None:
+        current_value = observation.total_value
+        unrealised = observation.unrealised_pnl
     else:
         current_value = total_value(bot, {})
         unrealised = 0.0

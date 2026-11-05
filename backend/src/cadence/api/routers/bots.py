@@ -60,6 +60,7 @@ def _to_read(db: Session, row: BotSession) -> BotSessionRead:
     """Serialise a bot session, marking its current value from the service."""
     read = BotSessionRead.model_validate(row)
     read.current_value = service.bot_current_value(db, row)
+    read.eod_value = service.bot_eod_value(db, row)
     return read
 
 

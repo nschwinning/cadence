@@ -1606,9 +1606,13 @@ class BotSessionRead(BaseModel):
     initial_capital: float
     allocated_capital: float
     cash: float
-    #: Current value (cash + marked-to-market positions). Not an ORM attribute; the
-    #: router sets it per row from ``service.bot_current_value`` (default until set).
+    #: Live value (cash + marked-to-market positions, freshest observation). Not an ORM
+    #: attribute; the router sets it per row from ``service.bot_current_value``.
     current_value: float = 0.0
+    #: End-of-day value: the session's latest daily snapshot total value, or ``None``
+    #: until a snapshot exists. Not an ORM attribute; set per row by the router from
+    #: ``service.bot_eod_value``.
+    eod_value: float | None = None
     sizing_method: str
     risk_pct: float
     atr_period: int
@@ -1676,6 +1680,15 @@ class BotKpisRead(BaseModel):
     benchmark: str
     benchmark_return_pct: float | None = None
     excess_return_pct: float | None = None
+    #: End-of-day value: the session's latest daily snapshot total value, or ``None``
+    #: until a snapshot exists. Distinct from ``current_value``, which tracks the
+    #: freshest observation (an intraday value point when newer than the snapshot).
+    eod_value: float | None = None
+    #: When the current value was captured (an intraday value point or a daily
+    #: snapshot), or ``None`` before any observation.
+    value_as_of: datetime | None = None
+    #: True when the current value came from an intraday value point.
+    value_is_intraday: bool = False
 
 
 class BotTradeRead(BaseModel):

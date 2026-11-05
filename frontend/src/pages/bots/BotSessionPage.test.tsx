@@ -25,6 +25,7 @@ const bot: BotSession = {
   allocated_capital: 10000,
   cash: 500,
   current_value: 10325,
+  eod_value: 10250,
   sizing_method: 'atr_risk',
   risk_pct: 0.01,
   atr_period: 14,
@@ -77,6 +78,9 @@ const kpis: BotKpis = {
   benchmark: 'SP500',
   benchmark_return_pct: 0.02,
   excess_return_pct: 0.0125,
+  eod_value: 10250,
+  value_as_of: '2026-10-05T18:00:00Z',
+  value_is_intraday: true,
 };
 
 const trade: BotTrade = {
@@ -94,9 +98,10 @@ const trade: BotTrade = {
 };
 
 /** Route every GET the detail page issues by URL suffix. */
-function routeGet(overrides: { session?: BotSession } = {}) {
+function routeGet(overrides: { session?: BotSession; kpis?: BotKpis } = {}) {
   return (url: string) => {
-    if (url.endsWith('/kpis')) return Promise.resolve({ data: kpis });
+    if (url.endsWith('/kpis'))
+      return Promise.resolve({ data: overrides.kpis ?? kpis });
     if (url.endsWith('/benchmarks'))
       return Promise.resolve({ data: [{ id: 'SP500', name: 'S&P 500' }] });
     if (url.endsWith('/value-history'))
@@ -105,6 +110,11 @@ function routeGet(overrides: { session?: BotSession } = {}) {
       return Promise.resolve({ data: { items: [trade], total: 1 } });
     return Promise.resolve({ data: overrides.session ?? bot });
   };
+}
+
+/** The tile card wrapping a given label (the label sits in a flex row inside it). */
+function tileOf(label: string): HTMLElement {
+  return screen.getByText(label).closest('div')!.parentElement as HTMLElement;
 }
 
 function renderDetail(ui: ReactNode) {
@@ -135,22 +145,42 @@ describe('BotSessionPage', () => {
     expect(
       await screen.findByRole('heading', { name: 'Apple crossover' }),
     ).toBeInTheDocument();
-    // KPI tiles.
-    expect(screen.getByText('$10,325.00')).toBeInTheDocument(); // current value
-    expect(screen.getByText('Available cash')).toBeInTheDocument();
+    // Live and end-of-day value tiles are distinct; the redundant "Allocated
+    // capital" tile is gone and the section carries no single freshness badge —
+    // each tile instead carries its own live/EOD badge.
+    const liveTile = tileOf('Live value');
+    expect(within(liveTile).getByText('$10,325.00')).toBeInTheDocument();
+    // The fixture's value came from an intraday point, so the live-value tile is
+    // badged live; the end-of-day tile is always badged EOD.
+    expect(within(liveTile).getByTestId('tile-freshness-live')).toBeInTheDocument();
+    const eodTile = tileOf('End of day value');
+    expect(within(eodTile).getByText('$10,250.00')).toBeInTheDocument();
+    expect(within(eodTile).getByTestId('tile-freshness-eod')).toBeInTheDocument();
+    expect(screen.queryByText('Allocated capital')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('freshness-live')).not.toBeInTheDocument();
+    // Snapshot-derived tiles are badged EOD; current/marked-to-market tiles live.
+    expect(
+      within(tileOf('Maximum drawdown')).getByTestId('tile-freshness-eod'),
+    ).toBeInTheDocument();
+    expect(
+      within(tileOf('Available cash')).getByTestId('tile-freshness-live'),
+    ).toBeInTheDocument();
     expect(screen.getByText('$737.00')).toBeInTheDocument(); // available cash
     expect(screen.getByText('3.25%')).toBeInTheDocument(); // total return pct
     // Best/worst closed round-trip tiles.
-    const best = screen.getByText('Best trade').closest('div') as HTMLElement;
+    const best = tileOf('Best trade');
     expect(within(best).getByText('$412.00')).toBeInTheDocument();
     expect(within(best).getByText('AAPL')).toBeInTheDocument();
-    const worst = screen.getByText('Worst trade').closest('div') as HTMLElement;
+    const worst = tileOf('Worst trade');
     expect(within(worst).getByText('-$88.00')).toBeInTheDocument();
     expect(within(worst).getByText('MSFT')).toBeInTheDocument();
     // Benchmark-comparison tile replaces the (always-$0) transaction-fees tile.
     const benchmarkTile = (
       await screen.findByText('vs S&P 500')
-    ).closest('div') as HTMLElement;
+    ).closest('div')!.parentElement as HTMLElement;
+    expect(
+      within(benchmarkTile).getByTestId('tile-freshness-eod'),
+    ).toBeInTheDocument();
     expect(within(benchmarkTile).getByText('1.25%')).toBeInTheDocument(); // excess
     expect(
       within(benchmarkTile).getByText('Benchmark 2.00%, buy & hold'),
@@ -160,6 +190,31 @@ describe('BotSessionPage', () => {
     const row = screen.getByText('fast SMA crossed above slow').closest('tr') as HTMLElement;
     expect(within(row).getByText('buy')).toBeInTheDocument();
     expect(within(row).getByText('filled')).toBeInTheDocument();
+  });
+
+  it('badges observation-derived tiles end-of-day when the value is not intraday', async () => {
+    mockedGet.mockImplementation(
+      routeGet({ kpis: { ...kpis, value_is_intraday: false } }),
+    );
+
+    renderDetail(<BotSessionPage />);
+
+    await screen.findByRole('heading', { name: 'Apple crossover' });
+    // When the current value came from a daily snapshot, the live-value,
+    // total-return and unrealised-P&L tiles are badged EOD, not live.
+    expect(
+      within(tileOf('Live value')).getByTestId('tile-freshness-eod'),
+    ).toBeInTheDocument();
+    expect(
+      within(tileOf('Total return')).getByTestId('tile-freshness-eod'),
+    ).toBeInTheDocument();
+    expect(
+      within(tileOf('Unrealised P&L')).getByTestId('tile-freshness-eod'),
+    ).toBeInTheDocument();
+    // Always-live tiles keep their live badge regardless of the value basis.
+    expect(
+      within(tileOf('Available cash')).getByTestId('tile-freshness-live'),
+    ).toBeInTheDocument();
   });
 
   it('renders the Sharpe ratio tile when a value is present', async () => {
@@ -230,7 +285,7 @@ describe('BotSessionPage', () => {
 
     const benchmarkTile = (
       await screen.findByText('vs S&P 500')
-    ).closest('div') as HTMLElement;
+    ).closest('div')!.parentElement as HTMLElement;
     expect(within(benchmarkTile).getByText('—')).toBeInTheDocument();
     expect(
       within(benchmarkTile).getByText('Needs a daily snapshot'),

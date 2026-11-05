@@ -30,6 +30,7 @@ export function StatTile({
   value,
   hint,
   size = 'default',
+  badge,
 }: {
   label: string;
   value: ReactNode;
@@ -37,10 +38,15 @@ export function StatTile({
   hint?: ReactNode;
   /** Visual density. `compact` suits dense KPI grids. */
   size?: StatTileSize;
+  /** Optional small element shown to the right of the label (e.g. a badge). */
+  badge?: ReactNode;
 }) {
   return (
     <div className={CARD_CLASS[size]}>
-      <p className={LABEL_CLASS[size]}>{label}</p>
+      <div className="flex items-start justify-between gap-1.5">
+        <p className={LABEL_CLASS[size]}>{label}</p>
+        {badge}
+      </div>
       <p className={VALUE_CLASS[size]}>{value}</p>
       {hint && <p className={HINT_CLASS[size]}>{hint}</p>}
     </div>

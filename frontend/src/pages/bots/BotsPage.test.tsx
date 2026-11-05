@@ -24,6 +24,7 @@ const bot: BotSession = {
   allocated_capital: 10000,
   cash: 10000,
   current_value: 10250,
+  eod_value: 10200,
   sizing_method: 'atr_risk',
   risk_pct: 0.01,
   atr_period: 14,
@@ -87,19 +88,35 @@ describe('BotsPage', () => {
     expect(within(row).getByText('active')).toBeInTheDocument();
     expect(within(row).getByText('3')).toBeInTheDocument();
     expect(within(row).getByText('$125.00')).toBeInTheDocument();
-    // The capital column shows current value, not the allocated-capital baseline.
-    expect(within(row).getByText('$10,250.00')).toBeInTheDocument();
+    // The row shows both the live value and the end-of-day snapshot value,
+    // not the allocated-capital baseline.
+    expect(within(row).getByText('$10,250.00')).toBeInTheDocument(); // live
+    expect(within(row).getByText('$10,200.00')).toBeInTheDocument(); // end of day
     expect(within(row).queryByText('$10,000.00')).not.toBeInTheDocument();
   });
 
-  it('labels the value column "Current value"', async () => {
+  it('shows an em dash for a bot without an end-of-day snapshot', async () => {
+    mockedGet.mockImplementation(routeGet([{ ...bot, eod_value: null }]));
+
+    renderWithClient(<BotsPage />);
+
+    const link = await screen.findByRole('link', { name: 'Apple crossover' });
+    const row = link.closest('tr') as HTMLElement;
+    expect(within(row).getByText('$10,250.00')).toBeInTheDocument(); // live
+    expect(within(row).getByText('—')).toBeInTheDocument();
+  });
+
+  it('labels the value columns "Live value" and "End of day"', async () => {
     mockedGet.mockImplementation(routeGet([bot]));
 
     renderWithClient(<BotsPage />);
 
     await screen.findByRole('link', { name: 'Apple crossover' });
     expect(
-      screen.getByRole('columnheader', { name: 'Current value' }),
+      screen.getByRole('columnheader', { name: 'Live value' }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole('columnheader', { name: 'End of day' }),
     ).toBeInTheDocument();
   });
 

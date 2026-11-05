@@ -580,6 +580,154 @@ def test_bot_current_value_falls_back_to_cost_without_snapshot(
     assert service.bot_current_value(db_session, bot) == pytest.approx(100_000.0)
 
 
+def _add_value_point_full(
+    db_session: Session,
+    bot: BotSession,
+    *,
+    when: datetime,
+    value: float,
+    unrealised: float,
+) -> None:
+    db_session.add(
+        BotValuePoint(
+            session=bot,
+            captured_at=when,
+            total_value=value,
+            realised_pnl=0.0,
+            unrealised_pnl=unrealised,
+        )
+    )
+    db_session.flush()
+
+
+def test_latest_value_observation_prefers_newer_intraday_point(
+    db_session: Session,
+) -> None:
+    _add_asset(db_session)
+    bot = _create(db_session)
+    service.record_bot_snapshot(
+        db_session, bot, marks={}, snapshot_date=date(2026, 1, 6)
+    )
+    # A value point captured after the snapshot's created_at (≈ now) is the freshest.
+    future = datetime.now(UTC) + timedelta(hours=1)
+    _add_value_point_full(
+        db_session, bot, when=future, value=102_000.0, unrealised=1_500.0
+    )
+
+    obs = service.latest_value_observation(db_session, bot)
+    assert obs is not None
+    assert obs.is_intraday is True
+    assert obs.total_value == pytest.approx(102_000.0)
+    assert obs.unrealised_pnl == pytest.approx(1_500.0)
+    assert obs.as_of == future
+
+
+def test_latest_value_observation_prefers_snapshot_when_newer(
+    db_session: Session,
+) -> None:
+    _add_asset(db_session)
+    bot = _create(db_session)
+    _add_position(db_session, bot, "AAPL", qty=100.0, avg=50.0)
+    service.record_bot_snapshot(
+        db_session, bot, marks={"AAPL": 60.0}, snapshot_date=date(2026, 1, 6)
+    )
+    # A stale intraday point from yesterday loses to the just-written snapshot.
+    stale = datetime.now(UTC) - timedelta(days=1)
+    _add_value_point_full(
+        db_session, bot, when=stale, value=99_000.0, unrealised=-100.0
+    )
+
+    obs = service.latest_value_observation(db_session, bot)
+    assert obs is not None
+    assert obs.is_intraday is False
+    assert obs.total_value == pytest.approx(101_000.0)
+    assert obs.unrealised_pnl == pytest.approx(1_000.0)
+
+
+def test_latest_value_observation_none_without_any_data(
+    db_session: Session,
+) -> None:
+    _add_asset(db_session)
+    bot = _create(db_session)
+    assert service.latest_value_observation(db_session, bot) is None
+
+
+def test_bot_current_value_prefers_newer_intraday_point(
+    db_session: Session,
+) -> None:
+    _add_asset(db_session)
+    bot = _create(db_session)
+    service.record_bot_snapshot(
+        db_session, bot, marks={}, snapshot_date=date(2026, 1, 6)
+    )
+    future = datetime.now(UTC) + timedelta(hours=1)
+    _add_value_point_full(
+        db_session, bot, when=future, value=103_000.0, unrealised=0.0
+    )
+
+    assert service.bot_current_value(db_session, bot) == pytest.approx(103_000.0)
+
+
+def test_bot_eod_value_is_latest_snapshot_or_none(db_session: Session) -> None:
+    _add_asset(db_session)
+    bot = _create(db_session)
+    assert service.bot_eod_value(db_session, bot) is None
+
+    _add_position(db_session, bot, "AAPL", qty=100.0, avg=50.0)
+    service.record_bot_snapshot(
+        db_session, bot, marks={"AAPL": 60.0}, snapshot_date=date(2026, 1, 6)
+    )
+    # Latest snapshot total: cash 95000 + 100 * 60 = 101000, even if a newer
+    # intraday point exists (eod value is the snapshot specifically).
+    _add_value_point_full(
+        db_session,
+        bot,
+        when=datetime.now(UTC) + timedelta(hours=1),
+        value=102_000.0,
+        unrealised=1_500.0,
+    )
+    assert service.bot_eod_value(db_session, bot) == pytest.approx(101_000.0)
+
+
+def test_kpis_prefer_newer_intraday_point_and_expose_eod_value(
+    db_session: Session,
+) -> None:
+    _add_asset(db_session)
+    bot = _create(db_session)
+    _add_position(db_session, bot, "AAPL", qty=100.0, avg=50.0)
+    service.record_bot_snapshot(
+        db_session, bot, marks={"AAPL": 60.0}, snapshot_date=date(2026, 1, 6)
+    )
+    future = datetime.now(UTC) + timedelta(hours=1)
+    _add_value_point_full(
+        db_session, bot, when=future, value=102_000.0, unrealised=1_500.0
+    )
+
+    kpis = service.bot_session_kpis(db_session, bot)
+    # Current value / unrealised come from the fresher intraday point…
+    assert kpis.current_value == pytest.approx(102_000.0)
+    assert kpis.unrealised_pnl == pytest.approx(1_500.0)
+    assert kpis.value_is_intraday is True
+    assert kpis.value_as_of == future
+    assert kpis.total_return == pytest.approx(2_000.0)
+    # …while the end-of-day value stays pinned to the latest daily snapshot.
+    assert kpis.eod_value == pytest.approx(101_000.0)
+
+
+def test_kpis_without_observation_mark_at_cost(db_session: Session) -> None:
+    _add_asset(db_session)
+    bot = _create(db_session)
+    _add_position(db_session, bot, "AAPL", qty=100.0, avg=50.0)
+
+    kpis = service.bot_session_kpis(db_session, bot)
+    # No snapshot and no value point: cost-marked, no freshness, no eod value.
+    assert kpis.current_value == pytest.approx(100_000.0)
+    assert kpis.unrealised_pnl == 0.0
+    assert kpis.value_as_of is None
+    assert kpis.value_is_intraday is False
+    assert kpis.eod_value is None
+
+
 # Trades-on-day count (Task 2.1) -----------------------------------------
 def _add_trade(
     db_session: Session, bot: BotSession, *, when: datetime, ticker: str = "AAPL"

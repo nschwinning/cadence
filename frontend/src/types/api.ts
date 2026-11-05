@@ -1347,8 +1347,10 @@ export interface BotSession {
   initial_capital: number;
   allocated_capital: number;
   cash: number;
-  /** Current value: cash plus marked-to-market positions (latest snapshot, cost fallback). */
+  /** Live value: cash plus marked-to-market positions (freshest observation, cost fallback). */
   current_value: number;
+  /** End-of-day value: the latest daily snapshot total value, or null until a snapshot exists. */
+  eod_value: number | null;
   sizing_method: string;
   risk_pct: number;
   atr_period: number;
@@ -1401,6 +1403,12 @@ export interface BotKpis {
   benchmark_return_pct: number | null;
   /** The session's excess return fraction (total return minus the benchmark's); null until a snapshot exists. */
   excess_return_pct: number | null;
+  /** End-of-day value: the latest daily snapshot total value, or null until a snapshot exists. */
+  eod_value: number | null;
+  /** When the current value was captured (intraday point or daily snapshot); null before any observation. */
+  value_as_of: string | null;
+  /** True when the current value came from an intraday value point. */
+  value_is_intraday: boolean;
 }
 
 /** A single closed round-trip trade: its ticker and realized P&L. Mirrors `TradeExtremeRead`. */
