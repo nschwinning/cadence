@@ -59,17 +59,46 @@ describe('buildBotValueOption', () => {
   });
 
   it('carries the daily line flat to the horizon over a trailing weekend', () => {
-    const series = (
-      buildBotValueOption(
-        [dailyPoint('2026-01-08', 10000), dailyPoint('2026-01-09', 10100)],
-        { resolution: 'daily', horizon: '2026-01-11' },
-      ).series ?? []
-    ) as Array<{ id: string; data: [number, number | null][] }>;
-    expect(series[0].data).toEqual([
-      [Date.parse('2026-01-08'), 10000],
-      [Date.parse('2026-01-09'), 10100],
-      [Date.parse('2026-01-11'), 10100], // carried flat from Friday
-    ]);
+    const option = buildBotValueOption(
+      [dailyPoint('2026-01-08', 10000), dailyPoint('2026-01-09', 10100)],
+      { resolution: 'daily', horizon: '2026-01-11' },
+    ) as {
+      xAxis: { type: string; data: string[] };
+      series: Array<{ id: string; data: (number | null)[] }>;
+    };
+    // Category axis: one label per period, values aligned to those categories.
+    expect(option.xAxis.type).toBe('category');
+    expect(option.xAxis.data).toEqual(['08.01', '09.01', '11.01']);
+    expect(option.series[0].data).toEqual([10000, 10100, 10100]); // carried flat
+  });
+
+  it('shows exactly one daily category per consecutive date with its own value', () => {
+    const option = buildBotValueOption(
+      [dailyPoint('2026-11-03', 10000), dailyPoint('2026-11-04', 10200)],
+      { resolution: 'daily', horizon: '2026-11-04' },
+    ) as {
+      xAxis: { type: string; data: string[] };
+      series: Array<{ data: (number | null)[] }>;
+    };
+    // No repeated date label and no neighbour-day value bleed.
+    expect(option.xAxis.type).toBe('category');
+    expect(option.xAxis.data).toEqual(['03.11', '04.11']);
+    expect(new Set(option.xAxis.data).size).toBe(option.xAxis.data.length);
+    expect(option.series[0].data).toEqual([10000, 10200]);
+  });
+
+  it('shows one monthly category per calendar month', () => {
+    // Backend hands monthly as one point per month; the axis keeps one label each.
+    const option = buildBotValueOption(
+      [dailyPoint('2026-09-30', 10000), dailyPoint('2026-10-31', 10500)],
+      { resolution: 'monthly', horizon: '2026-10-31' },
+    ) as {
+      xAxis: { type: string; data: string[] };
+      series: Array<{ data: (number | null)[] }>;
+    };
+    expect(option.xAxis.type).toBe('category');
+    expect(option.xAxis.data).toEqual(['30.09', '31.10']);
+    expect(option.series[0].data).toEqual([10000, 10500]);
   });
 
   it('labels intraday axis ticks and tooltips in the local timezone', () => {
@@ -107,12 +136,23 @@ describe('buildBotValueOption', () => {
     const option = buildBotValueOption(
       [dailyPoint('2026-01-06', 10000), dailyPoint('2026-01-07', 10100)],
       { resolution: 'daily' },
-    ) as { xAxis: { axisLabel: { formatter: (v: number) => string } } };
+    ) as { xAxis: { data: string[] } };
 
-    const label = option.xAxis.axisLabel.formatter(Date.parse('2026-01-06'));
-    // Date-only (no HH:mm), on the correct calendar day.
-    expect(label).not.toMatch(/\d{2}:\d{2}/);
-    expect(label).toContain('06');
+    // Category labels are date-only (no HH:mm), on the correct calendar day — and
+    // derived from the ISO date parts so they never shift under a viewer's zone.
+    expect(option.xAxis.data).toEqual(['06.01', '07.01']);
+    option.xAxis.data.forEach((label) => expect(label).not.toMatch(/\d{2}:\d{2}/));
+  });
+
+  it('reads the daily tooltip date from the hovered category, not an epoch', () => {
+    const option = buildBotValueOption(
+      [dailyPoint('2026-11-03', 10000), dailyPoint('2026-11-04', 10200)],
+      { resolution: 'daily', horizon: '2026-11-04' },
+    ) as { tooltip: { formatter: (p: unknown) => string } };
+
+    const tooltip = option.tooltip.formatter([{ dataIndex: 1, value: 10200 }]);
+    expect(tooltip).toContain('04.11.2026');
+    expect(tooltip).toContain('Bot value');
   });
 
   it('plots intraday points raw off their timestamps without carry-forward', () => {

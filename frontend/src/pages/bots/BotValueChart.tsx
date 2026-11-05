@@ -3,9 +3,9 @@ import type { EChartsCoreOption } from 'echarts/core';
 import { useBotValueHistory } from '../../api/bots';
 import type { BotValuePoint, BotValueResolution } from '../../types/api';
 import {
-  formatAxisTimestamp,
+  formatAxisDate,
   formatCurrency,
-  formatTooltipTimestamp,
+  formatTooltipDate,
 } from '../../lib/format';
 import {
   carryForwardSeries,
@@ -82,62 +82,91 @@ export function buildBotValueOption(
   const trendStroke = TREND_STROKE[trendOf(points)];
   const intraday = isIntradayResolution(resolution);
 
-  let data: [number, number][];
+  const yAxis = {
+    type: 'value' as const,
+    scale: true,
+    axisLabel: { formatter: (v: number) => formatCurrency(v) },
+  };
+  const series = {
+    id: 'value',
+    name: 'Bot value',
+    type: 'line' as const,
+    showSymbol: false,
+    lineStyle: { width: 2 },
+    itemStyle: { color: trendStroke },
+  };
+
   if (intraday) {
-    data = points.map((p) => [Date.parse(p.timestamp), p.total_value]);
-  } else {
-    const dated = points.map((p) => ({
-      date: p.timestamp.slice(0, 10),
-      value: p.total_value,
-    }));
-    const axis = unionDateAxis([dated.map((d) => d.date)], horizon);
-    data = carryForwardSeries(dated, axis).map((p) => [
-      Date.parse(p.date),
-      p.value,
+    // Intraday: true captured instants on a local-time `type:'time'` axis, no
+    // overnight-gap carry-forward (a closed-market bridge would be misleading).
+    const data: [number, number][] = points.map((p) => [
+      Date.parse(p.timestamp),
+      p.total_value,
     ]);
+    return {
+      grid: { left: 64, right: 16, top: 12, bottom: 28 },
+      xAxis: {
+        type: 'time',
+        axisLabel: {
+          hideOverlap: true,
+          formatter: (v: number) => formatIntradayAxis(v),
+        },
+      },
+      yAxis,
+      tooltip: {
+        trigger: 'axis',
+        formatter: (params: unknown) => {
+          const rows = Array.isArray(params) ? params : [params];
+          if (rows.length === 0) return '';
+          const first = rows[0] as { axisValue?: number; value?: [number, number] };
+          const header = formatIntradayTooltip(Number(first.axisValue));
+          const raw = Array.isArray(first.value) ? first.value[1] : null;
+          if (raw === null || !Number.isFinite(raw)) return header;
+          return `${header}<br/>Bot value: ${formatCurrency(raw)}`;
+        },
+      },
+      series: [{ ...series, data }],
+    };
   }
+
+  // Daily/monthly: one end-of-day value per calendar period on a `type:'category'`
+  // axis. A category axis renders exactly one tick per supplied label, so there is
+  // no sub-day tick generation and no local-vs-UTC placement ambiguity — the dates
+  // cannot be duplicated or bled onto a neighbouring period by the viewer's zone.
+  // Carry-forward-to-horizon still runs to extend the curve flat to today (ET).
+  const dated = points.map((p) => ({
+    date: p.timestamp.slice(0, 10),
+    value: p.total_value,
+  }));
+  const axis = unionDateAxis([dated.map((d) => d.date)], horizon);
+  const carried = carryForwardSeries(dated, axis);
+  const categoryDates = carried.map((p) => p.date);
+  const categoryLabels = categoryDates.map(formatAxisDate);
+  const data = carried.map((p) => p.value);
 
   return {
     grid: { left: 64, right: 16, top: 12, bottom: 28 },
     xAxis: {
-      type: 'time',
-      axisLabel: {
-        hideOverlap: true,
-        formatter: (v: number) =>
-          intraday ? formatIntradayAxis(v) : formatAxisTimestamp(v),
-      },
+      type: 'category',
+      data: categoryLabels,
+      axisLabel: { hideOverlap: true },
     },
-    yAxis: {
-      type: 'value',
-      scale: true,
-      axisLabel: { formatter: (v: number) => formatCurrency(v) },
-    },
+    yAxis,
     tooltip: {
       trigger: 'axis',
       formatter: (params: unknown) => {
         const rows = Array.isArray(params) ? params : [params];
         if (rows.length === 0) return '';
-        const first = rows[0] as { axisValue?: number; value?: [number, number] };
-        const ms = Number(first.axisValue);
-        const header = intraday
-          ? formatIntradayTooltip(ms)
-          : formatTooltipTimestamp(ms);
-        const raw = Array.isArray(first.value) ? first.value[1] : null;
+        const first = rows[0] as { dataIndex?: number; value?: number };
+        const idx = Number(first.dataIndex);
+        const iso = categoryDates[idx];
+        const header = iso ? formatTooltipDate(iso) : '';
+        const raw = typeof first.value === 'number' ? first.value : null;
         if (raw === null || !Number.isFinite(raw)) return header;
         return `${header}<br/>Bot value: ${formatCurrency(raw)}`;
       },
     },
-    series: [
-      {
-        id: 'value',
-        name: 'Bot value',
-        type: 'line',
-        showSymbol: false,
-        lineStyle: { width: 2 },
-        itemStyle: { color: trendStroke },
-        data,
-      },
-    ],
+    series: [{ ...series, data }],
   };
 }
 
