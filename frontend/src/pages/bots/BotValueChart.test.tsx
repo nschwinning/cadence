@@ -58,6 +58,32 @@ describe('buildBotValueOption', () => {
     expect((series[0].itemStyle as { color: string }).color).toBe('#059669');
   });
 
+  it('carries slider + inside zoom and toolbox box-zoom/reset in both branches', () => {
+    for (const option of [
+      buildBotValueOption(
+        [dailyPoint('2026-01-04', 10000), dailyPoint('2026-01-05', 11000)],
+        { resolution: 'daily' },
+      ) as Record<string, unknown>,
+      buildBotValueOption(
+        [
+          intradayPoint('2026-01-05T14:30:00Z', 10000),
+          intradayPoint('2026-01-05T15:00:00Z', 10100),
+        ],
+        { resolution: '5min' },
+      ) as Record<string, unknown>,
+    ]) {
+      const dataZoom = option.dataZoom as Array<{ type?: string }> | undefined;
+      expect(dataZoom?.map((z) => z.type)).toEqual(
+        expect.arrayContaining(['inside', 'slider']),
+      );
+      const toolbox = option.toolbox as
+        | { feature?: { dataZoom?: unknown; restore?: unknown } }
+        | undefined;
+      expect(toolbox?.feature?.dataZoom).toBeDefined();
+      expect(toolbox?.feature?.restore).toBeDefined();
+    }
+  });
+
   it('carries the daily line flat to the horizon over a trailing weekend', () => {
     const option = buildBotValueOption(
       [dailyPoint('2026-01-08', 10000), dailyPoint('2026-01-09', 10100)],

@@ -8,7 +8,10 @@
  * keep the line visible and comparable, we carry each series' last recorded value
  * forward across dates it has no snapshot for (a flat segment equal to the
  * preceding trading day's value) and extend the shared axis to a trailing horizon
- * of "today". This is a presentation-only fill — stored snapshots are untouched.
+ * of "yesterday" (ET). These are end-of-day charts, so they never plot a point for
+ * today — today's snapshot does not exist until the end-of-day job runs — but the
+ * carry-forward still fills any closed-market gap up to yesterday. This is a
+ * presentation-only fill — stored snapshots are untouched.
  *
  * Mirrors the pure-aggregation pattern in `pages/dashboard/aggregate.ts`.
  */
@@ -21,8 +24,8 @@ export interface DatedValue {
 
 /**
  * The current calendar date in `America/New_York`, formatted as `YYYY-MM-DD` so
- * it sorts and compares lexicographically against snapshot date strings. Used as
- * the trailing carry-forward horizon. `now` is injectable for deterministic tests.
+ * it sorts and compares lexicographically against snapshot date strings. `now` is
+ * injectable for deterministic tests.
  */
 export function todayEt(now: Date = new Date()): string {
   // `en-CA` renders as `YYYY-MM-DD`; the ET time zone matches how snapshots are keyed.
@@ -32,6 +35,23 @@ export function todayEt(now: Date = new Date()): string {
     month: '2-digit',
     day: '2-digit',
   }).format(now);
+}
+
+/**
+ * The calendar date before `todayEt`, as `YYYY-MM-DD`. Used as the trailing
+ * carry-forward horizon for end-of-day charts: they extend the axis only up to
+ * yesterday, because today has no end-of-day snapshot yet. Computed by one-day
+ * arithmetic on the ET calendar date string (via a UTC date so it is DST-safe and
+ * independent of the viewer's local time zone). `now` is injectable for tests.
+ */
+export function yesterdayEt(now: Date = new Date()): string {
+  const [year, month, day] = todayEt(now).split('-').map(Number);
+  const dt = new Date(Date.UTC(year, month - 1, day));
+  dt.setUTCDate(dt.getUTCDate() - 1);
+  const y = dt.getUTCFullYear();
+  const m = String(dt.getUTCMonth() + 1).padStart(2, '0');
+  const d = String(dt.getUTCDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
 }
 
 /**

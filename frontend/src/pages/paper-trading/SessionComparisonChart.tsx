@@ -11,10 +11,15 @@ import {
 import { categoricalColor } from '../../lib/palette';
 import {
   carryForwardSeries,
-  todayEt,
   unionDateAxis,
+  yesterdayEt,
 } from '../../lib/carryForward';
 import { EChart } from '../../components/charts/EChart';
+import {
+  ZOOM_DATA_ZOOM,
+  ZOOM_GRID,
+  ZOOM_TOOLBOX,
+} from '../../components/charts/zoom';
 import { Panel } from './PaperTradingSessionPage';
 
 /** Which metric the comparison chart plots. */
@@ -113,7 +118,9 @@ export function buildComparisonOption(
   const plottable = series.filter(isPlotted);
   const isReturn = metric === 'return';
   return {
-    grid: { left: 64, right: 16, top: 12, bottom: 28 },
+    grid: ZOOM_GRID,
+    dataZoom: ZOOM_DATA_ZOOM,
+    toolbox: ZOOM_TOOLBOX,
     xAxis: {
       type: 'time',
       axisLabel: {
@@ -220,7 +227,7 @@ export function SessionComparisonChart() {
   const { data, isPending, isError } = useSessionsValueComparison();
   const sessions = data?.sessions ?? [];
   const series = useMemo(
-    () => buildComparisonSeries(sessions, metric, todayEt()),
+    () => buildComparisonSeries(sessions, metric, yesterdayEt()),
     [sessions, metric],
   );
   const plottable = series.filter(isPlotted);
@@ -280,7 +287,7 @@ export function SessionComparisonChart() {
           <EChart
             key={metric}
             option={option}
-            height={200}
+            height={260}
             className="w-full"
             ariaLabel={`Session comparison by ${
               metric === 'return' ? 'return percent' : 'portfolio value'

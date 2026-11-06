@@ -9,10 +9,15 @@ import {
 } from '../../lib/format';
 import {
   carryForwardSeries,
-  todayEt,
   unionDateAxis,
+  yesterdayEt,
 } from '../../lib/carryForward';
 import { EChart } from '../../components/charts/EChart';
+import {
+  ZOOM_DATA_ZOOM,
+  ZOOM_GRID,
+  ZOOM_TOOLBOX,
+} from '../../components/charts/zoom';
 import { FreshnessBadge, Panel } from './PaperTradingSessionPage';
 
 /** Stroke colour by the equity curve's overall direction (first → last value). */
@@ -114,7 +119,9 @@ export function buildValueOption(
   }
 
   return {
-    grid: { left: 64, right: 16, top: 12, bottom: 28 },
+    grid: ZOOM_GRID,
+    dataZoom: ZOOM_DATA_ZOOM,
+    toolbox: ZOOM_TOOLBOX,
     xAxis: {
       type: 'time',
       axisLabel: {
@@ -163,7 +170,8 @@ function ValueCurve({ snapshots }: { snapshots: SessionValueSnapshot[] }) {
   // Only build the option once there is something to plot; buildValueOption reads
   // the first/last snapshot for the trend colour and would throw on an empty list.
   const option = useMemo(
-    () => (snapshots.length >= 2 ? buildValueOption(snapshots, todayEt()) : null),
+    () =>
+      snapshots.length >= 2 ? buildValueOption(snapshots, yesterdayEt()) : null,
     [snapshots],
   );
   if (snapshots.length < 2 || option === null) {
@@ -177,7 +185,7 @@ function ValueCurve({ snapshots }: { snapshots: SessionValueSnapshot[] }) {
     <div>
       <EChart
         option={option}
-        height={200}
+        height={260}
         className="w-full"
         ariaLabel={`Portfolio value over the last ${snapshots.length} daily snapshots`}
       />

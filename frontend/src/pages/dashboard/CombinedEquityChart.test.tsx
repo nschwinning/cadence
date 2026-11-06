@@ -3,19 +3,20 @@ import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { CombinedEquityChart, buildCombinedOption } from './CombinedEquityChart';
 import { makeSession, makeBotSession } from './fixtures';
-import { todayEt } from '../../lib/carryForward';
+import { yesterdayEt } from '../../lib/carryForward';
 import type { DashboardBenchmarkSeries } from '../../types/api';
 
-// Pin "today" (the carry-forward horizon) so the chart's axis is deterministic.
-// Default to the latest fixture date so existing cases see no trailing extension;
-// individual tests override it to assert the extension (or avoid one).
+// Pin the carry-forward horizon ("yesterday" ET) so the chart's axis is
+// deterministic. Default to the latest fixture date so existing cases see no
+// trailing extension; individual tests override it to assert the extension (or
+// avoid one). These are end-of-day charts, so the horizon is yesterday, never today.
 vi.mock('../../lib/carryForward', async (importOriginal) => {
   const actual =
     await importOriginal<typeof import('../../lib/carryForward')>();
-  return { ...actual, todayEt: vi.fn(() => '2026-06-15') };
+  return { ...actual, yesterdayEt: vi.fn(() => '2026-06-15') };
 });
 
-const mockedToday = vi.mocked(todayEt);
+const mockedHorizon = vi.mocked(yesterdayEt);
 
 // Mock the ECharts wrapper so tests can inspect the option passed to it (the real
 // SVG render is exercised elsewhere). Keeps the accessible `role="img"` name so the
@@ -71,6 +72,19 @@ describe('buildCombinedOption', () => {
     { date: '2026-06-01', value: 20000 },
     { date: '2026-06-15', value: 22000 },
   ];
+
+  it('carries slider + inside zoom and a toolbox box-zoom/reset', () => {
+    const option = buildCombinedOption(points) as Record<string, unknown>;
+    const dataZoom = option.dataZoom as Array<{ type?: string }> | undefined;
+    expect(dataZoom?.map((z) => z.type)).toEqual(
+      expect.arrayContaining(['inside', 'slider']),
+    );
+    const toolbox = option.toolbox as
+      | { feature?: { dataZoom?: unknown; restore?: unknown } }
+      | undefined;
+    expect(toolbox?.feature?.dataZoom).toBeDefined();
+    expect(toolbox?.feature?.restore).toBeDefined();
+  });
 
   it('plots a single emerald combined-value line', () => {
     const series = (buildCombinedOption(points).series ?? []) as Array<
@@ -174,9 +188,9 @@ describe('buildCombinedOption', () => {
 
 describe('CombinedEquityChart', () => {
   beforeEach(() => {
-    // Reset the pinned horizon to the latest fixture date so each test starts with
+    // Reset the pinned horizon (yesterday ET) to the latest fixture date so each test starts with
     // no trailing carry-forward; tests that assert extension override it explicitly.
-    mockedToday.mockReturnValue('2026-06-15');
+    mockedHorizon.mockReturnValue('2026-06-15');
   });
 
   it('draws the chart when sessions are selected', () => {
@@ -343,7 +357,7 @@ describe('CombinedEquityChart', () => {
   it('draws the default S&P 500 line as the aggregated per-session buy-and-hold', () => {
     // Pin the horizon to the latest data date so no trailing carry-forward point is
     // appended, keeping this aggregation assertion exact.
-    mockedToday.mockReturnValue('2026-06-10');
+    mockedHorizon.mockReturnValue('2026-06-10');
     // Two sessions opening on different dates against a flat-priced index: a single
     // rebased curve would stay flat, but the aggregated buy-and-hold must step up on
     // the second session's open date — proving per-session aggregation, not rebasing.
@@ -394,10 +408,11 @@ describe('CombinedEquityChart', () => {
     ]);
   });
 
-  it('extends the combined and benchmark lines flat to today over a trailing non-trading day', () => {
-    // Latest snapshot is 06-10 (a prior trading day); today is 06-20. Both the
-    // combined value line and the benchmark overlay must carry flat to 06-20.
-    mockedToday.mockReturnValue('2026-06-20');
+  it('extends the combined and benchmark lines flat to the trailing horizon over a non-trading gap', () => {
+    // Latest snapshot is 06-10 (a prior trading day); the horizon (yesterday ET)
+    // is 06-20. Both the combined value line and the benchmark overlay must carry
+    // flat to 06-20.
+    mockedHorizon.mockReturnValue('2026-06-20');
     const a = makeSession({
       id: 'a',
       label: 'Alpha',
@@ -429,13 +444,13 @@ describe('CombinedEquityChart', () => {
     expect(combined?.data).toEqual([
       [Date.parse('2026-06-01'), 10000],
       [Date.parse('2026-06-10'), 11000],
-      [Date.parse('2026-06-20'), 11000], // carried flat to today
+      [Date.parse('2026-06-20'), 11000], // carried flat to the horizon
     ]);
     const bench = chartSeries().find((s) => s.id === 'benchmark:SP500');
     expect(bench?.data).toEqual([
       [Date.parse('2026-06-01'), 10000],
       [Date.parse('2026-06-10'), 11000],
-      [Date.parse('2026-06-20'), 11000], // benchmark carried flat to today
+      [Date.parse('2026-06-20'), 11000], // benchmark carried flat to the horizon
     ]);
   });
 

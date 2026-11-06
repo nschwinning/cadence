@@ -29,11 +29,12 @@ vi.mock('../../components/charts/EChart', () => ({
   ),
 }));
 
-// Pin "today" (the carry-forward horizon) so plotted data is deterministic.
+// Pin the carry-forward horizon ("yesterday" ET) so plotted data is deterministic.
+// These are end-of-day charts, so the horizon is yesterday, never today.
 vi.mock('../../lib/carryForward', async (importOriginal) => {
   const actual =
     await importOriginal<typeof import('../../lib/carryForward')>();
-  return { ...actual, todayEt: () => '2026-01-11' };
+  return { ...actual, yesterdayEt: () => '2026-01-11' };
 });
 
 const mockedGet = vi.mocked(apiClient.get);
@@ -76,6 +77,30 @@ function optionSeries(metric: Metric, data: SessionValueComparisonSeries[]) {
   const built = buildComparisonOption(buildComparisonSeries(data, metric), metric);
   return (built.series ?? []) as Array<Record<string, unknown>>;
 }
+
+describe('zoom controls', () => {
+  it('builds a slider + inside dataZoom and a toolbox box-zoom/reset', () => {
+    const data = [
+      series('s1', 'One', 100, [
+        ['2026-01-04', 100],
+        ['2026-01-05', 110],
+      ]),
+    ];
+    const option = buildComparisonOption(
+      buildComparisonSeries(data, 'return'),
+      'return',
+    ) as Record<string, unknown>;
+    const dataZoom = option.dataZoom as Array<{ type?: string }> | undefined;
+    expect(dataZoom?.map((z) => z.type)).toEqual(
+      expect.arrayContaining(['inside', 'slider']),
+    );
+    const toolbox = option.toolbox as
+      | { feature?: { dataZoom?: unknown; restore?: unknown } }
+      | undefined;
+    expect(toolbox?.feature?.dataZoom).toBeDefined();
+    expect(toolbox?.feature?.restore).toBeDefined();
+  });
+});
 
 describe('buildComparisonSeries', () => {
   it('normalises points to return fraction in the return metric', () => {

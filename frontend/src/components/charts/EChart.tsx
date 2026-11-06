@@ -6,6 +6,8 @@ import {
   TooltipComponent,
   LegendComponent,
   MarkLineComponent,
+  DataZoomComponent,
+  ToolboxComponent,
 } from 'echarts/components';
 import { SVGRenderer } from 'echarts/renderers';
 import type { EChartsCoreOption } from 'echarts/core';
@@ -13,12 +15,16 @@ import type { EChartsCoreOption } from 'echarts/core';
 // Register only the pieces the paper-trading charts use, so the bundle tree-shakes
 // the rest of ECharts away. The SVG renderer (rather than canvas) keeps the output
 // as inspectable DOM — crisp text and testable in jsdom, which has no canvas.
+// DataZoom (slider + inside wheel/drag) and Toolbox (rubber-band box-select + reset)
+// power the charts' zoom controls — see `components/charts/zoom.ts`.
 echarts.use([
   LineChart,
   GridComponent,
   TooltipComponent,
   LegendComponent,
   MarkLineComponent,
+  DataZoomComponent,
+  ToolboxComponent,
   SVGRenderer,
 ]);
 
@@ -74,7 +80,23 @@ export function EChart({
   }, [height]);
 
   useEffect(() => {
-    chartRef.current?.setOption(option, { notMerge: true });
+    const chart = chartRef.current;
+    if (!chart) return;
+    // Preserve any active zoom window across the notMerge replace below, so a
+    // periodic refetch (e.g. the dashboard's 30s poll) or an option recompute does
+    // not snap the user's zoom back to the full range. dataZoom start/end are
+    // percentages, so they remain valid as the underlying data updates.
+    const prev = chart.getOption() as
+      | { dataZoom?: Array<{ start?: number; end?: number }> }
+      | undefined;
+    const savedZoom = prev?.dataZoom?.map((z) => ({
+      start: z.start,
+      end: z.end,
+    }));
+    chart.setOption(option, { notMerge: true });
+    if (savedZoom && savedZoom.length > 0) {
+      chart.setOption({ dataZoom: savedZoom }, { lazyUpdate: true });
+    }
   }, [option]);
 
   return (

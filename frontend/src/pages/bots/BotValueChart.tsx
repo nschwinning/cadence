@@ -9,10 +9,15 @@ import {
 } from '../../lib/format';
 import {
   carryForwardSeries,
-  todayEt,
   unionDateAxis,
+  yesterdayEt,
 } from '../../lib/carryForward';
 import { EChart } from '../../components/charts/EChart';
+import {
+  ZOOM_DATA_ZOOM,
+  ZOOM_GRID,
+  ZOOM_TOOLBOX,
+} from '../../components/charts/zoom';
 import { FreshnessBadge, Panel } from '../paper-trading/PaperTradingSessionPage';
 
 /** Stroke colour by the equity curve's overall direction (first → last value). */
@@ -104,7 +109,9 @@ export function buildBotValueOption(
       p.total_value,
     ]);
     return {
-      grid: { left: 64, right: 16, top: 12, bottom: 28 },
+      grid: ZOOM_GRID,
+      dataZoom: ZOOM_DATA_ZOOM,
+      toolbox: ZOOM_TOOLBOX,
       xAxis: {
         type: 'time',
         axisLabel: {
@@ -145,7 +152,9 @@ export function buildBotValueOption(
   const data = carried.map((p) => p.value);
 
   return {
-    grid: { left: 64, right: 16, top: 12, bottom: 28 },
+    grid: ZOOM_GRID,
+    dataZoom: ZOOM_DATA_ZOOM,
+    toolbox: ZOOM_TOOLBOX,
     xAxis: {
       type: 'category',
       data: categoryLabels,
@@ -187,7 +196,7 @@ function ValueCurve({
         ? buildBotValueOption(points, {
             resolution,
             // Carry daily/monthly forward to today; intraday plots raw points.
-            horizon: isIntradayResolution(resolution) ? undefined : todayEt(),
+            horizon: isIntradayResolution(resolution) ? undefined : yesterdayEt(),
           })
         : null,
     [points, resolution],
@@ -202,7 +211,7 @@ function ValueCurve({
   return (
     <EChart
       option={option}
-      height={200}
+      height={260}
       className="w-full"
       ariaLabel={`Bot value over ${points.length} ${resolution} points`}
     />

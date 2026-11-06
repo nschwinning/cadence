@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   todayEt,
+  yesterdayEt,
   unionDateAxis,
   carryForwardOnto,
   carryForwardSeries,
@@ -24,6 +25,29 @@ describe('todayEt', () => {
   it('is deterministic for a fixed instant', () => {
     const now = new Date('2026-03-10T15:00:00Z');
     expect(todayEt(now)).toBe(todayEt(now));
+  });
+});
+
+describe('yesterdayEt', () => {
+  it('returns the ET calendar date before today', () => {
+    // 2026-01-05 05:00 UTC is 2026-01-05 ET; the day before is 2026-01-04.
+    expect(yesterdayEt(new Date('2026-01-05T05:00:00Z'))).toBe('2026-01-04');
+  });
+
+  it('rolls back across a month boundary', () => {
+    // 2026-03-01 ET → 2026-02-28.
+    expect(yesterdayEt(new Date('2026-03-01T05:00:00Z'))).toBe('2026-02-28');
+  });
+
+  it('rolls back across a year boundary', () => {
+    // 2026-01-01 ET → 2025-12-31.
+    expect(yesterdayEt(new Date('2026-01-01T05:00:00Z'))).toBe('2025-12-31');
+  });
+
+  it('is exactly one day before todayEt', () => {
+    const now = new Date('2026-07-15T18:00:00Z');
+    expect(todayEt(now)).toBe('2026-07-15');
+    expect(yesterdayEt(now)).toBe('2026-07-14');
   });
 });
 

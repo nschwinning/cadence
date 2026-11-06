@@ -53,6 +53,30 @@ function optionSeries(snapshots: SessionValueSnapshot[]) {
   >;
 }
 
+/** Assert a built option carries the slider + inside zoom and the toolbox zoom/reset. */
+function expectZoomControls(option: Record<string, unknown>) {
+  const dataZoom = option.dataZoom as Array<{ type?: string }> | undefined;
+  expect(dataZoom?.map((z) => z.type)).toEqual(
+    expect.arrayContaining(['inside', 'slider']),
+  );
+  const toolbox = option.toolbox as
+    | { feature?: { dataZoom?: unknown; restore?: unknown } }
+    | undefined;
+  expect(toolbox?.feature?.dataZoom).toBeDefined();
+  expect(toolbox?.feature?.restore).toBeDefined();
+}
+
+describe('zoom controls', () => {
+  it('builds a slider + inside dataZoom and a toolbox box-zoom/reset', () => {
+    expectZoomControls(
+      buildValueOption([
+        snapshot('2026-01-04', 100),
+        snapshot('2026-01-05', 110),
+      ]) as Record<string, unknown>,
+    );
+  });
+});
+
 describe('trendOf', () => {
   it('reads the overall direction from first to last value', () => {
     expect(

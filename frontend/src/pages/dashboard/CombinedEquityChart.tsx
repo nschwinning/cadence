@@ -10,8 +10,13 @@ import {
   formatTooltipTimestamp,
 } from '../../lib/format';
 import { categoricalColor } from '../../lib/palette';
-import { todayEt } from '../../lib/carryForward';
+import { yesterdayEt } from '../../lib/carryForward';
 import { EChart } from '../../components/charts/EChart';
+import {
+  ZOOM_DATA_ZOOM,
+  ZOOM_GRID,
+  ZOOM_TOOLBOX,
+} from '../../components/charts/zoom';
 import {
   combinedSeries,
   benchmarkDollarSeries,
@@ -61,7 +66,9 @@ export function buildCombinedOption(
   benchmarkLines: BenchmarkLine[] = [],
 ): EChartsCoreOption {
   return {
-    grid: { left: 64, right: 16, top: 12, bottom: 28 },
+    grid: ZOOM_GRID,
+    dataZoom: ZOOM_DATA_ZOOM,
+    toolbox: ZOOM_TOOLBOX,
     xAxis: {
       type: 'time',
       axisLabel: {
@@ -143,7 +150,7 @@ export function CombinedEquityChart({
   const selected = sessions.filter((s) => selectedIds.has(s.id));
   // Extend the shared axis to today (ET) so the combined line and benchmark overlays
   // read flat over a trailing weekend instead of ending at the last snapshot.
-  const series = combinedSeries(selected, todayEt());
+  const series = combinedSeries(selected, yesterdayEt());
 
   // Local overlay selection: S&P 500 on by default, the rest opt-in.
   const [selectedBenchmarks, setSelectedBenchmarks] = useState<Set<string>>(
@@ -249,7 +256,7 @@ function SummedCurve({
   return (
     <EChart
       option={option}
-      height={200}
+      height={260}
       className="w-full"
       ariaLabel="Combined portfolio value"
     />
