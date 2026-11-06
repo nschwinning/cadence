@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { getStrategyChart } from './strategyCharts';
 import { crossoverSignals } from './crossoverChart';
+import { donchianSignals } from './donchianChart';
 import { rsiSignals, wilderRsiSeries } from './rsiChart';
 
 describe('strategyCharts registry', () => {
@@ -20,8 +21,41 @@ describe('strategyCharts registry', () => {
     expect(option.series.map((s) => s.name)).toEqual(['RSI']);
   });
 
+  it('returns the Donchian descriptor for donchian_breakout', () => {
+    const chart = getStrategyChart('donchian_breakout');
+    expect(chart).toBeDefined();
+    expect(chart?.ariaLabel).toMatch(/donchian range breakout/i);
+    const option = chart?.buildOption() as { series: { name: string }[] };
+    expect(option.series.map((s) => s.name)).toEqual([
+      'Price',
+      'Entry channel',
+      'Exit channel',
+    ]);
+  });
+
   it('returns undefined for an unregistered strategy key', () => {
     expect(getStrategyChart('does_not_exist')).toBeUndefined();
+  });
+});
+
+describe('donchianChart', () => {
+  it('detects an upward-breakout entry followed by a downward-breakdown exit', () => {
+    const signals = donchianSignals();
+    expect(signals.some((s) => s.kind === 'entry')).toBe(true);
+    expect(signals.some((s) => s.kind === 'exit')).toBe(true);
+    // Entry precedes the exit (long-only round trip).
+    const entry = signals.find((s) => s.kind === 'entry')!;
+    const exit = signals.find((s) => s.kind === 'exit')!;
+    expect(entry.index).toBeLessThan(exit.index);
+  });
+
+  it('builds a price + two channel lines with entry/exit mark-lines', () => {
+    const option = getStrategyChart('donchian_breakout')!.buildOption() as {
+      series: { name: string; markLine?: { data: unknown[] } }[];
+    };
+    expect(option.series).toHaveLength(3);
+    const markLine = option.series[0].markLine;
+    expect(markLine?.data.length).toBeGreaterThanOrEqual(2);
   });
 });
 

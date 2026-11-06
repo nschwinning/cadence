@@ -112,6 +112,58 @@ def test_create_rejects_unknown_strategy(
     assert resp.status_code == 422
 
 
+def test_create_donchian_turtle_session(
+    client: TestClient, eligible_asset: Asset
+) -> None:
+    """A Donchian Turtle session is created end-to-end through the service."""
+    resp = client.post(
+        "/api/v1/bots/sessions",
+        json=_create_payload(
+            strategy_key="donchian_breakout",
+            strategy_params={
+                "version": "turtle",
+                "entry_period": 20,
+                "exit_period": 10,
+            },
+        ),
+    )
+    assert resp.status_code == 201
+    assert resp.json()["strategy_key"] == "donchian_breakout"
+
+
+def test_create_donchian_locked_session(
+    client: TestClient, eligible_asset: Asset
+) -> None:
+    """A Donchian Locked session is created end-to-end through the service."""
+    resp = client.post(
+        "/api/v1/bots/sessions",
+        json=_create_payload(
+            strategy_key="donchian_breakout",
+            strategy_params={
+                "version": "locked",
+                "channel_period": 20,
+                "atr_padding_mult": 0.5,
+            },
+        ),
+    )
+    assert resp.status_code == 201
+    assert resp.json()["strategy_key"] == "donchian_breakout"
+
+
+def test_create_rejects_invalid_donchian_params(
+    client: TestClient, eligible_asset: Asset
+) -> None:
+    """exit_period not below entry_period is rejected on create."""
+    resp = client.post(
+        "/api/v1/bots/sessions",
+        json=_create_payload(
+            strategy_key="donchian_breakout",
+            strategy_params={"entry_period": 10, "exit_period": 10},
+        ),
+    )
+    assert resp.status_code == 422
+
+
 def test_create_rejects_ineligible_asset(client: TestClient) -> None:
     # No asset seeded → ticker not in the eligible universe.
     resp = client.post("/api/v1/bots/sessions", json=_create_payload())
@@ -390,8 +442,13 @@ def test_value_history_unknown_session_404(client: TestClient) -> None:
 def test_list_strategies(client: TestClient) -> None:
     resp = client.get("/api/v1/bots/strategies")
     assert resp.status_code == 200
-    keys = {entry["key"] for entry in resp.json()}
-    assert "ma_crossover" in keys
+    entries = {entry["key"]: entry for entry in resp.json()}
+    assert "ma_crossover" in entries
+    # The Donchian strategy is listed with its display name and params schema.
+    donchian = entries["donchian_breakout"]
+    assert donchian["display_name"] == "Donchian Range Breakout"
+    assert donchian["explanation"]
+    assert "version" in donchian["params_schema"]["properties"]
 
 
 # Cron-guarded jobs -------------------------------------------------------

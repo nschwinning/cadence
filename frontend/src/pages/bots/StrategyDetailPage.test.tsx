@@ -28,6 +28,14 @@ const CATALOG = [
     required_history: 15,
     params_schema: {},
   },
+  {
+    key: 'donchian_breakout',
+    display_name: 'Donchian Range Breakout',
+    explanation:
+      'Buys an upward Donchian channel breakout; the Turtle version exits on a channel breakdown while the Locked version defers its exit to the engine.',
+    required_history: 21,
+    params_schema: {},
+  },
 ];
 
 function renderDetail(key: string) {
@@ -81,6 +89,19 @@ describe('StrategyDetailPage', () => {
     ).toBeInTheDocument();
     expect(
       screen.getByRole('img', { name: /rsi mean-reversion/i }),
+    ).toBeInTheDocument();
+  });
+
+  it('renders the Donchian explanation and its illustrative chart', async () => {
+    mockedGet.mockResolvedValue({ data: CATALOG });
+
+    renderDetail('donchian_breakout');
+
+    expect(
+      await screen.findByText(/Buys an upward Donchian channel breakout/),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole('img', { name: /donchian range breakout/i }),
     ).toBeInTheDocument();
   });
 

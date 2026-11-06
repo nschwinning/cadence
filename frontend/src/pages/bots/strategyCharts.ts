@@ -1,5 +1,6 @@
 import type { EChartsCoreOption } from 'echarts/core';
 import { buildCrossoverChartOption } from './crossoverChart';
+import { buildDonchianChartOption } from './donchianChart';
 import { buildRsiChartOption } from './rsiChart';
 
 /**
@@ -27,6 +28,11 @@ const STRATEGY_CHARTS: Record<string, StrategyChartDescriptor> = {
     buildOption: buildRsiChartOption,
     ariaLabel:
       'Illustrative RSI mean-reversion with oversold entry and reversion exit markers',
+  },
+  donchian_breakout: {
+    buildOption: buildDonchianChartOption,
+    ariaLabel:
+      'Illustrative Donchian range breakout with an upward-breakout entry and a downward-breakdown exit marker',
   },
 };
 

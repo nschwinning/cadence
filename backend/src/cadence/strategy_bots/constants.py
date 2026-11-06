@@ -33,6 +33,7 @@ class StrategyKey(StrEnum):
 
     MA_CROSSOVER = "ma_crossover"
     RSI_MEAN_REVERSION = "rsi_mean_reversion"
+    DONCHIAN_BREAKOUT = "donchian_breakout"
 
 
 class SizingMethod(StrEnum):
@@ -53,6 +54,7 @@ class SizingMethod(StrEnum):
 STRATEGY_DISPLAY_NAMES: dict[StrategyKey, str] = {
     StrategyKey.MA_CROSSOVER: "Moving-Average Crossover",
     StrategyKey.RSI_MEAN_REVERSION: "RSI Mean Reversion",
+    StrategyKey.DONCHIAN_BREAKOUT: "Donchian Range Breakout",
 }
 
 #: Human-readable explanations for the strategy catalog, shown on the strategy
@@ -78,6 +80,20 @@ STRATEGY_EXPLANATIONS: dict[StrategyKey, str] = {
         "and long-only — it never shorts an overbought reading — and leaves "
         "take-profit, stop-loss, and the drawdown kill-switch to the bot's risk "
         "controls."
+    ),
+    StrategyKey.DONCHIAN_BREAKOUT: (
+        "The Donchian Range Breakout strategy follows breakouts of a price channel "
+        "— the highest high and lowest low of a recent window of bars. The bot enters "
+        "a long position when the price closes above the top of the channel, reading "
+        "the breakout as the start of a trend. It offers two versions. The Turtle "
+        "rolling channel exits when the price closes below the bottom of a shorter "
+        "channel, following the trend until it breaks down. The Locked channel instead "
+        "freezes once a trade is open and leaves the exit entirely to the bot's "
+        "risk controls; its entry band can be padded outward by a multiple of recent "
+        "volatility (an ATR buffer) to filter out false breakouts. Both are "
+        "deterministic and long-only — a downward breakout never opens a short — and "
+        "leave position sizing, take-profit, stop-loss, and the drawdown kill-switch "
+        "to the bot's risk controls."
     ),
 }
 

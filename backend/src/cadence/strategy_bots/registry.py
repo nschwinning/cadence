@@ -21,6 +21,10 @@ from cadence.strategy_bots.constants import (
     STRATEGY_EXPLANATIONS,
     StrategyKey,
 )
+from cadence.strategy_bots.donchian_breakout import (
+    DonchianBreakoutParams,
+    DonchianBreakoutStrategy,
+)
 from cadence.strategy_bots.errors import (
     InvalidStrategyParamsError,
     UnknownStrategyError,
@@ -72,6 +76,13 @@ _REGISTRY: dict[StrategyKey, StrategyRegistration] = {
         explanation=STRATEGY_EXPLANATIONS[StrategyKey.RSI_MEAN_REVERSION],
         strategy=RsiMeanReversionStrategy(),
         params_schema=RsiMeanReversionParams,
+    ),
+    StrategyKey.DONCHIAN_BREAKOUT: StrategyRegistration(
+        key=StrategyKey.DONCHIAN_BREAKOUT,
+        display_name=STRATEGY_DISPLAY_NAMES[StrategyKey.DONCHIAN_BREAKOUT],
+        explanation=STRATEGY_EXPLANATIONS[StrategyKey.DONCHIAN_BREAKOUT],
+        strategy=DonchianBreakoutStrategy(),
+        params_schema=DonchianBreakoutParams,
     ),
 }
 

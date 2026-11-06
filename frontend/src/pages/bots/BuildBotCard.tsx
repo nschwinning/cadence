@@ -44,6 +44,45 @@ const STRATEGY_RISK_DEFAULTS: Record<
     stopLossPct: '1',
     drawdownStopPct: '5',
   },
+  // Donchian's recipe depends on the version (see DONCHIAN_VERSION_RISK_DEFAULTS);
+  // the strategy-level entry seeds the default version (turtle).
+  donchian_breakout: {
+    takeProfitEnabled: false,
+    takeProfitPct: '1',
+    stopLossEnabled: false,
+    stopLossPct: '2',
+    drawdownStopPct: '5',
+  },
+};
+
+/** The two Donchian versions shown in the nested Version selector. */
+type DonchianVersion = 'turtle' | 'locked';
+
+/**
+ * Per-version course-recipe defaults for the Donchian Range Breakout strategy,
+ * re-applied whenever the Version selector changes. The Turtle version has its own
+ * channel exit, so it ships with take-profit / stop-loss off; the Locked version
+ * defers its exit entirely to the engine bracket, so it ships with the course's
+ * fixed 0.5% take-profit / 2% stop-loss on.
+ */
+const DONCHIAN_VERSION_RISK_DEFAULTS: Record<
+  DonchianVersion,
+  (typeof STRATEGY_RISK_DEFAULTS)[string]
+> = {
+  turtle: {
+    takeProfitEnabled: false,
+    takeProfitPct: '1',
+    stopLossEnabled: false,
+    stopLossPct: '2',
+    drawdownStopPct: '5',
+  },
+  locked: {
+    takeProfitEnabled: true,
+    takeProfitPct: '0.5',
+    stopLossEnabled: true,
+    stopLossPct: '2',
+    drawdownStopPct: '5',
+  },
 };
 
 const DEFAULT_RISK = STRATEGY_RISK_DEFAULTS[DEFAULT_STRATEGY_KEY];
@@ -144,6 +183,14 @@ export function BuildBotCard() {
   const [rsiPeriod, setRsiPeriod] = useState('14');
   const [oversold, setOversold] = useState('30');
   const [exitLevel, setExitLevel] = useState('50');
+  // Donchian Range Breakout: a nested version plus per-version params. Turtle
+  // (course Algo 25) uses entry / exit channel periods; Locked (Algos 7/8) uses a
+  // channel period and an ATR padding multiplier (0 = raw channel).
+  const [donchianVersion, setDonchianVersion] = useState<DonchianVersion>('turtle');
+  const [entryPeriod, setEntryPeriod] = useState('20');
+  const [exitPeriod, setExitPeriod] = useState('10');
+  const [channelPeriod, setChannelPeriod] = useState('20');
+  const [atrPadding, setAtrPadding] = useState('0.5');
   // Sizing controls (ATR risk-based by default; all-in is the legacy N=1 method).
   const [sizingMethod, setSizingMethod] = useState('atr_risk');
   const [riskPct, setRiskPct] = useState('1');
@@ -168,18 +215,34 @@ export function BuildBotCard() {
     DEFAULT_RISK.drawdownStopPct,
   );
 
-  // Switching strategy re-applies that strategy's course risk recipe (TP / SL /
-  // drawdown differ per reference algo). The strategy-specific parameter fields
-  // keep their own course-seeded state.
-  const handleStrategyChange = (key: string) => {
-    setStrategyKey(key);
-    const risk = STRATEGY_RISK_DEFAULTS[key];
-    if (!risk) return;
+  // Apply a course risk recipe to the shared TP / SL / drawdown controls.
+  const applyRisk = (risk: (typeof STRATEGY_RISK_DEFAULTS)[string]) => {
     setTakeProfitEnabled(risk.takeProfitEnabled);
     setTakeProfitPct(risk.takeProfitPct);
     setStopLossEnabled(risk.stopLossEnabled);
     setStopLossPct(risk.stopLossPct);
     setDrawdownStopPct(risk.drawdownStopPct);
+  };
+
+  // Switching strategy re-applies that strategy's course risk recipe (TP / SL /
+  // drawdown differ per reference algo). The strategy-specific parameter fields
+  // keep their own course-seeded state. Donchian's recipe depends on the selected
+  // version, so it re-applies the active version's recipe instead.
+  const handleStrategyChange = (key: string) => {
+    setStrategyKey(key);
+    if (key === 'donchian_breakout') {
+      applyRisk(DONCHIAN_VERSION_RISK_DEFAULTS[donchianVersion]);
+      return;
+    }
+    const risk = STRATEGY_RISK_DEFAULTS[key];
+    if (risk) applyRisk(risk);
+  };
+
+  // Switching Donchian version re-applies that version's course risk recipe
+  // (Turtle has its own channel exit; Locked defers its exit to the engine bracket).
+  const handleVersionChange = (version: DonchianVersion) => {
+    setDonchianVersion(version);
+    applyRisk(DONCHIAN_VERSION_RISK_DEFAULTS[version]);
   };
 
   const capitalValue = Number.parseFloat(capital);
@@ -190,6 +253,9 @@ export function BuildBotCard() {
 
   const isMaCrossover = strategyKey === 'ma_crossover';
   const isRsi = strategyKey === 'rsi_mean_reversion';
+  const isDonchian = strategyKey === 'donchian_breakout';
+  const isDonchianTurtle = isDonchian && donchianVersion === 'turtle';
+  const isDonchianLocked = isDonchian && donchianVersion === 'locked';
 
   const fastValue = Number.parseInt(fastPeriod, 10);
   const slowValue = Number.parseInt(slowPeriod, 10);
@@ -214,6 +280,25 @@ export function BuildBotCard() {
     oversoldValid && exitLevelValid && oversoldValue < exitLevelValue;
   const rsiParamsValid =
     !isRsi || (rsiPeriodValid && oversoldValid && exitLevelValid && bandsOrdered);
+
+  // Donchian params. Turtle: integer entry ≥ 2 and exit ≥ 1, exit strictly below
+  // entry. Locked: integer channel ≥ 2 and a non-negative ATR padding multiplier.
+  const entryPeriodValue = Number.parseInt(entryPeriod, 10);
+  const entryPeriodValid = Number.isInteger(entryPeriodValue) && entryPeriodValue >= 2;
+  const exitPeriodValue = Number.parseInt(exitPeriod, 10);
+  const exitPeriodValid = Number.isInteger(exitPeriodValue) && exitPeriodValue >= 1;
+  const donchianPeriodsOrdered =
+    entryPeriodValid && exitPeriodValid && exitPeriodValue < entryPeriodValue;
+  const channelPeriodValue = Number.parseInt(channelPeriod, 10);
+  const channelPeriodValid =
+    Number.isInteger(channelPeriodValue) && channelPeriodValue >= 2;
+  const atrPaddingValue = Number.parseFloat(atrPadding);
+  const atrPaddingValid = Number.isFinite(atrPaddingValue) && atrPaddingValue >= 0;
+  const donchianParamsValid =
+    !isDonchian ||
+    (donchianVersion === 'turtle'
+      ? entryPeriodValid && exitPeriodValid && donchianPeriodsOrdered
+      : channelPeriodValid && atrPaddingValid);
 
   const isAtr = sizingMethod === 'atr_risk';
   // ATR sizing params are entered in friendly units: risk/cap as percentages.
@@ -258,6 +343,7 @@ export function BuildBotCard() {
     capitalValid &&
     maParamsValid &&
     rsiParamsValid &&
+    donchianParamsValid &&
     riskValid &&
     atrPeriodValid &&
     atrKValid &&
@@ -275,6 +361,18 @@ export function BuildBotCard() {
     oversold.length > 0 && (!oversoldValid || !bandsOrdered);
   const exitLevelInvalid =
     exitLevel.length > 0 && (!exitLevelValid || !bandsOrdered);
+  const entryPeriodInvalid =
+    isDonchianTurtle &&
+    entryPeriod.length > 0 &&
+    (!entryPeriodValid || !donchianPeriodsOrdered);
+  const exitPeriodInvalid =
+    isDonchianTurtle &&
+    exitPeriod.length > 0 &&
+    (!exitPeriodValid || !donchianPeriodsOrdered);
+  const channelPeriodInvalid =
+    isDonchianLocked && channelPeriod.length > 0 && !channelPeriodValid;
+  const atrPaddingInvalid =
+    isDonchianLocked && atrPadding.length > 0 && !atrPaddingValid;
   const riskInvalid = isAtr && riskPct.length > 0 && !riskValid;
   const atrPeriodInvalid = isAtr && atrPeriod.length > 0 && !atrPeriodValid;
   const atrKInvalid = isAtr && atrK.length > 0 && !atrKValid;
@@ -284,14 +382,29 @@ export function BuildBotCard() {
   const stopLossInvalid = stopLossEnabled && !stopLossValid;
   const drawdownInvalid = drawdownStopPct.length > 0 && !drawdownValid;
 
-  // Build the strategy-specific params payload for the selected strategy.
+  // Build the strategy-specific params payload for the selected strategy (and, for
+  // Donchian, the selected version).
+  const donchianParams =
+    donchianVersion === 'turtle'
+      ? {
+          version: 'turtle',
+          entry_period: entryPeriodValue,
+          exit_period: exitPeriodValue,
+        }
+      : {
+          version: 'locked',
+          channel_period: channelPeriodValue,
+          atr_padding_mult: atrPaddingValue,
+        };
   const strategyParams = isRsi
     ? {
         period: rsiPeriodValue,
         oversold: oversoldValue,
         exit_level: exitLevelValue,
       }
-    : { fast_period: fastValue, slow_period: slowValue };
+    : isDonchian
+      ? donchianParams
+      : { fast_period: fastValue, slow_period: slowValue };
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -470,6 +583,80 @@ export function BuildBotCard() {
                   hint="Exit above this RSI. Must be over the oversold level."
                   invalid={exitLevelInvalid}
                 />
+              </div>
+            ) : isDonchian ? (
+              <div className="flex flex-col gap-3">
+                <div>
+                  <label
+                    htmlFor="bot-donchian-version"
+                    className="block text-sm font-medium text-slate-700"
+                  >
+                    Version
+                  </label>
+                  <select
+                    id="bot-donchian-version"
+                    value={donchianVersion}
+                    onChange={(e) =>
+                      handleVersionChange(e.target.value as DonchianVersion)
+                    }
+                    className={FIELD_CLASS}
+                  >
+                    <option value="turtle">Turtle rolling channel</option>
+                    <option value="locked">Locked channel</option>
+                  </select>
+                  <p className="mt-1 text-xs text-slate-500">
+                    {donchianVersion === 'turtle'
+                      ? 'Enters above the entry-channel high and exits below the exit-channel low.'
+                      : 'Enters above the (optionally ATR-padded) channel high; the exit is left to the risk controls below.'}
+                  </p>
+                </div>
+                {donchianVersion === 'turtle' ? (
+                  <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                    <NumberField
+                      id="bot-entry-period"
+                      label="Entry channel period"
+                      min={2}
+                      step={1}
+                      value={entryPeriod}
+                      onChange={setEntryPeriod}
+                      hint="Bars in the breakout (entry) high. Must be above the exit period."
+                      invalid={entryPeriodInvalid}
+                    />
+                    <NumberField
+                      id="bot-exit-period"
+                      label="Exit channel period"
+                      min={1}
+                      step={1}
+                      value={exitPeriod}
+                      onChange={setExitPeriod}
+                      hint="Bars in the breakdown (exit) low. Must be below the entry period."
+                      invalid={exitPeriodInvalid}
+                    />
+                  </div>
+                ) : (
+                  <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                    <NumberField
+                      id="bot-channel-period"
+                      label="Channel period"
+                      min={2}
+                      step={1}
+                      value={channelPeriod}
+                      onChange={setChannelPeriod}
+                      hint="Bars in the breakout channel high."
+                      invalid={channelPeriodInvalid}
+                    />
+                    <NumberField
+                      id="bot-atr-padding"
+                      label="ATR padding (×)"
+                      min={0}
+                      step={0.1}
+                      value={atrPadding}
+                      onChange={setAtrPadding}
+                      hint="Pads the channel outward by this × ATR. 0 = raw channel."
+                      invalid={atrPaddingInvalid}
+                    />
+                  </div>
+                )}
               </div>
             ) : (
               <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">

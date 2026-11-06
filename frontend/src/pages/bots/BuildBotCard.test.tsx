@@ -34,6 +34,13 @@ function routeCatalogs() {
             required_history: 15,
             params_schema: {},
           },
+          {
+            key: 'donchian_breakout',
+            display_name: 'Donchian Range Breakout',
+            explanation: 'Buys upward channel breakouts.',
+            required_history: 21,
+            params_schema: {},
+          },
         ],
       });
     }
@@ -354,6 +361,132 @@ describe('BuildBotCard', () => {
 
     expect(screen.getByRole('button', { name: 'Create bot' })).toBeDisabled();
     expect(oversold).toHaveAttribute('aria-invalid', 'true');
+    expect(mockedPost).not.toHaveBeenCalled();
+  });
+
+  it('shows the Donchian version selector and Turtle params (hiding SMA) when selected', async () => {
+    const user = userEvent.setup();
+
+    renderCard(<BuildBotCard />);
+
+    await screen.findByRole('option', { name: 'Donchian Range Breakout' });
+    await user.selectOptions(
+      screen.getByLabelText('Strategy'),
+      'donchian_breakout',
+    );
+
+    expect(screen.getByLabelText('Version')).toHaveValue('turtle');
+    expect(screen.getByLabelText('Entry channel period')).toHaveValue(20);
+    expect(screen.getByLabelText('Exit channel period')).toHaveValue(10);
+    expect(screen.queryByLabelText('Fast SMA period')).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('Channel period')).not.toBeInTheDocument();
+  });
+
+  it('swaps to the Locked params and re-applies its course recipe when the version changes', async () => {
+    const user = userEvent.setup();
+
+    renderCard(<BuildBotCard />);
+
+    await screen.findByRole('option', { name: 'Donchian Range Breakout' });
+    await user.selectOptions(
+      screen.getByLabelText('Strategy'),
+      'donchian_breakout',
+    );
+
+    // Turtle ships with TP / SL off (it has its own channel exit).
+    expect(screen.getByLabelText('Enable take-profit')).not.toBeChecked();
+    expect(screen.getByLabelText('Enable stop-loss')).not.toBeChecked();
+
+    await user.selectOptions(screen.getByLabelText('Version'), 'locked');
+
+    expect(screen.getByLabelText('Channel period')).toHaveValue(20);
+    expect(screen.getByLabelText('ATR padding (×)')).toHaveValue(0.5);
+    expect(
+      screen.queryByLabelText('Entry channel period'),
+    ).not.toBeInTheDocument();
+    // Locked defers its exit to the engine bracket → course TP 0.5% / SL 2% on.
+    expect(screen.getByLabelText('Enable take-profit')).toBeChecked();
+    expect(screen.getByLabelText('Take-profit threshold (%)')).toHaveValue(0.5);
+    expect(screen.getByLabelText('Enable stop-loss')).toBeChecked();
+    expect(screen.getByLabelText('Stop-loss threshold (%)')).toHaveValue(2);
+  });
+
+  it('submits the Turtle version with its params payload', async () => {
+    mockedPost.mockResolvedValue({ data: { id: 'b1' } });
+    const user = userEvent.setup();
+
+    renderCard(<BuildBotCard />);
+
+    await screen.findByRole('option', { name: 'Donchian Range Breakout' });
+    await user.selectOptions(
+      screen.getByLabelText('Strategy'),
+      'donchian_breakout',
+    );
+    await pickAAPL(user);
+    await user.click(screen.getByRole('button', { name: 'Create bot' }));
+
+    await waitFor(() => {
+      expect(mockedPost).toHaveBeenCalledWith(
+        '/api/v1/bots/sessions',
+        expect.objectContaining({
+          strategy_key: 'donchian_breakout',
+          strategy_params: {
+            version: 'turtle',
+            entry_period: 20,
+            exit_period: 10,
+          },
+        }),
+      );
+    });
+  });
+
+  it('submits the Locked version with its params payload', async () => {
+    mockedPost.mockResolvedValue({ data: { id: 'b1' } });
+    const user = userEvent.setup();
+
+    renderCard(<BuildBotCard />);
+
+    await screen.findByRole('option', { name: 'Donchian Range Breakout' });
+    await user.selectOptions(
+      screen.getByLabelText('Strategy'),
+      'donchian_breakout',
+    );
+    await user.selectOptions(screen.getByLabelText('Version'), 'locked');
+    await pickAAPL(user);
+    await user.click(screen.getByRole('button', { name: 'Create bot' }));
+
+    await waitFor(() => {
+      expect(mockedPost).toHaveBeenCalledWith(
+        '/api/v1/bots/sessions',
+        expect.objectContaining({
+          strategy_key: 'donchian_breakout',
+          strategy_params: {
+            version: 'locked',
+            channel_period: 20,
+            atr_padding_mult: 0.5,
+          },
+        }),
+      );
+    });
+  });
+
+  it('blocks Turtle submission when the exit period is not below the entry period', async () => {
+    const user = userEvent.setup();
+
+    renderCard(<BuildBotCard />);
+
+    await screen.findByRole('option', { name: 'Donchian Range Breakout' });
+    await user.selectOptions(
+      screen.getByLabelText('Strategy'),
+      'donchian_breakout',
+    );
+    await pickAAPL(user);
+    const exit = screen.getByLabelText('Exit channel period');
+    await user.clear(exit);
+    await user.type(exit, '30');
+
+    expect(screen.getByRole('button', { name: 'Create bot' })).toBeDisabled();
+    expect(exit).toHaveAttribute('aria-invalid', 'true');
     expect(mockedPost).not.toHaveBeenCalled();
   });
 });
