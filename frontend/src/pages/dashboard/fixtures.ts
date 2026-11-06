@@ -91,6 +91,7 @@ export function makeOverview(
       ],
     },
     benchmark_series: [],
+    market_open: true,
     ...overrides,
   };
 }

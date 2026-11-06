@@ -413,6 +413,7 @@ class DashboardOverview:
     universe_balance: UniverseBalance
     universe_performers: UniversePerformers
     benchmark_series: list[BenchmarkOverlaySeries]
+    market_open: bool
 
 
 def _range_start_datetime(start_date: date | None) -> datetime | None:
@@ -910,4 +911,8 @@ def get_dashboard_overview(
             session, range_=range_, today=today
         ),
         benchmark_series=_benchmark_overlays(session, floor=overlay_floor),
+        # Reuse the valuation layer's fault-tolerant clock check so the badge
+        # stays consistent with how equities are actually priced: both default
+        # to "open" when the broker clock is unreachable.
+        market_open=paper_trading_service._market_is_open(broker),
     )

@@ -1,5 +1,6 @@
 import type { EChartsCoreOption } from 'echarts/core';
 import { buildCrossoverChartOption } from './crossoverChart';
+import { buildRsiChartOption } from './rsiChart';
 
 /**
  * A strategy's illustrative (synthetic, client-side) chart: how to build its
@@ -21,6 +22,11 @@ const STRATEGY_CHARTS: Record<string, StrategyChartDescriptor> = {
     buildOption: buildCrossoverChartOption,
     ariaLabel:
       'Illustrative moving-average crossover with entry and exit markers',
+  },
+  rsi_mean_reversion: {
+    buildOption: buildRsiChartOption,
+    ariaLabel:
+      'Illustrative RSI mean-reversion with oversold entry and reversion exit markers',
   },
 };
 

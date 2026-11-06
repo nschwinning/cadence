@@ -879,6 +879,8 @@ def test_overview_endpoint_returns_payload(
     # Every catalog benchmark is present for the combined-equity overlay.
     assert isinstance(body["benchmark_series"], list)
     assert len(body["benchmark_series"]) == len(list(Benchmark))
+    # The market-state indicator serialises as a boolean on the payload.
+    assert isinstance(body["market_open"], bool)
 
 
 def test_overview_endpoint_rejects_unsupported_range(client: TestClient) -> None:
@@ -1017,3 +1019,51 @@ def test_session_without_activity_has_zero_realised_unrealised(
     perf = overview.sessions[0]
     assert perf.realised_pnl == pytest.approx(0.0)
     assert perf.unrealised_pnl == pytest.approx(0.0)
+
+
+# --- market-state indicator -------------------------------------------------
+
+
+class _ClockBroker(StubBroker):
+    """A stub whose ``is_market_open`` is fixed, or raises to exercise fallback."""
+
+    def __init__(self, *, open_: bool = True, raises: bool = False) -> None:
+        super().__init__()
+        self._open = open_
+        self._raises = raises
+
+    def is_market_open(self) -> bool:
+        if self._raises:
+            raise RuntimeError("clock unreachable")
+        return self._open
+
+
+@pytest.mark.parametrize("is_open", [True, False])
+def test_overview_reports_market_state_from_broker(
+    db_session: Session, is_open: bool
+) -> None:
+    overview = service.get_dashboard_overview(
+        db_session,
+        range_=DashboardRange.MONTH,
+        broker=_ClockBroker(open_=is_open),
+        today=_TODAY,
+        now=_NOW,
+    )
+
+    assert overview.market_open is is_open
+
+
+def test_overview_market_state_defaults_open_on_clock_failure(
+    db_session: Session,
+) -> None:
+    # A broker whose clock call raises must not fail the overview; the market
+    # state falls back to open, matching the valuation layer's convention.
+    overview = service.get_dashboard_overview(
+        db_session,
+        range_=DashboardRange.MONTH,
+        broker=_ClockBroker(raises=True),
+        today=_TODAY,
+        now=_NOW,
+    )
+
+    assert overview.market_open is True

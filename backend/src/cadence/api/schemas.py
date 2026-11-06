@@ -1472,6 +1472,7 @@ class DashboardOverview(BaseModel):
     universe_balance: DashboardUniverseBalance
     universe_performers: DashboardUniversePerformers
     benchmark_series: list[DashboardBenchmarkSeries]
+    market_open: bool
 
 
 # --- Dashboard AI cost per portfolio (all-time, range-independent) ------------

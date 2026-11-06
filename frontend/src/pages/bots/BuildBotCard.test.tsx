@@ -27,6 +27,13 @@ function routeCatalogs() {
             required_history: 51,
             params_schema: {},
           },
+          {
+            key: 'rsi_mean_reversion',
+            display_name: 'RSI Mean Reversion',
+            explanation: 'Buys oversold dips.',
+            required_history: 15,
+            params_schema: {},
+          },
         ],
       });
     }
@@ -105,7 +112,40 @@ describe('BuildBotCard', () => {
     ).toBeInTheDocument();
     expect(screen.getByLabelText('Sizing method')).toBeInTheDocument();
     expect(screen.getByLabelText('Max concurrent positions')).toHaveValue(10);
-    expect(screen.getByLabelText('Fast SMA period')).toHaveValue(20);
+    expect(screen.getByLabelText('Fast SMA period')).toHaveValue(5);
+  });
+
+  it('preloads the MA Crossover course recipe (5/12, TP 1%, SL 2%, drawdown 5%)', async () => {
+    renderCard(<BuildBotCard />);
+
+    await screen.findByRole('combobox', { name: 'Search universe equities' });
+    expect(screen.getByLabelText('Fast SMA period')).toHaveValue(5);
+    expect(screen.getByLabelText('Slow SMA period')).toHaveValue(12);
+    // Take-profit and stop-loss are on by default, at the course percentages.
+    expect(screen.getByLabelText('Enable take-profit')).toBeChecked();
+    expect(screen.getByLabelText('Take-profit threshold (%)')).toHaveValue(1);
+    expect(screen.getByLabelText('Enable stop-loss')).toBeChecked();
+    expect(screen.getByLabelText('Stop-loss threshold (%)')).toHaveValue(2);
+    expect(screen.getByLabelText('Drawdown kill-switch (%)')).toHaveValue(5);
+  });
+
+  it('re-applies the RSI course risk recipe when switching strategy', async () => {
+    const user = userEvent.setup();
+
+    renderCard(<BuildBotCard />);
+
+    await screen.findByRole('option', { name: 'RSI Mean Reversion' });
+    await user.selectOptions(
+      screen.getByLabelText('Strategy'),
+      'rsi_mean_reversion',
+    );
+
+    // RSI (course Algo 16) uses TP 0.5% / SL 1% / drawdown 5%.
+    expect(screen.getByLabelText('Enable take-profit')).toBeChecked();
+    expect(screen.getByLabelText('Take-profit threshold (%)')).toHaveValue(0.5);
+    expect(screen.getByLabelText('Enable stop-loss')).toBeChecked();
+    expect(screen.getByLabelText('Stop-loss threshold (%)')).toHaveValue(1);
+    expect(screen.getByLabelText('Drawdown kill-switch (%)')).toHaveValue(5);
   });
 
   it('submits a symbol set and ATR sizing params, then navigates away', async () => {
@@ -133,7 +173,7 @@ describe('BuildBotCard', () => {
           atr_k: 2,
           max_position_pct: 0.25,
           max_positions: 10,
-          strategy_params: { fast_period: 20, slow_period: 50 },
+          strategy_params: { fast_period: 5, slow_period: 12 },
         }),
       );
     });
@@ -180,7 +220,26 @@ describe('BuildBotCard', () => {
     expect(mockedPost).not.toHaveBeenCalled();
   });
 
-  it('sends the take-profit threshold as a fraction when enabled', async () => {
+  it('sends the default-on take-profit threshold as a fraction', async () => {
+    mockedPost.mockResolvedValue({ data: { id: 'b1' } });
+    const user = userEvent.setup();
+
+    renderCard(<BuildBotCard />);
+
+    await screen.findByRole('combobox', { name: 'Search universe equities' });
+    await pickAAPL(user);
+    // Take-profit is preloaded on at the MA Crossover course value (1% → 0.01).
+    await user.click(screen.getByRole('button', { name: 'Create bot' }));
+
+    await waitFor(() => {
+      expect(mockedPost).toHaveBeenCalledWith(
+        '/api/v1/bots/sessions',
+        expect.objectContaining({ take_profit_pct: 0.01 }),
+      );
+    });
+  });
+
+  it('sends a null take-profit when the default-on control is disabled', async () => {
     mockedPost.mockResolvedValue({ data: { id: 'b1' } });
     const user = userEvent.setup();
 
@@ -194,24 +253,21 @@ describe('BuildBotCard', () => {
     await waitFor(() => {
       expect(mockedPost).toHaveBeenCalledWith(
         '/api/v1/bots/sessions',
-        expect.objectContaining({ take_profit_pct: 0.2 }),
+        expect.objectContaining({ take_profit_pct: null }),
       );
     });
   });
 
-  it('defaults the drawdown kill-switch to 25% and sends it as a fraction', async () => {
+  it('defaults the drawdown kill-switch to the course 5% and sends it as a fraction', async () => {
     mockedPost.mockResolvedValue({ data: { id: 'b1' } });
     const user = userEvent.setup();
 
     renderCard(<BuildBotCard />);
 
     await screen.findByRole('combobox', { name: 'Search universe equities' });
-    expect(screen.getByLabelText('Drawdown kill-switch (%)')).toHaveValue(25);
+    expect(screen.getByLabelText('Drawdown kill-switch (%)')).toHaveValue(5);
 
     await pickAAPL(user);
-    const drawdown = screen.getByLabelText('Drawdown kill-switch (%)');
-    await user.clear(drawdown);
-    await user.type(drawdown, '5');
     await user.click(screen.getByRole('button', { name: 'Create bot' }));
 
     await waitFor(() => {
@@ -235,6 +291,69 @@ describe('BuildBotCard', () => {
 
     expect(screen.getByRole('button', { name: 'Create bot' })).toBeDisabled();
     expect(drawdown).toHaveAttribute('aria-invalid', 'true');
+    expect(mockedPost).not.toHaveBeenCalled();
+  });
+
+  it('shows the RSI params (and hides the SMA params) when RSI is selected', async () => {
+    const user = userEvent.setup();
+
+    renderCard(<BuildBotCard />);
+
+    await screen.findByRole('option', { name: 'RSI Mean Reversion' });
+    await user.selectOptions(
+      screen.getByLabelText('Strategy'),
+      'rsi_mean_reversion',
+    );
+
+    expect(screen.getByLabelText('RSI period')).toHaveValue(14);
+    expect(screen.getByLabelText('Oversold level')).toHaveValue(30);
+    expect(screen.getByLabelText('Exit level')).toHaveValue(50);
+    expect(screen.queryByLabelText('Fast SMA period')).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('Slow SMA period')).not.toBeInTheDocument();
+  });
+
+  it('submits the RSI strategy with its params payload', async () => {
+    mockedPost.mockResolvedValue({ data: { id: 'b1' } });
+    const user = userEvent.setup();
+
+    renderCard(<BuildBotCard />);
+
+    await screen.findByRole('option', { name: 'RSI Mean Reversion' });
+    await user.selectOptions(
+      screen.getByLabelText('Strategy'),
+      'rsi_mean_reversion',
+    );
+    await pickAAPL(user);
+    await user.click(screen.getByRole('button', { name: 'Create bot' }));
+
+    await waitFor(() => {
+      expect(mockedPost).toHaveBeenCalledWith(
+        '/api/v1/bots/sessions',
+        expect.objectContaining({
+          strategy_key: 'rsi_mean_reversion',
+          strategy_params: { period: 14, oversold: 30, exit_level: 50 },
+        }),
+      );
+    });
+  });
+
+  it('blocks RSI submission when oversold is not below the exit level', async () => {
+    const user = userEvent.setup();
+
+    renderCard(<BuildBotCard />);
+
+    await screen.findByRole('option', { name: 'RSI Mean Reversion' });
+    await user.selectOptions(
+      screen.getByLabelText('Strategy'),
+      'rsi_mean_reversion',
+    );
+    await pickAAPL(user);
+    const oversold = screen.getByLabelText('Oversold level');
+    await user.clear(oversold);
+    await user.type(oversold, '60');
+
+    expect(screen.getByRole('button', { name: 'Create bot' })).toBeDisabled();
+    expect(oversold).toHaveAttribute('aria-invalid', 'true');
     expect(mockedPost).not.toHaveBeenCalled();
   });
 });

@@ -57,6 +57,32 @@ function HealthIndicator() {
 }
 
 /**
+ * US equity market open/closed indicator shown in the header. Explains why the
+ * live "Total value" moves while the market is closed (crypto is priced live,
+ * equities are frozen to their last official close). Driven by the overview's
+ * `market_open` flag, which defaults to open when the broker clock is unreachable.
+ */
+function MarketStateBadge({ open }: { open: boolean | undefined }) {
+  if (open === undefined) return null;
+
+  const dotClass = open ? 'bg-emerald-500' : 'bg-slate-400';
+  const label = open ? 'Market open' : 'Market closed';
+
+  return (
+    <span
+      className="inline-flex items-center gap-2 text-sm text-slate-600"
+      role="status"
+    >
+      <span
+        aria-hidden="true"
+        className={`inline-block h-2.5 w-2.5 rounded-full ${dotClass}`}
+      />
+      {label}
+    </span>
+  );
+}
+
+/**
  * A labelled dashboard scope band: a heading (with an optional trailing chip/badge
  * and a docked control such as the range selector) over its content. The bands make
  * each figure's scope legible — point-in-time value, range-scoped performance, and
@@ -139,7 +165,10 @@ export function DashboardPage() {
         <h1 className="text-2xl font-bold tracking-tight text-slate-900">
           Dashboard
         </h1>
-        <HealthIndicator />
+        <div className="inline-flex items-center gap-4">
+          <MarketStateBadge open={data?.market_open} />
+          <HealthIndicator />
+        </div>
       </div>
 
       {isPending && (

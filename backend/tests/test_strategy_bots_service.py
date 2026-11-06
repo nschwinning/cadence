@@ -170,6 +170,21 @@ def test_create_rejects_unknown_strategy(db_session: Session) -> None:
         _create(db_session, strategy_key="not_a_strategy")
 
 
+def test_create_rsi_mean_reversion_session(db_session: Session) -> None:
+    """A session with the RSI strategy and valid params persists end-to-end."""
+    _add_asset(db_session)
+    bot = _create(
+        db_session,
+        strategy_key="rsi_mean_reversion",
+        strategy_params={"period": 14, "oversold": 30.0, "exit_level": 50.0},
+    )
+
+    assert bot.id is not None
+    assert bot.strategy_key == "rsi_mean_reversion"
+    assert bot.strategy_params["period"] == 14
+    assert bot.status == "active"
+
+
 def test_create_rejects_unknown_benchmark(db_session: Session) -> None:
     _add_asset(db_session)
     with pytest.raises(InvalidBotBenchmarkError):

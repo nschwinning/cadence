@@ -25,13 +25,14 @@ class BotSessionStatus(StrEnum):
 
 
 class StrategyKey(StrEnum):
-    """Registered strategy identifiers. v1 ships a single strategy.
+    """Registered strategy identifiers.
 
     The value is the stable key stored on ``bot_sessions.strategy_key`` and used
     to resolve the strategy implementation in :mod:`.registry`.
     """
 
     MA_CROSSOVER = "ma_crossover"
+    RSI_MEAN_REVERSION = "rsi_mean_reversion"
 
 
 class SizingMethod(StrEnum):
@@ -51,6 +52,7 @@ class SizingMethod(StrEnum):
 #: Human-facing display names for the strategy catalog (``/api/v1/bots`` reads).
 STRATEGY_DISPLAY_NAMES: dict[StrategyKey, str] = {
     StrategyKey.MA_CROSSOVER: "Moving-Average Crossover",
+    StrategyKey.RSI_MEAN_REVERSION: "RSI Mean Reversion",
 }
 
 #: Human-readable explanations for the strategy catalog, shown on the strategy
@@ -65,6 +67,17 @@ STRATEGY_EXPLANATIONS: dict[StrategyKey, str] = {
         "considered over and the bot exits. Between crossovers it holds its current "
         "state. It is a deterministic, long-only trend-following rule: it never "
         "shorts, and it waits for a confirmed cross rather than predicting turns."
+    ),
+    StrategyKey.RSI_MEAN_REVERSION: (
+        "The RSI Mean Reversion strategy is a counter-trend rule built on the "
+        "Relative Strength Index (RSI), a 0–100 momentum gauge of recent gains "
+        "versus losses. When RSI falls below the oversold level (default 30) the "
+        "price is considered stretched to the downside and the bot buys the dip; it "
+        "then exits once RSI reverts back above the exit level (default 50), the "
+        "mean-reversion target. Between those levels it holds. It is deterministic "
+        "and long-only — it never shorts an overbought reading — and leaves "
+        "take-profit, stop-loss, and the drawdown kill-switch to the bot's risk "
+        "controls."
     ),
 }
 

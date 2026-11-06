@@ -29,6 +29,10 @@ from cadence.strategy_bots.ma_crossover import (
     MACrossoverParams,
     MACrossoverStrategy,
 )
+from cadence.strategy_bots.rsi_mean_reversion import (
+    RsiMeanReversionParams,
+    RsiMeanReversionStrategy,
+)
 from cadence.strategy_bots.strategy import Strategy, StrategyParams
 
 
@@ -61,6 +65,13 @@ _REGISTRY: dict[StrategyKey, StrategyRegistration] = {
         explanation=STRATEGY_EXPLANATIONS[StrategyKey.MA_CROSSOVER],
         strategy=MACrossoverStrategy(),
         params_schema=MACrossoverParams,
+    ),
+    StrategyKey.RSI_MEAN_REVERSION: StrategyRegistration(
+        key=StrategyKey.RSI_MEAN_REVERSION,
+        display_name=STRATEGY_DISPLAY_NAMES[StrategyKey.RSI_MEAN_REVERSION],
+        explanation=STRATEGY_EXPLANATIONS[StrategyKey.RSI_MEAN_REVERSION],
+        strategy=RsiMeanReversionStrategy(),
+        params_schema=RsiMeanReversionParams,
     ),
 }
 

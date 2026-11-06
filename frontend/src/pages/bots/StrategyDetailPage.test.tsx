@@ -20,6 +20,14 @@ const CATALOG = [
     required_history: 51,
     params_schema: {},
   },
+  {
+    key: 'rsi_mean_reversion',
+    display_name: 'RSI Mean Reversion',
+    explanation:
+      'Buys an oversold dip when RSI falls below the oversold level and exits as it reverts.',
+    required_history: 15,
+    params_schema: {},
+  },
 ];
 
 function renderDetail(key: string) {
@@ -61,6 +69,19 @@ describe('StrategyDetailPage', () => {
     // The strategy-agnostic docs live only on the index.
     expect(screen.queryByText('Shared budget ceiling')).not.toBeInTheDocument();
     expect(screen.queryByText('ATR position sizing')).not.toBeInTheDocument();
+  });
+
+  it('renders the RSI explanation and its illustrative chart', async () => {
+    mockedGet.mockResolvedValue({ data: CATALOG });
+
+    renderDetail('rsi_mean_reversion');
+
+    expect(
+      await screen.findByText(/Buys an oversold dip when RSI falls below/),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole('img', { name: /rsi mean-reversion/i }),
+    ).toBeInTheDocument();
   });
 
   it('shows a not-found state with a link back to the index for an unknown key', async () => {

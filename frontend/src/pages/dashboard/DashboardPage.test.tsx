@@ -239,4 +239,44 @@ describe('DashboardPage', () => {
     ).length;
     expect(overviewCallsAfter).toBe(overviewCallsBefore);
   });
+
+  it('shows a "Market open" status label when the market is open', async () => {
+    mockedGet.mockImplementation((url: string) => {
+      if (url.includes('/dashboard/ai-costs')) {
+        return Promise.resolve({ data: makeAiCosts() });
+      }
+      if (url.includes('/dashboard/overview')) {
+        return Promise.resolve({
+          data: makeOverview({ sessions, market_open: true }),
+        });
+      }
+      if (url.includes('/health')) return Promise.resolve({ data: health });
+      return Promise.resolve({ data: {} });
+    });
+
+    renderWithClient(<DashboardPage />);
+
+    expect(await screen.findByText('Market open')).toBeInTheDocument();
+    expect(screen.queryByText('Market closed')).not.toBeInTheDocument();
+  });
+
+  it('shows a "Market closed" status label when the market is closed', async () => {
+    mockedGet.mockImplementation((url: string) => {
+      if (url.includes('/dashboard/ai-costs')) {
+        return Promise.resolve({ data: makeAiCosts() });
+      }
+      if (url.includes('/dashboard/overview')) {
+        return Promise.resolve({
+          data: makeOverview({ sessions, market_open: false }),
+        });
+      }
+      if (url.includes('/health')) return Promise.resolve({ data: health });
+      return Promise.resolve({ data: {} });
+    });
+
+    renderWithClient(<DashboardPage />);
+
+    expect(await screen.findByText('Market closed')).toBeInTheDocument();
+    expect(screen.queryByText('Market open')).not.toBeInTheDocument();
+  });
 });

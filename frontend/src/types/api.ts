@@ -1169,6 +1169,8 @@ export interface DashboardOverview {
   universe_balance: DashboardUniverseBalance;
   universe_performers: DashboardUniversePerformers;
   benchmark_series: DashboardBenchmarkSeries[];
+  /** Whether the US equity market is currently open (default-open on clock failure). */
+  market_open: boolean;
 }
 
 /** One portfolio's all-time cumulative AI cost (null when unavailable). */

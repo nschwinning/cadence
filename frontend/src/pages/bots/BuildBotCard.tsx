@@ -7,6 +7,47 @@ import type { BotSessionCreateRequest } from '../../types/api';
 /** Default benchmark id preselected in the build form (S&P 500). */
 const DEFAULT_BENCHMARK = 'SP500';
 
+/** Strategy selected when the build form first opens. */
+const DEFAULT_STRATEGY_KEY = 'ma_crossover';
+
+/**
+ * Course-recipe defaults for the shared engine risk controls, keyed by strategy.
+ * The form opens pre-tuned to the selected strategy's reference algo, and these
+ * values are re-applied whenever the strategy dropdown changes (the strategy's
+ * own parameters live in their own state, seeded to course values below):
+ *   `ma_crossover` → course Algo 6 (fast 5 / slow 12, TP 1% / SL 2% / drawdown 5%).
+ *   `rsi_mean_reversion` → course Algo 16 (period 14 / oversold 30 / exit 50,
+ *     TP 0.5% / SL 1% / drawdown 5%).
+ * The user can still change any of them before building.
+ */
+const STRATEGY_RISK_DEFAULTS: Record<
+  string,
+  {
+    takeProfitEnabled: boolean;
+    takeProfitPct: string;
+    stopLossEnabled: boolean;
+    stopLossPct: string;
+    drawdownStopPct: string;
+  }
+> = {
+  ma_crossover: {
+    takeProfitEnabled: true,
+    takeProfitPct: '1',
+    stopLossEnabled: true,
+    stopLossPct: '2',
+    drawdownStopPct: '5',
+  },
+  rsi_mean_reversion: {
+    takeProfitEnabled: true,
+    takeProfitPct: '0.5',
+    stopLossEnabled: true,
+    stopLossPct: '1',
+    drawdownStopPct: '5',
+  },
+};
+
+const DEFAULT_RISK = STRATEGY_RISK_DEFAULTS[DEFAULT_STRATEGY_KEY];
+
 /** Shared classes for the plain `<select>` / `<input>` controls. */
 const FIELD_CLASS =
   'mt-1 w-full rounded border border-slate-300 px-3 py-1.5 text-sm text-slate-900 focus:border-emerald-500 focus:outline-none focus:ring-1 focus:ring-emerald-500';
@@ -90,14 +131,19 @@ export function BuildBotCard() {
   const { data: benchmarks } = useBenchmarks();
   const benchmarkCatalog = Array.isArray(benchmarks) ? benchmarks : null;
 
-  const [strategyKey, setStrategyKey] = useState('ma_crossover');
+  const [strategyKey, setStrategyKey] = useState(DEFAULT_STRATEGY_KEY);
   const [tickers, setTickers] = useState<string[]>([]);
   const [wholeUniverse, setWholeUniverse] = useState(false);
   const [capital, setCapital] = useState('10000');
   const [benchmark, setBenchmark] = useState<string>(DEFAULT_BENCHMARK);
   const [label, setLabel] = useState('');
-  const [fastPeriod, setFastPeriod] = useState('20');
-  const [slowPeriod, setSlowPeriod] = useState('50');
+  // MA Crossover parameters (course Algo 6 defaults 5 / 12).
+  const [fastPeriod, setFastPeriod] = useState('5');
+  const [slowPeriod, setSlowPeriod] = useState('12');
+  // RSI Mean Reversion parameters (course defaults 14 / 30 / 50).
+  const [rsiPeriod, setRsiPeriod] = useState('14');
+  const [oversold, setOversold] = useState('30');
+  const [exitLevel, setExitLevel] = useState('50');
   // Sizing controls (ATR risk-based by default; all-in is the legacy N=1 method).
   const [sizingMethod, setSizingMethod] = useState('atr_risk');
   const [riskPct, setRiskPct] = useState('1');
@@ -105,13 +151,36 @@ export function BuildBotCard() {
   const [atrK, setAtrK] = useState('2');
   const [maxPositionPct, setMaxPositionPct] = useState('25');
   const [maxPositions, setMaxPositions] = useState('10');
-  const [takeProfitEnabled, setTakeProfitEnabled] = useState(false);
-  const [takeProfitPct, setTakeProfitPct] = useState('20');
-  const [stopLossEnabled, setStopLossEnabled] = useState(false);
-  const [stopLossPct, setStopLossPct] = useState('10');
-  // The drawdown kill-switch is always on. The field defaults to the configured
-  // default (25%); the user can lower it. Entered as a percent, sent as a fraction.
-  const [drawdownStopPct, setDrawdownStopPct] = useState('25');
+  // Take-profit / stop-loss preloaded with the strategy's course recipe (on by
+  // default); the user can disable or retune them.
+  const [takeProfitEnabled, setTakeProfitEnabled] = useState(
+    DEFAULT_RISK.takeProfitEnabled,
+  );
+  const [takeProfitPct, setTakeProfitPct] = useState(DEFAULT_RISK.takeProfitPct);
+  const [stopLossEnabled, setStopLossEnabled] = useState(
+    DEFAULT_RISK.stopLossEnabled,
+  );
+  const [stopLossPct, setStopLossPct] = useState(DEFAULT_RISK.stopLossPct);
+  // The drawdown kill-switch is always on. The field is preloaded with the
+  // strategy's course default (5%); the user can change it. Entered as a percent,
+  // sent as a fraction.
+  const [drawdownStopPct, setDrawdownStopPct] = useState(
+    DEFAULT_RISK.drawdownStopPct,
+  );
+
+  // Switching strategy re-applies that strategy's course risk recipe (TP / SL /
+  // drawdown differ per reference algo). The strategy-specific parameter fields
+  // keep their own course-seeded state.
+  const handleStrategyChange = (key: string) => {
+    setStrategyKey(key);
+    const risk = STRATEGY_RISK_DEFAULTS[key];
+    if (!risk) return;
+    setTakeProfitEnabled(risk.takeProfitEnabled);
+    setTakeProfitPct(risk.takeProfitPct);
+    setStopLossEnabled(risk.stopLossEnabled);
+    setStopLossPct(risk.stopLossPct);
+    setDrawdownStopPct(risk.drawdownStopPct);
+  };
 
   const capitalValue = Number.parseFloat(capital);
   const capitalValid = Number.isFinite(capitalValue) && capitalValue >= 1000;
@@ -119,12 +188,32 @@ export function BuildBotCard() {
   // Either an explicit symbol set or the whole-universe flag must be chosen.
   const symbolsValid = wholeUniverse || tickers.length > 0;
 
+  const isMaCrossover = strategyKey === 'ma_crossover';
+  const isRsi = strategyKey === 'rsi_mean_reversion';
+
   const fastValue = Number.parseInt(fastPeriod, 10);
   const slowValue = Number.parseInt(slowPeriod, 10);
   const fastValid = Number.isInteger(fastValue) && fastValue >= 1;
   const slowValid = Number.isInteger(slowValue) && slowValue >= 2;
   // The MA Crossover strategy requires the fast period strictly below the slow one.
   const periodsOrdered = fastValid && slowValid && fastValue < slowValue;
+  // Only the MA Crossover strategy's params gate submit when it is selected.
+  const maParamsValid = !isMaCrossover || (fastValid && slowValid && periodsOrdered);
+
+  // RSI Mean Reversion params: integer period ≥ 1, thresholds in 0–100, and the
+  // oversold level strictly below the exit level (otherwise the bands overlap).
+  const rsiPeriodValue = Number.parseInt(rsiPeriod, 10);
+  const rsiPeriodValid = Number.isInteger(rsiPeriodValue) && rsiPeriodValue >= 1;
+  const oversoldValue = Number.parseFloat(oversold);
+  const oversoldValid =
+    Number.isFinite(oversoldValue) && oversoldValue >= 0 && oversoldValue <= 100;
+  const exitLevelValue = Number.parseFloat(exitLevel);
+  const exitLevelValid =
+    Number.isFinite(exitLevelValue) && exitLevelValue >= 0 && exitLevelValue <= 100;
+  const bandsOrdered =
+    oversoldValid && exitLevelValid && oversoldValue < exitLevelValue;
+  const rsiParamsValid =
+    !isRsi || (rsiPeriodValid && oversoldValid && exitLevelValid && bandsOrdered);
 
   const isAtr = sizingMethod === 'atr_risk';
   // ATR sizing params are entered in friendly units: risk/cap as percentages.
@@ -167,9 +256,8 @@ export function BuildBotCard() {
     strategyKey.length > 0 &&
     symbolsValid &&
     capitalValid &&
-    fastValid &&
-    slowValid &&
-    periodsOrdered &&
+    maParamsValid &&
+    rsiParamsValid &&
     riskValid &&
     atrPeriodValid &&
     atrKValid &&
@@ -182,6 +270,11 @@ export function BuildBotCard() {
   const capitalInvalid = !capitalValid;
   const fastInvalid = fastPeriod.length > 0 && (!fastValid || !periodsOrdered);
   const slowInvalid = slowPeriod.length > 0 && (!slowValid || !periodsOrdered);
+  const rsiPeriodInvalid = rsiPeriod.length > 0 && !rsiPeriodValid;
+  const oversoldInvalid =
+    oversold.length > 0 && (!oversoldValid || !bandsOrdered);
+  const exitLevelInvalid =
+    exitLevel.length > 0 && (!exitLevelValid || !bandsOrdered);
   const riskInvalid = isAtr && riskPct.length > 0 && !riskValid;
   const atrPeriodInvalid = isAtr && atrPeriod.length > 0 && !atrPeriodValid;
   const atrKInvalid = isAtr && atrK.length > 0 && !atrKValid;
@@ -190,6 +283,15 @@ export function BuildBotCard() {
   const takeProfitInvalid = takeProfitEnabled && !takeProfitValid;
   const stopLossInvalid = stopLossEnabled && !stopLossValid;
   const drawdownInvalid = drawdownStopPct.length > 0 && !drawdownValid;
+
+  // Build the strategy-specific params payload for the selected strategy.
+  const strategyParams = isRsi
+    ? {
+        period: rsiPeriodValue,
+        oversold: oversoldValue,
+        exit_level: exitLevelValue,
+      }
+    : { fast_period: fastValue, slow_period: slowValue };
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -200,7 +302,7 @@ export function BuildBotCard() {
       whole_universe: wholeUniverse,
       initial_capital: capitalValue,
       benchmark,
-      strategy_params: { fast_period: fastValue, slow_period: slowValue },
+      strategy_params: strategyParams,
       label: label.trim() === '' ? null : label.trim(),
       sizing_method: sizingMethod,
       risk_pct: isAtr ? riskFraction : null,
@@ -242,7 +344,7 @@ export function BuildBotCard() {
               <select
                 id="bot-strategy"
                 value={strategyKey}
-                onChange={(e) => setStrategyKey(e.target.value)}
+                onChange={(e) => handleStrategyChange(e.target.value)}
                 className={FIELD_CLASS}
               >
                 {(
@@ -334,28 +436,65 @@ export function BuildBotCard() {
             <h3 className="text-xs font-semibold uppercase tracking-wide text-slate-500">
               Strategy parameters
             </h3>
-            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-              <NumberField
-                id="bot-fast-period"
-                label="Fast SMA period"
-                min={1}
-                step={1}
-                value={fastPeriod}
-                onChange={setFastPeriod}
-                hint="Must be below the slow period."
-                invalid={fastInvalid}
-              />
-              <NumberField
-                id="bot-slow-period"
-                label="Slow SMA period"
-                min={2}
-                step={1}
-                value={slowPeriod}
-                onChange={setSlowPeriod}
-                hint="Must be above the fast period."
-                invalid={slowInvalid}
-              />
-            </div>
+            {isRsi ? (
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                <NumberField
+                  id="bot-rsi-period"
+                  label="RSI period"
+                  min={1}
+                  step={1}
+                  value={rsiPeriod}
+                  onChange={setRsiPeriod}
+                  hint="Bars in the RSI window."
+                  invalid={rsiPeriodInvalid}
+                />
+                <NumberField
+                  id="bot-oversold"
+                  label="Oversold level"
+                  min={0}
+                  max={100}
+                  step={1}
+                  value={oversold}
+                  onChange={setOversold}
+                  hint="Buy below this RSI. Must be under the exit level."
+                  invalid={oversoldInvalid}
+                />
+                <NumberField
+                  id="bot-exit-level"
+                  label="Exit level"
+                  min={0}
+                  max={100}
+                  step={1}
+                  value={exitLevel}
+                  onChange={setExitLevel}
+                  hint="Exit above this RSI. Must be over the oversold level."
+                  invalid={exitLevelInvalid}
+                />
+              </div>
+            ) : (
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                <NumberField
+                  id="bot-fast-period"
+                  label="Fast SMA period"
+                  min={1}
+                  step={1}
+                  value={fastPeriod}
+                  onChange={setFastPeriod}
+                  hint="Must be below the slow period."
+                  invalid={fastInvalid}
+                />
+                <NumberField
+                  id="bot-slow-period"
+                  label="Slow SMA period"
+                  min={2}
+                  step={1}
+                  value={slowPeriod}
+                  onChange={setSlowPeriod}
+                  hint="Must be above the fast period."
+                  invalid={slowInvalid}
+                />
+              </div>
+            )}
 
             <h3 className="text-xs font-semibold uppercase tracking-wide text-slate-500">
               Position sizing
@@ -463,8 +602,8 @@ export function BuildBotCard() {
                     <NumberField
                       id="bot-take-profit-pct"
                       label="Take-profit threshold (%)"
-                      min={1}
-                      step={1}
+                      min={0.1}
+                      step={0.1}
                       value={takeProfitPct}
                       onChange={setTakeProfitPct}
                       hint="Above the entry price."
@@ -499,8 +638,8 @@ export function BuildBotCard() {
                     <NumberField
                       id="bot-stop-loss-pct"
                       label="Stop-loss threshold (%)"
-                      min={1}
-                      step={1}
+                      min={0.1}
+                      step={0.1}
                       value={stopLossPct}
                       onChange={setStopLossPct}
                       hint="Below the entry price."
@@ -522,7 +661,7 @@ export function BuildBotCard() {
                 step={0.1}
                 value={drawdownStopPct}
                 onChange={setDrawdownStopPct}
-                hint="Liquidates all positions and stops the bot when total value falls this far from its peak. Always on; defaults to the configured default."
+                hint="Liquidates all positions and stops the bot when total value falls this far from its peak. Always on; preloaded with the strategy's course default."
                 invalid={drawdownInvalid}
               />
             </div>
