@@ -1322,6 +1322,24 @@ export interface BotStrategyCatalogEntry {
   params_schema: Record<string, unknown>;
 }
 
+/**
+ * A fixed course-recipe bot preset: one strategy with its course parameters and
+ * risk controls. Risk values are fractions (0.01 = 1%); `null` take-profit /
+ * stop-loss means off. Mirrors `BotPresetRead`.
+ */
+export interface BotPreset {
+  key: string;
+  display_name: string;
+  description: string;
+  course_ref: string;
+  strategy_key: string;
+  strategy_params: Record<string, unknown>;
+  take_profit_pct: number | null;
+  stop_loss_pct: number | null;
+  drawdown_stop_pct: number;
+  is_default: boolean;
+}
+
 /** One eligible universe equity in a bot session's tradable symbol set. Mirrors `BotSymbolRead`. */
 export interface BotSymbol {
   asset_id: number;
@@ -1365,6 +1383,16 @@ export interface BotSession {
   drawdown_stop_pct: number;
   cash_buffer_pct: number;
   peak_value: number;
+  /** The preset the session started from, or null for a custom configuration. */
+  preset_key: string | null;
+  /** Whether the session's params / risk controls were changed from its preset. */
+  preset_customized: boolean;
+  /** Who created the session (`manual` for the build form, `orchestrator` when deployed by one). */
+  origin: string;
+  /** The bot orchestrator that deployed the session, or null for manual sessions. */
+  orchestrator_id: string | null;
+  /** That orchestrator's label, or null. */
+  orchestrator_label: string | null;
   symbols: BotSymbol[];
   positions: BotPosition[];
   total_trades: number;
@@ -1413,10 +1441,48 @@ export interface BotKpis {
   value_is_intraday: boolean;
 }
 
-/** A single closed round-trip trade: its ticker and realized P&L. Mirrors `TradeExtremeRead`. */
+/** A single closed round-trip trade: its ticker, realized P&L, and exact fills. Mirrors `TradeExtremeRead`. */
 export interface TradeExtreme {
   ticker: string;
   realised_pnl: number;
+  quantity: number;
+  entry_price: number;
+  entry_at: string;
+  exit_price: number;
+  exit_at: string;
+}
+
+/** The curated stats block of a stopped session's summary. Mirrors `SessionSummaryStatsRead`. */
+export interface SessionSummaryStats {
+  /** Why the session stopped (`'drawdown_kill_switch'` | `'manual'`); null if not recorded. */
+  stop_reason: string | null;
+  stopped_at: string | null;
+  started_at: string;
+  lifespan_days: number;
+  final_value: number;
+  allocated_capital: number;
+  total_return: number;
+  total_return_pct: number;
+  realised_pnl: number;
+  peak_value: number;
+  max_drawdown: number;
+  trade_count: number;
+  /** Share of closed round-trips with positive realized P&L; null with no closed trades. */
+  win_rate: number | null;
+  best_trade: TradeExtreme | null;
+  worst_trade: TradeExtreme | null;
+  benchmark: string;
+  benchmark_return_pct: number | null;
+  excess_return_pct: number | null;
+}
+
+/** A stopped session's summary: its stats block plus the cached AI narrative. Mirrors `BotSessionSummaryRead`. */
+export interface BotSessionSummary {
+  stats: SessionSummaryStats;
+  /** The cached AI narrative (markdown); null when not yet generated or the agent failed. */
+  narrative: string | null;
+  model: string | null;
+  generated_at: string | null;
 }
 
 /** A single fill recorded by the bot engine. Mirrors `BotTradeRead`. */
@@ -1460,7 +1526,9 @@ export interface BotValueHistoryResponse {
 
 /** Request to create a strategy-bot session. Mirrors `BotSessionCreateRequest`. */
 export interface BotSessionCreateRequest {
-  strategy_key: string;
+  strategy_key?: string | null;
+  /** Start from this preset; omitted params / risk fields take the preset's values. */
+  preset_key?: string | null;
   tickers?: string[] | null;
   whole_universe?: boolean;
   initial_capital: number;
@@ -1477,4 +1545,119 @@ export interface BotSessionCreateRequest {
   atr_k?: number | null;
   max_position_pct?: number | null;
   max_positions?: number | null;
+}
+
+// --- Bot orchestrator ------------------------------------------------------
+
+/** Request to deploy a bot orchestrator. Mirrors `BotOrchestratorCreateRequest`. */
+export interface BotOrchestratorCreateRequest {
+  label: string;
+  capital: number;
+  max_parallel_bots: number;
+  /** Max share (0, 1] of the orchestrator's value one bot may receive. */
+  max_bot_share: number;
+  max_tickers_per_bot: number;
+  cadence: string;
+  model?: string | null;
+  benchmark: string;
+}
+
+/** One applied or rejected action recorded on a decision run. */
+export interface OrchestratorAction {
+  kind: 'stop' | 'deploy';
+  /** Applied actions: the stopped or deployed bot. */
+  bot_id?: string;
+  preset_key?: string | null;
+  tickers?: string[];
+  capital?: number;
+  rationale?: string;
+  /** Applied stops carry the AI's reason; rejections carry the validation reason. */
+  reason?: string;
+  /** Rejected actions: the AI's original action. */
+  action?: Record<string, unknown>;
+}
+
+/** A decision run as listed in the run history. Mirrors `OrchestratorRunSummaryRead`. */
+export interface OrchestratorRunSummary {
+  id: string;
+  trigger: 'scheduled' | 'manual' | string;
+  status: 'queued' | 'running' | 'succeeded' | 'partial' | 'failed' | 'skipped' | string;
+  model: string;
+  created_at: string;
+  started_at: string | null;
+  finished_at: string | null;
+  duration_ms: number | null;
+  error: string | null;
+  market_summary: string | null;
+  applied: OrchestratorAction[];
+  rejected: OrchestratorAction[];
+}
+
+/** A decision run in full. Mirrors `OrchestratorRunRead`. */
+export interface OrchestratorRun extends OrchestratorRunSummary {
+  orchestrator_id: string;
+  prompt_version: number | null;
+  briefing: Record<string, unknown> | null;
+  decision: Record<string, unknown> | null;
+  research: Record<string, unknown>[];
+}
+
+/** One bot an orchestrator deployed. Mirrors `OrchestratorBotRead`. */
+export interface OrchestratorBot {
+  id: string;
+  label: string | null;
+  preset_key: string | null;
+  preset_name: string | null;
+  strategy_key: string;
+  tickers: string[];
+  status: string;
+  stop_reason: string | null;
+  initial_capital: number;
+  current_value: number;
+  total_return_pct: number;
+  open_positions: number;
+  created_at: string;
+  stopped_at: string | null;
+  capital_returned_at: string | null;
+}
+
+/** An orchestrator with computed capital figures. Mirrors `BotOrchestratorRead`. */
+export interface BotOrchestrator {
+  id: string;
+  label: string;
+  status: 'active' | 'stopped' | 'archived' | string;
+  capital: number;
+  free_capital: number;
+  allocated_capital: number;
+  value: number;
+  total_return_pct: number;
+  max_parallel_bots: number;
+  max_bot_share: number;
+  max_tickers_per_bot: number;
+  cadence: string;
+  model: string;
+  benchmark: string;
+  active_bots: number;
+  liquidating_bots: number;
+  created_at: string;
+  stopped_at: string | null;
+  archived_at: string | null;
+  last_run: OrchestratorRunSummary | null;
+}
+
+/** An orchestrator plus every bot it deployed. Mirrors `BotOrchestratorDetailRead`. */
+export interface BotOrchestratorDetail extends BotOrchestrator {
+  bots: OrchestratorBot[];
+}
+
+/** Orchestrators plus the total. Mirrors `BotOrchestratorListResponse`. */
+export interface BotOrchestratorListResponse {
+  items: BotOrchestrator[];
+  total: number;
+}
+
+/** A page of decision runs plus the total. Mirrors `OrchestratorRunListResponse`. */
+export interface OrchestratorRunListResponse {
+  items: OrchestratorRunSummary[];
+  total: number;
 }

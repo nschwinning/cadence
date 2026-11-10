@@ -10,7 +10,7 @@ can drive it exactly like the real Alpaca client. Selected by
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 
 from cadence.broker.base import OrderError
 from cadence.broker.models import (
@@ -282,6 +282,10 @@ class StubBroker:
     # Market status -------------------------------------------------------
     def is_market_open(self) -> bool:
         """The stub market is always open."""
+        return True
+
+    def is_trading_day(self, day: date) -> bool:
+        """Every day is a trading day on the stub market."""
         return True
 
     # Test/helper utilities ----------------------------------------------

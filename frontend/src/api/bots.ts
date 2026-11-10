@@ -9,9 +9,11 @@ import { apiClient } from './client';
 import { dashboardKeys } from './dashboard';
 import type {
   BotKpis,
+  BotPreset,
   BotSession,
   BotSessionCreateRequest,
   BotSessionListResponse,
+  BotSessionSummary,
   BotStrategyCatalogEntry,
   BotTradeListResponse,
   BotValueHistoryResponse,
@@ -22,10 +24,13 @@ import type {
 export const botKeys = {
   all: ['bots'] as const,
   strategies: () => ['bots', 'strategies'] as const,
+  presets: () => ['bots', 'presets'] as const,
   sessions: (includeArchived: boolean) =>
     ['bots', 'sessions', includeArchived] as const,
   session: (sessionId: string) => ['bots', 'session', sessionId] as const,
   kpis: (sessionId: string) => ['bots', 'session', sessionId, 'kpis'] as const,
+  summary: (sessionId: string) =>
+    ['bots', 'session', sessionId, 'summary'] as const,
   valueHistory: (sessionId: string, resolution?: BotValueResolution) =>
     ['bots', 'session', sessionId, 'value-history', resolution ?? null] as const,
   trades: (sessionId: string, limit?: number, offset?: number) =>
@@ -49,6 +54,12 @@ export async function listStrategies(): Promise<BotStrategyCatalogEntry[]> {
   const { data } = await apiClient.get<BotStrategyCatalogEntry[]>(
     '/api/v1/bots/strategies',
   );
+  return data;
+}
+
+/** Fetch the fixed course-recipe bot presets (catalog order). */
+export async function listPresets(): Promise<BotPreset[]> {
+  const { data } = await apiClient.get<BotPreset[]>('/api/v1/bots/presets');
   return data;
 }
 
@@ -109,6 +120,19 @@ export async function getBotKpis(sessionId: string): Promise<BotKpis> {
 }
 
 /**
+ * Fetch a stopped bot session's summary (stats + cached AI narrative). Rejects
+ * with the axios error: 404 if unknown, 409 if the session is not stopped.
+ */
+export async function getBotSummary(
+  sessionId: string,
+): Promise<BotSessionSummary> {
+  const { data } = await apiClient.get<BotSessionSummary>(
+    `/api/v1/bots/sessions/${encodeURIComponent(sessionId)}/summary`,
+  );
+  return data;
+}
+
+/**
  * Fetch a bot session's value history at the given resolution, oldest first.
  * `resolution` defaults to `daily` (the server default) when omitted.
  */
@@ -143,6 +167,18 @@ export function useStrategies() {
   });
 }
 
+/**
+ * React Query hook for the bot preset catalog. Presets are code-defined and only
+ * change on deploy, so they are cached for the life of the page.
+ */
+export function usePresets() {
+  return useQuery<BotPreset[]>({
+    queryKey: botKeys.presets(),
+    queryFn: () => listPresets(),
+    staleTime: Infinity,
+  });
+}
+
 /** React Query hook listing bot sessions. */
 export function useBotSessions(includeArchived = false) {
   return useQuery<BotSessionListResponse>({
@@ -173,6 +209,19 @@ export function useBotKpis(sessionId: string) {
     // Live-refresh the detail KPI block ~every 30s. Pauses in the background
     // (TanStack default refetchIntervalInBackground: false).
     refetchInterval: 30_000,
+  });
+}
+
+/**
+ * React Query hook fetching a stopped bot session's summary. Enabled only when
+ * the session is stopped (there is no summary for an active session); the AI
+ * narrative is generated lazily on first fetch and cached server-side thereafter.
+ */
+export function useBotSummary(sessionId: string, enabled: boolean) {
+  return useQuery<BotSessionSummary>({
+    queryKey: botKeys.summary(sessionId),
+    queryFn: () => getBotSummary(sessionId),
+    enabled: enabled && sessionId.length > 0,
   });
 }
 

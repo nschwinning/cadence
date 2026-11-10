@@ -201,6 +201,10 @@ services:
       # Cron expression; default 16:15 on weekdays (just after the US close) — record
       # the end-of-day value snapshot for each active bot session.
       BOT_SNAPSHOT_SCHEDULE: ${BOT_SNAPSHOT_SCHEDULE:-15 16 * * 1-5}
+      # Cron expression; default 09:00 on weekdays (BEFORE the 09:30 open) — run every
+      # due bot orchestrator's decision. Runs place no orders: the bot tick sells
+      # stopped bots and starts deployed ones from the open. Holidays are skipped.
+      ORCHESTRATOR_SCHEDULE: ${ORCHESTRATOR_SCHEDULE:-0 9 * * 1-5}
       # Must match the backend's REBALANCE_CRON_TOKEN.
       REBALANCE_CRON_TOKEN: ${REBALANCE_CRON_TOKEN:-}
     depends_on:
@@ -277,7 +281,14 @@ services:
       'T=$$(cat /tmp/cron.token)'
       'curl -fsS -X POST -H X-Cron-Token:$$T $$B/bots/snapshot-daily >/dev/null'
       > /usr/local/bin/bot-snapshot.sh &&
-      chmod +x /usr/local/bin/rebalance.sh /usr/local/bin/crypto-rebalance.sh /usr/local/bin/benchmark.sh /usr/local/bin/snapshot.sh /usr/local/bin/indicators.sh /usr/local/bin/price-ml.sh /usr/local/bin/fundamentals.sh /usr/local/bin/bot-tick.sh /usr/local/bin/bot-snapshot.sh &&
+      printf '%s\n'
+      '#!/bin/sh'
+      'set -eu'
+      'B=http://backend:8000/api/v1'
+      'T=$$(cat /tmp/cron.token)'
+      'curl -fsS -X POST -H X-Cron-Token:$$T $$B/bot-orchestrators/run-due >/dev/null'
+      > /usr/local/bin/orchestrator.sh &&
+      chmod +x /usr/local/bin/rebalance.sh /usr/local/bin/crypto-rebalance.sh /usr/local/bin/benchmark.sh /usr/local/bin/snapshot.sh /usr/local/bin/indicators.sh /usr/local/bin/price-ml.sh /usr/local/bin/fundamentals.sh /usr/local/bin/bot-tick.sh /usr/local/bin/bot-snapshot.sh /usr/local/bin/orchestrator.sh &&
       echo \"$${REBALANCE_SCHEDULE} /usr/local/bin/rebalance.sh\" > /etc/crontabs/root &&
       echo \"$${CRYPTO_REBALANCE_SCHEDULE} /usr/local/bin/crypto-rebalance.sh\" >> /etc/crontabs/root &&
       echo \"$${BENCHMARK_SCHEDULE} /usr/local/bin/benchmark.sh\" >> /etc/crontabs/root &&
@@ -287,6 +298,7 @@ services:
       echo \"$${FUNDAMENTALS_SCHEDULE} /usr/local/bin/fundamentals.sh\" >> /etc/crontabs/root &&
       echo \"$${BOT_TICK_SCHEDULE} /usr/local/bin/bot-tick.sh\" >> /etc/crontabs/root &&
       echo \"$${BOT_SNAPSHOT_SCHEDULE} /usr/local/bin/bot-snapshot.sh\" >> /etc/crontabs/root &&
+      echo \"$${ORCHESTRATOR_SCHEDULE} /usr/local/bin/orchestrator.sh\" >> /etc/crontabs/root &&
       crond -f -l 8"
     restart: unless-stopped
 

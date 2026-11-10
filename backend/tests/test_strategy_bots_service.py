@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import UTC, date, datetime, timedelta
 
 import pytest
 from sqlalchemy.orm import Session
-from tests.fakes import RecordingNotifier
+from tests.fakes import FakeBotSummaryAgent, RecordingNotifier
 
 from cadence.assets.models import Asset
 from cadence.broker.models import OrderSide
@@ -18,9 +19,11 @@ from cadence.strategy_bots import service
 from cadence.strategy_bots.constants import BotValueResolution
 from cadence.strategy_bots.errors import (
     BotSessionNotArchivableError,
+    BotSessionNotStoppedError,
     IneligibleAssetError,
     InvalidBotBenchmarkError,
     InvalidBotConfigError,
+    UnknownPresetError,
     UnknownStrategyError,
 )
 from cadence.strategy_bots.market_data import BarsResult
@@ -1331,3 +1334,556 @@ def test_snapshot_job_prunes_value_points_past_retention(
     assert datetime(2026, 1, 1, 23, 59, 59, tzinfo=UTC) in [
         p.timestamp for p in daily
     ]
+
+
+# Stop metadata ----------------------------------------------------------
+def test_manual_stop_records_reason_and_timestamp(db_session: Session) -> None:
+    _add_asset(db_session)
+    bot = _create(db_session)
+
+    service.stop_bot_session(db_session, bot.id)
+
+    assert bot.stop_reason == "manual"
+    assert bot.stopped_at is not None
+
+
+def test_kill_switch_records_reason_and_timestamp(db_session: Session) -> None:
+    _add_asset(db_session, "AAPL")
+    bot = _create(db_session, drawdown_stop_pct=0.10)
+    broker = _OpenableBroker()
+    price = broker.get_quote("AAPL").last
+    assert price is not None
+    broker.buy(symbol="AAPL", quantity=100.0)
+    bot.positions.append(
+        BotPosition(
+            asset_id=bot.symbols[0].asset_id,
+            ticker="AAPL",
+            alpaca_symbol="AAPL",
+            quantity=100.0,
+            avg_price=price,
+            opened_at=_NOW,
+        )
+    )
+    bot.cash = bot.initial_capital - 100.0 * price
+    bot.peak_value = bot.initial_capital
+    db_session.flush()
+
+    service.run_tick(
+        db_session,
+        broker=broker,
+        market_data=_PerSymbolMarketData({"AAPL": [price * 0.5] * 5}),
+        now=_NOW,
+    )
+
+    assert bot.stop_reason == "drawdown_kill_switch"
+    assert bot.stopped_at == _NOW
+
+
+# Round-trip entry/exit detail + count/win-rate --------------------------
+def test_trade_extremes_carry_entry_and_exit_detail(db_session: Session) -> None:
+    _add_asset(db_session)
+    bot = _create(db_session)
+    entry_at = datetime(2026, 1, 6, 9, 0, tzinfo=UTC)
+    exit_at = datetime(2026, 1, 7, 9, 0, tzinfo=UTC)
+    _add_fill(
+        db_session, bot, side=OrderSide.BUY, ticker="AAPL", qty=10.0, price=50.0,
+        when=entry_at,
+    )
+    _add_fill(
+        db_session, bot, side=OrderSide.SELL, ticker="AAPL", qty=10.0, price=55.0,
+        when=exit_at,
+    )
+
+    best, _ = service.bot_trade_extremes(db_session, bot)
+    assert best is not None
+    assert best.quantity == pytest.approx(10.0)
+    assert best.entry_price == pytest.approx(50.0)
+    assert best.entry_at == entry_at
+    assert best.exit_price == pytest.approx(55.0)
+    assert best.exit_at == exit_at
+
+
+def test_round_trips_count_and_win_rate_on_mixed_ledger(
+    db_session: Session,
+) -> None:
+    _add_asset(db_session)
+    bot = _create(db_session)
+    # One winner (AAPL +50) and one loser (MSFT -25) → two round-trips, 50% wins.
+    _add_fill(
+        db_session, bot, side=OrderSide.BUY, ticker="AAPL", qty=10.0, price=50.0,
+        when=datetime(2026, 1, 6, 9, 0, tzinfo=UTC),
+    )
+    _add_fill(
+        db_session, bot, side=OrderSide.SELL, ticker="AAPL", qty=10.0, price=55.0,
+        when=datetime(2026, 1, 7, 9, 0, tzinfo=UTC),
+    )
+    _add_fill(
+        db_session, bot, side=OrderSide.BUY, ticker="MSFT", qty=5.0, price=100.0,
+        when=datetime(2026, 1, 6, 9, 5, tzinfo=UTC),
+    )
+    _add_fill(
+        db_session, bot, side=OrderSide.SELL, ticker="MSFT", qty=5.0, price=95.0,
+        when=datetime(2026, 1, 7, 9, 5, tzinfo=UTC),
+    )
+
+    round_trips = service.bot_round_trips(db_session, bot)
+    assert len(round_trips) == 2
+    stats = service.bot_session_summary_stats(db_session, bot)
+    assert stats.trade_count == 2
+    assert stats.win_rate == pytest.approx(0.5)
+
+
+# Summary stats assembly -------------------------------------------------
+def test_summary_stats_assembles_fields(db_session: Session) -> None:
+    _add_asset(db_session)
+    bot = _create(db_session)
+    bot.created_at = datetime(2026, 1, 1, 12, 0, tzinfo=UTC)
+    _add_fill(
+        db_session, bot, side=OrderSide.BUY, ticker="AAPL", qty=10.0, price=50.0,
+        when=datetime(2026, 1, 2, 9, 0, tzinfo=UTC),
+    )
+    _add_fill(
+        db_session, bot, side=OrderSide.SELL, ticker="AAPL", qty=10.0, price=60.0,
+        when=datetime(2026, 1, 3, 9, 0, tzinfo=UTC),
+    )
+    bot.peak_value = 123_456.0
+    service.stop_bot_session(db_session, bot.id)
+    bot.stopped_at = datetime(2026, 1, 4, 12, 0, tzinfo=UTC)
+    db_session.flush()
+
+    stats = service.bot_session_summary_stats(db_session, bot)
+    assert stats.stop_reason == "manual"
+    assert stats.stopped_at == datetime(2026, 1, 4, 12, 0, tzinfo=UTC)
+    assert stats.lifespan_days == 3  # Jan 1 → Jan 4
+    assert stats.peak_value == pytest.approx(123_456.0)
+    assert stats.trade_count == 1
+    assert stats.win_rate == pytest.approx(1.0)
+    assert stats.best_trade is not None
+    assert stats.best_trade.realised_pnl == pytest.approx(100.0)
+    assert stats.benchmark == "SP500"
+
+
+def test_summary_stats_none_without_trades_or_benchmark_data(
+    db_session: Session,
+) -> None:
+    _add_asset(db_session)
+    bot = _create(db_session)
+    service.stop_bot_session(db_session, bot.id)
+
+    stats = service.bot_session_summary_stats(db_session, bot)
+    assert stats.trade_count == 0
+    assert stats.win_rate is None
+    assert stats.best_trade is None
+    assert stats.worst_trade is None
+    assert stats.benchmark_return_pct is None
+    assert stats.excess_return_pct is None
+
+
+# Summary fingerprint ----------------------------------------------------
+def test_summary_fingerprint_is_stable_and_changes(db_session: Session) -> None:
+    _add_asset(db_session)
+    bot = _create(db_session)
+    service.stop_bot_session(db_session, bot.id)
+    stats = service.bot_session_summary_stats(db_session, bot)
+
+    first = service._summary_fingerprint(stats)
+    assert first == service._summary_fingerprint(stats)
+
+    changed = replace(stats, final_value=stats.final_value + 1_000.0)
+    assert service._summary_fingerprint(changed) != first
+
+
+# Cached AI summary ------------------------------------------------------
+def _stopped_bot_with_round_trip(db_session: Session) -> BotSession:
+    _add_asset(db_session)
+    bot = _create(db_session)
+    _add_fill(
+        db_session, bot, side=OrderSide.BUY, ticker="AAPL", qty=10.0, price=50.0,
+        when=datetime(2026, 1, 6, 9, 0, tzinfo=UTC),
+    )
+    _add_fill(
+        db_session, bot, side=OrderSide.SELL, ticker="AAPL", qty=10.0, price=55.0,
+        when=datetime(2026, 1, 7, 9, 0, tzinfo=UTC),
+    )
+    service.stop_bot_session(db_session, bot.id)
+    return bot
+
+
+def test_summary_generates_then_caches(db_session: Session) -> None:
+    bot = _stopped_bot_with_round_trip(db_session)
+    agent = FakeBotSummaryAgent()
+
+    first = service.bot_session_summary(db_session, bot, agent)
+    assert agent.calls == 1
+    assert first.narrative is not None
+    assert "The session closed in the green." in first.narrative
+    assert bot.summary_fingerprint is not None
+
+    second = service.bot_session_summary(db_session, bot, agent)
+    assert agent.calls == 1  # cache hit — agent not called again
+    assert second.narrative == first.narrative
+
+
+def test_summary_regenerates_on_fingerprint_change(db_session: Session) -> None:
+    bot = _stopped_bot_with_round_trip(db_session)
+    agent = FakeBotSummaryAgent()
+    service.bot_session_summary(db_session, bot, agent)
+    assert agent.calls == 1
+
+    # A changed input (a new closed round-trip) shifts the fingerprint.
+    _add_fill(
+        db_session, bot, side=OrderSide.BUY, ticker="MSFT", qty=5.0, price=100.0,
+        when=datetime(2026, 1, 8, 9, 0, tzinfo=UTC),
+    )
+    _add_fill(
+        db_session, bot, side=OrderSide.SELL, ticker="MSFT", qty=5.0, price=110.0,
+        when=datetime(2026, 1, 9, 9, 0, tzinfo=UTC),
+    )
+
+    service.bot_session_summary(db_session, bot, agent)
+    assert agent.calls == 2  # regenerated
+
+
+def test_summary_agent_failure_returns_none_narrative(db_session: Session) -> None:
+    bot = _stopped_bot_with_round_trip(db_session)
+    agent = FakeBotSummaryAgent(fail=True)
+
+    summary = service.bot_session_summary(db_session, bot, agent)
+    assert agent.calls == 1
+    assert summary.narrative is None
+    assert summary.stats.trade_count == 1  # stats still assembled
+    assert bot.summary_narrative is None  # nothing persisted
+
+
+def test_summary_active_bot_raises_without_calling_agent(
+    db_session: Session,
+) -> None:
+    _add_asset(db_session)
+    bot = _create(db_session)  # active
+    agent = FakeBotSummaryAgent()
+
+    with pytest.raises(BotSessionNotStoppedError):
+        service.bot_session_summary(db_session, bot, agent)
+    assert agent.calls == 0
+
+
+# Presets ---------------------------------------------------------------------
+def _create_from_preset(
+    db_session: Session, preset_key: str, **overrides: object
+) -> BotSession:
+    kwargs: dict[str, object] = {
+        "preset_key": preset_key,
+        "tickers": ["AAPL"],
+        "initial_capital": 100_000.0,
+        "benchmark": "SP500",
+    }
+    kwargs.update(overrides)
+    return service.create_bot_session(db_session, **kwargs)  # type: ignore[arg-type]
+
+
+def test_create_from_preset_without_overrides_uses_preset(
+    db_session: Session,
+) -> None:
+    _add_asset(db_session)
+    bot = _create_from_preset(db_session, "rsi_mean_reversion_algo16")
+
+    assert bot.strategy_key == "rsi_mean_reversion"
+    assert bot.strategy_params == {"period": 14, "oversold": 30.0, "exit_level": 50.0}
+    assert bot.take_profit_pct == 0.005
+    assert bot.stop_loss_pct == 0.01
+    assert bot.drawdown_stop_pct == 0.05
+    assert bot.preset_key == "rsi_mean_reversion_algo16"
+    assert bot.preset_customized is False
+    assert bot.origin == "manual"
+
+
+def test_create_from_preset_override_marks_customized(db_session: Session) -> None:
+    _add_asset(db_session)
+    bot = _create_from_preset(
+        db_session,
+        "ma_crossover_algo6",
+        strategy_params={"fast_period": 7, "slow_period": 12},
+    )
+
+    assert bot.strategy_params["fast_period"] == 7
+    # Unsupplied risk values still come from the preset.
+    assert bot.take_profit_pct == 0.01
+    assert bot.stop_loss_pct == 0.02
+    assert bot.preset_customized is True
+
+
+def test_create_from_preset_explicit_none_turns_take_profit_off(
+    db_session: Session,
+) -> None:
+    _add_asset(db_session)
+    bot = _create_from_preset(db_session, "ma_crossover_algo6", take_profit_pct=None)
+
+    assert bot.take_profit_pct is None
+    assert bot.stop_loss_pct == 0.02
+    assert bot.preset_customized is True
+
+
+def test_create_from_preset_risk_override_marks_customized(
+    db_session: Session,
+) -> None:
+    _add_asset(db_session)
+    bot = _create_from_preset(
+        db_session, "donchian_turtle_algo25", drawdown_stop_pct=0.10
+    )
+
+    assert bot.drawdown_stop_pct == 0.10
+    assert bot.preset_customized is True
+
+
+def test_create_from_preset_equal_values_not_customized(db_session: Session) -> None:
+    """Supplied values equal to the preset (incl. a version-only Donchian dict that
+    omits inactive-version fields, and percent->fraction float math) are not custom."""
+    _add_asset(db_session)
+    bot = _create_from_preset(
+        db_session,
+        "donchian_smart_range_algo8",
+        strategy_key="donchian_breakout",
+        strategy_params={
+            "version": "locked",
+            "channel_period": 20,
+            "atr_padding_mult": 0.5,
+        },
+        take_profit_pct=0.5 / 100,
+        stop_loss_pct=2 / 100,
+        drawdown_stop_pct=5 / 100,
+    )
+
+    assert bot.preset_key == "donchian_smart_range_algo8"
+    assert bot.preset_customized is False
+
+
+def test_create_from_unknown_preset_rejected(db_session: Session) -> None:
+    _add_asset(db_session)
+    with pytest.raises(UnknownPresetError):
+        _create_from_preset(db_session, "not_a_preset")
+
+
+def test_create_from_preset_with_mismatched_strategy_rejected(
+    db_session: Session,
+) -> None:
+    _add_asset(db_session)
+    with pytest.raises(InvalidBotConfigError):
+        _create_from_preset(
+            db_session, "ma_crossover_algo6", strategy_key="rsi_mean_reversion"
+        )
+
+
+def test_create_without_strategy_or_preset_rejected(db_session: Session) -> None:
+    _add_asset(db_session)
+    with pytest.raises(InvalidBotConfigError):
+        service.create_bot_session(
+            db_session,
+            tickers=["AAPL"],
+            initial_capital=100_000.0,
+            benchmark="SP500",
+        )
+
+
+def test_create_without_preset_records_no_provenance(db_session: Session) -> None:
+    _add_asset(db_session)
+    bot = _create(db_session)
+
+    assert bot.preset_key is None
+    assert bot.preset_customized is False
+    assert bot.origin == "manual"
+    # Unchanged legacy defaults: no TP/SL, configured drawdown.
+    assert bot.take_profit_pct is None
+    assert bot.stop_loss_pct is None
+    assert bot.drawdown_stop_pct == settings.BOT_DRAWDOWN_STOP_PCT
+
+
+def test_create_from_rolling_reversion_preset(db_session: Session) -> None:
+    _add_asset(db_session)
+    bot = _create_from_preset(db_session, "rolling_reversion_vwap_cross_algo39")
+
+    assert bot.strategy_key == "rolling_average_reversion"
+    assert bot.strategy_params["average_type"] == "vwap"
+    assert bot.strategy_params["window"] == 60
+    assert bot.strategy_params["entry_threshold"] == 0.0
+    assert bot.strategy_params["exit_mode"] == "bracket"
+    assert bot.take_profit_pct == 0.005
+    assert bot.stop_loss_pct == 0.01
+    assert bot.drawdown_stop_pct == 0.05
+    assert bot.preset_customized is False
+
+
+# Selling stop ----------------------------------------------------------------
+def _stopped_bot_with_positions(
+    db_session: Session, broker: StubBroker
+) -> BotSession:
+    """A stopped bot holding AAPL x10 and MSFT x5, also held on the stub broker."""
+    _add_asset(db_session, "AAPL")
+    _add_asset(db_session, "MSFT")
+    bot = _create(db_session, tickers=["AAPL", "MSFT"])
+    _add_position(db_session, bot, "AAPL", 10, 100.0)
+    _add_position(db_session, bot, "MSFT", 5, 200.0)
+    broker.buy("AAPL", 10)
+    broker.buy("MSFT", 5)
+    service.stop_bot_session(db_session, bot.id)
+    return bot
+
+
+def _sells(db_session: Session, bot: BotSession) -> list[BotTrade]:
+    return [
+        t
+        for t in db_session.query(BotTrade).filter(BotTrade.bot_session_id == bot.id)
+        if t.side == "sell"
+    ]
+
+
+def test_orchestrator_stop_records_reason(db_session: Session) -> None:
+    from cadence.strategy_bots.constants import StopReason
+
+    _add_asset(db_session)
+    bot = _create(db_session)
+
+    service.stop_bot_session(db_session, bot.id, reason=StopReason.ORCHESTRATOR)
+
+    assert bot.status == "stopped"
+    assert bot.stop_reason == "orchestrator"
+    assert bot.stopped_at is not None
+
+
+def test_tick_flattens_a_stopped_session(db_session: Session) -> None:
+    broker = _OpenableBroker()
+    bot = _stopped_bot_with_positions(db_session, broker)
+
+    result = service.run_tick(
+        db_session,
+        broker=broker,
+        market_data=_PerSymbolMarketData({}),
+        now=_NOW,
+    )
+
+    assert result.flattened == 2
+    assert bot.positions == []
+    assert bot.status == "stopped"
+    sells = _sells(db_session, bot)
+    assert {t.ticker for t in sells} == {"AAPL", "MSFT"}
+    assert all(t.reason == "session_stopped" for t in sells)
+
+
+def test_tick_flattens_an_archived_session_with_leftovers(db_session: Session) -> None:
+    broker = _OpenableBroker()
+    bot = _stopped_bot_with_positions(db_session, broker)
+    service.archive_bot_session(db_session, bot.id)
+
+    service.run_tick(
+        db_session,
+        broker=broker,
+        market_data=_PerSymbolMarketData({}),
+        now=_NOW,
+    )
+
+    assert bot.positions == []
+    assert bot.status == "archived"
+
+
+def test_no_flatten_while_market_closed(db_session: Session) -> None:
+    broker = _OpenableBroker(market_open=False)
+    bot = _stopped_bot_with_positions(db_session, broker)
+
+    result = service.run_tick(
+        db_session,
+        broker=broker,
+        market_data=_PerSymbolMarketData({}),
+        now=_NOW,
+    )
+
+    assert result.flattened == 0
+    assert len(bot.positions) == 2
+    assert _sells(db_session, bot) == []
+
+
+def test_stopped_session_never_opens_a_position(db_session: Session) -> None:
+    _add_asset(db_session)
+    bot = _create(db_session)
+    service.stop_bot_session(db_session, bot.id)
+    broker = _OpenableBroker()
+    price = broker.get_quote("AAPL").last
+    assert price is not None
+
+    # Bars that would trigger an MA-crossover entry for an active session.
+    service.run_tick(
+        db_session,
+        broker=broker,
+        market_data=_PerSymbolMarketData({"AAPL": _up_cross(price)}),
+        now=_NOW,
+    )
+
+    assert bot.positions == []
+    assert bot.total_trades == 0
+
+
+def test_flatten_credits_cash_and_realises_pnl(db_session: Session) -> None:
+    broker = _OpenableBroker()
+    bot = _stopped_bot_with_positions(db_session, broker)
+    cash_before = bot.cash
+
+    service.run_tick(
+        db_session,
+        broker=broker,
+        market_data=_PerSymbolMarketData({}),
+        now=_NOW,
+    )
+
+    proceeds = sum(t.quantity * (t.filled_price or 0.0) for t in _sells(db_session, bot))
+    assert bot.cash == pytest.approx(cash_before + proceeds)
+
+
+def test_rejected_flatten_sell_is_retried_without_failing_the_tick(
+    db_session: Session,
+) -> None:
+    """A leftover the broker cannot sell stays on the ledger for the next tick, and the
+    other sessions are still processed."""
+    _add_asset(db_session, "AAPL")
+    stopped = _create(db_session)
+    _add_position(db_session, stopped, "AAPL", 10, 100.0)  # not held on the broker
+    service.stop_bot_session(db_session, stopped.id)
+    _create(db_session)  # an active session that must still be ticked
+
+    result = service.run_tick(
+        db_session,
+        broker=_OpenableBroker(),
+        market_data=_PerSymbolMarketData({"AAPL": [10.0] * 4}),
+        now=_NOW,
+    )
+
+    assert result.flattened == 0
+    assert result.processed == 1
+    assert len(stopped.positions) == 1
+
+
+def test_create_records_orchestrator_origin(db_session: Session) -> None:
+    from cadence.bot_orchestrator.models import BotOrchestrator
+    from cadence.strategy_bots.constants import BotOrigin
+
+    orchestrator = BotOrchestrator(
+        label="Orch",
+        capital=10_000.0,
+        free_capital=10_000.0,
+        max_parallel_bots=3,
+        max_bot_share=0.5,
+        max_tickers_per_bot=5,
+        cadence="daily",
+        model="gpt-5-mini",
+        benchmark="SP500",
+    )
+    db_session.add(orchestrator)
+    db_session.flush()
+    _add_asset(db_session)
+
+    bot = _create(
+        db_session,
+        origin=BotOrigin.ORCHESTRATOR,
+        orchestrator_id=orchestrator.id,
+    )
+
+    assert bot.origin == "orchestrator"
+    assert bot.orchestrator_id == orchestrator.id
+    assert bot.capital_returned_at is None

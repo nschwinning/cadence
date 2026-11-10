@@ -26,10 +26,11 @@ from cadence.api.app import app
 from cadence.api.routers.assets import get_fundamentals_provider
 from cadence.assets import models as _assets_models  # noqa: F401
 from cadence.assets.fundamentals import FundamentalsProvider
+from cadence.bot_orchestrator import models as _bot_orchestrator_models  # noqa: F401
 from cadence.broker import Broker, get_broker
 from cadence.broker.stub import StubBroker
 from cadence.config import settings
-from cadence.database import Base, get_db
+from cadence.database import Base, SessionLocal, get_db
 from cadence.paper_trading import models as _paper_trading_models  # noqa: F401
 from cadence.portfolios import models as _portfolios_models  # noqa: F401
 from cadence.price_ml import models as _price_ml_models  # noqa: F401
@@ -67,15 +68,24 @@ def _ensure_database_exists(url: str) -> None:
 
 @pytest.fixture(scope="session")
 def test_engine() -> Iterator[Engine]:
-    """Session-scoped engine bound to the provisioned test database."""
+    """Session-scoped engine bound to the provisioned test database.
+
+    Also rebinds the app's shared ``SessionLocal`` to this engine for the test run,
+    so code that opens its own session — the startup orphan sweeps the TestClient
+    lifespan runs, and background job runners — uses the test database instead of
+    the development ``DATABASE_URL``.
+    """
     _ensure_database_exists(settings.TEST_DATABASE_URL)
     engine = create_engine(
         settings.TEST_DATABASE_URL, echo=False, pool_pre_ping=True
     )
     Base.metadata.create_all(engine)
+    original_bind = SessionLocal.kw.get("bind")
+    SessionLocal.configure(bind=engine)
     try:
         yield engine
     finally:
+        SessionLocal.configure(bind=original_bind)
         engine.dispose()
 
 

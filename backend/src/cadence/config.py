@@ -177,6 +177,15 @@ class Settings(BaseSettings):
     #: Cap on assets the agent may discover and add beyond the current universe.
     AI_PORTFOLIO_MAX_NEW_ASSETS: int = 5
 
+    # Bot orchestrator decision runs (see cadence.bot_orchestrator). Each run is one
+    # agent call that may web-search market/sector news within this budget.
+    #: Hard SDK turn cap per decision run (searches + planning + final output turn).
+    BOT_ORCHESTRATOR_MAX_TURNS: int = 8
+    #: Hard cap on web searches per decision run.
+    BOT_ORCHESTRATOR_MAX_WEB_SEARCHES: int = 4
+    #: Seconds before a decision run's agent call is abandoned (the run fails).
+    BOT_ORCHESTRATOR_TIMEOUT_SECONDS: int = 300
+
     # Price-ML signal: a pooled gradient-boosted classifier predicting the sign of
     # each asset's forward-return over PRICE_ML_HORIZON_DAYS trading days. These
     # knobs are read by the nightly precompute and the rebalance-time annotation.

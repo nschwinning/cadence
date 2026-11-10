@@ -6,7 +6,12 @@ import { MemoryRouter, Routes, Route } from 'react-router-dom';
 import type { ReactNode } from 'react';
 import { BotSessionPage } from './BotSessionPage';
 import { apiClient } from '../../api/client';
-import type { BotKpis, BotSession, BotTrade } from '../../types/api';
+import type {
+  BotKpis,
+  BotSession,
+  BotSessionSummary,
+  BotTrade,
+} from '../../types/api';
 
 vi.mock('../../api/client', () => ({
   apiClient: { get: vi.fn(), post: vi.fn() },
@@ -38,6 +43,11 @@ const bot: BotSession = {
   drawdown_stop_pct: 0.25,
   cash_buffer_pct: 0.02,
   peak_value: 10500,
+  preset_key: null,
+  preset_customized: false,
+  origin: 'manual',
+  orchestrator_id: null,
+  orchestrator_label: null,
   symbols: [
     { asset_id: 1, ticker: 'AAPL', alpaca_symbol: 'AAPL' },
     { asset_id: 2, ticker: 'MSFT', alpaca_symbol: 'MSFT' },
@@ -73,8 +83,24 @@ const kpis: BotKpis = {
   total_trades: 3,
   max_drawdown: 0.012,
   sharpe_ratio: 1.42,
-  best_trade: { ticker: 'AAPL', realised_pnl: 412 },
-  worst_trade: { ticker: 'MSFT', realised_pnl: -88 },
+  best_trade: {
+    ticker: 'AAPL',
+    realised_pnl: 412,
+    quantity: 10,
+    entry_price: 180,
+    entry_at: '2026-10-02T13:35:00Z',
+    exit_price: 221.2,
+    exit_at: '2026-10-03T15:00:00Z',
+  },
+  worst_trade: {
+    ticker: 'MSFT',
+    realised_pnl: -88,
+    quantity: 4,
+    entry_price: 420,
+    entry_at: '2026-10-02T13:35:00Z',
+    exit_price: 398,
+    exit_at: '2026-10-04T15:00:00Z',
+  },
   benchmark: 'SP500',
   benchmark_return_pct: 0.02,
   excess_return_pct: 0.0125,
@@ -97,8 +123,57 @@ const trade: BotTrade = {
   created_at: '2026-10-02T13:35:00Z',
 };
 
+const summary: BotSessionSummary = {
+  stats: {
+    stop_reason: 'drawdown_kill_switch',
+    stopped_at: '2026-10-05T16:00:00Z',
+    started_at: '2026-10-01T00:00:00Z',
+    lifespan_days: 4,
+    final_value: 9800,
+    allocated_capital: 10000,
+    total_return: -200,
+    total_return_pct: -0.02,
+    realised_pnl: -200,
+    peak_value: 10500,
+    max_drawdown: 0.0667,
+    trade_count: 2,
+    win_rate: 0.5,
+    best_trade: {
+      ticker: 'AAPL',
+      realised_pnl: 120,
+      quantity: 10,
+      entry_price: 50,
+      entry_at: '2026-10-02T09:00:00Z',
+      exit_price: 62,
+      exit_at: '2026-10-03T09:00:00Z',
+    },
+    worst_trade: {
+      ticker: 'MSFT',
+      realised_pnl: -320,
+      quantity: 5,
+      entry_price: 100,
+      entry_at: '2026-10-02T09:00:00Z',
+      exit_price: 36,
+      exit_at: '2026-10-03T09:00:00Z',
+    },
+    benchmark: 'SP500',
+    benchmark_return_pct: 0.01,
+    excess_return_pct: -0.03,
+  },
+  narrative:
+    '**The kill-switch fired.**\n\nThe bot gave back its gains and stopped at its drawdown floor.',
+  model: 'gpt-x',
+  generated_at: '2026-10-05T16:05:00Z',
+};
+
 /** Route every GET the detail page issues by URL suffix. */
-function routeGet(overrides: { session?: BotSession; kpis?: BotKpis } = {}) {
+function routeGet(
+  overrides: {
+    session?: BotSession;
+    kpis?: BotKpis;
+    summary?: BotSessionSummary;
+  } = {},
+) {
   return (url: string) => {
     if (url.endsWith('/kpis'))
       return Promise.resolve({ data: overrides.kpis ?? kpis });
@@ -108,6 +183,25 @@ function routeGet(overrides: { session?: BotSession; kpis?: BotKpis } = {}) {
       return Promise.resolve({ data: { items: [], total: 0 } });
     if (url.endsWith('/trades'))
       return Promise.resolve({ data: { items: [trade], total: 1 } });
+    if (url.endsWith('/summary'))
+      return Promise.resolve({ data: overrides.summary ?? summary });
+    if (url.endsWith('/bots/presets'))
+      return Promise.resolve({
+        data: [
+          {
+            key: 'ma_crossover_algo6',
+            display_name: 'MA Crossover (Algo 6)',
+            description: 'Fast 5 / slow 12.',
+            course_ref: 'Algo 6',
+            strategy_key: 'ma_crossover',
+            strategy_params: { fast_period: 5, slow_period: 12 },
+            take_profit_pct: 0.01,
+            stop_loss_pct: 0.02,
+            drawdown_stop_pct: 0.05,
+            is_default: true,
+          },
+        ],
+      });
     return Promise.resolve({ data: overrides.session ?? bot });
   };
 }
@@ -436,5 +530,152 @@ describe('BotSessionPage', () => {
     await screen.findByRole('heading', { name: 'Apple crossover' });
     expect(screen.getByRole('button', { name: 'Archive' })).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Stop' })).not.toBeInTheDocument();
+  });
+
+  // Session summary -------------------------------------------------------
+  it('hides the session summary for an active bot', async () => {
+    mockedGet.mockImplementation(routeGet());
+
+    renderDetail(<BotSessionPage />);
+
+    await screen.findByRole('heading', { name: 'Apple crossover' });
+    expect(
+      screen.queryByRole('heading', { name: 'Session summary' }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByTestId('summary-stop-banner'),
+    ).not.toBeInTheDocument();
+  });
+
+  it('shows the session summary with stats, reason banner and trade detail for a stopped bot', async () => {
+    mockedGet.mockImplementation(
+      routeGet({ session: { ...bot, status: 'stopped' } }),
+    );
+
+    renderDetail(<BotSessionPage />);
+
+    // Stop-reason banner (awaits the summary query resolving).
+    const banner = await screen.findByTestId('summary-stop-banner');
+    expect(banner).toHaveTextContent('Stopped by the drawdown kill-switch');
+    // Stats grid.
+    const panel = screen.getByText('Session summary').closest('.rounded-lg') as HTMLElement;
+    expect(within(panel).getByText('$9,800.00')).toBeInTheDocument(); // final value
+    expect(within(panel).getByText('$10,500.00')).toBeInTheDocument(); // peak value
+    expect(within(panel).getByText('4 days')).toBeInTheDocument(); // lifespan
+    // Best-trade tile carries the exact entry→exit fills.
+    const best = within(panel).getByText('Best trade').closest('div')!
+      .parentElement as HTMLElement;
+    expect(within(best).getByText('$120.00')).toBeInTheDocument();
+    expect(within(best).getByText(/AAPL/)).toBeInTheDocument();
+    expect(within(best).getByText(/\$50\.00/)).toBeInTheDocument(); // entry price
+    expect(within(best).getByText(/\$62\.00/)).toBeInTheDocument(); // exit price
+    // AI narrative rendered.
+    expect(screen.getByText('The kill-switch fired.')).toBeInTheDocument();
+  });
+
+  it('shows a placeholder when the AI narrative is absent', async () => {
+    mockedGet.mockImplementation(
+      routeGet({
+        session: { ...bot, status: 'stopped' },
+        summary: { ...summary, narrative: null, generated_at: null },
+      }),
+    );
+
+    renderDetail(<BotSessionPage />);
+
+    expect(
+      await screen.findByTestId('summary-narrative-placeholder'),
+    ).toBeInTheDocument();
+  });
+
+  it('shows a loading state while the summary generates', async () => {
+    mockedGet.mockImplementation((url: string) => {
+      if (url.endsWith('/kpis')) return Promise.resolve({ data: kpis });
+      if (url.endsWith('/benchmarks'))
+        return Promise.resolve({ data: [{ id: 'SP500', name: 'S&P 500' }] });
+      if (url.endsWith('/value-history'))
+        return Promise.resolve({ data: { items: [], total: 0 } });
+      if (url.endsWith('/trades'))
+        return Promise.resolve({ data: { items: [], total: 0 } });
+      // The summary never resolves → the panel stays in its loading state.
+      if (url.endsWith('/summary')) return new Promise(() => {});
+      return Promise.resolve({ data: { ...bot, status: 'stopped' } });
+    });
+
+    renderDetail(<BotSessionPage />);
+
+    const panel = (
+      await screen.findByText('Session summary')
+    ).closest('.rounded-lg') as HTMLElement;
+    expect(within(panel).getByRole('status')).toHaveTextContent('Loading…');
+  });
+  it('shows "Custom configuration" for a session created without a preset', async () => {
+    mockedGet.mockImplementation(routeGet());
+    renderDetail(<BotSessionPage />);
+
+    const fact = (await screen.findByText('Preset')).parentElement as HTMLElement;
+    expect(within(fact).getByText('Custom configuration')).toBeInTheDocument();
+  });
+
+  it('shows the preset name without a customized mark for an unchanged preset', async () => {
+    mockedGet.mockImplementation(
+      routeGet({ session: { ...bot, preset_key: 'ma_crossover_algo6' } }),
+    );
+    renderDetail(<BotSessionPage />);
+
+    const fact = (await screen.findByText('Preset')).parentElement as HTMLElement;
+    expect(await within(fact).findByText('MA Crossover (Algo 6)')).toBeInTheDocument();
+    expect(within(fact).queryByText('Customized')).not.toBeInTheDocument();
+  });
+
+  it('marks a customized preset session', async () => {
+    mockedGet.mockImplementation(
+      routeGet({
+        session: { ...bot, preset_key: 'ma_crossover_algo6', preset_customized: true },
+      }),
+    );
+    renderDetail(<BotSessionPage />);
+
+    const fact = (await screen.findByText('Preset')).parentElement as HTMLElement;
+    expect(await within(fact).findByText('MA Crossover (Algo 6)')).toBeInTheDocument();
+    expect(within(fact).getByText('Customized')).toBeInTheDocument();
+  });
+
+  it('falls back to the raw key when the preset is not in the catalog', async () => {
+    mockedGet.mockImplementation(
+      routeGet({ session: { ...bot, preset_key: 'retired_preset' } }),
+    );
+    renderDetail(<BotSessionPage />);
+
+    const fact = (await screen.findByText('Preset')).parentElement as HTMLElement;
+    expect(within(fact).getByText('retired_preset')).toBeInTheDocument();
+  });
+
+  it('links an orchestrator-deployed bot to its orchestrator', async () => {
+    mockedGet.mockImplementation(
+      routeGet({
+        session: {
+          ...bot,
+          origin: 'orchestrator',
+          orchestrator_id: 'o1',
+          orchestrator_label: 'Core rotation',
+        },
+      }),
+    );
+    renderDetail(<BotSessionPage />);
+
+    const fact = (await screen.findByText('Deployed by')).parentElement as HTMLElement;
+    expect(within(fact).getByRole('link', { name: 'Core rotation' })).toHaveAttribute(
+      'href',
+      '/orchestrators/o1',
+    );
+  });
+
+  it('shows no orchestrator link for a manual bot', async () => {
+    mockedGet.mockImplementation(routeGet());
+    renderDetail(<BotSessionPage />);
+
+    await screen.findByText('Preset');
+    expect(screen.queryByText('Deployed by')).not.toBeInTheDocument();
   });
 });

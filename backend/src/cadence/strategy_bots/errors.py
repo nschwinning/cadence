@@ -19,6 +19,10 @@ class UnknownStrategyError(StrategyBotError):
     """The requested strategy key is not registered."""
 
 
+class UnknownPresetError(StrategyBotError):
+    """The requested preset key is not in the bot preset catalog."""
+
+
 class InvalidStrategyParamsError(StrategyBotError):
     """The supplied strategy parameters failed the strategy's schema validation."""
 
@@ -45,3 +49,20 @@ class InvalidBotConfigError(StrategyBotError):
 
 class InvalidBotBenchmarkError(StrategyBotError):
     """The requested benchmark id is not in the fixed benchmark catalog."""
+
+
+class BotSessionNotStoppedError(StrategyBotError):
+    """A session summary was requested for a session that is not stopped.
+
+    The session summary (stats + AI narrative) is only defined for stopped
+    sessions; requesting it for an active (or archived-but-never-stopped) session
+    is surfaced as 409 by the router.
+    """
+
+
+class BotSummaryUnavailableError(StrategyBotError):
+    """The AI session-summary narrative could not be generated.
+
+    Raised when the summary agent times out or the SDK fails. The stats block is
+    still served; only the narrative is absent, so a later view retries.
+    """

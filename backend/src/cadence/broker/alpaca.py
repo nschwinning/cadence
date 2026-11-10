@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import contextlib
 import logging
-from datetime import datetime
+from datetime import date, datetime
 from typing import Any, Protocol, cast
 from urllib.parse import quote
 
@@ -561,6 +561,23 @@ class AlpacaBroker:
     def is_market_open(self) -> bool:
         """Check whether the market is currently open."""
         return bool(self.get_clock().get("is_open", False))
+
+    def is_trading_day(self, day: date) -> bool:
+        """Whether the market calendar has a session on ``day``.
+
+        Reads ``/v2/calendar`` for that single date: Alpaca returns one entry for a
+        trading day and none for weekends and market holidays. A malformed response
+        raises :class:`BrokerError` rather than being read as "closed".
+        """
+        iso = day.isoformat()
+        sessions = self._request(
+            "GET", "/v2/calendar", params={"start": iso, "end": iso}
+        )
+        if not isinstance(sessions, list):
+            raise BrokerError(f"unexpected market calendar response for {iso}")
+        return any(
+            isinstance(entry, dict) and entry.get("date") == iso for entry in sessions
+        )
 
     # Parsing helpers -----------------------------------------------------
     @staticmethod

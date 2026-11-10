@@ -6,6 +6,7 @@ from alembic import context
 # Later phases add their model modules above so they register on Base.metadata.
 from cadence.ai_portfolio import models as _ai_portfolio_models  # noqa: F401
 from cadence.assets import models as _assets_models  # noqa: F401
+from cadence.bot_orchestrator import models as _bot_orchestrator_models  # noqa: F401
 from cadence.config import settings
 from cadence.database import Base
 from cadence.paper_trading import models as _paper_trading_models  # noqa: F401

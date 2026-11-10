@@ -65,4 +65,24 @@ describe('Sidebar', () => {
     expect(isHighlighted(screen.getByRole('link', { name: /^assets$/i }))).toBe(true);
     expect(isHighlighted(screen.getByRole('link', { name: /watchlist/i }))).toBe(false);
   });
+
+  it('renders the Orchestrators entry directly after Bots', () => {
+    renderSidebar();
+
+    const labels = screen.getAllByRole('link').map((link) => link.textContent?.trim());
+    const bots = labels.indexOf('Bots');
+    expect(bots).toBeGreaterThanOrEqual(0);
+    expect(labels[bots + 1]).toBe('Orchestrators');
+    expect(screen.getByRole('link', { name: /orchestrators/i })).toHaveAttribute(
+      'href',
+      '/orchestrators',
+    );
+  });
+
+  it('highlights Orchestrators on an orchestrator detail route', () => {
+    renderSidebar('/orchestrators/abc');
+
+    expect(isHighlighted(screen.getByRole('link', { name: /orchestrators/i }))).toBe(true);
+    expect(isHighlighted(screen.getByRole('link', { name: /^bots$/i }))).toBe(false);
+  });
 });

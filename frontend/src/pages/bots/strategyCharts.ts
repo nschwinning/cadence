@@ -1,6 +1,7 @@
 import type { EChartsCoreOption } from 'echarts/core';
 import { buildCrossoverChartOption } from './crossoverChart';
 import { buildDonchianChartOption } from './donchianChart';
+import { buildRollingReversionChartOption } from './rollingReversionChart';
 import { buildRsiChartOption } from './rsiChart';
 
 /**
@@ -33,6 +34,11 @@ const STRATEGY_CHARTS: Record<string, StrategyChartDescriptor> = {
     buildOption: buildDonchianChartOption,
     ariaLabel:
       'Illustrative Donchian range breakout with an upward-breakout entry and a downward-breakdown exit marker',
+  },
+  rolling_average_reversion: {
+    buildOption: buildRollingReversionChartOption,
+    ariaLabel:
+      'Illustrative rolling-average reversion with a dip-below-the-band entry and a revert-to-the-average exit marker',
   },
 };
 

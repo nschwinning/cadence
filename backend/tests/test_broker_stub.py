@@ -125,3 +125,9 @@ def test_get_broker_returns_stub_when_configured(monkeypatch: pytest.MonkeyPatch
 
     monkeypatch.setattr(config.settings, "ALPACA_STUB", True)
     assert isinstance(get_broker(), StubBroker)
+
+
+def test_stub_every_day_is_a_trading_day() -> None:
+    from datetime import date
+
+    assert StubBroker().is_trading_day(date(2026, 11, 26)) is True

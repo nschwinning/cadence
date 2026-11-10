@@ -10,6 +10,7 @@ assets domain hides market-data access behind ``MarketDataProvider``.
 
 from __future__ import annotations
 
+from datetime import date
 from typing import Protocol, runtime_checkable
 
 from cadence.broker.models import (
@@ -130,4 +131,13 @@ class Broker(Protocol):
     # Market status
     def is_market_open(self) -> bool:
         """Return whether the market is currently open for trading."""
+        ...
+
+    def is_trading_day(self, day: date) -> bool:
+        """Return whether the equity market holds a session on ``day``.
+
+        ``day`` is an America/New_York calendar date. Weekends and market holidays
+        are not trading days. Raises :class:`BrokerError` when the calendar cannot be
+        read, so callers can tell "closed" apart from "unknown".
+        """
         ...

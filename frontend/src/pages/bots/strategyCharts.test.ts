@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { getStrategyChart } from './strategyCharts';
 import { crossoverSignals } from './crossoverChart';
 import { donchianSignals } from './donchianChart';
+import { reversionSignals, rollingMean } from './rollingReversionChart';
 import { rsiSignals, wilderRsiSeries } from './rsiChart';
 
 describe('strategyCharts registry', () => {
@@ -30,6 +31,18 @@ describe('strategyCharts registry', () => {
       'Price',
       'Entry channel',
       'Exit channel',
+    ]);
+  });
+
+  it('returns the reversion descriptor for rolling_average_reversion', () => {
+    const chart = getStrategyChart('rolling_average_reversion');
+    expect(chart).toBeDefined();
+    expect(chart?.ariaLabel).toMatch(/rolling-average reversion/i);
+    const option = chart?.buildOption() as { series: { name: string }[] };
+    expect(option.series.map((s) => s.name)).toEqual([
+      'Price',
+      'Rolling average',
+      'Entry band',
     ]);
   });
 
@@ -104,5 +117,30 @@ describe('crossoverChart', () => {
     expect(option.series.map((s) => s.name)).toEqual(['Fast SMA', 'Slow SMA']);
     const markLine = option.series[0].markLine;
     expect(markLine?.data.length).toBeGreaterThanOrEqual(2);
+  });
+});
+
+describe('rollingReversionChart', () => {
+  it('computes a window mean including the current bar', () => {
+    expect(rollingMean([1, 2, 3, 4, 5, 6], 3)).toBeNull();
+    expect(rollingMean([1, 2, 3, 4, 5, 6], 5)).toBe(4);
+  });
+
+  it('detects a dip entry followed by a reversion exit', () => {
+    const signals = reversionSignals();
+    const entry = signals.find((s) => s.kind === 'entry');
+    const exit = signals.find((s) => s.kind === 'exit');
+    expect(entry).toBeDefined();
+    expect(exit).toBeDefined();
+    // Entry precedes the exit (long-only round trip).
+    expect(entry!.index).toBeLessThan(exit!.index);
+  });
+
+  it('builds price, mean and band lines with entry/exit mark-lines', () => {
+    const option = getStrategyChart('rolling_average_reversion')!.buildOption() as {
+      series: { name: string; markLine?: { data: unknown[] } }[];
+    };
+    expect(option.series).toHaveLength(3);
+    expect(option.series[0].markLine?.data.length).toBeGreaterThanOrEqual(2);
   });
 });

@@ -4,7 +4,9 @@ import {
   BOT_TRADES_PAGE_SIZE,
   useBotSession,
   useBotKpis,
+  useBotSummary,
   useBotTrades,
+  usePresets,
   useStopBotSession,
   useArchiveBotSession,
 } from '../../api/bots';
@@ -16,12 +18,14 @@ import {
   formatCurrency,
   formatPercent,
   formatQuantity,
+  formatRelativeTime,
 } from '../../lib/format';
 import type {
   BotKpis,
   BotSession,
-  BotTrade,
+  SessionSummaryStats,
   TradeExtreme,
+  BotTrade,
 } from '../../types/api';
 
 /** Status pill colors per bot status. */
@@ -222,6 +226,35 @@ function Fact({ label, value }: { label: string; value: React.ReactNode }) {
   );
 }
 
+/**
+ * Where a session's configuration came from: its preset's display name (marked
+ * "customized" when changed from it), or "Custom configuration" without a preset.
+ * Falls back to the raw key when the preset is no longer in the catalog.
+ */
+function PresetProvenance({
+  presetKey,
+  customized,
+}: {
+  presetKey: string | null;
+  customized: boolean;
+}) {
+  const { data: presets } = usePresets();
+  if (presetKey === null) return <span>Custom configuration</span>;
+  const preset = Array.isArray(presets)
+    ? presets.find((p) => p.key === presetKey)
+    : undefined;
+  return (
+    <span className="inline-flex flex-wrap items-center gap-1.5">
+      <span>{preset?.display_name ?? presetKey}</span>
+      {customized && (
+        <span className="rounded bg-amber-100 px-1.5 py-0.5 text-xs font-medium text-amber-800">
+          Customized
+        </span>
+      )}
+    </span>
+  );
+}
+
 function SessionHeader({ sessionId }: { sessionId: string }) {
   const { data: bot } = useBotSession(sessionId);
   const stop = useStopBotSession();
@@ -297,6 +330,28 @@ function SessionHeader({ sessionId }: { sessionId: string }) {
         />
         <Fact label="Capital" value={formatCurrency(bot.allocated_capital)} />
         <Fact label="Benchmark" value={bot.benchmark} />
+        <Fact
+          label="Preset"
+          value={
+            <PresetProvenance
+              presetKey={bot.preset_key}
+              customized={bot.preset_customized}
+            />
+          }
+        />
+        {bot.orchestrator_id !== null && (
+          <Fact
+            label="Deployed by"
+            value={
+              <Link
+                to={`/orchestrators/${bot.orchestrator_id}`}
+                className="text-emerald-700 hover:underline"
+              >
+                {bot.orchestrator_label ?? 'Orchestrator'}
+              </Link>
+            }
+          />
+        )}
         <Fact label="Parameters" value={paramsSummary(bot.strategy_params)} />
         <Fact
           label="Sizing"
@@ -633,6 +688,213 @@ function TradesPanel({ sessionId }: { sessionId: string }) {
   );
 }
 
+/** Date-only display of an ISO timestamp, or an em dash when absent. */
+function dateOnly(value: string | null | undefined): string {
+  return value ? new Date(value).toLocaleDateString() : '—';
+}
+
+/** Human label + accent for a session's stop reason (tolerant of nulls). */
+function stopReasonInfo(reason: string | null): {
+  label: string;
+  className: string;
+} {
+  if (reason === 'drawdown_kill_switch') {
+    return {
+      label: 'Stopped by the drawdown kill-switch',
+      className: 'border-amber-300 bg-amber-50 text-amber-800',
+    };
+  }
+  if (reason === 'manual') {
+    return {
+      label: 'Stopped manually',
+      className: 'border-slate-300 bg-slate-50 text-slate-700',
+    };
+  }
+  return {
+    label: 'Stopped (reason not recorded)',
+    className: 'border-slate-300 bg-slate-50 text-slate-600',
+  };
+}
+
+/**
+ * A best/worst round-trip tile for the session summary: realized P&L as the value,
+ * with the exact entry→exit fills (qty, price, date) as the hint.
+ */
+function SummaryTradeTile({
+  label,
+  trade,
+}: {
+  label: string;
+  trade: TradeExtreme | null;
+}) {
+  if (trade === null) {
+    return <KpiTile label={label} value="—" hint="No closed trades" />;
+  }
+  return (
+    <KpiTile
+      label={label}
+      value={<PnlValue value={trade.realised_pnl} />}
+      hint={
+        <>
+          {trade.ticker} · {formatQuantity(trade.quantity)} sh
+          <br />
+          {formatCurrency(trade.entry_price)} ({dateOnly(trade.entry_at)}) →{' '}
+          {formatCurrency(trade.exit_price)} ({dateOnly(trade.exit_at)})
+        </>
+      }
+    />
+  );
+}
+
+/** The curated stats grid of the session summary. */
+function SummaryStatsGrid({ stats }: { stats: SessionSummaryStats }) {
+  const maxDrawdown =
+    stats.max_drawdown === 0 ? (
+      '0.00%'
+    ) : (
+      <span className="text-red-700">−{formatPercent(stats.max_drawdown)}</span>
+    );
+  return (
+    <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
+      <KpiTile
+        label="Final value"
+        value={formatCurrency(stats.final_value)}
+        hint={`From ${formatCurrency(stats.allocated_capital)} allocated`}
+      />
+      <KpiTile
+        label="Total return"
+        value={
+          <span className={pnlClass(stats.total_return_pct)}>
+            {formatPercent(stats.total_return_pct)}
+          </span>
+        }
+        hint={<PnlValue value={stats.total_return} />}
+      />
+      <KpiTile
+        label="Peak value"
+        value={formatCurrency(stats.peak_value)}
+        hint="High-water mark"
+      />
+      <KpiTile
+        label="Maximum drawdown"
+        value={maxDrawdown}
+        hint="Worst peak-to-trough"
+      />
+      <KpiTile
+        label="Lifespan"
+        value={`${stats.lifespan_days} day${stats.lifespan_days === 1 ? '' : 's'}`}
+        hint={`Stopped ${dateOnly(stats.stopped_at)}`}
+      />
+      <KpiTile
+        label="Closed trades"
+        value={String(stats.trade_count)}
+        hint={
+          stats.win_rate === null
+            ? 'No closed trades'
+            : `${formatPercent(stats.win_rate, 0)} win rate`
+        }
+      />
+      <SummaryTradeTile label="Best trade" trade={stats.best_trade} />
+      <SummaryTradeTile label="Worst trade" trade={stats.worst_trade} />
+      <BenchmarkTile
+        benchmark={stats.benchmark}
+        benchmarkReturnPct={stats.benchmark_return_pct}
+        excessReturnPct={stats.excess_return_pct}
+      />
+    </div>
+  );
+}
+
+/** Render the cached AI narrative markdown: a bold lead line then paragraphs. */
+function SummaryNarrative({ narrative }: { narrative: string }) {
+  const paragraphs = narrative
+    .split(/\n{2,}/)
+    .map((p) => p.trim())
+    .filter((p) => p.length > 0);
+  return (
+    <div className="flex flex-col gap-2">
+      {paragraphs.map((paragraph, i) => {
+        const lead = paragraph.match(/^\*\*(.+)\*\*$/);
+        if (lead) {
+          return (
+            <p key={i} className="text-sm font-semibold text-slate-900">
+              {lead[1]}
+            </p>
+          );
+        }
+        return (
+          <p key={i} className="text-sm leading-relaxed text-slate-700">
+            {paragraph.replace(/\*\*/g, '')}
+          </p>
+        );
+      })}
+    </div>
+  );
+}
+
+/**
+ * The stopped-session summary: a stop reason + date banner, the curated stats
+ * grid, and the cached AI narrative (lazily generated on first view). Rendered
+ * only for a stopped session — returns nothing for an active or loading bot.
+ */
+function SessionSummary({ sessionId }: { sessionId: string }) {
+  const { data: bot } = useBotSession(sessionId);
+  const isStopped = bot?.status === 'stopped';
+  const { data, isPending, isError } = useBotSummary(sessionId, isStopped);
+
+  if (!bot || !isStopped) return null;
+
+  const reason = stopReasonInfo(data?.stats.stop_reason ?? null);
+
+  return (
+    <Panel
+      title="Session summary"
+      isPending={isPending}
+      isError={isError}
+      isEmpty={!data}
+      emptyText="No summary available."
+    >
+      <div className="flex flex-col gap-4 p-4">
+        {data && (
+          <>
+            <p
+              data-testid="summary-stop-banner"
+              className={`inline-flex items-center gap-2 self-start rounded border px-3 py-2 text-sm ${reason.className}`}
+            >
+              <span aria-hidden="true">■</span>
+              {reason.label} · {ts(data.stats.stopped_at)}
+            </p>
+            <SummaryStatsGrid stats={data.stats} />
+            <div>
+              <h3 className="mb-2 text-sm font-semibold uppercase tracking-wide text-slate-500">
+                AI recap
+              </h3>
+              {data.narrative ? (
+                <>
+                  <SummaryNarrative narrative={data.narrative} />
+                  {data.generated_at && (
+                    <p className="mt-3 text-xs text-slate-400">
+                      Generated {formatRelativeTime(data.generated_at)}
+                    </p>
+                  )}
+                </>
+              ) : (
+                <p
+                  data-testid="summary-narrative-placeholder"
+                  className="text-sm text-slate-500"
+                >
+                  An AI recap could not be generated right now. Reopen this page to
+                  try again.
+                </p>
+              )}
+            </div>
+          </>
+        )}
+      </div>
+    </Panel>
+  );
+}
+
 export function BotSessionPage() {
   const { id = '' } = useParams<{ id: string }>();
   return (
@@ -640,6 +902,7 @@ export function BotSessionPage() {
       <BackLink />
       <SessionHeader sessionId={id} />
       <KpiRow sessionId={id} />
+      <SessionSummary sessionId={id} />
       <PositionsPanel sessionId={id} />
       <BotValueChart sessionId={id} />
       <TradesPanel sessionId={id} />

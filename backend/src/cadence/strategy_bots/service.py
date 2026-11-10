@@ -13,18 +13,25 @@ process is crash-safe and restartable.
 
 from __future__ import annotations
 
+import hashlib
+import json
+import logging
+import math
 import uuid
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, time, timedelta
+from enum import Enum
 from itertools import pairwise
+from typing import Final, Literal
 
 from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
+from cadence.agents import llm_trace
 from cadence.assets import service as assets_service
 from cadence.assets.category import AssetCategory, AssetMembership
 from cadence.assets.models import Asset
-from cadence.broker.base import Broker
+from cadence.broker.base import Broker, BrokerError
 from cadence.broker.models import AssetClass, OrderSide
 from cadence.config import settings
 from cadence.dashboard.constants import DashboardRange, resolve_range_start
@@ -46,14 +53,17 @@ from cadence.paper_trading.constants import (
     Benchmark,
     benchmark_display_name,
 )
-from cadence.strategy_bots import registry
+from cadence.strategy_bots import presets, registry
 from cadence.strategy_bots.constants import (
+    BotOrigin,
     BotSessionStatus,
     BotValueResolution,
     SizingMethod,
+    StopReason,
 )
 from cadence.strategy_bots.engine import (
     REASON_DRAWDOWN,
+    REASON_SESSION_STOPPED,
     ExecutionEngine,
     take_profit_stop_loss_reason,
     total_value,
@@ -62,6 +72,8 @@ from cadence.strategy_bots.engine import (
 from cadence.strategy_bots.errors import (
     BotSessionNotArchivableError,
     BotSessionNotFoundError,
+    BotSessionNotStoppedError,
+    BotSummaryUnavailableError,
     IneligibleAssetError,
     InvalidBotBenchmarkError,
     InvalidBotConfigError,
@@ -80,12 +92,35 @@ from cadence.strategy_bots.notifications import (
     _notify_safely,
     _signed_pct,
 )
+from cadence.strategy_bots.presets import BotPreset
 from cadence.strategy_bots.sizing import (
     EntryCandidate,
     atr,
     plan_entries,
 )
-from cadence.strategy_bots.strategy import Bar, PositionView, SignalAction
+from cadence.strategy_bots.strategy import (
+    Bar,
+    PositionView,
+    SignalAction,
+    StrategyParams,
+)
+from cadence.strategy_bots.summary_agent import (
+    BotSessionSummaryAgent,
+    get_bot_summary_model,
+)
+
+_logger = logging.getLogger(__name__)
+
+
+class _Unset(Enum):
+    """Sentinel type for "not supplied" on preset-overridable creation inputs."""
+
+    TOKEN = 0
+
+
+#: Marks a preset-overridable creation input as not supplied, so the preset's value
+#: applies. Distinct from ``None``, which explicitly turns take-profit / stop-loss off.
+UNSET: Final = _Unset.TOKEN
 
 
 @dataclass(frozen=True)
@@ -97,6 +132,8 @@ class TickResult:
     processed: int = 0
     #: Active sessions skipped because fresh bars were unavailable.
     skipped: int = 0
+    #: Positions of stopped / archived sessions sold to flatten them this tick.
+    flattened: int = 0
 
 
 @dataclass(frozen=True)
@@ -115,10 +152,19 @@ class BotValueHistoryPoint:
 
 @dataclass(frozen=True)
 class TradeExtreme:
-    """A single closed round-trip trade, identified by ticker and its realized P&L."""
+    """A single closed round-trip trade: its ticker, realized P&L, and exact fills.
+
+    ``entry_at``/``exit_at`` are the paired buy/sell fill timestamps and
+    ``entry_price``/``exit_price`` their fill prices; ``quantity`` is the closed size.
+    """
 
     ticker: str
     realised_pnl: float
+    quantity: float
+    entry_price: float
+    entry_at: datetime
+    exit_price: float
+    exit_at: datetime
 
 
 @dataclass(frozen=True)
@@ -160,6 +206,53 @@ class BotKpis:
     #: True when the current value came from an intraday value point rather than the
     #: daily snapshot.
     value_is_intraday: bool
+
+
+@dataclass(frozen=True)
+class SessionSummaryStats:
+    """The curated stats block of a stopped session's summary.
+
+    Assembled once a session is stopped from its own ledger + snapshots: the final
+    figures (value, total return), the high-water mark and worst peak-to-trough drop,
+    the lifespan and closed-trade record, the best/worst round-trip (with exact
+    entry/exit), and the benchmark comparison. ``win_rate`` and the benchmark fractions
+    are ``None`` when there is no closed trade / no usable benchmark data; ``stop_reason``
+    and ``stopped_at`` are ``None`` for sessions stopped before stop metadata was recorded.
+    """
+
+    stop_reason: str | None
+    stopped_at: datetime | None
+    started_at: datetime
+    lifespan_days: int
+    final_value: float
+    allocated_capital: float
+    total_return: float
+    total_return_pct: float
+    realised_pnl: float
+    peak_value: float
+    max_drawdown: float
+    trade_count: int
+    win_rate: float | None
+    best_trade: TradeExtreme | None
+    worst_trade: TradeExtreme | None
+    benchmark: str
+    benchmark_return_pct: float | None
+    excess_return_pct: float | None
+
+
+@dataclass(frozen=True)
+class BotSessionSummary:
+    """A stopped session's summary: its stats block plus the cached AI narrative.
+
+    ``narrative`` is ``None`` when it has not been generated yet or the agent failed
+    on this view (the stats still render); ``model``/``generated_at`` describe the
+    cached narrative when present.
+    """
+
+    stats: SessionSummaryStats
+    narrative: str | None
+    model: str | None
+    generated_at: datetime | None
 
 
 @dataclass(frozen=True)
@@ -218,7 +311,7 @@ def _resolve_equity_asset(session: Session, ticker: str) -> Asset:
     return asset
 
 
-def _resolve_universe_equities(session: Session) -> list[Asset]:
+def resolve_universe_equities(session: Session) -> list[Asset]:
     """Every currently eligible universe equity (the whole-universe traded set)."""
     assets = assets_service.list_assets(
         session,
@@ -232,16 +325,17 @@ def _resolve_universe_equities(session: Session) -> list[Asset]:
 def create_bot_session(
     session: Session,
     *,
-    strategy_key: str,
+    strategy_key: str | None = None,
     initial_capital: float,
     benchmark: str,
     tickers: list[str] | None = None,
     whole_universe: bool = False,
-    strategy_params: dict[str, object] | None = None,
+    strategy_params: dict[str, object] | None | Literal[_Unset.TOKEN] = UNSET,
     label: str | None = None,
-    take_profit_pct: float | None = None,
-    stop_loss_pct: float | None = None,
-    drawdown_stop_pct: float | None = None,
+    take_profit_pct: float | None | Literal[_Unset.TOKEN] = UNSET,
+    stop_loss_pct: float | None | Literal[_Unset.TOKEN] = UNSET,
+    drawdown_stop_pct: float | None | Literal[_Unset.TOKEN] = UNSET,
+    preset_key: str | None = None,
     cash_buffer_pct: float | None = None,
     sizing_method: str | None = None,
     risk_pct: float | None = None,
@@ -249,8 +343,14 @@ def create_bot_session(
     atr_k: float | None = None,
     max_position_pct: float | None = None,
     max_positions: int | None = None,
+    origin: BotOrigin = BotOrigin.MANUAL,
+    orchestrator_id: uuid.UUID | None = None,
 ) -> BotSession:
     """Create and persist an active multi-asset bot session, validating every input.
+
+    ``origin`` / ``orchestrator_id`` record who created the session: the client API
+    always creates ``MANUAL`` sessions; a bot orchestrator passes ``ORCHESTRATOR`` and
+    its own id.
 
     The traded set is either the given ``tickers`` (each validated as an eligible
     universe equity) or, when ``whole_universe`` is set, the currently eligible universe
@@ -260,7 +360,43 @@ def create_bot_session(
     unknown benchmark, ``IneligibleAssetError`` for a non-eligible / non-equity asset,
     and ``InvalidBotConfigError`` for an empty set or an unknown sizing method. No AI
     model is invoked.
+
+    With ``preset_key`` the session starts from that preset: its strategy applies (a
+    supplied ``strategy_key`` must match it), and each of ``strategy_params`` /
+    ``take_profit_pct`` / ``stop_loss_pct`` / ``drawdown_stop_pct`` left as ``UNSET``
+    takes the preset's value, while a supplied value (including ``None``) overrides it.
+    The session records the preset and whether its effective configuration differs
+    from it. Raises ``UnknownPresetError`` for an unknown preset and
+    ``InvalidBotConfigError`` for a strategy mismatch or when neither a strategy nor a
+    preset is given. Without a preset, ``UNSET`` behaves exactly like ``None``.
     """
+    preset = presets.get_preset(preset_key) if preset_key is not None else None
+    if preset is not None:
+        if strategy_key is not None and strategy_key != preset.strategy_key.value:
+            raise InvalidBotConfigError(
+                f"strategy {strategy_key!r} does not match preset {preset.key!r} "
+                f"(strategy {preset.strategy_key.value!r})"
+            )
+        strategy_key = preset.strategy_key.value
+        if strategy_params is UNSET:
+            strategy_params = dict(preset.strategy_params)
+        if take_profit_pct is UNSET:
+            take_profit_pct = preset.take_profit_pct
+        if stop_loss_pct is UNSET:
+            stop_loss_pct = preset.stop_loss_pct
+        if drawdown_stop_pct is UNSET:
+            drawdown_stop_pct = preset.drawdown_stop_pct
+    if strategy_key is None:
+        raise InvalidBotConfigError("a strategy key or a preset key is required")
+    if strategy_params is UNSET:
+        strategy_params = None
+    if take_profit_pct is UNSET:
+        take_profit_pct = None
+    if stop_loss_pct is UNSET:
+        stop_loss_pct = None
+    if drawdown_stop_pct is UNSET:
+        drawdown_stop_pct = None
+
     registration = registry.get_strategy(strategy_key)
     params = registration.parse_params(strategy_params or {})
 
@@ -281,7 +417,7 @@ def create_bot_session(
 
     # Resolve the traded set (deduped, deterministic by ticker).
     if whole_universe:
-        assets = _resolve_universe_equities(session)
+        assets = resolve_universe_equities(session)
         if not assets:
             raise InvalidBotConfigError(
                 "the eligible universe has no equities to trade"
@@ -337,6 +473,20 @@ def create_bot_session(
         drawdown_stop_pct=drawdown,
         cash_buffer_pct=buffer,
         peak_value=initial_capital,
+        preset_key=preset.key if preset is not None else None,
+        preset_customized=(
+            preset is not None
+            and _differs_from_preset(
+                registration.parse_params(preset.strategy_params),
+                preset,
+                params=params,
+                take_profit_pct=take_profit_pct,
+                stop_loss_pct=stop_loss_pct,
+                drawdown_stop_pct=drawdown,
+            )
+        ),
+        origin=origin.value,
+        orchestrator_id=orchestrator_id,
     )
     bot.symbols = [
         BotSymbol(
@@ -349,6 +499,37 @@ def create_bot_session(
     session.add(bot)
     session.flush()
     return bot
+
+
+def _same_risk(a: float | None, b: float | None) -> bool:
+    """Whether two optional risk fractions are equal (``None`` = off)."""
+    if a is None or b is None:
+        return a is b
+    return math.isclose(a, b, rel_tol=1e-9, abs_tol=1e-12)
+
+
+def _differs_from_preset(
+    preset_params: StrategyParams,
+    preset: BotPreset,
+    *,
+    params: StrategyParams,
+    take_profit_pct: float | None,
+    stop_loss_pct: float | None,
+    drawdown_stop_pct: float,
+) -> bool:
+    """Whether the effective configuration was customized away from ``preset``.
+
+    Compares schema-normalized params (so omitted fields that default to the preset's
+    values, e.g. inactive Donchian-version fields, compare equal) and the three risk
+    controls with a float tolerance.
+    """
+    if params.model_dump() != preset_params.model_dump():
+        return True
+    return not (
+        _same_risk(take_profit_pct, preset.take_profit_pct)
+        and _same_risk(stop_loss_pct, preset.stop_loss_pct)
+        and _same_risk(drawdown_stop_pct, preset.drawdown_stop_pct)
+    )
 
 
 def get_bot_session(session: Session, bot_id: uuid.UUID) -> BotSession:
@@ -381,13 +562,36 @@ def active_bot_sessions(session: Session) -> list[BotSession]:
     return list(session.execute(stmt).scalars())
 
 
-def stop_bot_session(session: Session, bot_id: uuid.UUID) -> BotSession:
-    """Stop an active session so it is no longer ticked (idempotent)."""
+def stop_bot_session(
+    session: Session,
+    bot_id: uuid.UUID,
+    *,
+    reason: StopReason = StopReason.MANUAL,
+) -> BotSession:
+    """Stop an active session (idempotent), recording ``reason`` and the stop time.
+
+    Stopping never trades directly: the session stops evaluating entries at once, and
+    any positions it still holds are sold by the next intraday tick while the market is
+    open (see :func:`run_tick`'s flatten pass), so a stopped session ends up flat.
+    """
     bot = get_bot_session(session, bot_id)
     if bot.status == BotSessionStatus.ACTIVE.value:
         bot.status = BotSessionStatus.STOPPED.value
+        bot.stop_reason = reason.value
+        bot.stopped_at = datetime.now(UTC)
     session.flush()
     return bot
+
+
+def sessions_to_flatten(session: Session) -> list[BotSession]:
+    """Non-active (stopped or archived) sessions that still hold open positions."""
+    stmt = (
+        select(BotSession)
+        .where(BotSession.status != BotSessionStatus.ACTIVE.value)
+        .where(BotSession.positions.any())
+        .order_by(BotSession.created_at)
+    )
+    return list(session.execute(stmt).scalars())
 
 
 def archive_bot_session(session: Session, bot_id: uuid.UUID) -> BotSession:
@@ -489,6 +693,8 @@ def _tick_session(
         for position in list(bot.positions):
             engine.exit(bot, position, now=tick_now, reason=REASON_DRAWDOWN)
         bot.status = BotSessionStatus.STOPPED.value
+        bot.stop_reason = StopReason.DRAWDOWN_KILL_SWITCH.value
+        bot.stopped_at = tick_now
         bot.last_tick_at = tick_now
         _record_value_point(session, bot, marks, captured_at=tick_now)
         _notify_safely(
@@ -591,9 +797,11 @@ def run_tick(
     now: datetime | None = None,
     notifier: Notifier | None = None,
 ) -> TickResult:
-    """Advance every active bot session once (stateless recompute).
+    """Flatten stopped sessions, then advance every active bot session once.
 
-    No-op when the equity market is closed. For each active session it fetches each
+    No-op when the equity market is closed. First, every stopped or archived session
+    that still holds positions has them sold at market (a stopped session must end up
+    flat). Then, for each active session it fetches each
     traded symbol's required bar history from ``market_data`` at the configured
     timeframe, processes exits before entries, and sizes entries from the shared cash
     pool. A session with no fresh symbol data is counted as skipped. When a session's
@@ -605,6 +813,27 @@ def run_tick(
 
     tick_now = now or datetime.now(UTC)
     engine = ExecutionEngine(session, broker)
+
+    flattened = 0
+    for stopped in sessions_to_flatten(session):
+        for position in list(stopped.positions):
+            # A rejected sell (e.g. the shared account no longer holds the shares)
+            # must not abort the tick for every other session: keep the position and
+            # retry on the next tick.
+            try:
+                outcome = engine.exit(
+                    stopped, position, now=tick_now, reason=REASON_SESSION_STOPPED
+                )
+            except BrokerError:
+                _logger.warning(
+                    "could not sell %s for stopped bot session %s; will retry",
+                    position.ticker,
+                    stopped.id,
+                    exc_info=True,
+                )
+                continue
+            if outcome.action == "exit":
+                flattened += 1
 
     processed = 0
     skipped = 0
@@ -622,7 +851,9 @@ def run_tick(
             skipped += 1
 
     session.flush()
-    return TickResult(market_open=True, processed=processed, skipped=skipped)
+    return TickResult(
+        market_open=True, processed=processed, skipped=skipped, flattened=flattened
+    )
 
 
 # Snapshots & KPIs --------------------------------------------------------
@@ -1082,25 +1313,22 @@ def bot_eod_value(session: Session, bot: BotSession) -> float | None:
     return snapshots[-1].total_value if snapshots else None
 
 
-def bot_trade_extremes(
-    session: Session, bot: BotSession
-) -> tuple[TradeExtreme | None, TradeExtreme | None]:
-    """The session's best and worst closed round-trip by realized P&L.
+def bot_round_trips(session: Session, bot: BotSession) -> list[TradeExtreme]:
+    """Every closed round-trip for a session, oldest exit first.
 
     Walks the ledger oldest-first, pairing each sell (a full exit) with its ticker's
     open entry basis; a round-trip's realized P&L is the exit proceeds minus the entry
-    cost, net of both fills' fees. Returns ``(best, worst)`` — the max- and min-P&L
-    round-trips — or ``(None, None)`` when no position has been closed yet. Relies on
-    the one-position-per-symbol + full-exit invariants, so each ticker's fills strictly
-    alternate buy → sell.
+    cost, net of both fills' fees. Relies on the one-position-per-symbol + full-exit
+    invariants, so each ticker's fills strictly alternate buy → sell. Shared by the
+    best/worst-trade and summary (trade count, win rate) readers.
     """
     stmt = (
         select(BotTrade)
         .where(BotTrade.bot_session_id == bot.id)
         .order_by(BotTrade.created_at, BotTrade.id)
     )
-    # ticker -> (entry price, entry quantity, entry fees) for its open position.
-    open_basis: dict[str, tuple[float, float, float]] = {}
+    # ticker -> (entry price, entry quantity, entry fees, entry time) for its open position.
+    open_basis: dict[str, tuple[float, float, float, datetime]] = {}
     round_trips: list[TradeExtreme] = []
     for trade in session.execute(stmt).scalars():
         if trade.filled_price is None:
@@ -1110,18 +1338,41 @@ def bot_trade_extremes(
                 trade.filled_price,
                 trade.quantity,
                 trade.fees,
+                trade.created_at,
             )
         else:  # sell — closes this ticker's open position
             entry = open_basis.pop(trade.ticker, None)
             if entry is None:
                 continue
-            entry_price, _entry_qty, entry_fees = entry
+            entry_price, _entry_qty, entry_fees, entry_at = entry
             pnl = (
                 (trade.filled_price - entry_price) * trade.quantity
                 - entry_fees
                 - trade.fees
             )
-            round_trips.append(TradeExtreme(ticker=trade.ticker, realised_pnl=pnl))
+            round_trips.append(
+                TradeExtreme(
+                    ticker=trade.ticker,
+                    realised_pnl=pnl,
+                    quantity=trade.quantity,
+                    entry_price=entry_price,
+                    entry_at=entry_at,
+                    exit_price=trade.filled_price,
+                    exit_at=trade.created_at,
+                )
+            )
+    return round_trips
+
+
+def bot_trade_extremes(
+    session: Session, bot: BotSession
+) -> tuple[TradeExtreme | None, TradeExtreme | None]:
+    """The session's best and worst closed round-trip by realized P&L.
+
+    Returns ``(best, worst)`` — the max- and min-P&L round-trips — or ``(None, None)``
+    when no position has been closed yet.
+    """
+    round_trips = bot_round_trips(session, bot)
     if not round_trips:
         return None, None
     best = max(round_trips, key=lambda t: t.realised_pnl)
@@ -1179,6 +1430,160 @@ def bot_session_kpis(session: Session, bot: BotSession) -> BotKpis:
         eod_value=snapshots[-1].total_value if snapshots else None,
         value_as_of=value_as_of,
         value_is_intraday=value_is_intraday,
+    )
+
+
+def bot_session_summary_stats(
+    session: Session, bot: BotSession
+) -> SessionSummaryStats:
+    """Assemble the curated stats block for a (typically stopped) session.
+
+    Reuses the KPI reader for final value / total return / best-worst / benchmark,
+    the persisted ``peak_value`` high-water mark, the snapshot-series max drawdown, and
+    the full closed-round-trip walk for trade count and win rate. Lifespan is whole days
+    from the session start to its stop time (or now when not yet stopped). Tolerant of
+    missing stop metadata: ``stop_reason``/``stopped_at`` pass through as ``None``.
+    """
+    kpis = bot_session_kpis(session, bot)
+    round_trips = bot_round_trips(session, bot)
+    trade_count = len(round_trips)
+    win_rate: float | None = (
+        sum(1 for t in round_trips if t.realised_pnl > 0) / trade_count
+        if trade_count
+        else None
+    )
+    started_at = _as_utc(bot.created_at)
+    end = bot.stopped_at or datetime.now(UTC)
+    lifespan_days = max((_as_utc(end).date() - started_at.date()).days, 0)
+    return SessionSummaryStats(
+        stop_reason=bot.stop_reason,
+        stopped_at=bot.stopped_at,
+        started_at=started_at,
+        lifespan_days=lifespan_days,
+        final_value=kpis.current_value,
+        allocated_capital=kpis.allocated_capital,
+        total_return=kpis.total_return,
+        total_return_pct=kpis.total_return_pct,
+        realised_pnl=kpis.realised_pnl,
+        peak_value=bot.peak_value,
+        max_drawdown=kpis.max_drawdown,
+        trade_count=trade_count,
+        win_rate=win_rate,
+        best_trade=kpis.best_trade,
+        worst_trade=kpis.worst_trade,
+        benchmark=kpis.benchmark,
+        benchmark_return_pct=kpis.benchmark_return_pct,
+        excess_return_pct=kpis.excess_return_pct,
+    )
+
+
+def _summary_fingerprint(stats: SessionSummaryStats) -> str:
+    """Deterministic SHA-256 over the stop-stable stats the narrative derives from.
+
+    Hashes a canonical JSON payload of the summary's user-visible figures plus the stop
+    metadata — deliberately excluding anything that drifts after the stop — so a stopped
+    session's narrative is generated once and reused until the underlying figures change.
+    """
+    payload = {
+        "stop_reason": stats.stop_reason,
+        "stopped_at": stats.stopped_at.isoformat() if stats.stopped_at else None,
+        "lifespan_days": stats.lifespan_days,
+        "final_value": round(stats.final_value, 2),
+        "allocated_capital": round(stats.allocated_capital, 2),
+        "total_return": round(stats.total_return, 2),
+        "total_return_pct": round(stats.total_return_pct, 6),
+        "realised_pnl": round(stats.realised_pnl, 2),
+        "peak_value": round(stats.peak_value, 2),
+        "max_drawdown": round(stats.max_drawdown, 6),
+        "trade_count": stats.trade_count,
+        "win_rate": round(stats.win_rate, 6) if stats.win_rate is not None else None,
+        "best_trade": _trade_fingerprint(stats.best_trade),
+        "worst_trade": _trade_fingerprint(stats.worst_trade),
+        "benchmark": stats.benchmark,
+        "benchmark_return_pct": (
+            round(stats.benchmark_return_pct, 6)
+            if stats.benchmark_return_pct is not None
+            else None
+        ),
+        "excess_return_pct": (
+            round(stats.excess_return_pct, 6)
+            if stats.excess_return_pct is not None
+            else None
+        ),
+    }
+    serialized = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
+
+
+def _trade_fingerprint(trade: TradeExtreme | None) -> dict[str, object] | None:
+    """Canonical fingerprint payload for a single round-trip (or ``None``)."""
+    if trade is None:
+        return None
+    return {
+        "ticker": trade.ticker,
+        "realised_pnl": round(trade.realised_pnl, 2),
+        "quantity": round(trade.quantity, 6),
+        "entry_price": round(trade.entry_price, 4),
+        "entry_at": trade.entry_at.isoformat(),
+        "exit_price": round(trade.exit_price, 4),
+        "exit_at": trade.exit_at.isoformat(),
+    }
+
+
+def bot_session_summary(
+    session: Session,
+    bot: BotSession,
+    agent: BotSessionSummaryAgent,
+) -> BotSessionSummary:
+    """Assemble a stopped session's summary, generating + caching its AI narrative.
+
+    Raises :class:`BotSessionNotStoppedError` for a non-stopped session (no agent call).
+    Otherwise it assembles the stats block, computes a stop-stable fingerprint, and:
+    returns the cached narrative when the stored fingerprint matches; else calls the
+    agent, persists the narrative + fingerprint + model + timestamp, and returns it. An
+    agent failure is swallowed — the stats are returned with ``narrative=None`` and
+    nothing is persisted, so a later view retries.
+    """
+    if bot.status != BotSessionStatus.STOPPED.value:
+        raise BotSessionNotStoppedError(
+            "a session summary is only available for a stopped session"
+        )
+
+    stats = bot_session_summary_stats(session, bot)
+    fingerprint = _summary_fingerprint(stats)
+
+    if (
+        bot.summary_narrative is not None
+        and bot.summary_fingerprint == fingerprint
+    ):
+        return BotSessionSummary(
+            stats=stats,
+            narrative=bot.summary_narrative,
+            model=bot.summary_model,
+            generated_at=bot.summary_generated_at,
+        )
+
+    try:
+        with llm_trace(f"bot-summary-{fingerprint}"):
+            output = agent.summarize(stats)
+    except BotSummaryUnavailableError:
+        # Leave any prior cached narrative untouched; serve stats without a fresh one.
+        return BotSessionSummary(
+            stats=stats, narrative=None, model=None, generated_at=None
+        )
+
+    narrative = f"**{output.headline}**\n\n{output.narrative}"
+    generated_at = datetime.now(UTC)
+    bot.summary_narrative = narrative
+    bot.summary_fingerprint = fingerprint
+    bot.summary_model = get_bot_summary_model()
+    bot.summary_generated_at = generated_at
+    session.flush()
+    return BotSessionSummary(
+        stats=stats,
+        narrative=narrative,
+        model=bot.summary_model,
+        generated_at=generated_at,
     )
 
 

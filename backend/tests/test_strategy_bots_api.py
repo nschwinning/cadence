@@ -9,9 +9,10 @@ from datetime import UTC, date, datetime
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
-from tests.fakes import RecordingNotifier
+from tests.fakes import FakeBotSummaryAgent, RecordingNotifier
 
 from cadence.api.app import app
+from cadence.api.routers.bots import get_bot_summary_agent
 from cadence.assets.models import Asset
 from cadence.broker.models import OrderSide
 from cadence.config import settings
@@ -44,6 +45,17 @@ def stub_market_data() -> Iterator[None]:
         yield
     finally:
         app.dependency_overrides.pop(get_market_data, None)
+
+
+@pytest.fixture
+def fake_summary_agent() -> Iterator[FakeBotSummaryAgent]:
+    """Override the summary-agent DI so no network call is made on summary reads."""
+    agent = FakeBotSummaryAgent()
+    app.dependency_overrides[get_bot_summary_agent] = lambda: agent
+    try:
+        yield agent
+    finally:
+        app.dependency_overrides.pop(get_bot_summary_agent, None)
 
 
 @pytest.fixture
@@ -162,6 +174,110 @@ def test_create_rejects_invalid_donchian_params(
         ),
     )
     assert resp.status_code == 422
+
+
+def test_list_presets(client: TestClient) -> None:
+    resp = client.get("/api/v1/bots/presets")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert [p["key"] for p in body] == [
+        "ma_crossover_algo6",
+        "rsi_mean_reversion_algo16",
+        "donchian_turtle_algo25",
+        "donchian_smart_range_algo8",
+        "rolling_reversion_sma_band_algo5",
+        "rolling_reversion_zscore_algo4",
+        "rolling_reversion_mean_cross_algo14",
+        "rolling_reversion_vwap_cross_algo39",
+    ]
+    turtle = body[2]
+    assert turtle == {
+        "key": "donchian_turtle_algo25",
+        "display_name": "Turtle Breakout (Algo 25)",
+        "description": turtle["description"],
+        "course_ref": "Algo 25",
+        "strategy_key": "donchian_breakout",
+        "strategy_params": {"version": "turtle", "entry_period": 20, "exit_period": 10},
+        "take_profit_pct": None,
+        "stop_loss_pct": None,
+        "drawdown_stop_pct": 0.05,
+        "is_default": True,
+    }
+    assert turtle["description"]
+    assert body[3]["is_default"] is False
+
+
+def _preset_payload(**overrides: object) -> dict[str, object]:
+    payload: dict[str, object] = {
+        "preset_key": "ma_crossover_algo6",
+        "tickers": ["AAPL"],
+        "initial_capital": 100_000.0,
+        "benchmark": "SP500",
+    }
+    payload.update(overrides)
+    return payload
+
+
+def test_create_from_preset_without_overrides(
+    client: TestClient, eligible_asset: Asset
+) -> None:
+    resp = client.post("/api/v1/bots/sessions", json=_preset_payload())
+    assert resp.status_code == 201
+    body = resp.json()
+    assert body["strategy_key"] == "ma_crossover"
+    assert body["strategy_params"] == {"fast_period": 5, "slow_period": 12}
+    assert body["take_profit_pct"] == 0.01
+    assert body["stop_loss_pct"] == 0.02
+    assert body["drawdown_stop_pct"] == 0.05
+    assert body["preset_key"] == "ma_crossover_algo6"
+    assert body["preset_customized"] is False
+    assert body["origin"] == "manual"
+
+
+def test_create_from_preset_with_override_is_customized(
+    client: TestClient, eligible_asset: Asset
+) -> None:
+    resp = client.post(
+        "/api/v1/bots/sessions", json=_preset_payload(stop_loss_pct=None)
+    )
+    assert resp.status_code == 201
+    body = resp.json()
+    # Explicit null turns the preset's stop-loss off; omitted TP is inherited.
+    assert body["stop_loss_pct"] is None
+    assert body["take_profit_pct"] == 0.01
+    assert body["preset_customized"] is True
+
+
+def test_create_from_unknown_preset_422(
+    client: TestClient, eligible_asset: Asset
+) -> None:
+    resp = client.post(
+        "/api/v1/bots/sessions", json=_preset_payload(preset_key="nope")
+    )
+    assert resp.status_code == 422
+
+
+def test_create_from_preset_mismatched_strategy_422(
+    client: TestClient, eligible_asset: Asset
+) -> None:
+    resp = client.post(
+        "/api/v1/bots/sessions",
+        json=_preset_payload(strategy_key="rsi_mean_reversion"),
+    )
+    assert resp.status_code == 422
+
+
+def test_create_without_preset_reports_no_provenance(
+    client: TestClient, eligible_asset: Asset
+) -> None:
+    resp = client.post("/api/v1/bots/sessions", json=_create_payload())
+    assert resp.status_code == 201
+    body = resp.json()
+    assert body["preset_key"] is None
+    assert body["preset_customized"] is False
+    assert body["origin"] == "manual"
+    assert body["orchestrator_id"] is None
+    assert body["orchestrator_label"] is None
 
 
 def test_create_rejects_ineligible_asset(client: TestClient) -> None:
@@ -292,8 +408,17 @@ def test_kpis_report_best_and_worst_closed_trade(
     db_session.flush()
 
     body = client.get(f"/api/v1/bots/sessions/{sid}/kpis").json()
-    assert body["best_trade"] == {"ticker": "AAPL", "realised_pnl": 60.0}
-    assert body["worst_trade"] == {"ticker": "AAPL", "realised_pnl": 60.0}
+    best = body["best_trade"]
+    assert best["ticker"] == "AAPL"
+    assert best["realised_pnl"] == 60.0
+    # The round-trip now carries its exact entry/exit fills.
+    assert best["quantity"] == 10.0
+    assert best["entry_price"] == 50.0
+    assert best["entry_at"].startswith("2026-01-06")
+    assert best["exit_price"] == 56.0
+    assert best["exit_at"].startswith("2026-01-07")
+    assert body["worst_trade"]["ticker"] == "AAPL"
+    assert body["worst_trade"]["realised_pnl"] == 60.0
 
 
 def test_trades_pagination(
@@ -360,6 +485,74 @@ def test_trades_pagination_rejects_bad_params(
 def test_trades_unknown_session_404(client: TestClient) -> None:
     resp = client.get(
         "/api/v1/bots/sessions/00000000-0000-0000-0000-000000000000/trades"
+    )
+    assert resp.status_code == 404
+
+
+# Session summary ---------------------------------------------------------
+def test_summary_stopped_session_returns_stats_and_narrative(
+    client: TestClient,
+    eligible_asset: Asset,
+    db_session: Session,
+    fake_summary_agent: FakeBotSummaryAgent,
+) -> None:
+    sid = client.post("/api/v1/bots/sessions", json=_create_payload()).json()[
+        "id"
+    ]
+    # One closed round-trip so the stats carry a best/worst trade.
+    db_session.add_all(
+        [
+            BotTrade(
+                bot_session_id=uuid.UUID(sid),
+                side=OrderSide.BUY.value,
+                ticker="AAPL",
+                quantity=10.0,
+                filled_price=50.0,
+                fees=0.0,
+                created_at=datetime(2026, 1, 6, 9, 0, tzinfo=UTC),
+            ),
+            BotTrade(
+                bot_session_id=uuid.UUID(sid),
+                side=OrderSide.SELL.value,
+                ticker="AAPL",
+                quantity=10.0,
+                filled_price=55.0,
+                fees=0.0,
+                created_at=datetime(2026, 1, 7, 9, 0, tzinfo=UTC),
+            ),
+        ]
+    )
+    db_session.flush()
+    client.post(f"/api/v1/bots/sessions/{sid}/stop")
+
+    resp = client.get(f"/api/v1/bots/sessions/{sid}/summary")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["stats"]["stop_reason"] == "manual"
+    assert body["stats"]["trade_count"] == 1
+    assert body["stats"]["best_trade"]["ticker"] == "AAPL"
+    assert body["narrative"] is not None
+    assert fake_summary_agent.calls == 1
+
+
+def test_summary_active_session_conflicts(
+    client: TestClient,
+    eligible_asset: Asset,
+    fake_summary_agent: FakeBotSummaryAgent,
+) -> None:
+    sid = client.post("/api/v1/bots/sessions", json=_create_payload()).json()[
+        "id"
+    ]
+    resp = client.get(f"/api/v1/bots/sessions/{sid}/summary")
+    assert resp.status_code == 409
+    assert fake_summary_agent.calls == 0
+
+
+def test_summary_unknown_session_404(
+    client: TestClient, fake_summary_agent: FakeBotSummaryAgent
+) -> None:
+    resp = client.get(
+        "/api/v1/bots/sessions/00000000-0000-0000-0000-000000000000/summary"
     )
     assert resp.status_code == 404
 
@@ -449,6 +642,13 @@ def test_list_strategies(client: TestClient) -> None:
     assert donchian["display_name"] == "Donchian Range Breakout"
     assert donchian["explanation"]
     assert "version" in donchian["params_schema"]["properties"]
+    # The Rolling-Average Reversion strategy is listed with its three axes.
+    reversion = entries["rolling_average_reversion"]
+    assert reversion["display_name"] == "Rolling-Average Reversion"
+    assert reversion["explanation"]
+    assert reversion["required_history"] == 20
+    props = reversion["params_schema"]["properties"]
+    assert {"average_type", "distance", "exit_mode", "window"} <= set(props)
 
 
 # Cron-guarded jobs -------------------------------------------------------
@@ -477,6 +677,64 @@ def test_tick_authorized(
     assert resp.json()["market_open"] is True
     # Notifier is threaded (no kill-switch trips here, so nothing is pushed).
     assert recording_notifier.sent == []
+
+
+def test_tick_flattens_stopped_orchestrator_bot_and_returns_its_cash(
+    client: TestClient,
+    db_session: Session,
+    eligible_asset: Asset,
+    stub_market_data: None,
+    recording_notifier: RecordingNotifier,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from cadence.bot_orchestrator import service as orchestrator_service
+    from cadence.broker import get_broker
+    from cadence.broker.stub import StubBroker
+    from cadence.strategy_bots import service as bot_service
+    from cadence.strategy_bots.constants import BotOrigin
+    from cadence.strategy_bots.models import BotPosition
+
+    monkeypatch.setattr(settings, "REBALANCE_CRON_TOKEN", "secret")
+    broker = StubBroker()
+    app.dependency_overrides[get_broker] = lambda: broker
+    orchestrator = orchestrator_service.create_orchestrator(
+        db_session, label="Core", capital=10_000.0
+    )
+    orchestrator.free_capital -= 3_000.0
+    bot = bot_service.create_bot_session(
+        db_session,
+        preset_key="ma_crossover_algo6",
+        tickers=["AAPL"],
+        initial_capital=3_000.0,
+        benchmark="SP500",
+        origin=BotOrigin.ORCHESTRATOR,
+        orchestrator_id=orchestrator.id,
+    )
+    symbol = bot.symbols[0]
+    bot.positions.append(
+        BotPosition(
+            asset_id=symbol.asset_id,
+            ticker="AAPL",
+            alpaca_symbol=symbol.alpaca_symbol,
+            quantity=10,
+            avg_price=100.0,
+            opened_at=datetime(2026, 11, 10, 14, 0, tzinfo=UTC),
+        )
+    )
+    bot.cash -= 1_000.0
+    broker.buy("AAPL", 10)
+    bot_service.stop_bot_session(db_session, bot.id)
+    db_session.flush()
+
+    resp = client.post("/api/v1/bots/tick", headers={"X-Cron-Token": "secret"})
+
+    assert resp.status_code == 200
+    assert resp.json()["flattened"] == 1
+    db_session.refresh(bot)
+    db_session.refresh(orchestrator)
+    assert bot.positions == []
+    assert bot.capital_returned_at is not None
+    assert orchestrator.free_capital == pytest.approx(7_000.0 + bot.cash)
 
 
 def test_snapshot_daily_rejects_without_token(

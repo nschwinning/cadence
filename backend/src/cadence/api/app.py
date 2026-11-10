@@ -14,6 +14,7 @@ from cadence.ai_portfolio.background import cleanup_orphaned_events_on_startup
 from cadence.api.routers import (
     ai_portfolio_router,
     assets_router,
+    bot_orchestrators_router,
     bots_router,
     dashboard_router,
     health_router,
@@ -23,6 +24,9 @@ from cadence.api.routers import (
     recommendations_router,
     system_router,
     technical_indicators_router,
+)
+from cadence.bot_orchestrator.background import (
+    cleanup_orphaned_runs_on_startup as cleanup_orphaned_orchestrator_runs_on_startup,
 )
 from cadence.config import settings
 from cadence.recommendations.background import cleanup_orphaned_runs_on_startup
@@ -35,13 +39,14 @@ from cadence.technical_indicators.background import (
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     """Application lifespan. Schema is owned by Alembic; no table creation here.
 
-    On startup, any recommendation run or AI portfolio event left non-terminal by
-    a prior process (e.g. a restart mid-job) is marked failed so it never appears
-    stuck.
+    On startup, any recommendation run, AI portfolio event, indicator run or
+    orchestrator decision run left non-terminal by a prior process (e.g. a restart
+    mid-job) is marked failed so it never appears stuck.
     """
     cleanup_orphaned_runs_on_startup()
     cleanup_orphaned_events_on_startup()
     cleanup_orphaned_indicator_runs_on_startup()
+    cleanup_orphaned_orchestrator_runs_on_startup()
     yield
 
 
@@ -92,6 +97,7 @@ def create_app() -> FastAPI:
     app.include_router(paper_trading_router, prefix="/api/v1")
     app.include_router(ai_portfolio_router, prefix="/api/v1")
     app.include_router(bots_router, prefix="/api/v1")
+    app.include_router(bot_orchestrators_router, prefix="/api/v1")
     app.include_router(technical_indicators_router, prefix="/api/v1")
     app.include_router(price_ml_router, prefix="/api/v1")
     app.include_router(system_router, prefix="/api/v1")

@@ -32,6 +32,8 @@ from cadence.strategy_bots.models import BotPosition, BotSession, BotTrade
 REASON_TAKE_PROFIT = "take_profit"
 REASON_STOP_LOSS = "stop_loss"
 REASON_DRAWDOWN = "drawdown_kill_switch"
+#: Trade reason for sells that flatten a session after it was stopped.
+REASON_SESSION_STOPPED = "session_stopped"
 
 
 def _mark(position: BotPosition, marks: Mapping[str, float]) -> float:

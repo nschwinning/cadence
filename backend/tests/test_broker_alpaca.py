@@ -6,12 +6,13 @@ canned JSON, letting us assert URL/auth selection and response parsing.
 
 from __future__ import annotations
 
+from datetime import date
 from typing import Any
 
 import pytest
 
 from cadence.broker import AlpacaBroker
-from cadence.broker.base import ConnectionError
+from cadence.broker.base import BrokerError, ConnectionError
 from cadence.broker.models import AssetClass, OrderSide, OrderStatus, OrderType
 
 
@@ -459,3 +460,38 @@ def test_get_quotes_falls_back_per_symbol_when_batch_misses() -> None:
 
     assert quotes["AAPL"].bid == 189.9
     assert quotes["GHOST"].bid == 12.4
+
+
+def test_is_trading_day_true_when_calendar_has_the_session() -> None:
+    broker, session = _make_broker(
+        {
+            ("GET", "/v2/calendar"): [
+                {"date": "2026-11-10", "open": "09:30", "close": "16:00"}
+            ]
+        }
+    )
+
+    assert broker.is_trading_day(date(2026, 11, 10)) is True
+    assert session.calls[0]["params"] == {"start": "2026-11-10", "end": "2026-11-10"}
+
+
+def test_is_trading_day_false_on_holiday_or_weekend() -> None:
+    # Alpaca returns no session for a non-trading date (Thanksgiving 2026).
+    broker, _ = _make_broker({("GET", "/v2/calendar"): []})
+
+    assert broker.is_trading_day(date(2026, 11, 26)) is False
+
+
+def test_is_trading_day_ignores_a_session_for_another_date() -> None:
+    broker, _ = _make_broker(
+        {("GET", "/v2/calendar"): [{"date": "2026-11-27", "open": "09:30"}]}
+    )
+
+    assert broker.is_trading_day(date(2026, 11, 26)) is False
+
+
+def test_is_trading_day_raises_on_malformed_calendar() -> None:
+    broker, _ = _make_broker({("GET", "/v2/calendar"): {"error": "nope"}})
+
+    with pytest.raises(BrokerError):
+        broker.is_trading_day(date(2026, 11, 10))

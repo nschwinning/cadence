@@ -33,6 +33,10 @@ from cadence.strategy_bots.ma_crossover import (
     MACrossoverParams,
     MACrossoverStrategy,
 )
+from cadence.strategy_bots.rolling_average_reversion import (
+    RollingAverageReversionParams,
+    RollingAverageReversionStrategy,
+)
 from cadence.strategy_bots.rsi_mean_reversion import (
     RsiMeanReversionParams,
     RsiMeanReversionStrategy,
@@ -83,6 +87,13 @@ _REGISTRY: dict[StrategyKey, StrategyRegistration] = {
         explanation=STRATEGY_EXPLANATIONS[StrategyKey.DONCHIAN_BREAKOUT],
         strategy=DonchianBreakoutStrategy(),
         params_schema=DonchianBreakoutParams,
+    ),
+    StrategyKey.ROLLING_AVERAGE_REVERSION: StrategyRegistration(
+        key=StrategyKey.ROLLING_AVERAGE_REVERSION,
+        display_name=STRATEGY_DISPLAY_NAMES[StrategyKey.ROLLING_AVERAGE_REVERSION],
+        explanation=STRATEGY_EXPLANATIONS[StrategyKey.ROLLING_AVERAGE_REVERSION],
+        strategy=RollingAverageReversionStrategy(),
+        params_schema=RollingAverageReversionParams,
     ),
 }
 

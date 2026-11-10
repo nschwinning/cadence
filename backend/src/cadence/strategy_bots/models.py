@@ -26,6 +26,7 @@ from datetime import date, datetime
 from enum import Enum
 
 from sqlalchemy import (
+    Boolean,
     Date,
     DateTime,
     Float,
@@ -172,6 +173,45 @@ class BotSession(Base):
         DateTime(timezone=True), nullable=True
     )
     archived_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    # Why/when the session stopped (a StopReason value / timestamp). Null for
+    # sessions already stopped before this metadata was recorded (no backfill).
+    stop_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    stopped_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    # Cached AI session-summary narrative for a stopped bot, generated lazily on
+    # first view and reused while ``summary_fingerprint`` matches the summarized
+    # inputs. All null until the first successful generation.
+    summary_narrative: Mapped[str | None] = mapped_column(Text, nullable=True)
+    summary_fingerprint: Mapped[str | None] = mapped_column(Text, nullable=True)
+    summary_model: Mapped[str | None] = mapped_column(Text, nullable=True)
+    summary_generated_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    # Provenance: the bot preset the session started from (a presets key; null when
+    # no preset was used), whether its effective strategy params / risk controls were
+    # changed from that preset (computed once at creation), and who created it (a
+    # BotOrigin value). Older rows read as "no preset, not customized, manual".
+    preset_key: Mapped[str | None] = mapped_column(Text, nullable=True)
+    preset_customized: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default="false", default=False
+    )
+    origin: Mapped[str] = mapped_column(
+        Text, nullable=False, server_default="manual", default="manual"
+    )
+    # The bot orchestrator that deployed this session (null for manual sessions), and
+    # when its remaining cash was returned to that orchestrator's free capital (set once,
+    # after the session is stopped and flat). Only the column is mapped here: the
+    # strategy-bot subsystem stays unaware of the orchestrator package.
+    orchestrator_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("bot_orchestrators.id", ondelete="RESTRICT"),
+        nullable=True,
+        index=True,
+    )
+    capital_returned_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
 

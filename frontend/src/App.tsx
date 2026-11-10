@@ -8,6 +8,8 @@ import { PaperTradingPage } from './pages/paper-trading/PaperTradingPage';
 import { PaperTradingSessionPage } from './pages/paper-trading/PaperTradingSessionPage';
 import { BotsPage } from './pages/bots/BotsPage';
 import { BotSessionPage } from './pages/bots/BotSessionPage';
+import { OrchestratorsPage } from './pages/orchestrators/OrchestratorsPage';
+import { OrchestratorDetailPage } from './pages/orchestrators/OrchestratorDetailPage';
 import { StrategiesPage } from './pages/bots/StrategiesPage';
 import { StrategyDetailPage } from './pages/bots/StrategyDetailPage';
 import { RunsPage } from './pages/runs/RunsPage';
@@ -40,6 +42,8 @@ export function App() {
         <Route path="bots/strategies" element={<StrategiesPage />} />
         <Route path="bots/strategies/:key" element={<StrategyDetailPage />} />
         <Route path="bots/:id" element={<BotSessionPage />} />
+        <Route path="orchestrators" element={<OrchestratorsPage />} />
+        <Route path="orchestrators/:id" element={<OrchestratorDetailPage />} />
         {/* Legacy routes: the paper-trading area merged into Portfolios. */}
         <Route
           path="paper-trading"

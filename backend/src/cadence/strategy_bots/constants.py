@@ -24,6 +24,34 @@ class BotSessionStatus(StrEnum):
     ARCHIVED = "archived"
 
 
+class StopReason(StrEnum):
+    """Why a bot session transitioned to STOPPED.
+
+    ``MANUAL`` is a client-initiated stop; ``DRAWDOWN_KILL_SWITCH`` is the
+    whole-session drawdown kill-switch firing during a tick; ``ORCHESTRATOR`` is a bot
+    orchestrator stopping one of its bots (or the whole orchestrator being stopped).
+    Stored as free text on ``bot_sessions.stop_reason`` (null for sessions stopped
+    before this was recorded).
+    """
+
+    DRAWDOWN_KILL_SWITCH = "drawdown_kill_switch"
+    MANUAL = "manual"
+    ORCHESTRATOR = "orchestrator"
+
+
+class BotOrigin(StrEnum):
+    """Who created a bot session.
+
+    ``MANUAL`` is a session built through the client API (the build form);
+    ``ORCHESTRATOR`` is a session deployed by a bot orchestrator (which is also
+    referenced by ``bot_sessions.orchestrator_id``). Stored as free text on
+    ``bot_sessions.origin`` (server default ``manual`` for older rows).
+    """
+
+    MANUAL = "manual"
+    ORCHESTRATOR = "orchestrator"
+
+
 class StrategyKey(StrEnum):
     """Registered strategy identifiers.
 
@@ -34,6 +62,7 @@ class StrategyKey(StrEnum):
     MA_CROSSOVER = "ma_crossover"
     RSI_MEAN_REVERSION = "rsi_mean_reversion"
     DONCHIAN_BREAKOUT = "donchian_breakout"
+    ROLLING_AVERAGE_REVERSION = "rolling_average_reversion"
 
 
 class SizingMethod(StrEnum):
@@ -55,6 +84,7 @@ STRATEGY_DISPLAY_NAMES: dict[StrategyKey, str] = {
     StrategyKey.MA_CROSSOVER: "Moving-Average Crossover",
     StrategyKey.RSI_MEAN_REVERSION: "RSI Mean Reversion",
     StrategyKey.DONCHIAN_BREAKOUT: "Donchian Range Breakout",
+    StrategyKey.ROLLING_AVERAGE_REVERSION: "Rolling-Average Reversion",
 }
 
 #: Human-readable explanations for the strategy catalog, shown on the strategy
@@ -94,6 +124,19 @@ STRATEGY_EXPLANATIONS: dict[StrategyKey, str] = {
         "deterministic and long-only — a downward breakout never opens a short — and "
         "leave position sizing, take-profit, stop-loss, and the drawdown kill-switch "
         "to the bot's risk controls."
+    ),
+    StrategyKey.ROLLING_AVERAGE_REVERSION: (
+        "The Rolling-Average Reversion strategy buys when price has dropped below its "
+        "recent average and sells as it snaps back. It tracks a rolling average over "
+        "the last N bars — a simple average of closes, an average of typical prices "
+        "(high + low + close) / 3, or a volume-weighted average — and measures how "
+        "far the latest close sits below it, either as a percentage band or as a "
+        "z-score in standard deviations. A zero band means any close below the "
+        "average is a buy. It either exits once price reverts back to (or above) the "
+        "exit level, or holds and lets the take-profit / stop-loss bracket close the "
+        "trade. It is deterministic and long-only — a price above its average never "
+        "opens a short — and leaves sizing and the drawdown kill-switch to the bot's "
+        "risk controls."
     ),
 }
 

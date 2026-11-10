@@ -1121,6 +1121,23 @@ reachable only through this area, not through the AI paper-trading views.
   show that bot's KPI tiles, value chart, trade ledger, and current open positions from
   the strategy-bots endpoints
 
+### Requirement: Bot orchestrator navigation entry
+
+The application shell SHALL provide an "Orchestrators" navigation entry, placed directly
+after the "Bots" entry, leading to the bot-orchestrator area (its list, deploy form and
+detail views). The entry SHALL indicate when it is the active view, like the other
+navigation entries.
+
+#### Scenario: Orchestrators entry follows Bots
+
+- **WHEN** a user views the sidebar navigation
+- **THEN** it SHALL show an "Orchestrators" entry directly after the "Bots" entry
+
+#### Scenario: Orchestrators entry opens the orchestrator area
+
+- **WHEN** a user selects the "Orchestrators" entry
+- **THEN** the shell SHALL show the orchestrator list view and mark the entry as active
+
 ### Requirement: Strategy explanation navigation entry and page
 
 The application shell SHALL offer, within the Bots area, a navigation affordance to a

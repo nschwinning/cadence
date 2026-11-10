@@ -1544,15 +1544,39 @@ class BotStrategyCatalogEntry(BaseModel):
     params_schema: dict[str, Any]
 
 
+class BotPresetRead(BaseModel):
+    """A fixed course-recipe bot preset (risk values are fractions, 0.01 = 1%)."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    key: str
+    display_name: str
+    description: str
+    course_ref: str
+    strategy_key: str
+    strategy_params: dict[str, Any]
+    take_profit_pct: float | None
+    stop_loss_pct: float | None
+    drawdown_stop_pct: float
+    is_default: bool
+
+
 class BotSessionCreateRequest(BaseModel):
     """Request to create a strategy-bot session over a set of universe equities.
 
     The traded set is either an explicit ``tickers`` list or, when ``whole_universe``
     is set, the currently eligible universe equities resolved at creation. The sizing
     fields are optional; each falls back to the configured default when omitted.
+
+    With ``preset_key`` the session starts from that preset: ``strategy_key`` may be
+    omitted (or must match the preset's strategy), and any of ``strategy_params`` /
+    ``take_profit_pct`` / ``stop_loss_pct`` / ``drawdown_stop_pct`` left out of the
+    request takes the preset's value; sending one (including ``null`` to turn
+    take-profit / stop-loss off) overrides it.
     """
 
-    strategy_key: str
+    strategy_key: str | None = None
+    preset_key: str | None = None
     tickers: list[str] | None = None
     whole_universe: bool = False
     initial_capital: float = Field(gt=0)
@@ -1626,6 +1650,13 @@ class BotSessionRead(BaseModel):
     drawdown_stop_pct: float
     cash_buffer_pct: float
     peak_value: float
+    preset_key: str | None
+    preset_customized: bool
+    origin: str
+    #: The bot orchestrator that deployed the session (null for manual sessions).
+    orchestrator_id: uuid.UUID | None
+    #: That orchestrator's label. Not an ORM attribute; set by the router.
+    orchestrator_label: str | None = None
     symbols: list[BotSymbolRead]
     positions: list[BotPositionRead]
     total_trades: int
@@ -1645,12 +1676,17 @@ class BotSessionListResponse(BaseModel):
 
 
 class TradeExtremeRead(BaseModel):
-    """A single closed round-trip trade: its ticker and realized P&L."""
+    """A single closed round-trip trade: its ticker, realized P&L, and exact fills."""
 
     model_config = ConfigDict(from_attributes=True)
 
     ticker: str
     realised_pnl: float
+    quantity: float
+    entry_price: float
+    entry_at: datetime
+    exit_price: float
+    exit_at: datetime
 
 
 class BotKpisRead(BaseModel):
@@ -1690,6 +1726,48 @@ class BotKpisRead(BaseModel):
     value_as_of: datetime | None = None
     #: True when the current value came from an intraday value point.
     value_is_intraday: bool = False
+
+
+class SessionSummaryStatsRead(BaseModel):
+    """The curated stats block of a stopped session's summary."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    #: Why/when the session stopped; ``None`` for sessions stopped before stop
+    #: metadata was recorded.
+    stop_reason: str | None = None
+    stopped_at: datetime | None = None
+    started_at: datetime
+    lifespan_days: int
+    final_value: float
+    allocated_capital: float
+    total_return: float
+    total_return_pct: float
+    realised_pnl: float
+    peak_value: float
+    max_drawdown: float
+    trade_count: int
+    #: Share of closed round-trips with positive realized P&L; ``None`` with no
+    #: closed trades.
+    win_rate: float | None = None
+    best_trade: TradeExtremeRead | None = None
+    worst_trade: TradeExtremeRead | None = None
+    benchmark: str
+    benchmark_return_pct: float | None = None
+    excess_return_pct: float | None = None
+
+
+class BotSessionSummaryRead(BaseModel):
+    """A stopped session's summary: its stats block plus the cached AI narrative."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    stats: SessionSummaryStatsRead
+    #: The cached AI narrative (markdown); ``None`` when not yet generated or the
+    #: agent failed on this view (the stats still render).
+    narrative: str | None = None
+    model: str | None = None
+    generated_at: datetime | None = None
 
 
 class BotTradeRead(BaseModel):
@@ -1746,9 +1824,127 @@ class BotTickResponse(BaseModel):
     market_open: bool
     processed: int
     skipped: int
+    #: Positions of stopped / archived sessions sold to flatten them this tick.
+    flattened: int = 0
 
 
 class BotSnapshotResponse(BaseModel):
     """Outcome of one cron-triggered daily bot-snapshot run."""
 
     snapshots: int
+
+
+# --- Bot orchestrator --------------------------------------------------------------
+
+
+class BotOrchestratorCreateRequest(BaseModel):
+    """Request to deploy a bot orchestrator. Ranges are validated by the service."""
+
+    label: str
+    capital: float = Field(gt=0)
+    max_parallel_bots: int = 3
+    max_bot_share: float = 0.5
+    max_tickers_per_bot: int = 5
+    cadence: str = "daily"
+    model: str | None = None
+    benchmark: str = "SP500"
+
+
+class OrchestratorBotRead(BaseModel):
+    """One bot an orchestrator deployed, with its live figures."""
+
+    id: uuid.UUID
+    label: str | None
+    preset_key: str | None
+    preset_name: str | None
+    strategy_key: str
+    tickers: list[str]
+    status: str
+    stop_reason: str | None
+    initial_capital: float
+    current_value: float
+    total_return_pct: float
+    open_positions: int
+    created_at: datetime
+    stopped_at: datetime | None
+    capital_returned_at: datetime | None
+
+
+class OrchestratorRunSummaryRead(BaseModel):
+    """A decision run as listed in an orchestrator's run history."""
+
+    id: uuid.UUID
+    trigger: str
+    status: str
+    model: str
+    created_at: datetime
+    started_at: datetime | None
+    finished_at: datetime | None
+    duration_ms: int | None
+    error: str | None
+    market_summary: str | None
+    applied: list[dict[str, Any]]
+    rejected: list[dict[str, Any]]
+
+
+class OrchestratorRunRead(OrchestratorRunSummaryRead):
+    """A decision run in full: briefing, AI decision and web research included."""
+
+    orchestrator_id: uuid.UUID
+    prompt_version: int | None
+    briefing: dict[str, Any] | None
+    decision: dict[str, Any] | None
+    research: list[dict[str, Any]]
+
+
+class BotOrchestratorRead(BaseModel):
+    """An orchestrator with its computed capital figures and latest run."""
+
+    id: uuid.UUID
+    label: str
+    status: str
+    capital: float
+    free_capital: float
+    allocated_capital: float
+    value: float
+    total_return_pct: float
+    max_parallel_bots: int
+    max_bot_share: float
+    max_tickers_per_bot: int
+    cadence: str
+    model: str
+    benchmark: str
+    active_bots: int
+    liquidating_bots: int
+    created_at: datetime
+    stopped_at: datetime | None
+    archived_at: datetime | None
+    last_run: OrchestratorRunSummaryRead | None
+
+
+class BotOrchestratorDetailRead(BotOrchestratorRead):
+    """An orchestrator plus every bot it deployed."""
+
+    bots: list[OrchestratorBotRead]
+
+
+class BotOrchestratorListResponse(BaseModel):
+    """Orchestrators (newest first) plus the total."""
+
+    items: list[BotOrchestratorRead]
+    total: int
+
+
+class OrchestratorRunListResponse(BaseModel):
+    """A page of an orchestrator's decision runs (newest first) plus the total."""
+
+    items: list[OrchestratorRunSummaryRead]
+    total: int
+
+
+class OrchestratorRunDueResponse(BaseModel):
+    """Outcome of the scheduled run trigger."""
+
+    started: int
+    not_due: int
+    already_running: int

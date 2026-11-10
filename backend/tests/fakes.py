@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable, Sequence
 from concurrent.futures import Future
 from datetime import date, datetime, timedelta
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from cadence.agents.gateway import run_config_for_trace
 from cadence.agents.tools import note_web_search
@@ -25,6 +25,8 @@ from cadence.assets.universe_agent import (
     UniverseSummary,
     build_universe_evaluation_prompt,
 )
+from cadence.bot_orchestrator.agent import OrchestratorDecision
+from cadence.bot_orchestrator.errors import OrchestratorUnavailableError
 from cadence.broker.models import AssetClass, BrokerAsset
 from cadence.broker.stub import StubBroker
 from cadence.news_sentiment.models import NewsItem, SentimentScore
@@ -37,6 +39,14 @@ from cadence.recommendations.agent import (
 )
 from cadence.recommendations.composition import UniverseComposition
 from cadence.recommendations.constants import RunTarget
+from cadence.strategy_bots.errors import BotSummaryUnavailableError
+from cadence.strategy_bots.summary_agent import (
+    BotSummaryOutput,
+    build_bot_summary_prompt,
+)
+
+if TYPE_CHECKING:
+    from cadence.strategy_bots.service import SessionSummaryStats
 
 
 def _synthetic_series(
@@ -380,6 +390,38 @@ class FakeUniverseEvaluationAgent:
         return self._output
 
 
+class FakeBotSummaryAgent:
+    """In-memory :class:`BotSessionSummaryAgent` returning a canned recap.
+
+    ``calls`` counts :meth:`summarize` invocations so tests can assert the cache
+    hit skips the agent and a fingerprint change regenerates. Set ``fail=True`` to
+    raise :class:`BotSummaryUnavailableError` (the graceful-degradation path that
+    leaves the narrative absent). The prompt is built with the real builder.
+    """
+
+    def __init__(
+        self,
+        *,
+        output: BotSummaryOutput | None = None,
+        fail: bool = False,
+    ) -> None:
+        self._output = output or BotSummaryOutput(
+            headline="The session closed in the green.",
+            narrative="It ran steadily and finished ahead of its benchmark.",
+        )
+        self._fail = fail
+        self.calls = 0
+
+    def build_prompt(self, stats: SessionSummaryStats) -> str:
+        return build_bot_summary_prompt(stats)
+
+    def summarize(self, stats: SessionSummaryStats) -> BotSummaryOutput:
+        self.calls += 1
+        if self._fail:
+            raise BotSummaryUnavailableError("the summary could not be generated")
+        return self._output
+
+
 class FakeAIPortfolioAgent:
     """In-memory :class:`AIPortfolioAgent` returning canned structured output.
 
@@ -611,3 +653,30 @@ class ManualExecutor:
             future.set_result(fn(*args))
         except Exception as exc:  # noqa: BLE001 - surfaced via the future
             future.set_exception(exc)
+
+
+class FakeOrchestratorAgent:
+    """In-memory :class:`OrchestratorAgent`: returns a canned decision (or fails).
+
+    Records each briefing and model it was asked to decide on.
+    """
+
+    def __init__(
+        self,
+        *,
+        decision: OrchestratorDecision | None = None,
+        fail: bool = False,
+    ) -> None:
+        self._decision = decision or OrchestratorDecision(
+            market_summary="Calm tape; nothing to change."
+        )
+        self._fail = fail
+        self.calls: list[tuple[dict[str, Any], str]] = []
+
+    def decide(self, briefing: dict[str, Any], *, model: str) -> OrchestratorDecision:
+        self.calls.append((briefing, model))
+        if self._fail:
+            raise OrchestratorUnavailableError(
+                "The orchestrator decision timed out after 300s."
+            )
+        return self._decision
