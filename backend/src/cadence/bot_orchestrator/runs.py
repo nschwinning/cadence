@@ -66,6 +66,11 @@ logger = logging.getLogger(__name__)
 _CAPITAL_EPSILON = 1e-6
 
 
+def run_trace_id(run_id: uuid.UUID) -> str:
+    """The LiteLLM trace id a run's AI call is tagged with (and its cost looked up by)."""
+    return f"orchestrator-run-{run_id}"
+
+
 # Validation ------------------------------------------------------------------
 @dataclass
 class DecisionState:
@@ -444,9 +449,11 @@ def execute_run(
             db, orchestrator, now=run_now, resolve_sentiment=resolve_sentiment
         )
         run.briefing = briefing
-        with record_web_searches() as research, llm_trace(f"orchestrator-run-{run.id}"):
-            decision = agent.decide(briefing, model=orchestrator.model)
+        with record_web_searches() as research, llm_trace(run_trace_id(run.id)):
+            outcome = agent.decide(briefing, model=orchestrator.model)
+        decision = outcome.decision
         run.decision = decision.model_dump()
+        run.usage = outcome.usage.as_dict() if outcome.usage is not None else None
         run.research = research
         # Validate and apply atomically: an unexpected error rolls back every action.
         with db.begin_nested():

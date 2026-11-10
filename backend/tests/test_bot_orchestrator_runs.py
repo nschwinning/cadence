@@ -543,3 +543,53 @@ def test_orphaned_live_runs_are_failed(db_session: Session) -> None:
     assert runs.fail_orphaned_runs(db_session) == 1
     assert run.status == "failed"
     assert run.error == "interrupted by a restart"
+
+
+# Usage & trace ---------------------------------------------------------------
+def test_completed_run_stores_usage(db_session: Session) -> None:
+    orchestrator = _orchestrator(db_session)
+
+    run = _execute(db_session, orchestrator, FakeOrchestratorAgent())
+
+    assert run.usage == {
+        "requests": 2,
+        "input_tokens": 1_000,
+        "output_tokens": 234,
+        "total_tokens": 1_234,
+    }
+
+
+def test_timed_out_and_skipped_runs_store_no_usage(db_session: Session) -> None:
+    failed_orchestrator = _orchestrator(db_session, label="Fails")
+    failed = _execute(db_session, failed_orchestrator, FakeOrchestratorAgent(fail=True))
+    holiday_orchestrator = _orchestrator(db_session, label="Holiday")
+    skipped = _execute(
+        db_session,
+        holiday_orchestrator,
+        FakeOrchestratorAgent(),
+        broker=_CalendarBroker(trading_day=False),
+    )
+
+    assert failed.status == "failed" and failed.usage is None
+    assert skipped.status == "skipped" and skipped.usage is None
+
+
+def test_run_is_traced_with_its_run_trace_id(
+    db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from contextlib import contextmanager
+
+    traced: list[str | None] = []
+
+    @contextmanager
+    def _capture(trace_id: str | None, **kwargs: object) -> Any:
+        traced.append(trace_id)
+        yield
+
+    monkeypatch.setattr(runs, "llm_trace", _capture)
+    orchestrator = _orchestrator(db_session)
+
+    run = _execute(db_session, orchestrator, FakeOrchestratorAgent())
+
+    assert traced == [runs.run_trace_id(run.id)]
+    assert runs.run_trace_id(run.id) == f"orchestrator-run-{run.id}"

@@ -25,7 +25,11 @@ from cadence.assets.universe_agent import (
     UniverseSummary,
     build_universe_evaluation_prompt,
 )
-from cadence.bot_orchestrator.agent import OrchestratorDecision
+from cadence.bot_orchestrator.agent import (
+    OrchestratorAgentResult,
+    OrchestratorDecision,
+    RunUsage,
+)
 from cadence.bot_orchestrator.errors import OrchestratorUnavailableError
 from cadence.broker.models import AssetClass, BrokerAsset
 from cadence.broker.stub import StubBroker
@@ -673,10 +677,17 @@ class FakeOrchestratorAgent:
         self._fail = fail
         self.calls: list[tuple[dict[str, Any], str]] = []
 
-    def decide(self, briefing: dict[str, Any], *, model: str) -> OrchestratorDecision:
+    #: The canned usage every successful decision reports.
+    USAGE = RunUsage(
+        requests=2, input_tokens=1_000, output_tokens=234, total_tokens=1_234
+    )
+
+    def decide(
+        self, briefing: dict[str, Any], *, model: str
+    ) -> OrchestratorAgentResult:
         self.calls.append((briefing, model))
         if self._fail:
             raise OrchestratorUnavailableError(
                 "The orchestrator decision timed out after 300s."
             )
-        return self._decision
+        return OrchestratorAgentResult(decision=self._decision, usage=self.USAGE)

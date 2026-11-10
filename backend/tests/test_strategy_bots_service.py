@@ -942,7 +942,7 @@ def test_bot_daily_pnl_diffs_prior_snapshot(db_session: Session) -> None:
         db_session, session_id=bot.id, before=date(2026, 1, 6)
     )
     assert prior is not None and prior.snapshot_date == date(2026, 1, 5)
-    pnl, pct = service._bot_daily_pnl(db_session, bot, today)
+    pnl, pct = service.bot_daily_pnl(db_session, bot, today)
     # value today 101000 vs prior 100000.
     assert pnl == pytest.approx(1_000.0)
     assert pct == pytest.approx(0.01)
@@ -956,7 +956,7 @@ def test_bot_daily_pnl_day_one_uses_allocated_capital(db_session: Session) -> No
         db_session, bot, marks={"AAPL": 60.0}, snapshot_date=date(2026, 1, 6)
     )
 
-    pnl, pct = service._bot_daily_pnl(db_session, bot, snap)
+    pnl, pct = service.bot_daily_pnl(db_session, bot, snap)
     # No prior snapshot: baseline is allocated capital (100000).
     assert pnl == pytest.approx(1_000.0)
     assert pct == pytest.approx(0.01)
@@ -979,7 +979,7 @@ def test_bot_daily_pnl_guards_non_positive_baseline(db_session: Session) -> None
         db_session, bot, marks={}, snapshot_date=date(2026, 1, 6)
     )
 
-    pnl, pct = service._bot_daily_pnl(db_session, bot, today)
+    pnl, pct = service.bot_daily_pnl(db_session, bot, today)
     assert pnl == pytest.approx(100_000.0)
     assert pct is None  # baseline 0 → percent omitted
 
@@ -1887,3 +1887,51 @@ def test_create_records_orchestrator_origin(db_session: Session) -> None:
     assert bot.origin == "orchestrator"
     assert bot.orchestrator_id == orchestrator.id
     assert bot.capital_returned_at is None
+
+
+def test_orchestrator_bots_are_snapshotted_without_their_own_push(
+    db_session: Session,
+) -> None:
+    from cadence.bot_orchestrator.models import BotOrchestrator
+    from cadence.strategy_bots.constants import BotOrigin
+
+    _add_asset(db_session, "AAPL")
+    _add_asset(db_session, "MSFT")
+    orchestrator = BotOrchestrator(
+        label="Core",
+        capital=10_000.0,
+        free_capital=7_000.0,
+        max_parallel_bots=3,
+        max_bot_share=0.5,
+        max_tickers_per_bot=5,
+        cadence="daily",
+        model="gpt-5-mini",
+        benchmark="SP500",
+    )
+    db_session.add(orchestrator)
+    db_session.flush()
+    manual = _create(db_session, tickers=["AAPL"])
+    deployed = _create(
+        db_session,
+        tickers=["MSFT"],
+        origin=BotOrigin.ORCHESTRATOR,
+        orchestrator_id=orchestrator.id,
+    )
+    notifier = RecordingNotifier()
+    when = datetime(2026, 1, 6, 21, 0, tzinfo=UTC)
+
+    count = service.run_bot_snapshots(
+        db_session, broker=_OpenableBroker(), now=when, notifier=notifier
+    )
+
+    assert count == 2
+    snapped = {
+        s.bot_session_id
+        for s in db_session.query(BotValueSnapshot).filter(
+            BotValueSnapshot.snapshot_date == when.date()
+        )
+    }
+    assert snapped == {manual.id, deployed.id}
+    # Only the manual bot pushes; the orchestrator bot is rolled up.
+    assert len(notifier.sent) == 1
+    assert "MSFT" not in notifier.sent[0][1]

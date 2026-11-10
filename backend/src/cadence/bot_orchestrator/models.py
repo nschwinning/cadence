@@ -6,6 +6,8 @@
 * ``BotOrchestratorRun`` — one decision run's full audit trail (briefing, AI decision,
   applied and rejected actions, research, error). A partial unique index allows at most
   one queued-or-running run per orchestrator.
+* ``BotOrchestratorSnapshot`` — one end-of-day value snapshot per orchestrator and date
+  (the daily P&L push's baseline and the history for a future value chart).
 
 Deployed bots reference their orchestrator via ``bot_sessions.orchestrator_id``; the
 strategy-bot models deliberately carry only that column (no relationship back here).
@@ -14,17 +16,19 @@ strategy-bot models deliberately carry only that column (no relationship back he
 from __future__ import annotations
 
 import uuid
-from datetime import datetime
+from datetime import date, datetime
 from enum import Enum
 from typing import Any
 
 from sqlalchemy import (
+    Date,
     DateTime,
     Float,
     ForeignKey,
     Index,
     Integer,
     Text,
+    UniqueConstraint,
     func,
     text,
 )
@@ -143,6 +147,9 @@ class BotOrchestratorRun(Base):
     rejected: Mapped[list[dict[str, Any]] | None] = mapped_column(JSONB, nullable=True)
     # Web searches the AI made during the run.
     research: Mapped[list[dict[str, Any]] | None] = mapped_column(JSONB, nullable=True)
+    # The AI call's token usage ({requests, input_tokens, output_tokens,
+    # total_tokens}); null when the run ended before the AI answered.
+    usage: Mapped[dict[str, int] | None] = mapped_column(JSONB, nullable=True)
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
@@ -156,3 +163,35 @@ class BotOrchestratorRun(Base):
     duration_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
     orchestrator: Mapped[BotOrchestrator] = relationship(back_populates="runs")
+
+
+class BotOrchestratorSnapshot(Base):
+    """An orchestrator's end-of-day figures for one date (upserted by the daily job)."""
+
+    __tablename__ = "bot_orchestrator_snapshots"
+    __table_args__ = (
+        UniqueConstraint(
+            "orchestrator_id",
+            "snapshot_date",
+            name="uq_bot_orchestrator_snapshots_orchestrator_date",
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        server_default=func.gen_random_uuid(),
+    )
+    orchestrator_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("bot_orchestrators.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    snapshot_date: Mapped[date] = mapped_column(Date, nullable=False)
+    value: Mapped[float] = mapped_column(Float, nullable=False)
+    free_capital: Mapped[float] = mapped_column(Float, nullable=False)
+    allocated_capital: Mapped[float] = mapped_column(Float, nullable=False)
+    active_bots: Mapped[int] = mapped_column(Integer, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )

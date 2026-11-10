@@ -771,15 +771,29 @@ class PortfolioAiCost:
 
 
 @dataclass(frozen=True)
+class OrchestratorAiCost:
+    """One active bot orchestrator's all-time AI cost (the sum of its decision runs).
+
+    ``ai_cost_usd`` is ``None`` only when the cost source is unavailable; an
+    orchestrator with no recorded spend reads as ``0.0``.
+    """
+
+    orchestrator_id: str
+    label: str
+    ai_cost_usd: float | None
+
+
+@dataclass(frozen=True)
 class DashboardAiCosts:
-    """Per-portfolio AI cost breakdown with a grand total.
+    """Per-portfolio and per-orchestrator AI cost breakdown with a grand total.
 
     ``total_ai_cost_usd`` is ``None`` when the cost source is unavailable and the
-    sum of the per-portfolio costs when it is reachable.
+    sum of every readable portfolio and orchestrator cost when it is reachable.
     """
 
     portfolios: list[PortfolioAiCost]
     total_ai_cost_usd: float | None
+    orchestrators: list[OrchestratorAiCost] = field(default_factory=list)
 
 
 def get_dashboard_ai_costs(session: Session) -> DashboardAiCosts:
@@ -816,12 +830,38 @@ def get_dashboard_ai_costs(session: Session) -> DashboardAiCosts:
     # Sort by cost descending; unavailable (None) costs sort last.
     portfolios.sort(key=lambda p: (p.ai_cost_usd is not None, p.ai_cost_usd or 0.0), reverse=True)
 
-    total = (
-        None
-        if cost_map is None
-        else sum(p.ai_cost_usd or 0.0 for p in portfolios)
+    orchestrators = _orchestrator_ai_costs(session)
+    readable = [p.ai_cost_usd for p in portfolios] + [
+        o.ai_cost_usd for o in orchestrators
+    ]
+    sources_unavailable = cost_map is None and all(c is None for c in readable)
+    total = None if sources_unavailable else sum(c or 0.0 for c in readable)
+    return DashboardAiCosts(
+        portfolios=portfolios,
+        total_ai_cost_usd=total,
+        orchestrators=orchestrators,
     )
-    return DashboardAiCosts(portfolios=portfolios, total_ai_cost_usd=total)
+
+
+def _orchestrator_ai_costs(session: Session) -> list[OrchestratorAiCost]:
+    """Active orchestrators with their all-time AI cost, most expensive first."""
+    # Imported here: the orchestrator package depends on strategy_bots, which imports
+    # this module, so a top-level import would be circular.
+    from cadence.bot_orchestrator import costs as orchestrator_costs
+    from cadence.bot_orchestrator import service as orchestrator_service
+
+    active = orchestrator_service.active_orchestrators(session)
+    totals = orchestrator_costs.orchestrator_ai_costs(session, active)
+    rows = [
+        OrchestratorAiCost(
+            orchestrator_id=str(o.id),
+            label=o.label,
+            ai_cost_usd=totals.get(o.id) if totals is not None else None,
+        )
+        for o in active
+    ]
+    rows.sort(key=lambda r: (r.ai_cost_usd is not None, r.ai_cost_usd or 0.0), reverse=True)
+    return rows
 
 
 def get_dashboard_overview(

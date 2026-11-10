@@ -1492,12 +1492,27 @@ class DashboardPortfolioAiCostRead(BaseModel):
     ai_cost_usd: float | None
 
 
+class DashboardOrchestratorAiCostRead(BaseModel):
+    """One active bot orchestrator's all-time AI cost (the sum of its runs).
+
+    ``ai_cost_usd`` is ``None`` only when the cost source is unavailable; an
+    orchestrator with no recorded spend reads as ``0.0``.
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    orchestrator_id: str
+    label: str
+    ai_cost_usd: float | None
+
+
 class DashboardAiCostsRead(BaseModel):
-    """Per-portfolio AI cost breakdown with a grand total."""
+    """Per-portfolio and per-orchestrator AI cost breakdown with a grand total."""
 
     model_config = ConfigDict(from_attributes=True)
 
     portfolios: list[DashboardPortfolioAiCostRead]
+    orchestrators: list[DashboardOrchestratorAiCostRead] = []
     total_ai_cost_usd: float | None
 
 
@@ -1832,6 +1847,8 @@ class BotSnapshotResponse(BaseModel):
     """Outcome of one cron-triggered daily bot-snapshot run."""
 
     snapshots: int
+    #: Active orchestrators snapshotted (and sent their daily push) after the bots.
+    orchestrator_snapshots: int = 0
 
 
 # --- Bot orchestrator --------------------------------------------------------------
@@ -1885,6 +1902,11 @@ class OrchestratorRunSummaryRead(BaseModel):
     market_summary: str | None
     applied: list[dict[str, Any]]
     rejected: list[dict[str, Any]]
+    #: Token usage ({requests, input_tokens, output_tokens, total_tokens}); null when
+    #: the run ended before the AI answered.
+    usage: dict[str, int] | None = None
+    #: The run's AI cost in USD; null when the cost source is unavailable.
+    ai_cost_usd: float | None = None
 
 
 class OrchestratorRunRead(OrchestratorRunSummaryRead):
@@ -1920,6 +1942,8 @@ class BotOrchestratorRead(BaseModel):
     stopped_at: datetime | None
     archived_at: datetime | None
     last_run: OrchestratorRunSummaryRead | None
+    #: All-time AI cost in USD (sum of its runs); null when the source is unavailable.
+    ai_cost_usd: float | None = None
 
 
 class BotOrchestratorDetailRead(BotOrchestratorRead):

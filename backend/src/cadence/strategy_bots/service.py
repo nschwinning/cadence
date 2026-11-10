@@ -948,7 +948,7 @@ def get_previous_bot_value_snapshot(
     return session.execute(stmt).scalar_one_or_none()
 
 
-def _bot_daily_pnl(
+def bot_daily_pnl(
     session: Session, bot: BotSession, snapshot: BotValueSnapshot
 ) -> tuple[float, float | None]:
     """Day-over-day P&L (amount, percent) for a session's snapshot.
@@ -1028,8 +1028,9 @@ def run_bot_snapshots(
 ) -> int:
     """Record a daily value snapshot for every active session; return the count.
 
-    For each snapshotted session it also sends one best-effort daily-summary push via
-    ``notifier`` (one per bot, no cross-bot roll-up) mirroring the AI daily report —
+    For each snapshotted session that was not deployed by a bot orchestrator it also
+    sends one best-effort daily-summary push via ``notifier`` (orchestrator-deployed bots
+    are rolled up into their orchestrator's daily push) mirroring the AI daily report —
     value and day-over-day change, total return, realised/unrealised P&L, cash, fees,
     Sharpe, a benchmark comparison, the best/worst open position, and the number of
     trades executed that day. A ``None`` notifier stays silent and a notifier failure
@@ -1043,9 +1044,12 @@ def run_bot_snapshots(
             session, bot, marks=marks, snapshot_date=when
         )
         count += 1
+        if bot.orchestrator_id is not None:
+            # Rolled up: the orchestrator's own daily push covers its bots.
+            continue
 
         kpis = bot_session_kpis(session, bot)
-        daily_pnl, daily_pnl_pct = _bot_daily_pnl(session, bot, snapshot)
+        daily_pnl, daily_pnl_pct = bot_daily_pnl(session, bot, snapshot)
         benchmark_suffix = _bot_benchmark_suffix(
             session,
             bot,

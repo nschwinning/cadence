@@ -173,3 +173,101 @@ def test_ai_costs_endpoint_degrades_to_null(
     body = response.json()
     assert body["total_ai_cost_usd"] is None
     assert body["portfolios"][0]["ai_cost_usd"] is None
+
+
+# --- orchestrators ----------------------------------------------------------
+
+
+def _orchestrator_with_run(db_session: Session, label: str, status: str = "active") -> str:
+    """An orchestrator with one decision run; returns that run's trace id."""
+    from cadence.bot_orchestrator import service as orchestrator_service
+    from cadence.bot_orchestrator.models import BotOrchestratorRun
+    from cadence.bot_orchestrator.runs import run_trace_id
+
+    orchestrator = orchestrator_service.create_orchestrator(
+        db_session, label=label, capital=10_000.0
+    )
+    run = BotOrchestratorRun(
+        orchestrator_id=orchestrator.id,
+        trigger="scheduled",
+        status="succeeded",
+        model="gpt-5-mini",
+    )
+    db_session.add(run)
+    db_session.flush()
+    if status != "active":
+        orchestrator_service.stop_orchestrator(db_session, orchestrator.id)
+    return run_trace_id(run.id)
+
+
+def _stub_trace_costs(
+    monkeypatch: pytest.MonkeyPatch, result: dict[str, float] | None
+) -> None:
+    from cadence.bot_orchestrator import costs as orchestrator_costs
+
+    monkeypatch.setattr(
+        orchestrator_costs, "cost_source_configured", lambda: result is not None
+    )
+    monkeypatch.setattr(orchestrator_costs, "trace_ai_costs_usd", lambda ids: result)
+
+
+def test_active_orchestrators_are_listed_and_in_the_total(
+    db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    portfolio = _make_session(db_session, name="Portfolio", strategy_key="s1")
+    trace = _orchestrator_with_run(db_session, "Core rotation")
+    _stub_costs(monkeypatch, {str(portfolio.id): 1.5})
+    _stub_trace_costs(monkeypatch, {trace: 0.25})
+
+    costs = service.get_dashboard_ai_costs(db_session)
+
+    assert [(o.label, o.ai_cost_usd) for o in costs.orchestrators] == [
+        ("Core rotation", pytest.approx(0.25))
+    ]
+    assert costs.total_ai_cost_usd == pytest.approx(1.75)
+
+
+def test_stopped_orchestrators_are_excluded(
+    db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    trace = _orchestrator_with_run(db_session, "Retired", status="stopped")
+    _stub_costs(monkeypatch, {})
+    _stub_trace_costs(monkeypatch, {trace: 0.40})
+
+    costs = service.get_dashboard_ai_costs(db_session)
+
+    assert costs.orchestrators == []
+    assert costs.total_ai_cost_usd == 0.0
+
+
+def test_unavailable_source_nulls_orchestrators_and_total(
+    db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _make_session(db_session, name="Portfolio", strategy_key="s1")
+    _orchestrator_with_run(db_session, "Core rotation")
+    _stub_costs(monkeypatch, None)
+    _stub_trace_costs(monkeypatch, None)
+
+    costs = service.get_dashboard_ai_costs(db_session)
+
+    assert [o.ai_cost_usd for o in costs.orchestrators] == [None]
+    assert costs.total_ai_cost_usd is None
+
+
+def test_endpoint_includes_orchestrators(
+    client: TestClient, db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    trace = _orchestrator_with_run(db_session, "Core rotation")
+    _stub_costs(monkeypatch, {})
+    _stub_trace_costs(monkeypatch, {trace: 0.3})
+
+    body = client.get("/api/v1/dashboard/ai-costs").json()
+
+    assert body["orchestrators"] == [
+        {
+            "orchestrator_id": body["orchestrators"][0]["orchestrator_id"],
+            "label": "Core rotation",
+            "ai_cost_usd": pytest.approx(0.3),
+        }
+    ]
+    assert body["total_ai_cost_usd"] == pytest.approx(0.3)

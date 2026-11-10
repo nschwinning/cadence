@@ -50,6 +50,8 @@ const partialRun: OrchestratorRunSummary = {
       reason: 'capital 9,000.00 exceeds the free capital of 4,000.00',
     },
   ],
+  usage: { requests: 2, input_tokens: 1000, output_tokens: 234, total_tokens: 1234 },
+  ai_cost_usd: 0.04,
 };
 
 const detail: BotOrchestratorDetail = {
@@ -73,6 +75,7 @@ const detail: BotOrchestratorDetail = {
   stopped_at: null,
   archived_at: null,
   last_run: partialRun,
+  ai_cost_usd: 0.42,
   bots: [
     {
       id: 'b1',
@@ -233,5 +236,35 @@ describe('OrchestratorDetailPage', () => {
     expect(await screen.findByRole('button', { name: 'Archive' })).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Run now' })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Stop' })).not.toBeInTheDocument();
+  });
+
+  it('shows the AI cost tile and per-run tokens and cost', async () => {
+    mockedGet.mockImplementation(routeGet());
+    renderDetail();
+
+    const tile = (await screen.findByText('AI cost')).parentElement!
+      .parentElement as HTMLElement;
+    expect(within(tile).getByText('$0.42')).toBeInTheDocument();
+    expect(await screen.findByTestId('run-usage')).toHaveTextContent(
+      '1,234 tokens · $0.04',
+    );
+  });
+
+  it('renders unavailable cost as an em dash and omits tokens without usage', async () => {
+    const run = { ...partialRun, usage: null, ai_cost_usd: null };
+    mockedGet.mockImplementation((url: string) =>
+      url.endsWith('/runs')
+        ? Promise.resolve({ data: { items: [run], total: 1 } })
+        : Promise.resolve({ data: { ...detail, ai_cost_usd: null, last_run: run } }),
+    );
+    renderDetail();
+
+    const tile = (await screen.findByText('AI cost')).parentElement!
+      .parentElement as HTMLElement;
+    expect(within(tile).getByText('—')).toBeInTheDocument();
+    expect(within(tile).getByText('Cost tracking unavailable')).toBeInTheDocument();
+    const usage = await screen.findByTestId('run-usage');
+    expect(usage).toHaveTextContent('—');
+    expect(usage).not.toHaveTextContent('tokens');
   });
 });

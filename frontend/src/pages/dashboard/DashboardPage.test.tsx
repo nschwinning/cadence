@@ -87,7 +87,7 @@ describe('DashboardPage', () => {
 
   it('renders the AI cost panel above the market-performers tiles', async () => {
     renderWithClient(<DashboardPage />);
-    const panelHeading = await screen.findByText('AI cost per portfolio');
+    const panelHeading = await screen.findByText('AI cost per portfolio & orchestrator');
     const performersHeading = await screen.findByText('Market performers');
     // The AI cost panel precedes the market-performers tiles in document order.
     expect(

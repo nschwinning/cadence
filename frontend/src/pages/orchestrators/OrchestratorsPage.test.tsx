@@ -47,7 +47,10 @@ const orchestrator: BotOrchestrator = {
     market_summary: 'Breadth improving.',
     applied: [],
     rejected: [],
+    usage: null,
+    ai_cost_usd: 0.03,
   },
+  ai_cost_usd: 0.42,
 };
 
 function routeGet(items: BotOrchestrator[] = [orchestrator]) {
@@ -93,6 +96,7 @@ describe('OrchestratorsPage', () => {
     expect(within(row).getByText('+2.50%')).toBeInTheDocument();
     expect(within(row).getByText('2 / 3')).toBeInTheDocument();
     expect(within(row).getByText('partial')).toBeInTheDocument();
+    expect(within(row).getByText('$0.42')).toBeInTheDocument();
   });
 
   it('shows an empty state without orchestrators', async () => {

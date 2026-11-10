@@ -42,6 +42,13 @@ function OrchestratorRow({ orchestrator }: { orchestrator: BotOrchestrator }) {
       <td className="px-4 py-3 text-right tabular-nums text-slate-700">
         {orchestrator.active_bots} / {orchestrator.max_parallel_bots}
       </td>
+      <td
+        className={`px-4 py-3 text-right tabular-nums ${
+          orchestrator.ai_cost_usd === null ? 'text-slate-400' : 'text-slate-700'
+        }`}
+      >
+        {orchestrator.ai_cost_usd === null ? '—' : formatCurrency(orchestrator.ai_cost_usd)}
+      </td>
       <td className="px-4 py-3 text-slate-600">
         {run ? (
           <span className="inline-flex items-center gap-2">
@@ -134,6 +141,7 @@ export function OrchestratorsPage() {
                   <th className="px-4 py-3 text-right">Value</th>
                   <th className="px-4 py-3 text-right">Return</th>
                   <th className="px-4 py-3 text-right">Bots</th>
+                  <th className="px-4 py-3 text-right">AI cost</th>
                   <th className="px-4 py-3">Last run</th>
                 </tr>
               </thead>

@@ -138,3 +138,35 @@ def test_costs_none_on_read_error(monkeypatch: MonkeyPatch) -> None:
 
     monkeypatch.setattr(ai_cost, "_spend_engine", _boom)
     assert ai_cost.session_ai_costs_usd(["sess-1"]) is None
+
+
+def test_trace_costs_map_by_trace_id(monkeypatch: MonkeyPatch) -> None:
+    conn = _FakeRowsConn([("orchestrator-run-a", 0.12), ("orchestrator-run-b", 0.08)])
+    monkeypatch.setattr(settings, "LITELLM_DATABASE_URL", "postgresql://u:p@h:5432/litellm")
+    monkeypatch.setattr(ai_cost, "_spend_engine", lambda url: _FakeRowsEngine(conn))
+
+    result = ai_cost.trace_ai_costs_usd(
+        ["orchestrator-run-a", "orchestrator-run-b", "orchestrator-run-c"]
+    )
+
+    # A trace with no spend is absent (rendered as 0 by callers).
+    assert result == {"orchestrator-run-a": 0.12, "orchestrator-run-b": 0.08}
+    assert conn.params == {
+        "sids": ["orchestrator-run-a", "orchestrator-run-b", "orchestrator-run-c"]
+    }
+
+
+def test_trace_costs_degrade(monkeypatch: MonkeyPatch) -> None:
+    monkeypatch.setattr(ai_cost, "_spend_engine", _never_called)
+    monkeypatch.setattr(settings, "LITELLM_DATABASE_URL", "postgresql://u:p@h:5432/litellm")
+    assert ai_cost.trace_ai_costs_usd([]) == {}
+
+    monkeypatch.setattr(settings, "LITELLM_DATABASE_URL", "")
+    assert ai_cost.trace_ai_costs_usd(["orchestrator-run-a"]) is None
+
+    def _boom(url: str) -> _FakeRowsEngine:
+        raise ConnectionError("spend table unreachable")
+
+    monkeypatch.setattr(settings, "LITELLM_DATABASE_URL", "postgresql://u:p@h:5432/litellm")
+    monkeypatch.setattr(ai_cost, "_spend_engine", _boom)
+    assert ai_cost.trace_ai_costs_usd(["orchestrator-run-a"]) is None

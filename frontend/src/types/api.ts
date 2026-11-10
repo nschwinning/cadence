@@ -1180,9 +1180,17 @@ export interface DashboardPortfolioAiCost {
   ai_cost_usd: number | null;
 }
 
-/** Per-portfolio AI cost breakdown from `GET /api/v1/dashboard/ai-costs`. */
+/** One active bot orchestrator's all-time AI cost (the sum of its runs). */
+export interface DashboardOrchestratorAiCost {
+  orchestrator_id: string;
+  label: string;
+  ai_cost_usd: number | null;
+}
+
+/** Per-portfolio and per-orchestrator AI cost breakdown from `GET /api/v1/dashboard/ai-costs`. */
 export interface DashboardAiCosts {
   portfolios: DashboardPortfolioAiCost[];
+  orchestrators: DashboardOrchestratorAiCost[];
   total_ai_cost_usd: number | null;
 }
 
@@ -1591,6 +1599,18 @@ export interface OrchestratorRunSummary {
   market_summary: string | null;
   applied: OrchestratorAction[];
   rejected: OrchestratorAction[];
+  /** The AI call's token usage; null when the run ended before the AI answered. */
+  usage: OrchestratorRunUsage | null;
+  /** The run's AI cost in USD; null when the cost source is unavailable. */
+  ai_cost_usd: number | null;
+}
+
+/** Token usage of one decision run's AI call. */
+export interface OrchestratorRunUsage {
+  requests: number;
+  input_tokens: number;
+  output_tokens: number;
+  total_tokens: number;
 }
 
 /** A decision run in full. Mirrors `OrchestratorRunRead`. */
@@ -1643,6 +1663,8 @@ export interface BotOrchestrator {
   stopped_at: string | null;
   archived_at: string | null;
   last_run: OrchestratorRunSummary | null;
+  /** All-time AI cost in USD (sum of its runs); null when the source is unavailable. */
+  ai_cost_usd: number | null;
 }
 
 /** An orchestrator plus every bot it deployed. Mirrors `BotOrchestratorDetailRead`. */

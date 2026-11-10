@@ -259,3 +259,92 @@ def test_unknown_ids_404(client: TestClient) -> None:
     assert client.post(f"{_BASE}/{missing}/runs").status_code == 404
     assert client.get(f"{_BASE}/{missing}/runs").status_code == 404
     assert client.get(f"{_BASE}/runs/{missing}").status_code == 404
+
+
+# AI cost ----------------------------------------------------------------------
+def _seed_runs(db_session: Session, orchestrator_id: str) -> list[BotOrchestratorRun]:
+    created = []
+    for status_value in ("succeeded", "partial"):
+        run = BotOrchestratorRun(
+            orchestrator_id=uuid.UUID(orchestrator_id),
+            trigger="scheduled",
+            status=status_value,
+            model="gpt-5-mini",
+            usage={
+                "requests": 2,
+                "input_tokens": 1_000,
+                "output_tokens": 234,
+                "total_tokens": 1_234,
+            },
+        )
+        db_session.add(run)
+        db_session.flush()
+        created.append(run)
+    return created
+
+
+def _fake_costs(
+    monkeypatch: pytest.MonkeyPatch, by_trace: dict[str, float] | None
+) -> None:
+    from cadence.bot_orchestrator import costs
+
+    monkeypatch.setattr(costs, "cost_source_configured", lambda: by_trace is not None)
+    monkeypatch.setattr(costs, "trace_ai_costs_usd", lambda ids: by_trace)
+
+
+def test_orchestrator_cost_is_the_sum_of_its_runs(
+    client: TestClient, db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from cadence.bot_orchestrator.runs import run_trace_id
+
+    body = _create(client)
+    first, second = _seed_runs(db_session, str(body["id"]))
+    _fake_costs(
+        monkeypatch, {run_trace_id(first.id): 0.12, run_trace_id(second.id): 0.08}
+    )
+
+    detail = client.get(f"{_BASE}/{body['id']}").json()
+    listed = client.get(_BASE).json()["items"][0]
+    page = client.get(f"{_BASE}/{body['id']}/runs").json()["items"]
+    full = client.get(f"{_BASE}/runs/{first.id}").json()
+
+    assert detail["ai_cost_usd"] == pytest.approx(0.20)
+    assert listed["ai_cost_usd"] == pytest.approx(0.20)
+    assert sorted(r["ai_cost_usd"] for r in page) == pytest.approx([0.08, 0.12])
+    assert page[0]["usage"]["total_tokens"] == 1_234
+    assert full["ai_cost_usd"] == pytest.approx(0.12)
+    assert full["usage"]["requests"] == 2
+
+
+def test_no_recorded_spend_reads_zero(
+    client: TestClient, db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    body = _create(client)
+    _seed_runs(db_session, str(body["id"]))
+    _fake_costs(monkeypatch, {})
+    fresh = _create(client, label="Fresh")  # no runs at all
+
+    assert client.get(f"{_BASE}/{body['id']}").json()["ai_cost_usd"] == 0.0
+    assert client.get(f"{_BASE}/{fresh['id']}").json()["ai_cost_usd"] == 0.0
+    runs_page = client.get(f"{_BASE}/{body['id']}/runs").json()["items"]
+    assert {r["ai_cost_usd"] for r in runs_page} == {0.0}
+
+
+def test_unavailable_cost_source_reads_null(
+    client: TestClient, db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    body = _create(client)
+    _seed_runs(db_session, str(body["id"]))
+    _fake_costs(monkeypatch, None)
+    fresh = _create(client, label="Fresh")
+
+    resp = client.get(f"{_BASE}/{body['id']}")
+    assert resp.status_code == 200
+    assert resp.json()["ai_cost_usd"] is None
+    assert resp.json()["last_run"]["ai_cost_usd"] is None
+    # Even without runs, an unconfigured source is "unavailable", not $0.
+    assert client.get(f"{_BASE}/{fresh['id']}").json()["ai_cost_usd"] is None
+    runs_page = client.get(f"{_BASE}/{body['id']}/runs").json()["items"]
+    assert {r["ai_cost_usd"] for r in runs_page} == {None}
+    # Usage is stored on the run, so it is reported regardless of the cost source.
+    assert runs_page[0]["usage"]["total_tokens"] == 1_234

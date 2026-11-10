@@ -27,7 +27,7 @@ from cadence.api.schemas import (
     OrchestratorRunRead,
     OrchestratorRunSummaryRead,
 )
-from cadence.bot_orchestrator import runs, service
+from cadence.bot_orchestrator import costs, runs, service
 from cadence.bot_orchestrator.background import (
     OrchestratorJobRunner,
     get_orchestrator_job_runner,
@@ -60,9 +60,13 @@ _RUNS_PAGE_MAX = 100
 
 
 # Serialisation -----------------------------------------------------------------
-def _run_summary(run: BotOrchestratorRun) -> OrchestratorRunSummaryRead:
+def _run_summary(
+    run: BotOrchestratorRun, run_costs: dict[uuid.UUID, float] | None = None
+) -> OrchestratorRunSummaryRead:
     decision = run.decision or {}
     return OrchestratorRunSummaryRead(
+        usage=run.usage,
+        ai_cost_usd=run_costs.get(run.id) if run_costs is not None else None,
         id=run.id,
         trigger=run.trigger,
         status=run.status,
@@ -80,7 +84,7 @@ def _run_summary(run: BotOrchestratorRun) -> OrchestratorRunSummaryRead:
 
 def _run_read(run: BotOrchestratorRun) -> OrchestratorRunRead:
     return OrchestratorRunRead(
-        **_run_summary(run).model_dump(),
+        **_run_summary(run, costs.run_ai_costs([run])).model_dump(),
         orchestrator_id=run.orchestrator_id,
         prompt_version=run.prompt_version,
         briefing=run.briefing,
@@ -132,10 +136,17 @@ def _latest_run(db: Session, orchestrator: BotOrchestrator) -> BotOrchestratorRu
     )
 
 
-def _read(db: Session, orchestrator: BotOrchestrator) -> BotOrchestratorRead:
+def _read(
+    db: Session,
+    orchestrator: BotOrchestrator,
+    *,
+    ai_cost: float | None,
+    latest: BotOrchestratorRun | None,
+    run_costs: dict[uuid.UUID, float] | None,
+) -> BotOrchestratorRead:
     figures = service.orchestrator_figures(db, orchestrator)
-    latest = _latest_run(db, orchestrator)
     return BotOrchestratorRead(
+        ai_cost_usd=ai_cost,
         id=orchestrator.id,
         label=orchestrator.label,
         status=orchestrator.status,
@@ -155,13 +166,32 @@ def _read(db: Session, orchestrator: BotOrchestrator) -> BotOrchestratorRead:
         created_at=orchestrator.created_at,
         stopped_at=orchestrator.stopped_at,
         archived_at=orchestrator.archived_at,
-        last_run=_run_summary(latest) if latest is not None else None,
+        last_run=_run_summary(latest, run_costs) if latest is not None else None,
     )
+
+
+def _reads(
+    db: Session, orchestrators: list[BotOrchestrator]
+) -> list[BotOrchestratorRead]:
+    """Serialise orchestrators with their AI costs (two batched cost queries)."""
+    totals = costs.orchestrator_ai_costs(db, orchestrators)
+    latest = {o.id: _latest_run(db, o) for o in orchestrators}
+    run_costs = costs.run_ai_costs([r for r in latest.values() if r is not None])
+    return [
+        _read(
+            db,
+            o,
+            ai_cost=totals.get(o.id) if totals is not None else None,
+            latest=latest[o.id],
+            run_costs=run_costs,
+        )
+        for o in orchestrators
+    ]
 
 
 def _detail(db: Session, orchestrator: BotOrchestrator) -> BotOrchestratorDetailRead:
     return BotOrchestratorDetailRead(
-        **_read(db, orchestrator).model_dump(),
+        **_reads(db, [orchestrator])[0].model_dump(),
         bots=[_bot_read(db, b) for b in service.orchestrator_bots(db, orchestrator)],
     )
 
@@ -184,9 +214,7 @@ def list_orchestrators(
 ) -> BotOrchestratorListResponse:
     """Orchestrators newest first (archived only when requested)."""
     rows = service.list_orchestrators(db, include_archived=include_archived)
-    return BotOrchestratorListResponse(
-        items=[_read(db, row) for row in rows], total=len(rows)
-    )
+    return BotOrchestratorListResponse(items=_reads(db, rows), total=len(rows))
 
 
 @router.post(
@@ -311,6 +339,7 @@ def list_runs(
     """A page of the orchestrator's runs, newest first."""
     orchestrator = _load(db, orchestrator_id)
     rows, total = runs.list_runs(db, orchestrator, limit=limit, offset=offset)
+    run_costs = costs.run_ai_costs(rows)
     return OrchestratorRunListResponse(
-        items=[_run_summary(row) for row in rows], total=total
+        items=[_run_summary(row, run_costs) for row in rows], total=total
     )

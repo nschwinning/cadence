@@ -762,3 +762,50 @@ def test_snapshot_daily_authorized(
     # Notifier is threaded: one daily-summary push for the single active bot.
     assert len(recording_notifier.sent) == 1
     assert "daily P&L" in recording_notifier.sent[0][1]
+
+
+def test_snapshot_daily_rolls_orchestrator_bots_into_one_push(
+    client: TestClient,
+    db_session: Session,
+    eligible_asset: Asset,
+    recording_notifier: RecordingNotifier,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from cadence.bot_orchestrator import service as orchestrator_service
+    from cadence.bot_orchestrator.models import BotOrchestratorSnapshot
+    from cadence.strategy_bots import service as bot_service
+    from cadence.strategy_bots.constants import BotOrigin
+
+    monkeypatch.setattr(settings, "REBALANCE_CRON_TOKEN", "secret")
+    client.post("/api/v1/bots/sessions", json=_create_payload())  # a manual bot
+    orchestrator = orchestrator_service.create_orchestrator(
+        db_session, label="Core rotation", capital=10_000.0
+    )
+    orchestrator.free_capital -= 3_000.0
+    bot_service.create_bot_session(
+        db_session,
+        preset_key="ma_crossover_algo6",
+        tickers=["AAPL"],
+        initial_capital=3_000.0,
+        benchmark="SP500",
+        origin=BotOrigin.ORCHESTRATOR,
+        orchestrator_id=orchestrator.id,
+    )
+    db_session.flush()
+
+    resp = client.post(
+        "/api/v1/bots/snapshot-daily", headers={"X-Cron-Token": "secret"}
+    )
+
+    assert resp.status_code == 200
+    assert resp.json() == {"snapshots": 2, "orchestrator_snapshots": 1}
+    titles = sorted(title or "" for _, title in recording_notifier.sent)
+    assert len(titles) == 2
+    assert titles[0].startswith("Cadence bot:")  # the manual bot
+    assert titles[1] == "Cadence orchestrator: Core rotation daily P&L"
+    assert (
+        db_session.query(BotOrchestratorSnapshot)
+        .filter(BotOrchestratorSnapshot.orchestrator_id == orchestrator.id)
+        .count()
+        == 1
+    )

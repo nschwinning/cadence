@@ -159,7 +159,7 @@ function Header({ orchestrator }: { orchestrator: BotOrchestratorDetail }) {
 
 function CapitalTiles({ orchestrator }: { orchestrator: BotOrchestratorDetail }) {
   return (
-    <div className="grid grid-cols-2 gap-4 lg:grid-cols-5">
+    <div className="grid grid-cols-2 gap-4 lg:grid-cols-6">
       <StatTile label="Value" value={formatCurrency(orchestrator.value)} />
       <StatTile
         label="Return"
@@ -174,6 +174,13 @@ function CapitalTiles({ orchestrator }: { orchestrator: BotOrchestratorDetail })
       <StatTile
         label="Allocated"
         value={formatCurrency(orchestrator.allocated_capital)}
+      />
+      <StatTile
+        label="AI cost"
+        value={
+          orchestrator.ai_cost_usd === null ? '—' : formatCurrency(orchestrator.ai_cost_usd)
+        }
+        hint={orchestrator.ai_cost_usd === null ? 'Cost tracking unavailable' : 'all time'}
       />
       <StatTile
         label="Active bots"
@@ -268,6 +275,15 @@ function describeAction(action: OrchestratorAction): string {
   return `Deploy ${preset ?? 'unknown preset'}${onTickers}${amount}`;
 }
 
+const tokenFormatter = new Intl.NumberFormat('en-US');
+
+/** "1,234 tokens · $0.04"; tokens are omitted without usage, cost shows "—" if unknown. */
+function runUsageLabel(run: OrchestratorRunSummary): string {
+  const cost = run.ai_cost_usd === null ? '—' : formatCurrency(run.ai_cost_usd);
+  if (run.usage === null) return cost;
+  return `${tokenFormatter.format(run.usage.total_tokens)} tokens · ${cost}`;
+}
+
 function RunRow({ run }: { run: OrchestratorRunSummary }) {
   const [open, setOpen] = useState(false);
   const hasDetail =
@@ -285,6 +301,9 @@ function RunRow({ run }: { run: OrchestratorRunSummary }) {
         <span className="text-xs capitalize text-slate-500">{run.trigger}</span>
         <span className="text-xs text-slate-500">
           {run.applied.length} applied · {run.rejected.length} rejected
+        </span>
+        <span className="text-xs tabular-nums text-slate-500" data-testid="run-usage">
+          {runUsageLabel(run)}
         </span>
         {hasDetail && (
           <button

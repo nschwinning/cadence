@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from dataclasses import asdict, dataclass
 from typing import Any, Protocol, runtime_checkable
 
 from agents.run import Runner
@@ -85,6 +86,41 @@ class OrchestratorDecision(BaseModel):
     deploys: list[DeployAction] = Field(default_factory=list)
 
 
+@dataclass(frozen=True)
+class RunUsage:
+    """Token usage of one decision run's AI call (all model requests it made)."""
+
+    requests: int
+    input_tokens: int
+    output_tokens: int
+    total_tokens: int
+
+    def as_dict(self) -> dict[str, int]:
+        """JSON-ready form stored on the run."""
+        return asdict(self)
+
+
+@dataclass(frozen=True)
+class OrchestratorAgentResult:
+    """The agent's decision together with the token usage that produced it."""
+
+    decision: OrchestratorDecision
+    #: ``None`` when the SDK reported no usage.
+    usage: RunUsage | None
+
+
+def usage_from_sdk(usage: Any) -> RunUsage | None:
+    """Map the SDK's run usage (``result.context_wrapper.usage``) to :class:`RunUsage`."""
+    if usage is None:
+        return None
+    return RunUsage(
+        requests=int(getattr(usage, "requests", 0) or 0),
+        input_tokens=int(getattr(usage, "input_tokens", 0) or 0),
+        output_tokens=int(getattr(usage, "output_tokens", 0) or 0),
+        total_tokens=int(getattr(usage, "total_tokens", 0) or 0),
+    )
+
+
 def _section(title: str, payload: Any) -> str:
     return f"## {title}\n{json.dumps(payload, sort_keys=True, separators=(',', ':'))}"
 
@@ -114,18 +150,22 @@ def build_orchestrator_prompt(briefing: dict[str, Any]) -> str:
 class OrchestratorAgent(Protocol):
     """Produces a decision for a briefing. Raises ``OrchestratorUnavailableError``."""
 
-    def decide(self, briefing: dict[str, Any], *, model: str) -> OrchestratorDecision:
-        """Return the structured decision for ``briefing`` using ``model``."""
+    def decide(
+        self, briefing: dict[str, Any], *, model: str
+    ) -> OrchestratorAgentResult:
+        """Return the structured decision for ``briefing`` and its token usage."""
         ...
 
 
 class OpenAIOrchestratorAgent:
     """Production :class:`OrchestratorAgent` backed by ``openai-agents``."""
 
-    def decide(self, briefing: dict[str, Any], *, model: str) -> OrchestratorDecision:
+    def decide(
+        self, briefing: dict[str, Any], *, model: str
+    ) -> OrchestratorAgentResult:
         return asyncio.run(self._run(build_orchestrator_prompt(briefing), model))
 
-    async def _run(self, prompt: str, model: str) -> OrchestratorDecision:
+    async def _run(self, prompt: str, model: str) -> OrchestratorAgentResult:
         agent = build_agent(
             name=_AGENT_NAME,
             instructions=_AGENT_INSTRUCTIONS,
@@ -154,4 +194,7 @@ class OpenAIOrchestratorAgent:
                 f"The orchestrator decision could not be produced: {exc}"
             ) from exc
         output: OrchestratorDecision = result.final_output
-        return output
+        return OrchestratorAgentResult(
+            decision=output,
+            usage=usage_from_sdk(getattr(result.context_wrapper, "usage", None)),
+        )

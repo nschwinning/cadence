@@ -10,6 +10,7 @@ daily value ``/snapshot-daily`` — both guarded by the shared ``X-Cron-Token`` 
 from __future__ import annotations
 
 import uuid
+from datetime import UTC, datetime
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -31,6 +32,7 @@ from cadence.api.schemas import (
     BotValueHistoryResponse,
     BotValuePointRead,
 )
+from cadence.bot_orchestrator import daily as orchestrator_daily
 from cadence.bot_orchestrator import service as orchestrator_service
 from cadence.bot_orchestrator.models import BotOrchestrator
 from cadence.broker import get_broker
@@ -370,6 +372,17 @@ def run_snapshot_daily(
     notifier: NotifierDep,
     _token: Annotated[None, Depends(require_valid_cron_token)],
 ) -> BotSnapshotResponse:
-    """Record a daily value snapshot for every active session (cron-guarded)."""
-    count = service.run_bot_snapshots(db, broker=broker, notifier=notifier)
-    return BotSnapshotResponse(snapshots=count)
+    """Snapshot every active bot, then every active orchestrator (cron-guarded).
+
+    Bots first, so each orchestrator's daily push can rank its bots by today's P&L. Both
+    steps share one ``now`` so their snapshot dates match. Orchestrator-deployed bots
+    send no push of their own; their orchestrator's daily push covers them.
+    """
+    now = datetime.now(UTC)
+    count = service.run_bot_snapshots(db, broker=broker, notifier=notifier, now=now)
+    orchestrator_count = orchestrator_daily.run_orchestrator_daily(
+        db, notifier=notifier, now=now
+    )
+    return BotSnapshotResponse(
+        snapshots=count, orchestrator_snapshots=orchestrator_count
+    )

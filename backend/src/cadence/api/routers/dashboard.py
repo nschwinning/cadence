@@ -15,6 +15,7 @@ from sqlalchemy.orm import Session
 from cadence.api.schemas import (
     DashboardAiCostsRead,
     DashboardMetrics,
+    DashboardOrchestratorAiCostRead,
     DashboardOverview,
     DashboardPortfolioAiCostRead,
 )
@@ -55,7 +56,7 @@ def read_dashboard_overview(
 
 @router.get("/ai-costs", response_model=DashboardAiCostsRead)
 def read_dashboard_ai_costs(db: DbSession) -> DashboardAiCostsRead:
-    """Return the all-time AI cost per active portfolio with a grand total.
+    """Return the all-time AI cost per active portfolio and orchestrator, with a total.
 
     Range-independent: the figures are cumulative since each session began, so
     there is no ``range`` parameter. Costs degrade to ``null`` when the LiteLLM
@@ -68,6 +69,14 @@ def read_dashboard_ai_costs(db: DbSession) -> DashboardAiCostsRead:
                 session_id=p.session_id, label=p.label, ai_cost_usd=p.ai_cost_usd
             )
             for p in costs.portfolios
+        ],
+        orchestrators=[
+            DashboardOrchestratorAiCostRead(
+                orchestrator_id=o.orchestrator_id,
+                label=o.label,
+                ai_cost_usd=o.ai_cost_usd,
+            )
+            for o in costs.orchestrators
         ],
         total_ai_cost_usd=costs.total_ai_cost_usd,
     )

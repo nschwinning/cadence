@@ -274,8 +274,11 @@ action was rejected. A failed run SHALL apply nothing.
 Every run SHALL be persisted with its trigger (scheduled or manual), status, start and
 finish times, duration, model, briefing, the AI's structured output, the applied actions
 (stopped and deployed bot references), the rejected actions with reasons, the web
-searches made, and an error message when it failed. The system SHALL let a client list an
-orchestrator's runs newest first, paginated, and read a single run in full.
+searches made, the AI call's **token usage** (requests, input tokens, output tokens and
+total tokens) when the AI answered, and an error message when it failed. A run that ended
+before the AI answered (skipped, or failed on a timeout or error) SHALL record no token
+usage. The system SHALL let a client list an orchestrator's runs newest first, paginated,
+and read a single run in full; run reads SHALL report the token usage and the run's AI cost.
 
 #### Scenario: Run history lists newest first
 
@@ -289,12 +292,107 @@ orchestrator's runs newest first, paginated, and read a single run in full.
 - **THEN** the system SHALL return its market summary, applied actions, rejected actions
   with reasons, briefing and web searches
 
+#### Scenario: Completed run records its token usage
+
+- **WHEN** a run's AI call returns a decision
+- **THEN** the run SHALL record the call's requests, input tokens, output tokens and total
+  tokens, and run reads SHALL report them with the run's AI cost
+
+#### Scenario: Run without an AI answer records no usage
+
+- **WHEN** a run is skipped, or fails because the AI timed out
+- **THEN** the run SHALL record no token usage
+
+### Requirement: Orchestrator AI cost
+
+The system SHALL report the AI (LLM) cost of each decision run and of each orchestrator,
+sourced from the same LiteLLM spend log as the other AI cost figures. A run's cost SHALL be
+the spend recorded under that run's own trace identifier; an orchestrator's cost SHALL be
+the all-time sum of its runs' costs, including runs made before this reporting existed.
+Costs for many runs or orchestrators SHALL be read with a single batched query rather than
+one query per run.
+
+Cost SHALL degrade like the existing AI cost figures: when the cost source is
+unconfigured or cannot be read, costs SHALL be reported as absent (never a fabricated `0`
+and never an error); when the source is reachable, a run or orchestrator with no recorded
+spend SHALL report `0`.
+
+#### Scenario: Orchestrator cost is the sum of its runs
+
+- **WHEN** an orchestrator has two runs whose spend log entries total $0.12 and $0.08
+- **THEN** the orchestrator's AI cost SHALL be $0.20 and each run SHALL report its own cost
+
+#### Scenario: No recorded spend reads as zero
+
+- **WHEN** the cost source is reachable and an orchestrator's runs have no spend entries
+- **THEN** the orchestrator's AI cost SHALL be `0`
+
+#### Scenario: Unavailable cost source degrades to absent
+
+- **WHEN** the cost source is unconfigured or a query against it fails
+- **THEN** orchestrator and run costs SHALL be reported as absent and the request SHALL
+  still succeed
+
+### Requirement: Orchestrator daily snapshots
+
+The evening bot snapshot job SHALL, after recording the bots' daily snapshots, record one
+daily snapshot per **active** orchestrator for that date, capturing its value, free
+capital, allocated capital and number of active bots (as defined by the capital-pool
+requirement). There SHALL be at most one snapshot per orchestrator per date; running the
+job again on the same date SHALL update that date's snapshot rather than add another.
+Stopped and archived orchestrators SHALL NOT be snapshotted. Before snapshotting, the job
+SHALL settle any capital that finished bots return to the pool, so the figures are
+current.
+
+#### Scenario: Active orchestrator is snapshotted daily
+
+- **WHEN** the evening snapshot job runs with one active orchestrator
+- **THEN** the system SHALL record a snapshot for that date with its value, free capital,
+  allocated capital and active bots
+
+#### Scenario: Rerun on the same day updates the snapshot
+
+- **WHEN** the job runs twice on the same date
+- **THEN** the orchestrator SHALL have a single snapshot for that date carrying the latest
+  figures
+
+#### Scenario: Stopped orchestrators are not snapshotted
+
+- **WHEN** the job runs while an orchestrator is stopped or archived
+- **THEN** no snapshot SHALL be recorded for it
+
 ### Requirement: Orchestrator notifications
 
 Scheduled runs SHALL send a push notification when notifications are configured: on
 success or partial success, a summary naming the orchestrator and the bots stopped and
 deployed; on failure, the orchestrator and the error. Skipped runs and manual runs SHALL NOT
 notify. A notification failure SHALL NOT fail the run.
+
+In addition, the evening snapshot job SHALL send **one daily P&L notification per active
+orchestrator** after recording its snapshot, titled with the orchestrator's label, carrying:
+
+- its value and **day change** as an amount and a percentage, against the previous
+  snapshot's value or, when there is no earlier snapshot, against the capital pool (the
+  percentage is omitted when that baseline is not positive);
+- its **total return** on the capital pool as an amount and a percentage;
+- its free capital, allocated capital, and active bots out of the maximum;
+- a **benchmark comparison** — the orchestrator's benchmark return and the excess return
+  since its first snapshot — when the benchmark has usable stored closes, omitted otherwise;
+- its **best and worst bot** by that day's P&L among its active bots, omitted when it has
+  no active bot;
+- the bots it **started** that day, each with its preset, tickers and capital, or that
+  none were started;
+- the bots **stopped** that day — whether by an orchestrator decision or by the bot's own
+  drawdown kill-switch — each with its preset, tickers, stop reason and return on its
+  allocated capital, or that none were stopped;
+- the status of that day's **decision run**, or that no decision run happened that day.
+
+Each of the started and stopped lists SHALL show at most five bots, summarising any
+further bots as a count, so the notification stays within the channel's message limit.
+
+This daily notification SHALL replace the individual daily notifications of the bots the
+orchestrator deployed. It SHALL be best-effort: a silent no-op when no notification channel
+is configured, and a notification failure SHALL NOT fail the snapshot job.
 
 #### Scenario: Scheduled run notifies a summary
 
@@ -306,30 +404,73 @@ notify. A notification failure SHALL NOT fail the run.
 - **WHEN** a manual run completes
 - **THEN** no notification SHALL be sent
 
+#### Scenario: Daily P&L notification per active orchestrator
+
+- **WHEN** the evening snapshot job runs for an active orchestrator with two active bots
+  and a previous snapshot
+- **THEN** one notification SHALL be sent for it with its value, day change against the
+  previous snapshot, total return, free and allocated capital, active bots out of the
+  maximum, its best and worst bot, the bots started and stopped that day, and that day's
+  decision-run status
+
+#### Scenario: First day compares against the capital pool
+
+- **WHEN** an orchestrator's first snapshot is recorded
+- **THEN** its day change SHALL be measured against its capital pool
+
+#### Scenario: Daily notification names bots started and stopped today
+
+- **WHEN** an orchestrator deployed one bot that morning and stopped another, and a third of
+  its bots was stopped by its drawdown kill-switch during the day
+- **THEN** the daily notification SHALL list the started bot with its preset, tickers and
+  capital, and both stopped bots with their preset, tickers, stop reason (orchestrator or
+  kill-switch) and return
+
+#### Scenario: Long lists are capped
+
+- **WHEN** more than five bots were started (or stopped) that day
+- **THEN** the notification SHALL list five of them and summarise the rest as a count
+
+#### Scenario: No decision run today
+
+- **WHEN** no decision run happened for the orchestrator that day (for example on a
+  weekly cadence)
+- **THEN** the daily notification SHALL say that no decision run happened today
+
+#### Scenario: Daily notification is best-effort
+
+- **WHEN** the snapshot job runs while no notification channel is configured, or the
+  channel fails
+- **THEN** the snapshots SHALL still be recorded and the job SHALL NOT fail
+
 ### Requirement: Orchestrator views
 
 The orchestrator area SHALL offer:
 
 - a **list view** of orchestrators (active and stopped by default, with an option to
   include archived), each with its label, status, cadence, value, return on its capital
-  pool, active bots out of the maximum, and last run status and time;
+  pool, active bots out of the maximum, all-time AI cost, and last run status and time;
 - a **deploy form** (opened from the list view) with the label, capital pool, maximum
   parallel bots, maximum share per bot, maximum tickers per bot, cadence, AI model and
   benchmark, pre-filled with the defaults and validated like the backend; on success it
   SHALL navigate to the new orchestrator's detail view;
 - a **detail view** showing the configuration; capital tiles for value, return, free
-  capital and allocated capital; its bots (active, being sold, and finished), each linking
-  to the bot's detail view with preset, tickers, allocated capital, current value and
-  status; and its run history with each run's status, trigger, time, market summary,
-  applied and rejected actions with reasons. The detail view SHALL offer **Run now**, **Stop**
-  (with confirmation) and **Archive** actions appropriate to the status, and SHALL refresh
-  while a run is queued or running.
+  capital and allocated capital, and an **AI cost** tile with the orchestrator's all-time
+  AI cost; its bots (active, being sold, and finished), each linking to the bot's detail
+  view with preset, tickers, allocated capital, current value and status; and its run
+  history with each run's status, trigger, time, token usage, AI cost, market summary,
+  applied and rejected actions with reasons. The detail view SHALL offer **Run now**,
+  **Stop** (with confirmation) and **Archive** actions appropriate to the status, and SHALL
+  refresh while a run is queued or running.
+
+AI costs that are absent SHALL render as an em dash ("—"), never as `$0.00`; a readable
+cost of zero SHALL render as `$0.00`.
 
 #### Scenario: List shows orchestrators with key figures
 
 - **WHEN** a user opens the orchestrator list
 - **THEN** each orchestrator SHALL show its label, status, cadence, value, return, active
-  bots out of the maximum, and last run status
+  bots out of the maximum, AI cost, and last run status
 
 #### Scenario: Deploy form opens with defaults
 
@@ -352,3 +493,15 @@ The orchestrator area SHALL offer:
 
 - **WHEN** a user selects Stop on an active orchestrator
 - **THEN** the view SHALL ask for confirmation before stopping it and its bots
+
+#### Scenario: Detail view shows AI cost and per-run usage
+
+- **WHEN** a user opens the detail view of an orchestrator whose runs have recorded usage
+  and cost
+- **THEN** the view SHALL show an AI cost tile with the all-time cost, and each run in the
+  history SHALL show its total tokens and its cost
+
+#### Scenario: Unavailable cost renders as an em dash
+
+- **WHEN** the cost source is unavailable
+- **THEN** the AI cost tile and the per-run costs SHALL render as "—", not `$0.00`

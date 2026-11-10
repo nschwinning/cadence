@@ -497,6 +497,78 @@ comparison.
 - **THEN** the returned KPIs SHALL still include the benchmark id but SHALL report the
   benchmark return and excess return as absent
 
+### Requirement: Bot daily summary notification
+
+When the daily bot snapshot job records an active session's snapshot, the system SHALL
+send that session a **best-effort daily summary notification**, titled with the bot's
+label, mirroring the AI portfolios' daily report: its value and day-over-day change (amount
+and percentage, against the previous snapshot or, on the first day, its allocated capital;
+the percentage omitted when that baseline is not positive), its total return (amount and
+percentage), realised and unrealised P&L, cash, fees, Sharpe ratio, a benchmark comparison
+when available, its best and worst open position when it has any, and the number of trades
+it executed that day.
+
+Sessions **deployed by a bot orchestrator** SHALL still be snapshotted but SHALL NOT send
+their own daily summary notification; their orchestrator's daily notification covers them.
+Manually created sessions SHALL keep their own notification.
+
+The notification SHALL be a silent no-op when no notification channel is configured, and a
+notification failure SHALL NOT fail the snapshot job.
+
+#### Scenario: Daily summary notification sent per manual bot
+
+- **WHEN** the daily snapshot job runs for an active, manually created bot session
+- **THEN** the system SHALL send one notification for that session carrying its value and
+  day change, total return, realised and unrealised P&L, cash, fees, Sharpe ratio, benchmark
+  comparison when available, best and worst open position, and the day's trade count
+
+#### Scenario: Orchestrator-deployed bots are snapshotted without their own push
+
+- **WHEN** the daily snapshot job runs for an active session deployed by an orchestrator
+- **THEN** the system SHALL record its daily snapshot and SHALL NOT send it a daily summary
+  notification
+
+#### Scenario: Summary notification is best-effort and silent when unconfigured
+
+- **WHEN** the snapshot job runs while no notification channel is configured, or while a
+  configured channel fails
+- **THEN** the snapshots SHALL still be recorded and the job SHALL NOT fail because of the
+  (absent or failed) notification
+
+### Requirement: Bot kill-switch notification
+
+When the drawdown kill-switch stops a bot session during a tick, the system SHALL send one
+**best-effort notification** titled with the bot's label, stating that the drawdown
+kill-switch tripped, naming the positions it liquidated (their count and tickers, or that
+there were no open positions to liquidate), the realised P&L booked on that liquidation, and
+that the bot is now stopped. The notification SHALL be sent for every bot whose kill-switch
+trips, including bots deployed by a bot orchestrator. It SHALL be a silent no-op when no
+notification channel is configured, and a notification failure SHALL NOT prevent the
+kill-switch from liquidating and stopping the bot or fail the tick. A tick in which no
+kill-switch trips SHALL send no kill-switch notification.
+
+#### Scenario: Kill-switch sends one notification
+
+- **WHEN** a tick trips a bot's drawdown kill-switch while it holds two positions
+- **THEN** the system SHALL send one notification titled with the bot's label that names
+  both liquidated positions, the realised P&L of the liquidation, and that the bot is now
+  stopped
+
+#### Scenario: Kill-switch with no open positions
+
+- **WHEN** a bot's kill-switch trips while it holds no open positions
+- **THEN** the notification SHALL state that there were no open positions to liquidate
+
+#### Scenario: No trip, no notification
+
+- **WHEN** a tick processes a bot whose drawdown stays within its limit
+- **THEN** no kill-switch notification SHALL be sent
+
+#### Scenario: Notification failure does not block the stop
+
+- **WHEN** the kill-switch trips while the notification channel is absent or fails
+- **THEN** the bot SHALL still be liquidated and stopped, and the tick SHALL NOT fail
+
 ### Requirement: Session-list current value
 
 When the system lists bot sessions, each listed session SHALL include a **live value** —

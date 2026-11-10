@@ -30,6 +30,8 @@ logger = logging.getLogger(__name__)
 # soft (cost → None) rather than breaking session detail.
 _SPEND_TABLE = "LiteLLM_SpendLogs"
 _SESSION_METADATA_KEY = "cadence_session_id"
+# The per-run trace id every llm_trace() run carries (see cadence.agents.gateway).
+_TRACE_METADATA_KEY = "cadence_trace_id"
 
 
 def _normalize_url(url: str) -> str:
@@ -75,40 +77,67 @@ def session_ai_cost_usd(session_id: str) -> float | None:
     return float(total) if total is not None else None
 
 
-def session_ai_costs_usd(session_ids: Sequence[str]) -> dict[str, float] | None:
-    """Return a map of ``session_id -> cumulative USD AI cost`` in one query.
+def cost_source_configured() -> bool:
+    """Whether the LiteLLM spend database is configured (costs can be read at all)."""
+    return bool(settings.LITELLM_DATABASE_URL.strip())
 
-    Reads the same LiteLLM ``SpendLogs`` source as :func:`session_ai_cost_usd`,
-    but aggregates all requested sessions with a single grouped query instead of
-    one query per session.
 
-    Degradation matches the single-session helper:
+def _costs_by_metadata_key(key: str, values: Sequence[str]) -> dict[str, float] | None:
+    """Sum ``spend`` per value of a spend-log metadata ``key`` in one grouped query.
+
+    The shared batched lookup behind :func:`session_ai_costs_usd` and
+    :func:`trace_ai_costs_usd`. Degradation:
 
     - ``None`` when ``LITELLM_DATABASE_URL`` is unconfigured, or when the query
       fails for any reason (logged, never raised) — the caller treats this as
       "cost source unavailable".
-    - ``{}`` for an empty ``session_ids`` (the database is never touched).
-    - Otherwise a ``{sid: float(sum)}`` map. Sessions with no recorded spend are
-      **absent** from the map (the caller renders them as ``0``, distinct from
-      the unavailable ``None`` state).
+    - ``{}`` for an empty ``values`` (the database is never touched).
+    - Otherwise a ``{value: float(sum)}`` map. Values with no recorded spend are
+      **absent** from the map (callers render them as ``0``, distinct from the
+      unavailable ``None`` state).
     """
-    if not session_ids:
+    if not values:
         return {}
     url = settings.LITELLM_DATABASE_URL.strip()
     if not url:
         return None
     query = text(
-        f"SELECT metadata->'spend_logs_metadata'->>'{_SESSION_METADATA_KEY}' AS sid, "
+        f"SELECT metadata->'spend_logs_metadata'->>'{key}' AS sid, "
         f'SUM(spend) AS total FROM "{_SPEND_TABLE}" '
-        f"WHERE metadata->'spend_logs_metadata'->>'{_SESSION_METADATA_KEY}' = ANY(:sids) "
+        f"WHERE metadata->'spend_logs_metadata'->>'{key}' = ANY(:sids) "
         "GROUP BY sid"
     )
     try:
         with _spend_engine(url).connect() as conn:
-            rows = conn.execute(query, {"sids": list(session_ids)}).all()
+            rows = conn.execute(query, {"sids": list(values)}).all()
     except Exception:
-        # Best-effort overview: any connection/query failure degrades to the
-        # unavailable state rather than breaking the dashboard.
-        logger.warning("Failed to read AI costs for %d sessions", len(session_ids), exc_info=True)
+        # Best-effort figures: any connection/query failure degrades to the
+        # unavailable state rather than breaking the caller.
+        logger.warning(
+            "Failed to read AI costs for %d %s values", len(values), key, exc_info=True
+        )
         return None
-    return {sid: float(total) for sid, total in rows if sid is not None and total is not None}
+    return {
+        sid: float(total) for sid, total in rows if sid is not None and total is not None
+    }
+
+
+def session_ai_costs_usd(session_ids: Sequence[str]) -> dict[str, float] | None:
+    """Return a map of ``session_id -> cumulative USD AI cost`` in one query.
+
+    Reads the same LiteLLM ``SpendLogs`` source as :func:`session_ai_cost_usd`,
+    aggregating all requested sessions with a single grouped query (see
+    :func:`_costs_by_metadata_key` for the degradation contract).
+    """
+    return _costs_by_metadata_key(_SESSION_METADATA_KEY, session_ids)
+
+
+def trace_ai_costs_usd(trace_ids: Sequence[str]) -> dict[str, float] | None:
+    """Return a map of ``trace_id -> USD AI cost`` in one query.
+
+    Every agent run started under :func:`cadence.agents.llm_trace` is tagged with its
+    trace id, so this attributes spend to individual runs (e.g. bot-orchestrator
+    decision runs) without any extra metadata. Same degradation contract as
+    :func:`session_ai_costs_usd`.
+    """
+    return _costs_by_metadata_key(_TRACE_METADATA_KEY, trace_ids)

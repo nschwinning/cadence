@@ -1,29 +1,51 @@
+import { Link } from 'react-router-dom';
 import type { DashboardAiCosts } from '../../types/api';
 import { formatCurrency } from '../../lib/format';
 
 const CARD_CLASS = 'rounded-lg border border-slate-200 bg-white shadow-sm';
 
+/** One row of the breakdown: a portfolio or a bot orchestrator. */
+interface CostRow {
+  key: string;
+  label: string;
+  cost: number | null;
+  /** Orchestrator rows link to their detail view and carry a tag. */
+  orchestratorId: string | null;
+}
+
 /**
- * Per-portfolio AI (LLM) cost breakdown: one row per active portfolio with its
- * all-time cumulative spend, sorted by cost descending, plus a grand-total row.
- * All-time and range-independent — it does not react to the dashboard range or
- * the combined-equity selection.
+ * AI (LLM) cost breakdown: one row per active portfolio and per active bot
+ * orchestrator with its all-time cumulative spend, sorted by cost descending,
+ * plus a grand-total row. Orchestrator rows are tagged and link to the
+ * orchestrator. All-time and range-independent — it does not react to the
+ * dashboard range or the combined-equity selection.
  *
  * Degradation mirrors the per-session AI cost tile: a cost of `null` (the source
  * is unconfigured or unreachable) renders as an em dash with a "Cost tracking
- * unavailable" hint, distinct from a readable `$0.00` for a portfolio with no
- * recorded spend.
+ * unavailable" hint, distinct from a readable `$0.00` for a row with no recorded
+ * spend.
  */
 export function AiCostBreakdown({ data }: { data: DashboardAiCosts }) {
-  const rows = [...data.portfolios].sort((a, b) => {
-    // Defensive re-sort (backend already sorts): available costs first, then
-    // descending by cost; unavailable (null) costs sink to the bottom.
-    const av = a.ai_cost_usd;
-    const bv = b.ai_cost_usd;
-    if (av === null && bv === null) return 0;
-    if (av === null) return 1;
-    if (bv === null) return -1;
-    return bv - av;
+  const rows: CostRow[] = [
+    ...data.portfolios.map((p) => ({
+      key: `portfolio-${p.session_id}`,
+      label: p.label,
+      cost: p.ai_cost_usd,
+      orchestratorId: null,
+    })),
+    ...(data.orchestrators ?? []).map((o) => ({
+      key: `orchestrator-${o.orchestrator_id}`,
+      label: o.label,
+      cost: o.ai_cost_usd,
+      orchestratorId: o.orchestrator_id,
+    })),
+  ].sort((a, b) => {
+    // Available costs first, then descending by cost; unavailable (null) costs
+    // sink to the bottom.
+    if (a.cost === null && b.cost === null) return 0;
+    if (a.cost === null) return 1;
+    if (b.cost === null) return -1;
+    return b.cost - a.cost;
   });
 
   const sourceUnavailable = data.total_ai_cost_usd === null;
@@ -34,37 +56,53 @@ export function AiCostBreakdown({ data }: { data: DashboardAiCosts }) {
   return (
     <div className={CARD_CLASS}>
       <div className="flex items-baseline gap-3 border-b border-slate-200 p-4">
-        <h3 className="text-lg font-semibold text-slate-900">AI cost per portfolio</h3>
+        <h3 className="text-lg font-semibold text-slate-900">
+          AI cost per portfolio &amp; orchestrator
+        </h3>
         {sourceUnavailable && (
           <span className="text-sm text-slate-500">Cost tracking unavailable</span>
         )}
       </div>
       {rows.length === 0 ? (
         <p className="p-6 text-slate-500">
-          No active portfolios yet. Start one to track its AI cost here.
+          No active portfolios or orchestrators yet. Start one to track its AI cost
+          here.
         </p>
       ) : (
         <div className="overflow-x-auto">
           <table className="w-full min-w-[320px] border-collapse text-sm">
             <thead>
               <tr className="border-b border-slate-200 bg-slate-50 text-left text-xs font-semibold uppercase tracking-wide text-slate-500">
-                <th className="px-4 py-3">Portfolio</th>
+                <th className="px-4 py-3">Portfolio / orchestrator</th>
                 <th className="px-4 py-3 text-right">AI cost</th>
               </tr>
             </thead>
             <tbody>
-              {rows.map((p) => (
-                <tr
-                  key={p.session_id}
-                  className="border-b border-slate-100 hover:bg-slate-50"
-                >
-                  <td className="px-4 py-3 text-slate-700">{p.label}</td>
+              {rows.map((row) => (
+                <tr key={row.key} className="border-b border-slate-100 hover:bg-slate-50">
+                  <td className="px-4 py-3 text-slate-700">
+                    {row.orchestratorId ? (
+                      <span className="inline-flex flex-wrap items-center gap-2">
+                        <Link
+                          to={`/orchestrators/${row.orchestratorId}`}
+                          className="text-emerald-700 hover:underline"
+                        >
+                          {row.label}
+                        </Link>
+                        <span className="rounded bg-indigo-50 px-1.5 py-0.5 text-xs font-medium text-indigo-700">
+                          Orchestrator
+                        </span>
+                      </span>
+                    ) : (
+                      row.label
+                    )}
+                  </td>
                   <td
                     className={`px-4 py-3 text-right tabular-nums ${
-                      p.ai_cost_usd === null ? 'text-slate-400' : 'text-slate-700'
+                      row.cost === null ? 'text-slate-400' : 'text-slate-700'
                     }`}
                   >
-                    {renderCost(p.ai_cost_usd)}
+                    {renderCost(row.cost)}
                   </td>
                 </tr>
               ))}

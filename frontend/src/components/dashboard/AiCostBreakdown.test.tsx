@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { render, screen, within } from '@testing-library/react';
+import { MemoryRouter } from 'react-router-dom';
 import { AiCostBreakdown } from './AiCostBreakdown';
 import { makeAiCosts } from '../../pages/dashboard/fixtures';
 
@@ -73,7 +74,55 @@ describe('AiCostBreakdown', () => {
         data={makeAiCosts({ portfolios: [], total_ai_cost_usd: 0 })}
       />,
     );
-    expect(screen.getByText(/No active portfolios yet/i)).toBeInTheDocument();
+    expect(
+      screen.getByText(/No active portfolios or orchestrators yet/i),
+    ).toBeInTheDocument();
     expect(screen.queryByRole('table')).not.toBeInTheDocument();
+  });
+
+  it('lists orchestrators tagged and linked, ordered by cost with portfolios', () => {
+    render(
+      <MemoryRouter>
+        <AiCostBreakdown
+          data={makeAiCosts({
+            portfolios: [{ session_id: 'p1', label: 'Portfolio', ai_cost_usd: 1 }],
+            orchestrators: [
+              { orchestrator_id: 'o1', label: 'Core rotation', ai_cost_usd: 2.5 },
+            ],
+            total_ai_cost_usd: 3.5,
+          })}
+        />
+      </MemoryRouter>,
+    );
+
+    const body = screen.getAllByRole('row').slice(1, -1);
+    expect(within(body[0]).getByRole('link', { name: 'Core rotation' })).toHaveAttribute(
+      'href',
+      '/orchestrators/o1',
+    );
+    expect(within(body[0]).getByText('Orchestrator')).toBeInTheDocument();
+    expect(within(body[0]).getByText('$2.50')).toBeInTheDocument();
+    expect(within(body[1]).getByText('Portfolio')).toBeInTheDocument();
+    expect(screen.getByText('$3.50')).toBeInTheDocument();
+  });
+
+  it('shows the table (not the empty state) with only an orchestrator', () => {
+    render(
+      <MemoryRouter>
+        <AiCostBreakdown
+          data={makeAiCosts({
+            portfolios: [],
+            orchestrators: [
+              { orchestrator_id: 'o1', label: 'Core rotation', ai_cost_usd: null },
+            ],
+            total_ai_cost_usd: null,
+          })}
+        />
+      </MemoryRouter>,
+    );
+
+    expect(screen.getByRole('table')).toBeInTheDocument();
+    expect(screen.getByText('Cost tracking unavailable')).toBeInTheDocument();
+    expect(screen.getAllByText('—')).toHaveLength(2);
   });
 });

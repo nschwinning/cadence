@@ -15,7 +15,9 @@ from cadence.bot_orchestrator.agent import (
     OpenAIOrchestratorAgent,
     OrchestratorAgent,
     OrchestratorDecision,
+    RunUsage,
     build_orchestrator_prompt,
+    usage_from_sdk,
 )
 from cadence.bot_orchestrator.errors import OrchestratorUnavailableError
 
@@ -100,6 +102,43 @@ def test_fake_agent_satisfies_the_protocol() -> None:
     fake = FakeOrchestratorAgent()
 
     assert isinstance(fake, OrchestratorAgent)
-    decision = fake.decide(_briefing(), model="m")
-    assert decision.stops == [] and decision.deploys == []
+    result = fake.decide(_briefing(), model="m")
+    assert result.decision.stops == [] and result.decision.deploys == []
+    assert result.usage == FakeOrchestratorAgent.USAGE
     assert fake.calls[0][1] == "m"
+
+
+def test_production_agent_returns_sdk_usage(monkeypatch: pytest.MonkeyPatch) -> None:
+    decision = OrchestratorDecision(market_summary="Quiet.")
+
+    class _Usage:
+        requests = 3
+        input_tokens = 2_000
+        output_tokens = 150
+        total_tokens = 2_150
+
+    class _Context:
+        usage = _Usage()
+
+    class _Result:
+        final_output = decision
+        context_wrapper = _Context()
+
+    class _Runner:
+        @staticmethod
+        async def run(*args: object, **kwargs: object) -> _Result:
+            return _Result()
+
+    monkeypatch.setattr(agent_module, "Runner", _Runner)
+
+    result = OpenAIOrchestratorAgent().decide(_briefing(), model="gpt-5-mini")
+
+    assert result.decision is decision
+    assert result.usage == RunUsage(
+        requests=3, input_tokens=2_000, output_tokens=150, total_tokens=2_150
+    )
+    assert result.usage.as_dict()["total_tokens"] == 2_150
+
+
+def test_usage_from_sdk_handles_missing_usage() -> None:
+    assert usage_from_sdk(None) is None

@@ -104,6 +104,7 @@ export function makeAiCosts(
     portfolios: [
       { session_id: 'session-a', label: 'Portfolio A', ai_cost_usd: 1.5 },
     ],
+    orchestrators: [],
     total_ai_cost_usd: 1.5,
     ...overrides,
   };
