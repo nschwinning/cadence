@@ -421,7 +421,11 @@ function ConfirmAction({
 
 function outcomeText(o: AdminFlattenOutcome): string {
   if (o.result === 'sold') return `sold ${formatQuantity(o.quantity ?? 0)}`;
-  if (o.result === 'bought') return `bought ${formatQuantity(o.quantity ?? 0)}`;
+  if (o.result === 'bought') {
+    const bought = `bought ${formatQuantity(o.quantity ?? 0)}`;
+    // A short's cover may still be filling: the note says what is left to buy.
+    return o.reason ? `${bought} — ${o.reason}` : bought;
+  }
   if (o.result === 'skipped') return `skipped — ${SKIP_REASONS[o.reason ?? ''] ?? o.reason}`;
   return `failed — ${o.reason ?? 'broker rejected the order'}`;
 }

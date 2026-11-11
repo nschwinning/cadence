@@ -350,4 +350,45 @@ describe('AdminPage', () => {
     expect(within(rowOf('CVX')).queryByRole('button')).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Restore all' })).not.toBeInTheDocument();
   });
+
+  it('shows the remainder note when a short cover is still filling', async () => {
+    mockedGet.mockResolvedValue({
+      data: account({
+        positions: [
+          position({
+            symbol: 'PSA',
+            broker_quantity: -75,
+            cadence_quantity: 1,
+            orphan_quantity: 0,
+            status: 'short',
+            flattenable: false,
+            restorable: true,
+            restore_quantity: 76,
+          }),
+        ],
+      }),
+    });
+    mockedPost.mockResolvedValue({
+      data: {
+        outcomes: [
+          {
+            symbol: 'PSA',
+            result: 'bought',
+            quantity: 75,
+            order_id: 'o-3',
+            reason: 'cover of 75 still filling; run Restore again to buy the remaining 1',
+          },
+        ],
+      },
+    });
+    const user = userEvent.setup();
+
+    renderPage();
+    await user.click(await screen.findByRole('button', { name: 'Restore PSA' }));
+    await user.click(screen.getByRole('button', { name: 'Buy' }));
+
+    expect(await screen.findByTestId('flatten-outcomes')).toHaveTextContent(
+      'PSA: bought 75 — cover of 75 still filling; run Restore again to buy the remaining 1',
+    );
+  });
 });

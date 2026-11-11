@@ -17,6 +17,7 @@ Nothing here writes to the database: reads only, plus broker sells for orphans.
 from __future__ import annotations
 
 import logging
+import time
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -30,7 +31,7 @@ from cadence.assets.models import Asset
 from cadence.bot_orchestrator.constants import OrchestratorStatus
 from cadence.bot_orchestrator.models import BotOrchestrator
 from cadence.broker.base import Broker, BrokerError
-from cadence.broker.models import AssetClass, Order, Position
+from cadence.broker.models import AssetClass, Order, OrderStatus, Position
 from cadence.broker.symbols import symbol_key
 from cadence.orders import journal
 from cadence.orders.gateway import OrderGateway
@@ -49,6 +50,9 @@ _logger = logging.getLogger(__name__)
 QUANTITY_EPSILON = 1e-6
 # Alpaca accepts at most 9 decimal places on an order quantity.
 _ORDER_QTY_DECIMALS = 9
+# How long a short's cover is waited on before the long part of a restore is sent.
+_FILL_POLL_ATTEMPTS = 10
+_FILL_POLL_INTERVAL_SECONDS = 0.5
 
 PositionStatus = Literal["matched", "orphan", "shortfall", "short"]
 ContributorKind = Literal["portfolio", "bot", "orchestrator", "returning_bot"]
@@ -450,6 +454,20 @@ def _adjust(
         key = symbol_key(row.symbol)
         held = by_key.get(key)
         broker_symbol = held.symbol if held is not None else row.symbol
+        ticker = cadence[key][0] if key in cadence else broker_symbol
+        if restore and row.status == "short":
+            # A single order may not take a position from short to long: cover first,
+            # then buy Cadence's quantity once the cover has filled.
+            outcomes.append(
+                _restore_short(
+                    gateway,
+                    row,
+                    ticker=ticker,
+                    broker_symbol=broker_symbol,
+                    asset_class=asset_class,
+                )
+            )
+            continue
         quantity = round(
             row.restore_quantity if restore else row.orphan_quantity, _ORDER_QTY_DECIMALS
         )
@@ -457,7 +475,7 @@ def _adjust(
         place = gateway.buy if restore else gateway.sell
         try:
             order = place(
-                cadence[key][0] if key in cadence else broker_symbol,
+                ticker,
                 quantity,
                 purpose=purpose,
                 asset_class=asset_class,
@@ -483,6 +501,94 @@ def _adjust(
             )
         )
     return outcomes
+
+
+def _restore_short(
+    gateway: OrderGateway,
+    row: PositionRow,
+    *,
+    ticker: str,
+    broker_symbol: str,
+    asset_class: AssetClass,
+) -> FlattenOutcome:
+    """Restore a short row in two orders: cover the short, then buy Cadence's quantity.
+
+    The broker caps a buy against a short at the short quantity (it will not flip a
+    position from short to long in one order), so the long part is a second order sent
+    only once the cover has filled. A cover still working after the wait is reported so
+    the operator can run Restore again, which then sees a plain shortfall.
+    """
+    cover = round(-row.broker_quantity, _ORDER_QTY_DECIMALS)
+    long_part = round(row.cadence_quantity, _ORDER_QTY_DECIMALS)
+    try:
+        covered = _await_fill(
+            gateway.broker,
+            gateway.buy(
+                ticker,
+                cover,
+                purpose="admin_restore_cover",
+                asset_class=asset_class,
+                broker_symbol=broker_symbol,
+            ),
+        )
+    except BrokerError as exc:
+        _logger.warning("admin restore: cover of %s %s rejected", cover, broker_symbol)
+        return FlattenOutcome(
+            symbol=row.symbol, result="failed", quantity=cover, reason=str(exc)
+        )
+    if long_part <= QUANTITY_EPSILON:
+        return FlattenOutcome(
+            symbol=row.symbol, result="bought", quantity=cover, order_id=covered.order_id
+        )
+    if covered.status is not OrderStatus.FILLED:
+        return FlattenOutcome(
+            symbol=row.symbol,
+            result="bought",
+            quantity=cover,
+            order_id=covered.order_id,
+            reason=(
+                f"cover of {cover:g} still filling; run Restore again to buy the "
+                f"remaining {long_part:g}"
+            ),
+        )
+    try:
+        bought = gateway.buy(
+            ticker,
+            long_part,
+            purpose="admin_restore",
+            asset_class=asset_class,
+            broker_symbol=broker_symbol,
+        )
+    except BrokerError as exc:
+        _logger.warning("admin restore: buying %s %s rejected", long_part, broker_symbol)
+        return FlattenOutcome(
+            symbol=row.symbol,
+            result="failed",
+            quantity=cover,
+            order_id=covered.order_id,
+            reason=f"covered {cover:g}; buying the remaining {long_part:g} failed: {exc}",
+        )
+    _logger.info(
+        "admin restore: covered %s and bought %s %s", cover, long_part, broker_symbol
+    )
+    return FlattenOutcome(
+        symbol=row.symbol,
+        result="bought",
+        quantity=round(cover + long_part, _ORDER_QTY_DECIMALS),
+        order_id=bought.order_id,
+    )
+
+
+def _await_fill(broker: Broker, order: Order) -> Order:
+    """Poll ``order`` until it is terminal or the bounded wait runs out."""
+    for _ in range(_FILL_POLL_ATTEMPTS):
+        if order.is_complete or order.order_id is None:
+            return order
+        time.sleep(_FILL_POLL_INTERVAL_SECONDS)
+        refreshed = broker.get_order(order.order_id)
+        if refreshed is not None:
+            order = refreshed
+    return order
 
 
 def _skipped(symbol: str, reason: str) -> FlattenOutcome:

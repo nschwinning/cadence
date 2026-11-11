@@ -492,7 +492,8 @@ def test_short_position_is_restored_to_cadence_quantity(db_session: Session) -> 
     outcomes = service.restore_positions(db_session, broker, symbol="TSLA")
 
     assert [(o.symbol, o.result, o.quantity) for o in outcomes] == [("TSLA", "bought", 10)]
-    assert broker.bought == [("TSLA", 10)]
+    # Cover first, then Cadence's quantity: a single order may not flip short → long.
+    assert broker.bought == [("TSLA", 6), ("TSLA", 4)]
 
 
 def test_shortfall_is_restored(db_session: Session) -> None:
@@ -633,3 +634,124 @@ def test_restore_and_reconcile_endpoints(client: TestClient, db_session: Session
     assert body["unresolved_orders"] == []
     assert {"reported_cash", "short_proceeds"} <= body["cash_check"].keys()
     assert {"restorable", "restore_quantity"} <= body["positions"][0].keys()
+
+
+# --- restoring shorts the way Alpaca allows ------------------------------------------
+class _AlpacaShortBroker(StubBroker):
+    """Tracks short positions and, like Alpaca, refuses a buy that would flip one long.
+
+    ``fill_covers=False`` leaves cover orders working (as if not yet filled).
+    """
+
+    def __init__(self, shorts: dict[str, float], *, fill_covers: bool = True) -> None:
+        super().__init__(initial_cash=1_000_000.0)
+        self.shorts = dict(shorts)
+        self._fill_covers = fill_covers
+        self.reject_long: set[str] = set()
+        self.bought: list[tuple[str, float]] = []
+
+    def get_positions(self) -> list[Position]:
+        open_shorts = {s for s, q in self.shorts.items() if q > 0}
+        held = [p for p in super().get_positions() if p.symbol not in open_shorts]
+        return held + [
+            Position(symbol=s, quantity=-q, avg_cost=100.0, market_value=-q * 100.0)
+            for s, q in self.shorts.items()
+            if q > 0
+        ]
+
+    def buy(self, symbol, quantity, *args, **kwargs):  # type: ignore[no-untyped-def, override]
+        from cadence.broker.base import OrderError
+        from cadence.broker.models import OrderSide, OrderStatus
+
+        short = self.shorts.get(symbol, 0.0)
+        if short > 0:
+            if quantity > short:
+                raise OrderError(
+                    "Alpaca API error: insufficient qty available for order "
+                    f"(requested: {quantity:g}, available: {short:g})"
+                )
+            self.bought.append((symbol, quantity))
+            order = Order(
+                symbol=symbol,
+                side=OrderSide.BUY,
+                quantity=quantity,
+                order_id=self._next_order_id(),
+                client_order_id=kwargs.get("client_order_id"),
+                status=OrderStatus.FILLED if self._fill_covers else OrderStatus.SUBMITTED,
+                filled_quantity=quantity if self._fill_covers else 0.0,
+                filled_price=100.0 if self._fill_covers else None,
+            )
+            self._orders[order.order_id or ""] = order
+            if self._fill_covers:
+                self.shorts[symbol] = short - quantity
+            return order
+        if symbol in self.reject_long:
+            raise OrderError("Alpaca API error: insufficient buying power")
+        self.bought.append((symbol, quantity))
+        return super().buy(symbol, quantity, *args, **kwargs)
+
+
+def test_short_with_cadence_shares_is_covered_then_rebuilt(db_session: Session) -> None:
+    _ledger(db_session, _ai_session(db_session), "PSA", 1, 100.0)
+    _ledger(db_session, _ai_session(db_session, name="Utilities"), "AWK", 8, 100.0)
+    broker = _AlpacaShortBroker({"PSA": 75, "AWK": 608})
+
+    outcomes = service.restore_positions(db_session, broker)
+
+    assert {(o.symbol, o.result, o.quantity, o.reason) for o in outcomes} == {
+        ("PSA", "bought", 76, None),
+        ("AWK", "bought", 616, None),
+    }
+    assert broker.bought == [("AWK", 608), ("AWK", 8), ("PSA", 75), ("PSA", 1)]
+    rows = {r.symbol: r.status for r in service.account_overview(db_session, broker).positions}
+    assert rows == {"AWK": "matched", "PSA": "matched"}
+
+
+def test_short_cadence_does_not_track_is_a_single_cover(db_session: Session) -> None:
+    broker = _AlpacaShortBroker({"PSA": 75})
+
+    [outcome] = service.restore_positions(db_session, broker)
+
+    assert (outcome.result, outcome.quantity) == ("bought", 75)
+    assert broker.bought == [("PSA", 75)]
+
+
+def test_unfilled_cover_reports_the_remainder(db_session: Session) -> None:
+    _ledger(db_session, _ai_session(db_session), "PSA", 1, 100.0)
+    broker = _AlpacaShortBroker({"PSA": 75}, fill_covers=False)
+
+    [outcome] = service.restore_positions(db_session, broker)
+
+    assert (outcome.result, outcome.quantity) == ("bought", 75)
+    assert "run Restore again to buy the remaining 1" in (outcome.reason or "")
+    assert broker.bought == [("PSA", 75)]
+
+
+def test_rejected_rebuild_after_cover_is_reported(db_session: Session) -> None:
+    _ledger(db_session, _ai_session(db_session), "AWK", 8, 100.0)
+    broker = _AlpacaShortBroker({"AWK": 608})
+    broker.reject_long = {"AWK"}
+
+    [outcome] = service.restore_positions(db_session, broker)
+
+    assert (outcome.result, outcome.quantity) == ("failed", 608)
+    assert "covered 608; buying the remaining 8 failed" in (outcome.reason or "")
+    assert "insufficient buying power" in (outcome.reason or "")
+
+
+def test_rejected_cover_sends_nothing_else(db_session: Session) -> None:
+    from cadence.broker.base import OrderError
+
+    _ledger(db_session, _ai_session(db_session), "PSA", 1, 100.0)
+
+    class _CoverRejected(_AlpacaShortBroker):
+        def buy(self, symbol, quantity, *args, **kwargs):  # type: ignore[no-untyped-def, override]
+            raise OrderError("Alpaca API error: insufficient buying power")
+
+    broker = _CoverRejected({"PSA": 75})
+
+    [outcome] = service.restore_positions(db_session, broker)
+
+    assert (outcome.result, outcome.quantity) == ("failed", 75)
+    assert "insufficient buying power" in (outcome.reason or "")
+    assert broker.bought == []
