@@ -25,6 +25,9 @@ from cadence.assets.service import normalize_ticker
 from cadence.broker.base import Broker
 from cadence.broker.models import AssetClass, OrderSide, OrderStatus, Position
 from cadence.config import settings
+from cadence.orders import journal
+from cadence.orders.models import OrderOwnerKind
+from cadence.orders.reconcile import reconcile_orders
 from cadence.paper_trading.ai_cost import session_ai_cost_usd
 from cadence.paper_trading.benchmark import (
     Contribution,
@@ -451,7 +454,16 @@ def _liquidate_out_of_scope_positions(
     # leaves the scope unchanged.
     broker.get_account_info()
 
-    executor = AIPortfolioExecutor(broker, session_row.allocated_capital)
+    # Book any order an earlier run sent but never recorded before trading again.
+    reconcile_orders(
+        session, broker, owner_kind=OrderOwnerKind.AI_SESSION, owner_id=session_row.id
+    )
+    executor = AIPortfolioExecutor(
+        broker,
+        session_row.allocated_capital,
+        session_id=session_row.id,
+        purpose=SCOPE_CHANGE_SIGNAL_TYPE,
+    )
     now = datetime.now(tz=UTC)
     sold = 0
     realized_pnl_total = 0.0
@@ -469,47 +481,22 @@ def _liquidate_out_of_scope_positions(
         if result is None:
             continue
 
-        fill_price = result.filled_price or result.price or 0.0
-        record_trade(
+        realized_pnl_total += book_fill(
             session,
             session_id=session_row.id,
             ticker=result.ticker,
             side=OrderSide.SELL,
             quantity=result.shares,
             price=result.price or 0.0,
+            filled_price=result.filled_price,
             signal_type=SCOPE_CHANGE_SIGNAL_TYPE,
             asset_class=cls,
             order_id=result.order_id,
             order_status=result.order_status,
-            filled_price=result.filled_price,
-            ai_portfolio_event_id=None,
+            client_order_id=result.client_order_id,
+            now=now,
         )
         sold += 1
-
-        basis = get_position_entry_basis(session, session_row.id, result.ticker)
-        if basis is not None:
-            entry_price, entry_date = basis
-            closed = record_closed_position(
-                session,
-                session_id=session_row.id,
-                ticker=result.ticker,
-                quantity=result.shares,
-                entry_price=entry_price,
-                exit_price=fill_price or entry_price,
-                entry_date=entry_date,
-                exit_date=now,
-                ai_portfolio_event_id=None,
-            )
-            realized_pnl_total += closed.realized_pnl
-
-        apply_fill_to_ledger(
-            session,
-            session_id=session_row.id,
-            ticker=result.ticker,
-            side=OrderSide.SELL,
-            shares=result.shares,
-            price=fill_price,
-        )
 
     if sold == 0:
         return
@@ -551,6 +538,16 @@ def update_session_last_run(
     return row
 
 
+def _finish(session: Session, row: object | None, *, commit: bool) -> None:
+    """Commit (and refresh ``row``) — or only flush, leaving the commit to the caller."""
+    if commit:
+        session.commit()
+        if row is not None:
+            session.refresh(row)
+    else:
+        session.flush()
+
+
 def record_trade(
     session: Session,
     *,
@@ -566,6 +563,7 @@ def record_trade(
     filled_price: float | None = None,
     filled_at: datetime | None = None,
     ai_portfolio_event_id: uuid.UUID | None = None,
+    commit: bool = True,
 ) -> PaperTrade:
     """Record a paper trade (fill). ``notional`` is derived as ``quantity * price``.
 
@@ -608,8 +606,9 @@ def record_trade(
     trade.fee = fee
     row = get_session(session, session_id)
     row.total_fees = row.total_fees + fee
-    session.commit()
-    session.refresh(trade)
+    # ``commit=False`` lets a caller book the trade, its ledger change and its journal
+    # mark in one unit of work.
+    _finish(session, trade, commit=commit)
     return trade
 
 
@@ -719,6 +718,7 @@ def record_closed_position(
     entry_date: datetime,
     exit_date: datetime,
     ai_portfolio_event_id: uuid.UUID | None = None,
+    commit: bool = True,
 ) -> ClosedPosition:
     """Record a closed position, deriving realized P&L, return, and holding days.
 
@@ -745,8 +745,7 @@ def record_closed_position(
         holding_days=holding_days,
     )
     session.add(position)
-    session.commit()
-    session.refresh(position)
+    _finish(session, position, commit=commit)
     return position
 
 
@@ -863,6 +862,7 @@ def apply_fill_to_ledger(
     side: OrderSide,
     shares: float,
     price: float,
+    commit: bool = True,
 ) -> SessionPosition | None:
     """Apply one executed fill to the session's open-position ledger.
 
@@ -892,8 +892,7 @@ def apply_fill_to_ledger(
                 else 0.0
             )
             entry.quantity = total
-        session.commit()
-        session.refresh(entry)
+        _finish(session, entry, commit=commit)
         return entry
 
     # Sell: reduce and delete on full exit. A sell with no open entry is a no-op.
@@ -902,11 +901,85 @@ def apply_fill_to_ledger(
     entry.quantity -= shares
     if entry.quantity <= LEDGER_QUANTITY_EPSILON:
         session.delete(entry)
-        session.commit()
+        _finish(session, None, commit=commit)
         return None
-    session.commit()
-    session.refresh(entry)
+    _finish(session, entry, commit=commit)
     return entry
+
+
+def book_fill(
+    session: Session,
+    *,
+    session_id: uuid.UUID,
+    ticker: str,
+    side: OrderSide,
+    quantity: float,
+    price: float,
+    filled_price: float | None,
+    signal_type: str,
+    asset_class: AssetClass,
+    order_id: str | None,
+    order_status: OrderStatus,
+    ai_portfolio_event_id: uuid.UUID | None = None,
+    client_order_id: str | None = None,
+    now: datetime | None = None,
+) -> float:
+    """Book one executed fill into a session in a single unit of work; return realised P&L.
+
+    Records the trade (charging its fee), a closed position for a sell that reduces a
+    long (at the ledger's weighted-average cost, read before the ledger changes), the
+    ledger change, and — when ``client_order_id`` is given — the order journal's booked
+    mark, then commits them together. A journal row already booked (e.g. by
+    reconciliation) raises :class:`~cadence.orders.journal.AlreadyBookedError` before
+    anything is written, so a fill is never booked twice.
+    """
+    if client_order_id is not None:
+        journal.mark_booked(session, client_order_id)
+    fill_price = filled_price or price
+    realised = 0.0
+    if side == OrderSide.SELL:
+        basis = get_position_entry_basis(session, session_id, ticker)
+        if basis is not None:
+            entry_price, entry_date = basis
+            closed = record_closed_position(
+                session,
+                session_id=session_id,
+                ticker=ticker,
+                quantity=quantity,
+                entry_price=entry_price,
+                exit_price=fill_price or entry_price,
+                entry_date=entry_date,
+                exit_date=now or datetime.now(tz=UTC),
+                ai_portfolio_event_id=ai_portfolio_event_id,
+                commit=False,
+            )
+            realised = closed.realized_pnl
+    apply_fill_to_ledger(
+        session,
+        session_id=session_id,
+        ticker=ticker,
+        side=side,
+        shares=quantity,
+        price=fill_price,
+        commit=False,
+    )
+    record_trade(
+        session,
+        session_id=session_id,
+        ticker=ticker,
+        side=side,
+        quantity=quantity,
+        price=price,
+        signal_type=signal_type,
+        asset_class=asset_class,
+        order_id=order_id,
+        order_status=order_status,
+        filled_price=filled_price,
+        ai_portfolio_event_id=ai_portfolio_event_id,
+        commit=False,
+    )
+    session.commit()
+    return realised
 
 
 # --------------------------------------------------------------------------- #

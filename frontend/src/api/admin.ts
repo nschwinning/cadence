@@ -1,6 +1,10 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { apiClient } from './client';
-import type { AdminAccount, AdminFlattenResponse } from '../types/api';
+import type {
+  AdminAccount,
+  AdminFlattenResponse,
+  AdminReconcileResult,
+} from '../types/api';
 
 /** Typed query keys for the broker-account admin. */
 export const adminKeys = {
@@ -28,6 +32,28 @@ export async function flattenOrphans(
   return data;
 }
 
+/**
+ * Buy back shortfalls/shorts for one symbol, or every eligible one when `symbol` is
+ * null. Only the symbol is sent: the server recomputes the quantity at execution.
+ */
+export async function restorePositions(
+  symbol: string | null,
+): Promise<AdminFlattenResponse> {
+  const { data } = await apiClient.post<AdminFlattenResponse>(
+    '/api/v1/admin/restore-positions',
+    { symbol },
+  );
+  return data;
+}
+
+/** Resolve unbooked journaled orders now. */
+export async function reconcileOrders(): Promise<AdminReconcileResult> {
+  const { data } = await apiClient.post<AdminReconcileResult>(
+    '/api/v1/admin/reconcile-orders',
+  );
+  return data;
+}
+
 /** React Query hook for the account overview; `refetch` drives the manual refresh. */
 export function useAdminAccount() {
   return useQuery<AdminAccount>({
@@ -42,6 +68,24 @@ export function useFlattenOrphans() {
   const queryClient = useQueryClient();
   return useMutation<AdminFlattenResponse, unknown, string | null>({
     mutationFn: flattenOrphans,
+    onSettled: () => queryClient.invalidateQueries({ queryKey: adminKeys.all }),
+  });
+}
+
+/** Mutation restoring shortfalls/shorts; refreshes the overview once it settles. */
+export function useRestorePositions() {
+  const queryClient = useQueryClient();
+  return useMutation<AdminFlattenResponse, unknown, string | null>({
+    mutationFn: restorePositions,
+    onSettled: () => queryClient.invalidateQueries({ queryKey: adminKeys.all }),
+  });
+}
+
+/** Mutation running order reconciliation; refreshes the overview once it settles. */
+export function useReconcileOrders() {
+  const queryClient = useQueryClient();
+  return useMutation<AdminReconcileResult, unknown, void>({
+    mutationFn: reconcileOrders,
     onSettled: () => queryClient.invalidateQueries({ queryKey: adminKeys.all }),
   });
 }

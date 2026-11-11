@@ -102,6 +102,8 @@ class Order:
     submitted_at: datetime | None = None
     filled_at: datetime | None = None
     broker_order_id: str | None = None
+    # Caller-chosen idempotency key sent to the broker (a duplicate is refused there).
+    client_order_id: str | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
 
     @property

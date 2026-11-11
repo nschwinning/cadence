@@ -99,6 +99,10 @@ class Broker(Protocol):
         """Return the order with ``order_id`` or ``None`` if unknown."""
         ...
 
+    def get_order_by_client_id(self, client_order_id: str) -> Order | None:
+        """Return the order submitted with ``client_order_id`` or ``None`` if unknown."""
+        ...
+
     def get_open_orders(self, symbol: str | None = None) -> list[Order]:
         """Return open orders, optionally filtered by ``symbol``."""
         ...
@@ -112,6 +116,7 @@ class Broker(Protocol):
         limit_price: float | None = ...,
         time_in_force: TimeInForce = ...,
         asset_class: AssetClass = ...,
+        client_order_id: str | None = ...,
     ) -> Order:
         """Submit a buy order and return the resulting :class:`Order`."""
         ...
@@ -124,6 +129,7 @@ class Broker(Protocol):
         limit_price: float | None = ...,
         time_in_force: TimeInForce = ...,
         asset_class: AssetClass = ...,
+        client_order_id: str | None = ...,
     ) -> Order:
         """Submit a sell order and return the resulting :class:`Order`."""
         ...

@@ -37,6 +37,8 @@ from cadence.assets import service as assets_service
 from cadence.broker.base import Broker
 from cadence.broker.models import Position
 from cadence.notify.base import Notifier
+from cadence.orders.models import OrderOwnerKind
+from cadence.orders.reconcile import reconcile_orders
 from cadence.paper_trading import service as paper_service
 from cadence.paper_trading.constants import RunStatus, SessionStatus
 from cadence.portfolios import service as portfolios_service
@@ -81,6 +83,11 @@ def close_session(
     try:
         portfolio = portfolios_service.get_portfolio(session, session_row.portfolio_id)
 
+        # Book any order an earlier run sent but never recorded, so the ledger read
+        # below is the session's true holdings.
+        reconcile_orders(
+            session, broker, owner_kind=OrderOwnerKind.AI_SESSION, owner_id=session_row.id
+        )
         # The session's ledger is the source of truth for what it holds; liquidate
         # exactly its open positions (no account-wide intersection).
         ledger = paper_service.list_open_positions(session, session_id)
@@ -95,7 +102,12 @@ def close_session(
         }
 
         asset_classes = _asset_class_map(assets_service.list_assets(session))
-        executor = AIPortfolioExecutor(broker, session_row.allocated_capital)
+        executor = AIPortfolioExecutor(
+            broker,
+            session_row.allocated_capital,
+            session_id=session_row.id,
+            purpose="ai_close",
+        )
         trade_results = executor.execute_close(positions, asset_classes=asset_classes)
 
         executed, realized_pnl = _apply_rebalance_trades(

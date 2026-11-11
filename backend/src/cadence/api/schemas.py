@@ -1578,9 +1578,12 @@ class AdminCashCheckRead(BaseModel):
 
     contributors: list[AdminCashContributorRead]
     committed_total: float
+    #: Free cash: the reported cash minus short-sale proceeds.
     account_cash: float
     difference: float
     shortfall: bool
+    reported_cash: float
+    short_proceeds: float
 
 
 class AdminOpenOrderRead(BaseModel):
@@ -1611,6 +1614,25 @@ class AdminPositionRead(BaseModel):
     status: Literal["matched", "orphan", "shortfall", "short"]
     pending_order: bool
     flattenable: bool
+    restorable: bool
+    restore_quantity: float
+
+
+class AdminUnresolvedOrderRead(BaseModel):
+    """A journaled order not yet booked or closed out."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    client_order_id: str
+    owner_kind: str
+    owner_label: str
+    ticker: str
+    side: str
+    quantity: float
+    state: str
+    broker_status: str | None
+    error: str | None
+    created_at: datetime
 
 
 class AdminAccountRead(BaseModel):
@@ -1624,10 +1646,11 @@ class AdminAccountRead(BaseModel):
     cash_check: AdminCashCheckRead | None
     open_orders: list[AdminOpenOrderRead]
     positions: list[AdminPositionRead]
+    unresolved_orders: list[AdminUnresolvedOrderRead]
 
 
 class AdminFlattenRequest(BaseModel):
-    """Which orphan to flatten (``None`` = all). Quantities are never accepted."""
+    """Which symbol to flatten or restore (``None`` = all). Quantities are never accepted."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -1640,16 +1663,26 @@ class AdminFlattenOutcomeRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     symbol: str
-    result: Literal["sold", "skipped", "failed"]
+    result: Literal["sold", "bought", "skipped", "failed"]
     quantity: float | None
     order_id: str | None
     reason: str | None
 
 
 class AdminFlattenResponse(BaseModel):
-    """Outcomes of a flatten action, one per targeted symbol."""
+    """Outcomes of a flatten or restore action, one per targeted symbol."""
 
     outcomes: list[AdminFlattenOutcomeRead]
+
+
+class AdminReconcileResponse(BaseModel):
+    """Outcome of an on-demand order reconciliation pass."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    booked: int
+    closed: int
+    remaining: int
 
 
 # --- Strategy bots -----------------------------------------------------------
@@ -1950,6 +1983,10 @@ class BotTickResponse(BaseModel):
     skipped: int
     #: Positions of stopped / archived sessions sold to flatten them this tick.
     flattened: int = 0
+    #: Sessions whose processing failed this tick (rolled back alone).
+    failed: int = 0
+    #: Previously unrecorded orders booked by the tick's reconciliation pass.
+    reconciled: int = 0
 
 
 class BotSnapshotResponse(BaseModel):

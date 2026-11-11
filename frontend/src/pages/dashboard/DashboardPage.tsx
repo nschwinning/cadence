@@ -3,6 +3,7 @@ import { useHealth } from '../../api/health';
 import { useDashboardAiCosts, useDashboardOverview } from '../../api/dashboard';
 import type { DashboardRange } from '../../types/api';
 import { AiCostBreakdown } from '../../components/dashboard/AiCostBreakdown';
+import { AccountStateTile } from '../../components/dashboard/AccountStateTile';
 import { RangeSelector } from './RangeSelector';
 import { ValueTiles, PerformanceTiles } from './HeroTiles';
 import { CombinedEquityChart } from './CombinedEquityChart';
@@ -202,6 +203,10 @@ export function DashboardPage() {
             badge={<FreshnessBadge kind="live" />}
           >
             <ValueTiles sessions={selectedSessions} />
+          </ScopeBand>
+
+          <ScopeBand title="Broker account">
+            <AccountStateTile />
           </ScopeBand>
 
           <ScopeBand

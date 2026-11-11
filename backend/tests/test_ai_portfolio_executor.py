@@ -353,11 +353,13 @@ class _FailingSellBroker(StubBroker):
         limit_price: float | None = None,
         time_in_force: TimeInForce = TimeInForce.DAY,
         asset_class: AssetClass = AssetClass.EQUITY,
+        client_order_id: str | None = None,
     ):  # type: ignore[override]
         if symbol == self._fail_ticker:
             raise OrderError(f"forced sell failure for {symbol}")
         return super().sell(
-            symbol, quantity, order_type, limit_price, time_in_force, asset_class
+            symbol, quantity, order_type, limit_price, time_in_force, asset_class,
+            client_order_id=client_order_id,
         )
 
 
@@ -535,16 +537,20 @@ class _RecordingBroker(StubBroker):
         self.calls: list[tuple[str, str]] = []
 
     def buy(self, symbol, quantity, order_type=OrderType.MARKET, limit_price=None,
-            time_in_force=TimeInForce.DAY, asset_class=AssetClass.EQUITY):  # type: ignore[override]
+            time_in_force=TimeInForce.DAY, asset_class=AssetClass.EQUITY,
+            client_order_id=None):  # type: ignore[override]
         self.calls.append(("buy", symbol))
         return super().buy(symbol, quantity, order_type, limit_price,
-                           time_in_force, asset_class)
+                           time_in_force, asset_class,
+                           client_order_id=client_order_id)
 
     def sell(self, symbol, quantity, order_type=OrderType.MARKET, limit_price=None,
-             time_in_force=TimeInForce.DAY, asset_class=AssetClass.EQUITY):  # type: ignore[override]
+             time_in_force=TimeInForce.DAY, asset_class=AssetClass.EQUITY,
+            client_order_id=None):  # type: ignore[override]
         self.calls.append(("sell", symbol))
         return super().sell(symbol, quantity, order_type, limit_price,
-                            time_in_force, asset_class)
+                            time_in_force, asset_class,
+                           client_order_id=client_order_id)
 
 
 class _AsyncBroker(StubBroker):
@@ -562,22 +568,26 @@ class _AsyncBroker(StubBroker):
         self.buy_submitted_while_pending = False
 
     def sell(self, symbol, quantity, order_type=OrderType.MARKET, limit_price=None,
-             time_in_force=TimeInForce.DAY, asset_class=AssetClass.EQUITY):  # type: ignore[override]
+             time_in_force=TimeInForce.DAY, asset_class=AssetClass.EQUITY,
+            client_order_id=None):  # type: ignore[override]
         oid = self._next_order_id()
         order = Order(symbol=symbol, side=OrderSide.SELL, quantity=quantity,
                       asset_class=asset_class, order_id=oid,
+                      client_order_id=client_order_id,
                       status=OrderStatus.SUBMITTED, filled_price=None)
         self.sell_orders[oid] = order
         self._orders[oid] = order
         return order
 
     def buy(self, symbol, quantity, order_type=OrderType.MARKET, limit_price=None,
-            time_in_force=TimeInForce.DAY, asset_class=AssetClass.EQUITY):  # type: ignore[override]
+            time_in_force=TimeInForce.DAY, asset_class=AssetClass.EQUITY,
+            client_order_id=None):  # type: ignore[override]
         if any(not o.is_complete for o in self.sell_orders.values()):
             self.buy_submitted_while_pending = True
         oid = self._next_order_id()
         order = Order(symbol=symbol, side=OrderSide.BUY, quantity=quantity,
                       asset_class=asset_class, order_id=oid,
+                      client_order_id=client_order_id,
                       status=OrderStatus.FILLED, filled_price=100.0)
         self.buy_orders[oid] = order
         self._orders[oid] = order
@@ -605,7 +615,8 @@ class _RejectingBuyBroker(StubBroker):
         self.attempts = 0
 
     def buy(self, symbol, quantity, order_type=OrderType.MARKET, limit_price=None,
-            time_in_force=TimeInForce.DAY, asset_class=AssetClass.EQUITY):  # type: ignore[override]
+            time_in_force=TimeInForce.DAY, asset_class=AssetClass.EQUITY,
+            client_order_id=None):  # type: ignore[override]
         if symbol == self._symbol:
             self.attempts += 1
             if self._reject_remaining > 0:
@@ -613,11 +624,13 @@ class _RejectingBuyBroker(StubBroker):
                 oid = self._next_order_id()
                 order = Order(symbol=symbol, side=OrderSide.BUY, quantity=quantity,
                               asset_class=asset_class, order_id=oid,
+                      client_order_id=client_order_id,
                               status=OrderStatus.REJECTED, filled_price=None)
                 self._orders[oid] = order
                 return order
         return super().buy(symbol, quantity, order_type, limit_price,
-                           time_in_force, asset_class)
+                           time_in_force, asset_class,
+                           client_order_id=client_order_id)
 
 
 # --- 2.1 / 2.2: plan/submit split ------------------------------------------ #
@@ -1231,3 +1244,33 @@ def test_rebalance_exits_held_ticker_absent_from_targets() -> None:
     assert by_ticker["ASML.AS"].executed is True
     assert by_ticker["ASML.AS"].shares == 10  # full exit
     assert "exit" in by_ticker["ASML.AS"].reason.lower()
+
+
+def test_close_refuses_to_sell_more_than_the_account_holds() -> None:
+    broker = StubBroker()
+    broker.buy("AAPL", 4)
+    executor = AIPortfolioExecutor(broker, allocated_capital=100_000)
+
+    results = executor.execute_close(
+        {"AAPL": Position(symbol="AAPL", quantity=10, avg_cost=100.0)}
+    )
+
+    [result] = results
+    assert result.executed is False
+    assert "Refused" in result.reason
+    assert broker.get_position("AAPL").quantity == 4  # type: ignore[union-attr]
+    assert all(p.quantity >= 0 for p in broker.get_positions())
+
+
+def test_executed_trades_carry_their_client_order_id() -> None:
+    broker = StubBroker()
+    broker.buy("AAPL", 5)
+    executor = AIPortfolioExecutor(broker, allocated_capital=100_000)
+
+    [result] = executor.execute_close(
+        {"AAPL": Position(symbol="AAPL", quantity=5, avg_cost=100.0)}
+    )
+
+    assert result.executed is True
+    assert result.client_order_id is not None
+    assert broker.get_order_by_client_id(result.client_order_id) is not None

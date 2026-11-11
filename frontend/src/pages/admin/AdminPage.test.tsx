@@ -24,6 +24,8 @@ function position(overrides: Partial<AdminPosition>): AdminPosition {
     status: 'orphan',
     pending_order: false,
     flattenable: true,
+    restorable: false,
+    restore_quantity: 0,
     ...overrides,
   };
 }
@@ -42,8 +44,11 @@ function account(overrides: Partial<AdminAccount> = {}): AdminAccount {
       account_cash: 20000,
       difference: 7500,
       shortfall: false,
+      reported_cash: 20000,
+      short_proceeds: 0,
     },
     open_orders: [],
+    unresolved_orders: [],
     positions: [
       position({}),
       position({
@@ -211,5 +216,138 @@ describe('AdminPage', () => {
     expect(screen.getByRole('alert')).toHaveTextContent('timed out');
     expect(screen.queryByText('Cash check')).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /Flatten/ })).not.toBeInTheDocument();
+  });
+
+  it('restores a short row after confirmation, posting only the symbol', async () => {
+    mockedGet.mockResolvedValue({
+      data: account({
+        positions: [
+          position({
+            symbol: 'TSLA',
+            broker_quantity: -6,
+            cadence_quantity: 4,
+            orphan_quantity: 0,
+            status: 'short',
+            flattenable: false,
+            restorable: true,
+            restore_quantity: 10,
+          }),
+        ],
+      }),
+    });
+    mockedPost.mockResolvedValue({
+      data: {
+        outcomes: [
+          { symbol: 'TSLA', result: 'bought', quantity: 10, order_id: 'o-2', reason: null },
+        ],
+      },
+    });
+    const user = userEvent.setup();
+
+    renderPage();
+    await user.click(await screen.findByRole('button', { name: 'Restore TSLA' }));
+    const dialog = screen.getByRole('dialog', { name: 'Confirm restore' });
+    expect(within(dialog).getByText('10')).toBeInTheDocument();
+    await user.click(within(dialog).getByRole('button', { name: 'Buy' }));
+
+    expect(mockedPost).toHaveBeenCalledWith('/api/v1/admin/restore-positions', {
+      symbol: 'TSLA',
+    });
+    expect(await screen.findByTestId('flatten-outcomes')).toHaveTextContent(
+      'TSLA: bought 10',
+    );
+  });
+
+  it('restore all posts a null symbol and cancel sends nothing', async () => {
+    mockedGet.mockResolvedValue({
+      data: account({
+        positions: [
+          position({
+            symbol: 'NVDA',
+            status: 'shortfall',
+            flattenable: false,
+            restorable: true,
+            restore_quantity: 4,
+          }),
+        ],
+      }),
+    });
+    mockedPost.mockResolvedValue({ data: { outcomes: [] } });
+    const user = userEvent.setup();
+
+    renderPage();
+    await user.click(await screen.findByRole('button', { name: 'Restore all' }));
+    await user.click(screen.getByRole('button', { name: 'Cancel' }));
+    expect(mockedPost).not.toHaveBeenCalled();
+
+    await user.click(screen.getByRole('button', { name: 'Restore all' }));
+    await user.click(screen.getByRole('button', { name: 'Buy' }));
+    expect(mockedPost).toHaveBeenCalledWith('/api/v1/admin/restore-positions', {
+      symbol: null,
+    });
+  });
+
+  it('shows the short-sale proceeds excluded from the cash', async () => {
+    const base = account();
+    mockedGet.mockResolvedValue({
+      data: account({
+        cash_check: {
+          ...base.cash_check!,
+          reported_cash: 294000,
+          short_proceeds: 201000,
+          account_cash: 93000,
+        },
+      }),
+    });
+
+    renderPage();
+
+    expect(await screen.findByTestId('short-proceeds')).toHaveTextContent('$201,000.00');
+    expect(screen.getByText('$294,000.00')).toBeInTheDocument();
+  });
+
+  it('lists unresolved orders and shows the reconcile result', async () => {
+    mockedGet.mockResolvedValue({
+      data: account({
+        unresolved_orders: [
+          {
+            client_order_id: 'cad-b-1',
+            owner_kind: 'bot',
+            owner_label: 'Turtle Breakout (Algo 25) · MSFT',
+            ticker: 'MSFT',
+            side: 'sell',
+            quantity: 5,
+            state: 'submitted',
+            broker_status: 'submitted',
+            error: null,
+            created_at: '2026-11-11T14:40:00Z',
+          },
+        ],
+      }),
+    });
+    mockedPost.mockResolvedValue({ data: { booked: 1, closed: 0, remaining: 0 } });
+    const user = userEvent.setup();
+
+    renderPage();
+    expect(
+      await screen.findByText('Turtle Breakout (Algo 25) · MSFT'),
+    ).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Reconcile now' }));
+
+    expect(mockedPost).toHaveBeenCalledWith('/api/v1/admin/reconcile-orders');
+    expect(await screen.findByTestId('reconcile-result')).toHaveTextContent(
+      'Reconciled: 1 booked, 0 closed, 0 still open.',
+    );
+  });
+
+  it('rows that are matched or pending offer no action', async () => {
+    mockedGet.mockResolvedValue({ data: account() });
+
+    renderPage();
+    await screen.findByText('$40,000.00');
+
+    expect(within(rowOf('AAPL')).queryByRole('button')).not.toBeInTheDocument();
+    expect(within(rowOf('CVX')).queryByRole('button')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Restore all' })).not.toBeInTheDocument();
   });
 });

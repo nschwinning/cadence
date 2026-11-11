@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import logging
 import time
+import uuid
 from collections import defaultdict
 from dataclasses import dataclass
 from typing import Any
@@ -27,6 +28,8 @@ from cadence.ai_portfolio.agent import AIPortfolioStock, AITargetAllocation
 from cadence.broker.base import Broker
 from cadence.broker.models import AssetClass, OrderStatus, Position
 from cadence.config import settings
+from cadence.orders.gateway import OrderGateway, WouldShortError
+from cadence.orders.models import OrderOwnerKind
 
 #: Order statuses that count as settled for the sell→buy fill gate. A rejected or
 #: cancelled sell is terminal too, so it never strands the run (house idiom from
@@ -232,6 +235,8 @@ class TradeResult:
     order_id: str | None = None
     order_status: OrderStatus = OrderStatus.FILLED
     filled_price: float | None = None
+    # The journal key of the submitted order; booking marks it booked.
+    client_order_id: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -276,9 +281,21 @@ class _OrderIntent:
 class AIPortfolioExecutor:
     """Sizes and places AI portfolio orders through a :class:`Broker` (long-only)."""
 
-    def __init__(self, broker: Broker, allocated_capital: float) -> None:
+    def __init__(
+        self,
+        broker: Broker,
+        allocated_capital: float,
+        *,
+        session_id: uuid.UUID | None = None,
+        purpose: str = "ai_portfolio",
+    ) -> None:
         self.broker = broker
         self.allocated_capital = allocated_capital
+        # Every order goes through the journaled, long-only gateway owned by the session.
+        self.orders = OrderGateway(
+            broker, owner_kind=OrderOwnerKind.AI_SESSION, owner_id=session_id
+        )
+        self._purpose = purpose
         # Set by ``execute_rebalance`` when a run is skipped as a no-op (a buy-only
         # plan with no deployable unallocated cash). The caller reads it to record a
         # SKIPPED run instead of applying trades.
@@ -510,7 +527,9 @@ class AIPortfolioExecutor:
                         ),
                     )
 
-            o = self.broker.buy(ticker, qty, asset_class=cls)
+            o = self.orders.buy(
+                ticker, qty, asset_class=cls, purpose=f"{self._purpose}_buy"
+            )
             fill_price = o.filled_price or price
             logger.info("AI build: long %s %s @ ~$%.2f", qty, ticker, price)
             return TradeResult(
@@ -523,6 +542,7 @@ class AIPortfolioExecutor:
                 order_id=o.order_id,
                 order_status=o.status,
                 filled_price=o.filled_price,
+                client_order_id=o.client_order_id,
             )
 
         except Exception as exc:  # noqa: BLE001 - one ticker must not abort the run
@@ -831,13 +851,23 @@ class AIPortfolioExecutor:
         for attempt in range(1, attempts + 1):
             try:
                 if intent.side == "sell":
-                    order = self.broker.sell(
-                        intent.ticker, intent.quantity, asset_class=intent.asset_class
+                    order = self.orders.sell(
+                        intent.ticker,
+                        intent.quantity,
+                        asset_class=intent.asset_class,
+                        purpose=f"{self._purpose}_sell",
                     )
                 else:
-                    order = self.broker.buy(
-                        intent.ticker, intent.quantity, asset_class=intent.asset_class
+                    order = self.orders.buy(
+                        intent.ticker,
+                        intent.quantity,
+                        asset_class=intent.asset_class,
+                        purpose=f"{self._purpose}_buy",
                     )
+            except WouldShortError as exc:
+                # The account holds less than the sell: retrying cannot help.
+                last_exc = exc
+                break
             except Exception as exc:  # noqa: BLE001 - one order must not abort the run
                 last_exc = exc
                 logger.warning(
@@ -878,6 +908,7 @@ class AIPortfolioExecutor:
                 order_id=order.order_id,
                 order_status=order.status,
                 filled_price=order.filled_price,
+                client_order_id=order.client_order_id,
             )
 
         reason = (
@@ -976,7 +1007,9 @@ class AIPortfolioExecutor:
                     )
                     continue
 
-                order = self.broker.sell(ticker, qty, asset_class=cls)
+                order = self.orders.sell(
+                    ticker, qty, asset_class=cls, purpose=f"{self._purpose}_close"
+                )
                 fill_price = order.filled_price or price
                 logger.info("AI close: sell %s %s", qty, ticker)
                 results.append(
@@ -990,6 +1023,7 @@ class AIPortfolioExecutor:
                         order_id=order.order_id,
                         order_status=order.status,
                         filled_price=order.filled_price,
+                        client_order_id=order.client_order_id,
                     )
                 )
             except Exception as exc:  # noqa: BLE001 - one ticker must not abort the run

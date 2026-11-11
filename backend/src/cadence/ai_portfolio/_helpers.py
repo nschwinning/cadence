@@ -589,28 +589,20 @@ def _record_trades(
     for tr in trade_results:
         if not tr.executed:
             continue
-        side = _order_action(tr.side)
-        paper_service.record_trade(
+        paper_service.book_fill(
             session,
             session_id=session_id,
             ticker=tr.ticker,
-            side=side,
+            side=_order_action(tr.side),
             quantity=tr.shares,
             price=tr.price or 0.0,
+            filled_price=tr.filled_price,
             signal_type=f"{signal_prefix}_{tr.side}",
             asset_class=asset_classes.get(tr.ticker, AssetClass.EQUITY),
             order_id=tr.order_id,
             order_status=tr.order_status,
-            filled_price=tr.filled_price,
             ai_portfolio_event_id=event_id,
-        )
-        paper_service.apply_fill_to_ledger(
-            session,
-            session_id=session_id,
-            ticker=tr.ticker,
-            side=side,
-            shares=tr.shares,
-            price=tr.filled_price or tr.price or 0.0,
+            client_order_id=tr.client_order_id,
         )
         executed += 1
     return executed
@@ -645,54 +637,25 @@ def _apply_rebalance_trades(
     for tr in trade_results:
         if not tr.executed:
             continue
-        side = _order_action(tr.side)
-        fill_price = tr.filled_price or tr.price or 0.0
-        paper_service.record_trade(
+        # A sell that reduces/closes a long records its realised P&L from the ledger
+        # basis; trade, closed position, ledger change and journal mark commit together.
+        realized_pnl_total += paper_service.book_fill(
             session,
             session_id=session_id,
             ticker=tr.ticker,
-            side=side,
+            side=_order_action(tr.side),
             quantity=tr.shares,
             price=tr.price or 0.0,
+            filled_price=tr.filled_price,
             signal_type=f"{signal_prefix}_{tr.side}",
             asset_class=asset_classes.get(tr.ticker, AssetClass.EQUITY),
             order_id=tr.order_id,
             order_status=tr.order_status,
-            filled_price=tr.filled_price,
             ai_portfolio_event_id=event_id,
+            client_order_id=tr.client_order_id,
+            now=now,
         )
         executed += 1
-
-        # A sell reduces/closes an existing long; record realized P&L from the
-        # ledger basis, captured before the fill decrements the entry below.
-        if tr.side == "sell":
-            basis = paper_service.get_position_entry_basis(
-                session, session_id, tr.ticker
-            )
-            if basis is not None:
-                entry_price, entry_date = basis
-                exit_price = fill_price or entry_price
-                closed = paper_service.record_closed_position(
-                    session,
-                    session_id=session_id,
-                    ticker=tr.ticker,
-                    quantity=tr.shares,
-                    entry_price=entry_price,
-                    exit_price=exit_price,
-                    entry_date=entry_date,
-                    exit_date=now,
-                    ai_portfolio_event_id=event_id,
-                )
-                realized_pnl_total += closed.realized_pnl
-
-        paper_service.apply_fill_to_ledger(
-            session,
-            session_id=session_id,
-            ticker=tr.ticker,
-            side=side,
-            shares=tr.shares,
-            price=fill_price,
-        )
 
     return executed, realized_pnl_total
 

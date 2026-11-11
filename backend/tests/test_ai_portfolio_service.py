@@ -100,10 +100,12 @@ class _RecordingBroker(StubBroker):
         limit_price: float | None = None,
         time_in_force: TimeInForce = TimeInForce.DAY,
         asset_class: AssetClass = AssetClass.EQUITY,
+        client_order_id: str | None = None,
     ):  # type: ignore[override]
         self.buy_classes[symbol] = asset_class
         return super().buy(
-            symbol, quantity, order_type, limit_price, time_in_force, asset_class
+            symbol, quantity, order_type, limit_price, time_in_force, asset_class,
+            client_order_id=client_order_id,
         )
 
 

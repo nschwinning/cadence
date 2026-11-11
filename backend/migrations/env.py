@@ -9,6 +9,7 @@ from cadence.assets import models as _assets_models  # noqa: F401
 from cadence.bot_orchestrator import models as _bot_orchestrator_models  # noqa: F401
 from cadence.config import settings
 from cadence.database import Base
+from cadence.orders import models as _orders_models  # noqa: F401
 from cadence.paper_trading import models as _paper_trading_models  # noqa: F401
 from cadence.portfolios import models as _portfolios_models  # noqa: F401
 from cadence.price_history import models as _price_history_models  # noqa: F401

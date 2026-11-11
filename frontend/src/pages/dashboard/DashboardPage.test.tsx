@@ -85,6 +85,44 @@ describe('DashboardPage', () => {
     expect(screen.getByText('Top performers')).toBeInTheDocument();
   });
 
+  it('shows the broker account tile independent of the range', async () => {
+    const accountData = {
+      broker_available: true,
+      reason: null,
+      account: { cash: 100000, buying_power: 100000, portfolio_value: 100000, currency: 'USD' },
+      cash_check: {
+        contributors: [],
+        committed_total: 75000,
+        account_cash: 100000,
+        difference: 25000,
+        shortfall: false,
+        reported_cash: 100000,
+        short_proceeds: 0,
+      },
+      open_orders: [],
+      positions: [],
+      unresolved_orders: [],
+    };
+    const base = mockedGet.getMockImplementation()!;
+    mockedGet.mockImplementation((url: string, config?: unknown) =>
+      url.includes('/admin/account')
+        ? Promise.resolve({ data: accountData })
+        : base(url, config as never),
+    );
+
+    renderWithClient(<DashboardPage />);
+
+    expect(await screen.findByText('Broker account')).toBeInTheDocument();
+    expect(await screen.findByTestId('free-capital')).toHaveTextContent('$25,000.00');
+
+    await userEvent.click(screen.getByRole('button', { name: 'YTD' }));
+    await waitFor(() => expect(screen.getByText('GOLD')).toBeInTheDocument());
+    expect(screen.getByTestId('free-capital')).toHaveTextContent('$25,000.00');
+    expect(
+      mockedGet.mock.calls.filter((c) => String(c[0]).includes('/admin/account')),
+    ).toHaveLength(1);
+  });
+
   it('renders the AI cost panel above the market-performers tiles', async () => {
     renderWithClient(<DashboardPage />);
     const panelHeading = await screen.findByText('AI cost per portfolio & orchestrator');

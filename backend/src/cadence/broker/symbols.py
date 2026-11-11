@@ -57,3 +57,12 @@ def to_canonical_symbol(symbol: str, asset_class: AssetClass) -> str:
         base, _, quote = normalized.partition("/")
         return f"{base}-{quote}"
     return normalized
+
+
+def symbol_key(symbol: str) -> str:
+    """Spelling-independent symbol key: ``BRK.B``/``BRK-B`` → ``BRKB``, ``BTC/USD`` → ``BTCUSD``.
+
+    Used to match a Cadence ledger ticker against the broker's spelling of the same
+    instrument (class shares, crypto pairs with or without a separator).
+    """
+    return "".join(ch for ch in symbol.upper() if ch not in "-/. ")

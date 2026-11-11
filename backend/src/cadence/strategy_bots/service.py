@@ -41,6 +41,8 @@ from cadence.dashboard.service import (
     SessionValuePoint,
 )
 from cadence.notify.base import Notifier
+from cadence.orders.models import OrderOwnerKind
+from cadence.orders.reconcile import reconcile_orders
 from cadence.paper_trading import service as paper_service
 from cadence.paper_trading.benchmark import (
     Contribution,
@@ -135,6 +137,10 @@ class TickResult:
     skipped: int = 0
     #: Positions of stopped / archived sessions sold to flatten them this tick.
     flattened: int = 0
+    #: Sessions whose processing raised this tick (their own work rolled back only).
+    failed: int = 0
+    #: Unrecorded orders booked by the reconciliation pass that opens the tick.
+    reconciled: int = 0
 
 
 @dataclass(frozen=True)
@@ -820,53 +826,94 @@ def run_tick(
     pool. A session with no fresh symbol data is counted as skipped. When a session's
     drawdown kill-switch trips, a best-effort notification is sent via ``notifier``
     (a ``None`` notifier stays silent and a notifier failure never fails the tick).
+
+    Unrecorded bot orders from earlier ticks are reconciled first. Each session is then
+    processed and committed on its own: a session that raises (including a broker
+    rejection) is rolled back alone, counted as failed, and the tick carries on.
     """
     if not broker.is_market_open():
         return TickResult(market_open=False)
 
     tick_now = now or datetime.now(UTC)
+    # Book any order an earlier tick sent but never recorded before deciding anything.
+    reconciled = reconcile_orders(session, broker, owner_kind=OrderOwnerKind.BOT)
     engine = ExecutionEngine(session, broker)
 
     flattened = 0
+    failed = 0
     for stopped in sessions_to_flatten(session):
-        for position in list(stopped.positions):
-            # A rejected sell (e.g. the shared account no longer holds the shares)
-            # must not abort the tick for every other session: keep the position and
-            # retry on the next tick.
-            try:
-                outcome = engine.exit(
-                    stopped, position, now=tick_now, reason=REASON_SESSION_STOPPED
-                )
-            except BrokerError:
-                _logger.warning(
-                    "could not sell %s for stopped bot session %s; will retry",
-                    position.ticker,
-                    stopped.id,
-                    exc_info=True,
-                )
-                continue
-            if outcome.action == "exit":
-                flattened += 1
+        bot_id = stopped.id
+        try:
+            flattened += _flatten_session(stopped, engine=engine, tick_now=tick_now)
+            session.commit()
+        except Exception:  # one bot must not fail the tick
+            session.rollback()
+            failed += 1
+            _logger.warning(
+                "tick: flattening bot session %s failed", bot_id, exc_info=True
+            )
 
     processed = 0
     skipped = 0
     for bot in active_bot_sessions(session):
-        if _tick_session(
-            bot,
-            session=session,
-            engine=engine,
-            market_data=market_data,
-            tick_now=tick_now,
-            notifier=notifier,
-        ):
+        bot_id = bot.id
+        try:
+            ticked = _tick_session(
+                bot,
+                session=session,
+                engine=engine,
+                market_data=market_data,
+                tick_now=tick_now,
+                notifier=notifier,
+            )
+            session.commit()
+        except Exception:  # one bot must not fail the tick
+            session.rollback()
+            failed += 1
+            _logger.warning("tick: bot session %s failed", bot_id, exc_info=True)
+            continue
+        if ticked:
             processed += 1
         else:
             skipped += 1
 
     session.flush()
     return TickResult(
-        market_open=True, processed=processed, skipped=skipped, flattened=flattened
+        market_open=True,
+        processed=processed,
+        skipped=skipped,
+        flattened=flattened,
+        failed=failed,
+        reconciled=reconciled.booked,
     )
+
+
+def _flatten_session(
+    stopped: BotSession, *, engine: ExecutionEngine, tick_now: datetime
+) -> int:
+    """Sell a stopped session's positions; return how many were sold.
+
+    A rejected sell (e.g. the shared account no longer holds the shares) keeps the
+    position and is retried on the next tick; a sell larger than the account's holding
+    is refused by the order gateway before anything is sent.
+    """
+    sold = 0
+    for position in list(stopped.positions):
+        try:
+            outcome = engine.exit(
+                stopped, position, now=tick_now, reason=REASON_SESSION_STOPPED
+            )
+        except BrokerError:
+            _logger.warning(
+                "could not sell %s for stopped bot session %s; will retry",
+                position.ticker,
+                stopped.id,
+                exc_info=True,
+            )
+            continue
+        if outcome.action == "exit":
+            sold += 1
+    return sold
 
 
 # Snapshots & KPIs --------------------------------------------------------

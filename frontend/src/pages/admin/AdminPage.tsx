@@ -1,5 +1,10 @@
 import { useState } from 'react';
-import { useAdminAccount, useFlattenOrphans } from '../../api/admin';
+import {
+  useAdminAccount,
+  useFlattenOrphans,
+  useReconcileOrders,
+  useRestorePositions,
+} from '../../api/admin';
 import { Modal } from '../../components/Modal';
 import { formatCurrency, formatQuantity } from '../../lib/format';
 import type {
@@ -10,6 +15,8 @@ import type {
   AdminOpenOrder,
   AdminPosition,
   AdminPositionStatus,
+  AdminReconcileResult,
+  AdminUnresolvedOrder,
 } from '../../types/api';
 
 const CARD_CLASS = 'rounded-lg border border-slate-200 bg-white shadow-sm';
@@ -40,8 +47,12 @@ const STATUS_STYLES: Record<AdminPositionStatus, string> = {
   short: 'bg-red-50 text-red-700',
 };
 
+/** Which correction an action applies: sell orphans, or buy back shortfalls/shorts. */
+type AdminAction = 'flatten' | 'restore';
+
 const SKIP_REASONS: Record<string, string> = {
   not_orphan: 'no longer an orphan',
+  not_short: 'no longer short of Cadence’s quantity',
   pending_order: 'has an open order',
   market_closed: 'equity market is closed',
   not_found: 'not held in the account',
@@ -131,6 +142,29 @@ function CashCheckCard({ check }: { check: AdminCashCheck }) {
                 {formatCurrency(check.committed_total)}
               </td>
             </tr>
+            {check.short_proceeds > 0 && (
+              <>
+                <tr>
+                  <td colSpan={2} className="px-4 py-2 text-slate-500">
+                    Reported cash
+                  </td>
+                  <td className="px-4 py-2 text-right tabular-nums text-slate-500">
+                    {formatCurrency(check.reported_cash)}
+                  </td>
+                </tr>
+                <tr>
+                  <td colSpan={2} className="px-4 py-2 text-slate-500">
+                    Short-sale proceeds (excluded)
+                  </td>
+                  <td
+                    data-testid="short-proceeds"
+                    className="px-4 py-2 text-right tabular-nums text-slate-500"
+                  >
+                    −{formatCurrency(check.short_proceeds)}
+                  </td>
+                </tr>
+              </>
+            )}
             <tr>
               <td colSpan={2} className="px-4 py-2 text-slate-700">
                 Account cash
@@ -219,33 +253,49 @@ function PositionStatus({ position }: { position: AdminPosition }) {
 
 function PositionsCard({
   positions,
-  onFlatten,
+  onAction,
   busy,
 }: {
   positions: AdminPosition[];
-  onFlatten: (targets: AdminPosition[], symbol: string | null) => void;
+  onAction: (action: AdminAction, targets: AdminPosition[], symbol: string | null) => void;
   busy: boolean;
 }) {
   const flattenable = positions.filter((p) => p.flattenable);
+  const restorable = positions.filter((p) => p.restorable);
   return (
     <Card
       title="Positions"
       actions={
-        flattenable.length > 0 && (
-          <button
-            type="button"
-            className={DANGER_BUTTON_CLASS}
-            disabled={busy}
-            onClick={() => onFlatten(flattenable, null)}
-          >
-            Flatten all orphans
-          </button>
+        (flattenable.length > 0 || restorable.length > 0) && (
+          <span className="flex flex-wrap gap-2">
+            {restorable.length > 0 && (
+              <button
+                type="button"
+                className={BUTTON_CLASS}
+                disabled={busy}
+                onClick={() => onAction('restore', restorable, null)}
+              >
+                Restore all
+              </button>
+            )}
+            {flattenable.length > 0 && (
+              <button
+                type="button"
+                className={DANGER_BUTTON_CLASS}
+                disabled={busy}
+                onClick={() => onAction('flatten', flattenable, null)}
+              >
+                Flatten all orphans
+              </button>
+            )}
+          </span>
         )
       }
     >
       <p className="px-4 pt-3 text-sm text-slate-500">
         Broker holdings compared with every Cadence portfolio and bot. An orphan is the
-        quantity no Cadence record claims; only that excess is ever sold.
+        quantity no Cadence record claims; only that excess is ever sold. A shortfall or
+        short can be restored by buying back exactly what Cadence tracks.
       </p>
       {positions.length === 0 ? (
         <p className="p-4 text-sm text-slate-500">No positions.</p>
@@ -296,9 +346,20 @@ function PositionsCard({
                         className={BUTTON_CLASS}
                         disabled={busy}
                         aria-label={`Flatten ${p.symbol}`}
-                        onClick={() => onFlatten([p], p.symbol)}
+                        onClick={() => onAction('flatten', [p], p.symbol)}
                       >
                         Flatten
+                      </button>
+                    )}
+                    {p.restorable && (
+                      <button
+                        type="button"
+                        className={BUTTON_CLASS}
+                        disabled={busy}
+                        aria-label={`Restore ${p.symbol}`}
+                        onClick={() => onAction('restore', [p], p.symbol)}
+                      >
+                        Restore {formatQuantity(p.restore_quantity)}
                       </button>
                     )}
                   </td>
@@ -312,39 +373,46 @@ function PositionsCard({
   );
 }
 
-function ConfirmFlatten({
+function ConfirmAction({
+  action,
   targets,
   onCancel,
   onConfirm,
 }: {
+  action: AdminAction;
   targets: AdminPosition[];
   onCancel: () => void;
   onConfirm: () => void;
 }) {
+  const restore = action === 'restore';
   return (
     <div className="mx-auto w-full max-w-lg rounded-lg bg-white p-6 shadow-xl">
-      <h2 className="text-lg font-semibold text-slate-900">Sell orphan positions?</h2>
+      <h2 className="text-lg font-semibold text-slate-900">
+        {restore ? 'Buy back to Cadence’s positions?' : 'Sell orphan positions?'}
+      </h2>
       <p className="mt-2 text-sm text-slate-600">
-        This places market sell orders in the broker account for:
+        This places market {restore ? 'buy' : 'sell'} orders in the broker account for:
       </p>
       <ul className="mt-3 flex flex-col gap-1 text-sm">
         {targets.map((t) => (
           <li key={t.symbol} className="flex justify-between gap-4">
             <span className="font-medium text-slate-900">{t.symbol}</span>
-            <span className="tabular-nums text-slate-700">{formatQuantity(t.orphan_quantity)}</span>
+            <span className="tabular-nums text-slate-700">
+              {formatQuantity(restore ? t.restore_quantity : t.orphan_quantity)}
+            </span>
           </li>
         ))}
       </ul>
       <p className="mt-3 text-xs text-slate-500">
-        Quantities are recomputed when the order is placed, so only what no Cadence portfolio
-        or bot claims at that moment is sold.
+        Quantities are recomputed when the order is placed, so the account ends up holding
+        exactly what Cadence’s portfolios and bots track at that moment.
       </p>
       <div className="mt-5 flex justify-end gap-2">
         <button type="button" className={BUTTON_CLASS} onClick={onCancel}>
           Cancel
         </button>
         <button type="button" className={DANGER_BUTTON_CLASS} onClick={onConfirm}>
-          Sell
+          {restore ? 'Buy' : 'Sell'}
         </button>
       </div>
     </div>
@@ -353,6 +421,7 @@ function ConfirmFlatten({
 
 function outcomeText(o: AdminFlattenOutcome): string {
   if (o.result === 'sold') return `sold ${formatQuantity(o.quantity ?? 0)}`;
+  if (o.result === 'bought') return `bought ${formatQuantity(o.quantity ?? 0)}`;
   if (o.result === 'skipped') return `skipped — ${SKIP_REASONS[o.reason ?? ''] ?? o.reason}`;
   return `failed — ${o.reason ?? 'broker rejected the order'}`;
 }
@@ -364,7 +433,7 @@ function Outcomes({ outcomes }: { outcomes: AdminFlattenOutcome[] }) {
       data-testid="flatten-outcomes"
       className="rounded border border-slate-200 bg-slate-50 p-4 text-sm"
     >
-      <p className="font-semibold text-slate-900">Flatten result</p>
+      <p className="font-semibold text-slate-900">Result</p>
       {outcomes.length === 0 ? (
         <p className="mt-1 text-slate-600">Nothing to flatten.</p>
       ) : (
@@ -383,24 +452,102 @@ function Outcomes({ outcomes }: { outcomes: AdminFlattenOutcome[] }) {
   );
 }
 
+function UnresolvedOrdersCard({
+  orders,
+  onReconcile,
+  busy,
+  result,
+}: {
+  orders: AdminUnresolvedOrder[];
+  onReconcile: () => void;
+  busy: boolean;
+  result: AdminReconcileResult | undefined;
+}) {
+  return (
+    <Card
+      title="Unresolved orders"
+      actions={
+        <button type="button" className={BUTTON_CLASS} disabled={busy} onClick={onReconcile}>
+          {busy ? 'Reconciling…' : 'Reconcile now'}
+        </button>
+      }
+    >
+      {result && (
+        <p role="status" data-testid="reconcile-result" className="px-4 pt-3 text-sm text-slate-700">
+          Reconciled: {result.booked} booked, {result.closed} closed, {result.remaining} still
+          open.
+        </p>
+      )}
+      {orders.length === 0 ? (
+        <p className="p-4 text-sm text-slate-500">
+          Every order Cadence sent is recorded.
+        </p>
+      ) : (
+        <div className="overflow-x-auto">
+          <table className="w-full min-w-[560px] border-collapse text-sm">
+            <thead>
+              <tr className="border-b border-slate-200 bg-slate-50">
+                <th className={TH_CLASS}>Owner</th>
+                <th className={TH_CLASS}>Symbol</th>
+                <th className={TH_CLASS}>Side</th>
+                <th className={`${TH_CLASS} text-right`}>Quantity</th>
+                <th className={TH_CLASS}>Status</th>
+                <th className={TH_CLASS}>Sent</th>
+              </tr>
+            </thead>
+            <tbody>
+              {orders.map((o) => (
+                <tr key={o.client_order_id} className="border-b border-slate-100">
+                  <td className="px-4 py-2 text-slate-700">{o.owner_label}</td>
+                  <td className="px-4 py-2 font-medium text-slate-900">{o.ticker}</td>
+                  <td className="px-4 py-2 text-slate-700">{o.side}</td>
+                  <td className="px-4 py-2 text-right tabular-nums text-slate-700">
+                    {formatQuantity(o.quantity)}
+                  </td>
+                  <td className="px-4 py-2 text-slate-700">
+                    {o.broker_status ?? o.state}
+                    {o.error && <span className="ml-2 text-xs text-red-700">{o.error}</span>}
+                  </td>
+                  <td className="px-4 py-2 text-slate-500">
+                    {new Date(o.created_at).toLocaleString()}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </Card>
+  );
+}
+
 /**
  * Admin — the shared broker account every portfolio, bot and orchestrator trades in:
  * live balances, the cash Cadence has committed against the account's cash, open
  * orders, and a per-symbol comparison of broker holdings with Cadence's books. Orphan
- * positions (shares no Cadence record claims) can be sold after confirmation; the
- * server recomputes the quantity at execution.
+ * positions (shares no Cadence record claims) can be sold, and shortfalls or shorts
+ * bought back to Cadence's quantity, after confirmation; the server recomputes the
+ * quantity at execution. Journaled orders not yet booked are listed and can be
+ * reconciled on demand.
  */
 export function AdminPage() {
   const { data, isPending, isError, refetch, isFetching } = useAdminAccount();
   const flatten = useFlattenOrphans();
+  const restore = useRestorePositions();
+  const reconcile = useReconcileOrders();
   const [pending, setPending] = useState<{
+    action: AdminAction;
     targets: AdminPosition[];
     symbol: string | null;
   } | null>(null);
+  // The most recent flatten/restore drives the outcome panel.
+  const [lastAction, setLastAction] = useState<AdminAction | null>(null);
+  const lastMutation = lastAction === 'restore' ? restore : flatten;
 
   const confirm = () => {
     if (pending === null) return;
-    flatten.mutate(pending.symbol);
+    (pending.action === 'restore' ? restore : flatten).mutate(pending.symbol);
+    setLastAction(pending.action);
     setPending(null);
   };
 
@@ -438,12 +585,12 @@ export function AdminPage() {
         </div>
       )}
 
-      {flatten.isError && (
+      {lastAction && lastMutation.isError && (
         <div role="alert" className="rounded border border-red-300 bg-red-50 p-4 text-red-800">
-          The flatten request failed. Nothing may have been sold; refresh to check.
+          The request failed. Orders may not have been placed; refresh to check.
         </div>
       )}
-      {flatten.data && <Outcomes outcomes={flatten.data.outcomes} />}
+      {lastAction && lastMutation.data && <Outcomes outcomes={lastMutation.data.outcomes} />}
 
       {data?.broker_available && data.account && data.cash_check && (
         <>
@@ -451,16 +598,27 @@ export function AdminPage() {
           <CashCheckCard check={data.cash_check} />
           <PositionsCard
             positions={data.positions}
-            busy={flatten.isPending}
-            onFlatten={(targets, symbol) => setPending({ targets, symbol })}
+            busy={flatten.isPending || restore.isPending}
+            onAction={(action, targets, symbol) => setPending({ action, targets, symbol })}
+          />
+          <UnresolvedOrdersCard
+            orders={data.unresolved_orders}
+            busy={reconcile.isPending}
+            result={reconcile.data}
+            onReconcile={() => reconcile.mutate()}
           />
           <OpenOrdersCard orders={data.open_orders} />
         </>
       )}
 
-      <Modal open={pending !== null} onClose={() => setPending(null)} title="Confirm flatten">
+      <Modal
+        open={pending !== null}
+        onClose={() => setPending(null)}
+        title={pending?.action === 'restore' ? 'Confirm restore' : 'Confirm flatten'}
+      >
         {pending && (
-          <ConfirmFlatten
+          <ConfirmAction
+            action={pending.action}
             targets={pending.targets}
             onCancel={() => setPending(null)}
             onConfirm={confirm}

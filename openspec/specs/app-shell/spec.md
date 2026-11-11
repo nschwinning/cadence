@@ -1644,18 +1644,21 @@ like the other navigation entries. The System page SHALL remain unchanged.
 
 The Admin page SHALL show the broker account overview: account cash, buying power and total
 value; the committed-cash check with its itemised contributors, committed total, account cash
-and difference, visibly warning on a shortfall; the open orders; and the positions comparison
-with each row's broker quantity, Cadence quantity, classification and orphan quantity. The page
-SHALL offer a manual refresh. When the broker is unavailable the page SHALL say so instead of
-showing figures.
+(excluding short-sale proceeds, with the excluded amount shown) and difference, visibly warning
+on a shortfall; the open orders; the unresolved orders with a "Reconcile now" action that shows
+the reconciliation result; and the positions comparison with each row's broker quantity, Cadence
+quantity, classification and orphan quantity. The page SHALL offer a manual refresh. When the
+broker is unavailable the page SHALL say so instead of showing figures.
 
 Each flattenable orphan row SHALL offer a "Flatten" action, and the page SHALL offer a
-"Flatten all orphans" action when at least one row is flattenable. Each action SHALL first open
-a confirmation dialog naming the symbols and orphan quantities that will be sold and noting
-that the final quantities are recomputed at execution. Nothing SHALL be sold unless the
-operator confirms. After the action completes the page SHALL show the per-symbol outcome and
-refresh the overview. Rows that are not flattenable SHALL show why (matched, shortfall, short,
-or pending order) and offer no flatten action.
+"Flatten all orphans" action when at least one row is flattenable. Each shortfall or short row
+without a pending order SHALL offer a "Restore" action showing the quantity that would be bought,
+and the page SHALL offer a "Restore all" action when at least one row is restorable. Each action
+SHALL first open a confirmation dialog naming the symbols and quantities that will be sold or
+bought and noting that the final quantities are recomputed at execution. Nothing SHALL be sold or
+bought unless the operator confirms. After the action completes the page SHALL show the
+per-symbol outcome and refresh the overview. Rows that are neither flattenable nor restorable
+SHALL show why (matched or pending order) and offer no action.
 
 #### Scenario: Admin entry follows System
 
@@ -1696,3 +1699,71 @@ or pending order) and offer no flatten action.
 - **WHEN** the broker cannot be reached
 - **THEN** the Admin page SHALL say the broker is unavailable and show no figures or flatten
   actions
+
+#### Scenario: Restore requires confirmation
+
+- **WHEN** the operator selects "Restore" on a short or shortfall row
+- **THEN** the page SHALL show a confirmation dialog naming the symbol and the quantity to buy,
+  and SHALL submit nothing if the operator cancels
+
+#### Scenario: Unresolved orders and reconcile now
+
+- **WHEN** the overview lists unresolved orders and the operator selects "Reconcile now"
+- **THEN** the page SHALL run reconciliation, show the booked, closed-out and remaining counts,
+  and refresh the overview
+
+### Requirement: Dashboard broker account tile
+
+The dashboard SHALL show a "Broker account" section containing a tile with the shared broker
+account's **free capital** — the capital still available for new bots and AI portfolios —
+defined as the account's cash excluding short-sale proceeds minus the cash Cadence has
+committed (the committed-cash check's difference). The tile SHALL also show the committed
+total and the account cash it is measured against, in the app's USD formatting, and SHALL
+link to the Admin page. The tile SHALL be account-wide: it SHALL NOT react to the dashboard
+range selector or to the combined-equity chart's portfolio selection. It SHALL refresh
+periodically like the rest of the live dashboard figures.
+
+The tile SHALL warn:
+
+- with an amber "low capital" warning when free capital is positive but below $1,000, the
+  smallest capital a new bot or AI portfolio can be built with;
+- with a red "no capital left" warning when free capital is zero or negative, stating that new
+  bots or portfolios cannot be funded;
+- with a red "short positions" warning when the account holds one or more short positions,
+  stating how many and their total value.
+
+Both red warnings SHALL be shown together when both apply. When none applies the tile SHALL
+show no warning. When the broker account cannot be read the tile SHALL say the broker is
+unavailable instead of showing figures or warnings.
+
+#### Scenario: Healthy account
+
+- **WHEN** free capital is $25,000 and the account holds no short positions
+- **THEN** the tile SHALL show $25,000 of free capital, the committed total and account cash,
+  and no warning
+
+#### Scenario: Low capital
+
+- **WHEN** free capital is $600
+- **THEN** the tile SHALL show an amber low-capital warning
+
+#### Scenario: No capital left
+
+- **WHEN** free capital is zero or negative
+- **THEN** the tile SHALL show a red warning that no capital is left for new bots or
+  portfolios
+
+#### Scenario: Short positions
+
+- **WHEN** the account holds two short positions worth $201,000 in total
+- **THEN** the tile SHALL show a red warning naming two short positions and $201,000
+
+#### Scenario: Broker unavailable
+
+- **WHEN** the broker account cannot be read
+- **THEN** the tile SHALL say the broker is unavailable and show no figures or warnings
+
+#### Scenario: Independent of range and selection
+
+- **WHEN** the operator changes the dashboard range or deselects portfolios in the equity chart
+- **THEN** the tile's figures SHALL NOT change

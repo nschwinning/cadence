@@ -31,6 +31,8 @@ from cadence.broker import Broker, get_broker
 from cadence.broker.stub import StubBroker
 from cadence.config import settings
 from cadence.database import Base, SessionLocal, get_db
+from cadence.orders import journal as order_journal
+from cadence.orders import models as _orders_models  # noqa: F401
 from cadence.paper_trading import models as _paper_trading_models  # noqa: F401
 from cadence.portfolios import models as _portfolios_models  # noqa: F401
 from cadence.price_ml import models as _price_ml_models  # noqa: F401
@@ -133,6 +135,47 @@ def _seed_rebalance_prompt(session: Session) -> None:
         )
     )
     session.flush()
+
+
+class _NullJournalSession:
+    """Stand-in journal session for tests without a database: every write is dropped."""
+
+    def add(self, *_args: object) -> None:
+        return None
+
+    def execute(self, *_args: object, **_kwargs: object) -> None:
+        return None
+
+    def commit(self) -> None:
+        return None
+
+    def rollback(self) -> None:
+        return None
+
+    def close(self) -> None:
+        return None
+
+
+@pytest.fixture(autouse=True)
+def _clean_order_journal(request: pytest.FixtureRequest) -> Iterator[None]:
+    """Empty the order journal after every DB-backed test.
+
+    The journal commits through its own sessions (so a record survives the caller's
+    rollback), which puts its rows outside the test's rolled-back transaction. Autouse
+    fixtures are set up first and torn down last, so this runs after ``db_session`` has
+    released any row lock it held on a journal row.
+    """
+    if "db_session" not in request.fixturenames:
+        # No database in this test: journal writes go nowhere, so broker-only unit
+        # tests (e.g. the AI executor) still exercise the gateway and its guard.
+        monkeypatch: pytest.MonkeyPatch = request.getfixturevalue("monkeypatch")
+        monkeypatch.setattr(order_journal, "session_factory", _NullJournalSession)
+        yield
+        return
+    engine: Engine = request.getfixturevalue("test_engine")
+    yield
+    with engine.begin() as conn:
+        conn.execute(text("DELETE FROM broker_orders"))
 
 
 @pytest.fixture

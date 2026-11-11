@@ -130,10 +130,19 @@ class _RejectingBroker(StubBroker):
         limit_price: float | None = None,
         time_in_force: TimeInForce = TimeInForce.DAY,
         asset_class: AssetClass = AssetClass.EQUITY,
+        client_order_id: str | None = None,
     ) -> Order:
         if symbol == self._reject:
             raise OrderError("Alpaca API error: insufficient qty available for order")
-        return super().sell(symbol, quantity, order_type, limit_price, time_in_force, asset_class)
+        return super().sell(
+            symbol,
+            quantity,
+            order_type,
+            limit_price,
+            time_in_force,
+            asset_class,
+            client_order_id=client_order_id,
+        )
 
 
 class _DownBroker(StubBroker):
@@ -445,3 +454,182 @@ def test_flatten_endpoint_503_when_broker_unreadable(client: TestClient) -> None
     response = client.post("/api/v1/admin/flatten-orphans", json={})
 
     assert response.status_code == 503
+
+
+# --- restore -------------------------------------------------------------------
+class _ShortBroker(StubBroker):
+    """Stub reporting extra short positions (the stub itself cannot sell short)."""
+
+    def __init__(self, shorts: dict[str, float], *, market_open: bool = True) -> None:
+        super().__init__(initial_cash=1_000_000.0)
+        self._shorts = shorts
+        self._open = market_open
+        self.bought: list[tuple[str, float]] = []
+
+    def is_market_open(self) -> bool:
+        return self._open
+
+    def get_positions(self) -> list[Position]:
+        positions = [p for p in super().get_positions() if p.symbol not in self._shorts]
+        positions += [
+            Position(symbol=s, quantity=q, avg_cost=100.0, market_value=q * 100.0)
+            for s, q in self._shorts.items()
+        ]
+        return positions
+
+    def buy(self, symbol, quantity, *args, **kwargs):  # type: ignore[no-untyped-def, override]
+        self.bought.append((symbol, quantity))
+        return super().buy(symbol, quantity, *args, **kwargs)
+
+
+def test_short_position_is_restored_to_cadence_quantity(db_session: Session) -> None:
+    _ledger(db_session, _ai_session(db_session), "TSLA", 4, 100.0)
+    broker = _ShortBroker({"TSLA": -6})
+
+    row = _row(service.account_overview(db_session, broker).positions, "TSLA")
+    assert (row.status, row.restorable, row.restore_quantity) == ("short", True, 10)
+
+    outcomes = service.restore_positions(db_session, broker, symbol="TSLA")
+
+    assert [(o.symbol, o.result, o.quantity) for o in outcomes] == [("TSLA", "bought", 10)]
+    assert broker.bought == [("TSLA", 10)]
+
+
+def test_shortfall_is_restored(db_session: Session) -> None:
+    _ledger(db_session, _ai_session(db_session), "NVDA", 10, 100.0)
+    broker = _broker(("NVDA", 6))
+
+    outcomes = service.restore_positions(db_session, broker)
+
+    assert [(o.symbol, o.result, o.quantity) for o in outcomes] == [("NVDA", "bought", 4)]
+    assert broker.get_position("NVDA").quantity == 10  # type: ignore[union-attr]
+
+
+def test_cadence_only_crypto_is_restored_as_crypto(db_session: Session) -> None:
+    db_session.add(
+        Asset(
+            ticker="BTC-USD",
+            name="Bitcoin",
+            sector=None,
+            category="crypto",
+            currency="USD",
+            is_eligible=True,
+            criteria_results=[],
+        )
+    )
+    _ledger(db_session, _ai_session(db_session), "BTC-USD", 0.5, 60_000.0)
+    broker = _ShortBroker({}, market_open=False)
+
+    [row] = service.account_overview(db_session, broker).positions
+    assert (row.symbol, row.asset_class, row.restore_quantity) == ("BTC-USD", "crypto", 0.5)
+    outcomes = service.restore_positions(db_session, broker)
+
+    assert [(o.result, o.quantity) for o in outcomes] == [("bought", 0.5)]
+
+
+def test_restore_skips_matched_orphan_pending_and_closed_market(db_session: Session) -> None:
+    _ledger(db_session, _ai_session(db_session), "AAPL", 5, 100.0)
+    _ledger(db_session, _ai_session(db_session, name="Value"), "CVX", 5, 100.0)
+    broker = _ShortBroker({"CVX": -1}, market_open=False)
+    broker.buy("AAPL", 5)
+    broker.buy("XOM", 3)
+
+    assert [
+        (o.result, o.reason) for o in service.restore_positions(db_session, broker, symbol="AAPL")
+    ] == [("skipped", "not_short")]
+    assert [
+        (o.result, o.reason) for o in service.restore_positions(db_session, broker, symbol="XOM")
+    ] == [("skipped", "not_short")]
+    assert [
+        (o.result, o.reason) for o in service.restore_positions(db_session, broker, symbol="CVX")
+    ] == [("skipped", "market_closed")]
+
+    pending = _broker(("XOM", 3))
+    _ledger(db_session, _ai_session(db_session, name="Third"), "XOM", 5, 100.0)
+    pending.buy("XOM", 1, order_type=OrderType.LIMIT, limit_price=0.01)
+    assert [
+        (o.result, o.reason) for o in service.restore_positions(db_session, pending, symbol="XOM")
+    ] == [("skipped", "pending_order")]
+
+
+def test_restore_leaves_cadence_books_untouched(db_session: Session) -> None:
+    session_row = _ai_session(db_session, capital=10_000.0)
+    _ledger(db_session, session_row, "NVDA", 10, 100.0)
+    before = db_session.execute(select(func.count()).select_from(PaperTrade)).scalar()
+
+    service.restore_positions(db_session, _broker(("NVDA", 6)))
+
+    assert db_session.execute(select(func.count()).select_from(PaperTrade)).scalar() == before
+    db_session.refresh(session_row)
+    assert [p.quantity for p in session_row.positions] == [10]
+
+
+# --- cash check vs shorts -----------------------------------------------------------
+def test_cash_check_excludes_short_sale_proceeds(db_session: Session) -> None:
+    broker = _ShortBroker({"TSLA": -2_010})  # 2,010 × $100 = $201,000 short
+
+    overview = service.account_overview(db_session, broker)
+
+    check = overview.cash_check
+    assert check is not None
+    assert check.reported_cash == pytest.approx(1_000_000.0)
+    assert check.short_proceeds == pytest.approx(201_000.0)
+    assert check.account_cash == pytest.approx(799_000.0)
+
+
+# --- unresolved orders and reconcile -----------------------------------------------
+def test_unresolved_orders_are_listed_and_reconciled(db_session: Session) -> None:
+    from datetime import UTC, datetime, timedelta
+
+    from cadence.orders.gateway import OrderGateway
+    from cadence.orders.models import OrderOwnerKind
+    from cadence.orders.reconcile import reconcile_orders
+
+    session_row = _ai_session(db_session, name="Growth")
+    broker = StubBroker()
+    OrderGateway(broker, owner_kind=OrderOwnerKind.AI_SESSION, owner_id=session_row.id).buy(
+        "MSFT", 2, purpose="ai_rebalance_buy"
+    )
+
+    [unresolved] = service.account_overview(db_session, broker).unresolved_orders
+    assert (unresolved.owner_label, unresolved.ticker, unresolved.side) == ("Growth", "MSFT", "buy")
+
+    result = reconcile_orders(db_session, broker, now=datetime.now(UTC) + timedelta(hours=1))
+    assert result.booked == 1
+    assert service.account_overview(db_session, broker).unresolved_orders == []
+
+
+def test_admin_orders_are_journaled(db_session: Session) -> None:
+    from cadence.orders.models import BrokerOrder
+
+    service.flatten_orphans(db_session, _broker(("XOM", 3)), symbol="XOM")
+
+    db_session.expire_all()
+    [row] = db_session.execute(select(BrokerOrder)).scalars()
+    assert (row.owner_kind, row.purpose, row.side, row.quantity) == (
+        "admin",
+        "admin_flatten",
+        "sell",
+        3,
+    )
+    assert row.booked_at is not None
+
+
+def test_restore_and_reconcile_endpoints(client: TestClient, db_session: Session) -> None:
+    _ledger(db_session, _ai_session(db_session), "NVDA", 10, 100.0)
+    _use_broker(_broker(("NVDA", 6)))
+
+    restore = client.post("/api/v1/admin/restore-positions", json={"symbol": None})
+    reconcile = client.post("/api/v1/admin/reconcile-orders")
+    rejected = client.post(
+        "/api/v1/admin/restore-positions", json={"symbol": "NVDA", "quantity": 1}
+    )
+
+    assert restore.status_code == 200
+    assert restore.json()["outcomes"][0]["result"] == "bought"
+    assert reconcile.json() == {"booked": 0, "closed": 0, "remaining": 0}
+    assert rejected.status_code == 422
+    body = client.get("/api/v1/admin/account").json()
+    assert body["unresolved_orders"] == []
+    assert {"reported_cash", "short_proceeds"} <= body["cash_check"].keys()
+    assert {"restorable", "restore_quantity"} <= body["positions"][0].keys()

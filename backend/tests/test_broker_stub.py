@@ -131,3 +131,13 @@ def test_stub_every_day_is_a_trading_day() -> None:
     from datetime import date
 
     assert StubBroker().is_trading_day(date(2026, 11, 26)) is True
+
+
+def test_stub_refuses_a_duplicate_client_order_id() -> None:
+    broker = StubBroker()
+    broker.buy("AAPL", 1, client_order_id="cad-x-1")
+
+    with pytest.raises(OrderError):
+        broker.buy("AAPL", 1, client_order_id="cad-x-1")
+    assert broker.get_order_by_client_id("cad-x-1") is not None
+    assert broker.get_order_by_client_id("cad-x-2") is None

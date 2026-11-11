@@ -253,6 +253,8 @@ class AlpacaBroker:
             "type": self._map_order_type(order.order_type),
             "time_in_force": self._map_time_in_force(time_in_force),
         }
+        if order.client_order_id:
+            order_data["client_order_id"] = order.client_order_id
 
         if order.order_type == OrderType.LIMIT:
             if order.limit_price is None:
@@ -306,6 +308,20 @@ class AlpacaBroker:
         """Get an order by id, or ``None`` if not found."""
         try:
             result = self._request("GET", f"/v2/orders/{order_id}")
+        except OrderError:
+            return None
+        if not result:
+            return None
+        return self._parse_order(result)
+
+    def get_order_by_client_id(self, client_order_id: str) -> Order | None:
+        """Get an order by the client order id it was submitted with, or ``None``."""
+        try:
+            result = self._request(
+                "GET",
+                "/v2/orders:by_client_order_id",
+                params={"client_order_id": client_order_id},
+            )
         except OrderError:
             return None
         if not result:
@@ -507,6 +523,7 @@ class AlpacaBroker:
         limit_price: float | None = None,
         time_in_force: TimeInForce = TimeInForce.DAY,
         asset_class: AssetClass = AssetClass.EQUITY,
+        client_order_id: str | None = None,
     ) -> Order:
         """Submit a buy order."""
         return self.submit_order(
@@ -518,6 +535,7 @@ class AlpacaBroker:
                 order_type=order_type,
                 limit_price=limit_price,
                 time_in_force=self._effective_tif(time_in_force, asset_class),
+                client_order_id=client_order_id,
             )
         )
 
@@ -529,6 +547,7 @@ class AlpacaBroker:
         limit_price: float | None = None,
         time_in_force: TimeInForce = TimeInForce.DAY,
         asset_class: AssetClass = AssetClass.EQUITY,
+        client_order_id: str | None = None,
     ) -> Order:
         """Submit a sell order."""
         return self.submit_order(
@@ -540,6 +559,7 @@ class AlpacaBroker:
                 order_type=order_type,
                 limit_price=limit_price,
                 time_in_force=self._effective_tif(time_in_force, asset_class),
+                client_order_id=client_order_id,
             )
         )
 
@@ -658,6 +678,7 @@ class AlpacaBroker:
             time_in_force=cls._parse_time_in_force(data.get("time_in_force")),
             order_id=data.get("id"),
             broker_order_id=data.get("id"),
+            client_order_id=data.get("client_order_id"),
             status=cls._map_order_status(data.get("status")),
             filled_quantity=float(data.get("filled_qty", 0)),
             filled_price=(

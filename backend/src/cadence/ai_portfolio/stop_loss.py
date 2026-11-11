@@ -31,6 +31,8 @@ from cadence.broker.base import Broker
 from cadence.broker.models import AssetClass, Position
 from cadence.config import settings
 from cadence.notify.base import Notifier
+from cadence.orders.models import OrderOwnerKind
+from cadence.orders.reconcile import reconcile_orders
 from cadence.paper_trading import service as paper_service
 from cadence.paper_trading.constants import (
     STOP_LOSS_RUN_TRIGGER,
@@ -228,7 +230,16 @@ def _stop_out_position(
         quantity=entry.quantity,
         avg_cost=entry.avg_cost,
     )
-    executor = AIPortfolioExecutor(broker, session_row.allocated_capital)
+    # Book any order an earlier run sent but never recorded before trading again.
+    reconcile_orders(
+        session, broker, owner_kind=OrderOwnerKind.AI_SESSION, owner_id=session_row.id
+    )
+    executor = AIPortfolioExecutor(
+        broker,
+        session_row.allocated_capital,
+        session_id=session_row.id,
+        purpose=STOP_LOSS_SIGNAL_TYPE,
+    )
     trade_results = executor.execute_close(
         {entry.ticker: position}, asset_classes={entry.ticker: cls}
     )
@@ -242,48 +253,21 @@ def _stop_out_position(
         return None
 
     fill_price = result.filled_price or result.price or 0.0
-    side = _order_action(result.side)
-
-    paper_service.record_trade(
+    now = datetime.now(tz=UTC)
+    realized_pnl = paper_service.book_fill(
         session,
         session_id=session_row.id,
         ticker=result.ticker,
-        side=side,
+        side=_order_action(result.side),
         quantity=result.shares,
         price=result.price or 0.0,
+        filled_price=result.filled_price,
         signal_type=STOP_LOSS_SIGNAL_TYPE,
         asset_class=cls,
         order_id=result.order_id,
         order_status=result.order_status,
-        filled_price=result.filled_price,
-        ai_portfolio_event_id=None,
-    )
-
-    realized_pnl = 0.0
-    now = datetime.now(tz=UTC)
-    basis = paper_service.get_position_entry_basis(session, session_row.id, result.ticker)
-    if basis is not None:
-        entry_price, entry_date = basis
-        closed = paper_service.record_closed_position(
-            session,
-            session_id=session_row.id,
-            ticker=result.ticker,
-            quantity=result.shares,
-            entry_price=entry_price,
-            exit_price=fill_price or entry_price,
-            entry_date=entry_date,
-            exit_date=now,
-            ai_portfolio_event_id=None,
-        )
-        realized_pnl = closed.realized_pnl
-
-    paper_service.apply_fill_to_ledger(
-        session,
-        session_id=session_row.id,
-        ticker=result.ticker,
-        side=side,
-        shares=result.shares,
-        price=fill_price,
+        client_order_id=result.client_order_id,
+        now=now,
     )
 
     paper_service.record_session_run(

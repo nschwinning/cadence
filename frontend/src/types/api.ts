@@ -1712,9 +1712,14 @@ export interface AdminCashContributor {
 export interface AdminCashCheck {
   contributors: AdminCashContributor[];
   committed_total: number;
+  /** Free cash: the reported cash minus short-sale proceeds. */
   account_cash: number;
   difference: number;
   shortfall: boolean;
+  /** Cash as the broker reports it (inflated by any short-sale proceeds). */
+  reported_cash: number;
+  /** Proceeds of short sales excluded from the free cash. */
+  short_proceeds: number;
 }
 
 /** An open order in the broker account. */
@@ -1741,6 +1746,23 @@ export interface AdminPosition {
   status: AdminPositionStatus;
   pending_order: boolean;
   flattenable: boolean;
+  /** Shortfall or short without an open order: buy `restore_quantity` to match Cadence. */
+  restorable: boolean;
+  restore_quantity: number;
+}
+
+/** A journaled order not yet booked or closed out. */
+export interface AdminUnresolvedOrder {
+  client_order_id: string;
+  owner_kind: 'bot' | 'ai_session' | 'admin' | string;
+  owner_label: string;
+  ticker: string;
+  side: string;
+  quantity: number;
+  state: string;
+  broker_status: string | null;
+  error: string | null;
+  created_at: string;
 }
 
 /** The Admin page payload; sections are empty when the broker is unavailable. */
@@ -1751,12 +1773,13 @@ export interface AdminAccount {
   cash_check: AdminCashCheck | null;
   open_orders: AdminOpenOrder[];
   positions: AdminPosition[];
+  unresolved_orders: AdminUnresolvedOrder[];
 }
 
 /** Per-symbol result of a flatten action. */
 export interface AdminFlattenOutcome {
   symbol: string;
-  result: 'sold' | 'skipped' | 'failed';
+  result: 'sold' | 'bought' | 'skipped' | 'failed';
   quantity: number | null;
   order_id: string | null;
   reason: string | null;
@@ -1764,4 +1787,11 @@ export interface AdminFlattenOutcome {
 
 export interface AdminFlattenResponse {
   outcomes: AdminFlattenOutcome[];
+}
+
+/** Outcome of an on-demand order reconciliation pass. */
+export interface AdminReconcileResult {
+  booked: number;
+  closed: number;
+  remaining: number;
 }

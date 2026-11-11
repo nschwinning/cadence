@@ -497,3 +497,63 @@ def test_is_trading_day_raises_on_malformed_calendar() -> None:
 
     with pytest.raises(BrokerError):
         broker.is_trading_day(date(2026, 11, 10))
+
+
+def test_submit_sends_client_order_id() -> None:
+    order_response = {"id": "abc-1", "status": "accepted", "filled_qty": "0"}
+    broker, session = _make_broker({("POST", "/v2/orders"): order_response})
+
+    broker.sell("AAPL", 2, client_order_id="cad-b-123")
+
+    assert session.calls[0]["json"]["client_order_id"] == "cad-b-123"
+
+
+def test_submit_without_client_order_id_omits_it() -> None:
+    broker, session = _make_broker(
+        {("POST", "/v2/orders"): {"id": "abc-1", "status": "accepted"}}
+    )
+
+    broker.buy("AAPL", 1)
+
+    assert "client_order_id" not in session.calls[0]["json"]
+
+
+def test_get_order_by_client_id_parses_the_order() -> None:
+    order_response = {
+        "id": "abc-9",
+        "client_order_id": "cad-b-9",
+        "symbol": "AAPL",
+        "side": "sell",
+        "qty": "3",
+        "type": "market",
+        "time_in_force": "day",
+        "status": "filled",
+        "filled_qty": "3",
+        "filled_avg_price": "101.5",
+    }
+    broker, session = _make_broker(
+        {("GET", "/v2/orders:by_client_order_id"): order_response}
+    )
+
+    order = broker.get_order_by_client_id("cad-b-9")
+
+    assert order is not None
+    assert (order.client_order_id, order.filled_quantity, order.filled_price) == (
+        "cad-b-9",
+        3,
+        101.5,
+    )
+    assert session.calls[0]["params"] == {"client_order_id": "cad-b-9"}
+
+
+def test_get_order_by_client_id_unknown_returns_none(monkeypatch: pytest.MonkeyPatch) -> None:
+    broker, _ = _make_broker({})
+
+    def _not_found(*_args: Any, **_kwargs: Any) -> Any:
+        from cadence.broker.base import OrderError
+
+        raise OrderError("Alpaca API error: order not found")
+
+    monkeypatch.setattr(broker, "_request", _not_found)
+
+    assert broker.get_order_by_client_id("cad-b-missing") is None

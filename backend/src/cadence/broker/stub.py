@@ -137,7 +137,16 @@ class StubBroker:
 
     # Orders --------------------------------------------------------------
     def submit_order(self, order: Order) -> Order:
-        """Fill a market order immediately; store limit orders as open."""
+        """Fill a market order immediately; store limit orders as open.
+
+        Like Alpaca, a second order with an already-used ``client_order_id`` is refused.
+        """
+        if order.client_order_id is not None and any(
+            o.client_order_id == order.client_order_id for o in self._orders.values()
+        ):
+            raise OrderError(
+                f"client_order_id must be unique: {order.client_order_id}"
+            )
         price = _deterministic_price(order.symbol)
 
         if order.order_type == OrderType.MARKET:
@@ -225,6 +234,13 @@ class StubBroker:
         """Return the order with ``order_id`` or ``None``."""
         return self._orders.get(order_id)
 
+    def get_order_by_client_id(self, client_order_id: str) -> Order | None:
+        """Return the order submitted with ``client_order_id`` or ``None``."""
+        return next(
+            (o for o in self._orders.values() if o.client_order_id == client_order_id),
+            None,
+        )
+
     def get_open_orders(self, symbol: str | None = None) -> list[Order]:
         """Return unfilled orders, optionally filtered by symbol."""
         orders = [
@@ -243,6 +259,7 @@ class StubBroker:
         limit_price: float | None = None,
         time_in_force: TimeInForce = TimeInForce.DAY,
         asset_class: AssetClass = AssetClass.EQUITY,
+        client_order_id: str | None = None,
     ) -> Order:
         """Submit a buy order (``asset_class`` accepted for parity, unused)."""
         return self.submit_order(
@@ -254,6 +271,7 @@ class StubBroker:
                 order_type=order_type,
                 limit_price=limit_price,
                 time_in_force=time_in_force,
+                client_order_id=client_order_id,
             )
         )
 
@@ -265,6 +283,7 @@ class StubBroker:
         limit_price: float | None = None,
         time_in_force: TimeInForce = TimeInForce.DAY,
         asset_class: AssetClass = AssetClass.EQUITY,
+        client_order_id: str | None = None,
     ) -> Order:
         """Submit a sell order (``asset_class`` accepted for parity, unused)."""
         return self.submit_order(
@@ -276,6 +295,7 @@ class StubBroker:
                 order_type=order_type,
                 limit_price=limit_price,
                 time_in_force=time_in_force,
+                client_order_id=client_order_id,
             )
         )
 

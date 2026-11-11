@@ -189,3 +189,41 @@ def test_attribution_stays_backend_only() -> None:
     fields = set(AIPortfolioEventRead.model_fields)
     assert "run_stats" not in fields
     assert "enabled_signals" not in fields
+
+
+def test_rebalance_reconciles_the_sessions_orders_first(
+    db_session: Session, monkeypatch: Any
+) -> None:
+    from cadence.ai_portfolio.flows import rebalance as rebalance_flow
+
+    provider = _seed_universe(db_session, "AAPL", "MSFT")
+    broker = StubBroker()
+    session_id = _session(db_session, broker, provider, seed_v6=True)
+    calls: list[dict[str, Any]] = []
+    real = rebalance_flow.reconcile_orders
+
+    def _spy(*args: Any, **kwargs: Any) -> Any:
+        calls.append(kwargs)
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(rebalance_flow, "reconcile_orders", _spy)
+
+    _rebalance(db_session, session_id, broker, provider)
+
+    assert [c["owner_id"] for c in calls] == [session_id]
+
+
+def test_rebalance_trades_are_journaled_and_booked(db_session: Session) -> None:
+    from sqlalchemy import select
+
+    from cadence.orders.models import BrokerOrder
+
+    provider = _seed_universe(db_session, "AAPL", "MSFT")
+    broker = StubBroker()
+    session_id = _session(db_session, broker, provider, seed_v6=True)
+
+    db_session.expire_all()
+    rows = list(db_session.execute(select(BrokerOrder)).scalars())
+    assert rows, "the opening allocation must journal its orders"
+    assert {r.owner_id for r in rows} == {session_id}
+    assert all(r.booked_at is not None for r in rows if r.filled_quantity)

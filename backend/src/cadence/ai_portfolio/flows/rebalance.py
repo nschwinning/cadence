@@ -70,6 +70,8 @@ from cadence.broker.models import AssetClass, Position
 from cadence.config import settings
 from cadence.news_sentiment import service as news_sentiment_service
 from cadence.notify.base import Notifier
+from cadence.orders.models import OrderOwnerKind
+from cadence.orders.reconcile import reconcile_orders
 from cadence.paper_trading import service as paper_service
 from cadence.paper_trading.constants import RunStatus
 from cadence.portfolios import service as portfolios_service
@@ -126,6 +128,11 @@ def run_rebalance_event(
         session_id = event.session_id
         session_row = paper_service.get_session(session, session_id)
         portfolio = portfolios_service.get_portfolio(session, session_row.portfolio_id)
+        # Book any order an earlier run sent but never recorded before reading the
+        # ledger, so this run plans from the session's true holdings.
+        reconcile_orders(
+            session, broker, owner_kind=OrderOwnerKind.AI_SESSION, owner_id=session_row.id
+        )
 
         # Read the scope and risk profile persisted at build. Sessions built before
         # these fields existed default to ``both`` / ``balanced`` (unchanged
@@ -640,7 +647,12 @@ def run_rebalance_event(
         # crypto-only run sizes against the crypto budget (crypto market value +
         # unallocated cash) so the crypto weights never claim equity capital (D4).
         rebalance_base = crypto_budget if crypto_only else valuation.total_value
-        executor = AIPortfolioExecutor(broker, session_row.allocated_capital)
+        executor = AIPortfolioExecutor(
+            broker,
+            session_row.allocated_capital,
+            session_id=session_row.id,
+            purpose="ai_rebalance",
+        )
         trade_results = executor.execute_rebalance(
             targets=result.target_allocations,
             current_positions=positions,

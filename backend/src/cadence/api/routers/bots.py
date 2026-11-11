@@ -363,6 +363,8 @@ def run_tick(
         processed=result.processed,
         skipped=result.skipped,
         flattened=result.flattened,
+        failed=result.failed,
+        reconciled=result.reconciled,
     )
 
 

@@ -1999,3 +1999,105 @@ def test_push_titles_use_the_display_name(db_session: Session) -> None:
 
     assert notifier.sent[0][1] == "Cadence bot: MA Crossover (Algo 6) · AAPL daily P&L"
     assert service.bot_display_name(bot) in notifier.sent[0][1]
+
+
+# Per-bot isolation (the 2026-11-10 incident) ------------------------------
+class _RejectingBuyBroker(_OpenableBroker):
+    """Open-market stub whose buys of one symbol are refused by the broker (403)."""
+
+    def __init__(self, reject: str) -> None:
+        super().__init__()
+        self._reject = reject
+
+    def buy(self, symbol, quantity, *args, **kwargs):  # type: ignore[no-untyped-def, override]
+        from cadence.broker.base import OrderError
+
+        if symbol == self._reject:
+            raise OrderError("Alpaca API error: forbidden")
+        return super().buy(symbol, quantity, *args, **kwargs)
+
+
+def test_one_bots_rejection_does_not_fail_or_undo_the_tick(db_session: Session) -> None:
+    broker = _RejectingBuyBroker(reject="NVDA")
+    stopped = _stopped_bot_with_positions(db_session, broker)
+    _add_asset(db_session, "NVDA")
+    good = _create(db_session, tickers=["AAPL"])
+    bad = _create(db_session, tickers=["NVDA"])
+    aapl = broker.get_quote("AAPL").last
+    nvda = broker.get_quote("NVDA").last
+    assert aapl is not None and nvda is not None
+    market = _PerSymbolMarketData({"AAPL": _up_cross(aapl), "NVDA": _up_cross(nvda)})
+
+    result = service.run_tick(db_session, broker=broker, market_data=market, now=_NOW)
+
+    assert (result.processed, result.failed, result.flattened) == (1, 1, 2)
+    assert stopped.positions == []
+    assert len(good.positions) == 1
+    assert bad.positions == []
+
+
+def test_flattened_positions_are_not_sold_again_next_tick(db_session: Session) -> None:
+    broker = _RejectingBuyBroker(reject="NVDA")
+    stopped = _stopped_bot_with_positions(db_session, broker)
+    _add_asset(db_session, "NVDA")
+    _create(db_session, tickers=["NVDA"])
+    nvda = broker.get_quote("NVDA").last
+    assert nvda is not None
+    market = _PerSymbolMarketData({"NVDA": _up_cross(nvda)})
+
+    service.run_tick(db_session, broker=broker, market_data=market, now=_NOW)
+    second = service.run_tick(
+        db_session, broker=broker, market_data=market, now=_NOW + timedelta(minutes=5)
+    )
+
+    assert second.flattened == 0
+    assert len(_sells(db_session, stopped)) == 2
+    # The account never went short on the stopped bot's symbols.
+    assert all(p.quantity >= 0 for p in broker.get_positions())
+
+
+def test_flatten_refuses_to_sell_shares_the_account_no_longer_holds(
+    db_session: Session,
+) -> None:
+    broker = _OpenableBroker()
+    stopped = _stopped_bot_with_positions(db_session, broker)
+    # Someone sold the shares outside Cadence: the ledger still claims them.
+    for position in broker.get_positions():
+        broker.sell(position.symbol, position.quantity)
+
+    result = service.run_tick(
+        db_session, broker=broker, market_data=_PerSymbolMarketData({}), now=_NOW
+    )
+
+    assert (result.flattened, result.failed) == (0, 0)
+    assert len(stopped.positions) == 2
+    assert _sells(db_session, stopped) == []
+    assert all(p.quantity >= 0 for p in broker.get_positions())
+
+
+def test_tick_endpoint_reports_failed_bots(client, db_session: Session) -> None:  # type: ignore[no-untyped-def]
+    from cadence.api.app import app
+    from cadence.broker import get_broker
+    from cadence.strategy_bots.market_data import get_market_data
+
+    broker = _RejectingBuyBroker(reject="NVDA")
+    _add_asset(db_session, "NVDA")
+    _create(db_session, tickers=["NVDA"])
+    nvda = broker.get_quote("NVDA").last
+    assert nvda is not None
+    app.dependency_overrides[get_broker] = lambda: broker
+    app.dependency_overrides[get_market_data] = lambda: _PerSymbolMarketData(
+        {"NVDA": _up_cross(nvda)}
+    )
+    settings_token = settings.REBALANCE_CRON_TOKEN or "test-token"
+    original = settings.REBALANCE_CRON_TOKEN
+    settings.REBALANCE_CRON_TOKEN = settings_token
+    try:
+        response = client.post(
+            "/api/v1/bots/tick", headers={"X-Cron-Token": settings_token}
+        )
+    finally:
+        settings.REBALANCE_CRON_TOKEN = original
+
+    assert response.status_code == 200
+    assert response.json()["failed"] == 1
