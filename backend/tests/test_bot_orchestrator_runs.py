@@ -414,7 +414,7 @@ def test_scheduled_run_notifies_a_summary(db_session: Session) -> None:
     assert len(notifier.sent) == 1
     message, title = notifier.sent[0]
     assert title == "Orchestrator Core"
-    assert "Deployed: Turtle Breakout (Algo 25) on AAPL" in message
+    assert "Deployed: Turtle Breakout (Algo 25) · AAPL" in message
 
 
 def test_scheduled_failure_notifies(db_session: Session) -> None:

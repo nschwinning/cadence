@@ -18,6 +18,7 @@ const bot: BotSession = {
   id: 'b1',
   strategy_key: 'ma_crossover',
   label: 'Apple crossover',
+  display_name: 'Apple crossover',
   status: 'active',
   benchmark: 'SP500',
   initial_capital: 10000,
@@ -125,15 +126,53 @@ describe('BotsPage', () => {
     ).toBeInTheDocument();
   });
 
-  it('falls back to strategy + ticker when the bot has no label', async () => {
-    mockedGet.mockImplementation(routeGet([{ ...bot, label: null }]));
+  it('names an unlabelled bot by its display name, never the raw strategy key', async () => {
+    mockedGet.mockImplementation(
+      routeGet([
+        { ...bot, label: null, display_name: 'MA Crossover (Algo 6) · AAPL' },
+      ]),
+    );
 
     renderWithClient(<BotsPage />);
 
     const link = await screen.findByRole('link', {
-      name: 'ma_crossover · AAPL',
+      name: 'MA Crossover (Algo 6) · AAPL',
     });
     expect(link).toHaveAttribute('href', '/bots/b1');
+    expect(screen.queryByText('ma_crossover · AAPL')).not.toBeInTheDocument();
+  });
+
+  it('marks an orchestrator bot and links to its orchestrator', async () => {
+    mockedGet.mockImplementation(
+      routeGet([
+        {
+          ...bot,
+          label: null,
+          display_name: 'Turtle Breakout (Algo 25) · MSFT',
+          origin: 'orchestrator',
+          orchestrator_id: 'o1',
+          orchestrator_label: 'First Orchestrator',
+        },
+      ]),
+    );
+
+    renderWithClient(<BotsPage />);
+
+    expect(
+      await screen.findByRole('link', { name: 'Turtle Breakout (Algo 25) · MSFT' }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole('link', { name: 'Orchestrator · First Orchestrator' }),
+    ).toHaveAttribute('href', '/orchestrators/o1');
+  });
+
+  it('shows no orchestrator marker on a manual bot', async () => {
+    mockedGet.mockImplementation(routeGet([bot]));
+
+    renderWithClient(<BotsPage />);
+
+    await screen.findByRole('link', { name: 'Apple crossover' });
+    expect(screen.queryByText(/^Orchestrator ·/)).not.toBeInTheDocument();
   });
 
   it('opens the build form in a modal only after the trigger is activated', async () => {

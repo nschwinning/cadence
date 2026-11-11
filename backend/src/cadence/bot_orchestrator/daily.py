@@ -30,15 +30,11 @@ from cadence.paper_trading.benchmark import (
     load_benchmark_series,
 )
 from cadence.paper_trading.constants import Benchmark, benchmark_display_name
-from cadence.strategy_bots import presets
 from cadence.strategy_bots import service as bot_service
 from cadence.strategy_bots.constants import (
-    STRATEGY_DISPLAY_NAMES,
     BotSessionStatus,
     StopReason,
-    StrategyKey,
 )
-from cadence.strategy_bots.errors import UnknownPresetError
 from cadence.strategy_bots.models import BotSession, BotValueSnapshot
 from cadence.strategy_bots.notifications import _signed_money, _signed_pct
 
@@ -233,19 +229,6 @@ def orchestrator_daily_message(figures: DailyFigures) -> str:
 
 
 # Job ---------------------------------------------------------------------------
-def _bot_name(bot: BotSession) -> str:
-    """'Preset name on TICKER, TICKER' (strategy name when there is no preset)."""
-    name: str
-    try:
-        name = presets.get_preset(bot.preset_key).display_name if bot.preset_key else ""
-    except UnknownPresetError:
-        name = ""
-    if not name:
-        name = STRATEGY_DISPLAY_NAMES.get(StrategyKey(bot.strategy_key), bot.strategy_key)
-    tickers = ", ".join(s.ticker for s in bot.symbols)
-    return f"{name} on {tickers}" if tickers else name
-
-
 def _market_date(moment: datetime) -> date:
     return moment.astimezone(MARKET_TIMEZONE).date()
 
@@ -304,15 +287,15 @@ def gather_daily_figures(
         bot_snapshot = _bot_snapshot(db, bot, snapshot.snapshot_date)
         if bot_snapshot is not None:
             pnl, _ = bot_service.bot_daily_pnl(db, bot, bot_snapshot)
-            bot_pnls.append((_bot_name(bot), pnl))
+            bot_pnls.append((bot_service.bot_display_name(bot), pnl))
     started = [
-        StartedBot(name=_bot_name(b), capital=b.initial_capital)
+        StartedBot(name=bot_service.bot_display_name(b), capital=b.initial_capital)
         for b in bots
         if _market_date(b.created_at) == market_day
     ]
     stopped = [
         StoppedBot(
-            name=_bot_name(b),
+            name=bot_service.bot_display_name(b),
             reason=b.stop_reason,
             return_pct=service.bot_value(db, b) / b.initial_capital - 1.0,
         )

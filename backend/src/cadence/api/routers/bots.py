@@ -80,6 +80,7 @@ SummaryAgentDep = Annotated[
 def _to_read(db: Session, row: BotSession) -> BotSessionRead:
     """Serialise a bot session, marking its current value from the service."""
     read = BotSessionRead.model_validate(row)
+    read.display_name = service.bot_display_name(row)
     read.current_value = service.bot_current_value(db, row)
     read.eod_value = service.bot_eod_value(db, row)
     if row.orchestrator_id is not None:

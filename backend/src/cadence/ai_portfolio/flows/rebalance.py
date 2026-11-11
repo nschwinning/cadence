@@ -339,6 +339,18 @@ def run_rebalance_event(
             and not crypto_only
             and session_row.rebalance_prompt_version >= NEWS_SENTIMENT_PROMPT_VERSION
         )
+        # The opt-in signals this run actually attaches (after the version and
+        # crypto-only gating above), recorded on run_stats for offline attribution.
+        enabled_signals = sorted(
+            name
+            for name, applied in (
+                ("technical_indicators", gating_enabled),
+                ("fundamentals", fundamentals_enabled),
+                ("price_ml", price_ml_enabled),
+                ("news_sentiment", news_sentiment_enabled),
+            )
+            if applied
+        )
 
         # A freshly stopped-out position is quarantined for a cooldown window so the
         # agent cannot immediately re-buy it. Exclude quarantined tickers the session
@@ -500,6 +512,21 @@ def run_rebalance_event(
                 ],
                 "holdings": [
                     {"ticker": h["ticker"], "news_sentiment": h["news_sentiment"]}
+                    for h in holdings
+                ],
+            }
+        # Record the fundamentals picture the agent was shown this run (available/
+        # unavailable per name), mirroring price-ML and news, for offline learning.
+        if fundamentals_enabled:
+            if trend_context is None:
+                trend_context = {}
+            trend_context["fundamentals"] = {
+                "candidates": [
+                    {"ticker": c["ticker"], "fundamentals": c.get("fundamentals")}
+                    for c in candidates
+                ],
+                "holdings": [
+                    {"ticker": h["ticker"], "fundamentals": h.get("fundamentals")}
                     for h in holdings
                 ],
             }
@@ -718,6 +745,7 @@ def run_rebalance_event(
                 realized_pnl=realized_pnl,
                 account_summary=account_summary,
                 trend_context=trend_context,
+                enabled_signals=enabled_signals,
                 guardrail_observations=_min_positions_observation(
                     rebalance_guardrails,
                     sum(

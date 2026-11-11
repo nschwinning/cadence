@@ -270,6 +270,24 @@ describe('CombinedEquityChart', () => {
     expect(screen.getByText('Bot')).toBeInTheDocument();
   });
 
+  it('badges an orchestrator in the selection legend', () => {
+    const orchestrator = makeSession({
+      id: 'o1',
+      label: 'First Orchestrator',
+      kind: 'orchestrator',
+    });
+    render(
+      <CombinedEquityChart
+        sessions={[orchestrator]}
+        selectedIds={new Set(['o1'])}
+        onToggle={() => {}}
+        benchmarkSeries={benchmarkSeries}
+      />,
+    );
+    expect(screen.getByText('First Orchestrator')).toBeInTheDocument();
+    expect(screen.getByText('Orchestrator')).toBeInTheDocument();
+  });
+
   it('toggles a bot session from the legend via its checkbox', async () => {
     const onToggle = vi.fn();
     const ai = makeSession({ id: 'ai1', label: 'Alpha', kind: 'ai' });

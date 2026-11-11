@@ -57,6 +57,30 @@ A day with a value snapshot but no run records the valuation with the signal por
 absent (as it already does for the indicator/order portions); a day with no value snapshot
 is skipped; assembly for one session failing never aborts the batch. No new failure modes.
 
+### Revision at apply time (2026-11-10)
+Two assumptions above no longer hold against the shipped code, so the approach is adjusted
+(the spec is unchanged):
+
+- **Price-ML and news sentiment are already captured.** Their changes write each per-ticker
+  block, including the "unavailable" marker, into the run's `trend_context`, and the
+  snapshot already copies `trend_context` verbatim under `document.run.trend_context`. No
+  extra snapshot key is needed for them, and duplicating them would only invite drift.
+- **Fundamentals are not stored on the run.** They are attached to candidates and holdings
+  for the prompt but never persisted, so the snapshot cannot read them. The rebalance flow
+  therefore writes `trend_context["fundamentals"]`, with the same candidates/holdings shape
+  as price-ML and news, whenever the fundamentals block was attached. This is the
+  only change to `flows/rebalance.py`, and it re-uses the already-computed annotations, so
+  nothing is re-fetched.
+- **The "enabled" set must be the effective per-run set, not the session toggles.** A toggle
+  only takes effect when the session's frozen prompt version supports it, and fundamentals,
+  price-ML and news are skipped on crypto-only weekend runs. The run computes exactly these
+  effective flags (`gating_enabled`, `fundamentals_enabled`, `price_ml_enabled`,
+  `news_sentiment_enabled`). It records them as a sorted list under
+  `run_stats["enabled_signals"]` (`run_stats` is already backend-only), and the snapshot
+  surfaces that list as `document.enabled_signals` (`null` on a day without a run).
+  Deriving the set from the session flags in the assembly, as originally planned, would
+  label signals as enabled for runs where the AI never saw them.
+
 ## Risks / Trade-offs
 
 - **Document growth:** adding per-ticker blocks for several signals enlarges each JSONB

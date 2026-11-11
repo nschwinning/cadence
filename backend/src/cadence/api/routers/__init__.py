@@ -1,5 +1,6 @@
 """Router aggregation. Each resource exposes a ``<name>_router``."""
 
+from cadence.api.routers.admin import router as admin_router
 from cadence.api.routers.ai_portfolio import router as ai_portfolio_router
 from cadence.api.routers.assets import router as assets_router
 from cadence.api.routers.bot_orchestrators import router as bot_orchestrators_router
@@ -16,6 +17,7 @@ from cadence.api.routers.technical_indicators import (
 )
 
 __all__ = [
+    "admin_router",
     "ai_portfolio_router",
     "assets_router",
     "bot_orchestrators_router",

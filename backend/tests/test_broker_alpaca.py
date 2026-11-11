@@ -294,6 +294,7 @@ def test_parse_crypto_position_maps_to_canonical() -> None:
     assert len(positions) == 1
     assert positions[0].symbol == "BTC-USD"
     assert positions[0].quantity == 0.5
+    assert positions[0].asset_class == AssetClass.CRYPTO
 
 
 def test_parse_equity_position_symbol_unchanged() -> None:
@@ -312,6 +313,7 @@ def test_parse_equity_position_symbol_unchanged() -> None:
 
     positions = broker.get_positions()
     assert positions[0].symbol == "AAPL"
+    assert positions[0].asset_class == AssetClass.EQUITY
 
 
 def test_get_asset_parses_tradable_equity() -> None:

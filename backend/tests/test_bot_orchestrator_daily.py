@@ -308,12 +308,12 @@ def test_daily_push_end_to_end(db_session: Session) -> None:
     # Benchmark +1.00% since the first snapshot; orchestrator +0.23% → excess −0.77%.
     assert f"vs S&P 500: +1.00% (excess {_MINUS}0.77%)" in lines
     assert (
-        f"Best: Turtle Breakout (Algo 25) on MSFT +$85.00 · "
-        f"Worst: RSI Mean Reversion (Algo 16) on AAPL {_MINUS}$12.00"
+        f"Best: Turtle Breakout (Algo 25) · MSFT +$85.00 · "
+        f"Worst: RSI Mean Reversion (Algo 16) · AAPL {_MINUS}$12.00"
     ) in lines
-    assert "Started: Turtle Breakout (Algo 25) on NVDA ($1,000.00)" in lines
+    assert "Started: Turtle Breakout (Algo 25) · NVDA ($1,000.00)" in lines
     assert (
-        f"Stopped: MA Crossover (Algo 6) on XOM — kill-switch ({_MINUS}5.00%)" in lines
+        f"Stopped: MA Crossover (Algo 6) · XOM — kill-switch ({_MINUS}5.00%)" in lines
     )
     assert lines[-1] == "Decision run: partial"
     snapshot = (

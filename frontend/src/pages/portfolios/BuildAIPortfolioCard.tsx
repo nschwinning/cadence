@@ -19,6 +19,9 @@ const DEFAULT_BENCHMARK = 'SP500';
 /** Default AI model id preselected in the build form (the configured default). */
 const DEFAULT_MODEL = 'gpt-6-luna';
 
+/** Enabled opt-in signals at which the build form shows the soft many-signals hint. */
+const MANY_SIGNALS_THRESHOLD = 3;
+
 /** Risk-profile options accepted by the build endpoint. */
 const RISK_PROFILES = ['conservative', 'balanced', 'aggressive'] as const;
 
@@ -190,6 +193,15 @@ export function BuildAIPortfolioCard() {
   const [useFundamentals, setUseFundamentals] = useState(false);
   const [usePriceMl, setUsePriceMl] = useState(false);
   const [useNewsSentiment, setUseNewsSentiment] = useState(false);
+  // Advisory only: with many signals on, nudge toward a focused combination. Never
+  // blocks the build, unchecks a toggle, or changes the request.
+  const enabledSignalCount = [
+    useTechnicalIndicators,
+    useFundamentals,
+    usePriceMl,
+    useNewsSentiment,
+  ].filter(Boolean).length;
+  const showManySignalsHint = enabledSignalCount >= MANY_SIGNALS_THRESHOLD;
   const [includeWatchlist, setIncludeWatchlist] = useState(false);
   const [stopLossEnabled, setStopLossEnabled] = useState(false);
   const [stopLossPct, setStopLossPct] = useState('15');
@@ -587,6 +599,18 @@ export function BuildAIPortfolioCard() {
                     count) for each candidate and holding.
                   </p>
                 </div>
+
+                {showManySignalsHint && (
+                  <p
+                    role="note"
+                    data-testid="many-signals-hint"
+                    className="rounded border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900 sm:col-span-2"
+                  >
+                    Using many signals can dilute focus — 2–3 complementary signals
+                    usually work best. The AI weighs them against each other, but
+                    more is not automatically better.
+                  </p>
+                )}
 
                 {/* Include watchlist assets. */}
                 <div className={CONTROL_CARD_CLASS}>

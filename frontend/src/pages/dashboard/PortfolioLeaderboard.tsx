@@ -5,11 +5,11 @@ import { sessionReturnPct } from './aggregate';
 import { spanLabel } from './rangeLabel';
 import { KindBadge } from './KindBadge';
 
-/** The detail route for a session row, by kind: bots and AI portfolios differ. */
+/** The detail route for a session row, by kind. */
 function sessionHref(session: DashboardSessionPerformance): string {
-  return session.kind === 'bot'
-    ? `/bots/${session.id}`
-    : `/paper-trading/${session.id}`;
+  if (session.kind === 'bot') return `/bots/${session.id}`;
+  if (session.kind === 'orchestrator') return `/orchestrators/${session.id}`;
+  return `/paper-trading/${session.id}`;
 }
 
 const CARD_CLASS = 'rounded-lg border border-slate-200 bg-white shadow-sm';

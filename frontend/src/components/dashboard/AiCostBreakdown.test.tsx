@@ -5,7 +5,7 @@ import { AiCostBreakdown } from './AiCostBreakdown';
 import { makeAiCosts } from '../../pages/dashboard/fixtures';
 
 describe('AiCostBreakdown', () => {
-  it('renders one row per portfolio sorted by cost descending with a total', () => {
+  it('renders one linked row per portfolio sorted by cost descending with a total', () => {
     render(
       <AiCostBreakdown
         data={makeAiCosts({
@@ -16,14 +16,19 @@ describe('AiCostBreakdown', () => {
           total_ai_cost_usd: 9.5,
         })}
       />,
+    { wrapper: MemoryRouter },
     );
 
     const rows = screen.getAllByRole('row');
     // header + 2 body rows + total row
-    const bodyLabels = screen
-      .getAllByRole('cell')
-      .filter((c) => ['Laggard', 'Leader'].includes(c.textContent ?? ''));
-    expect(bodyLabels).toHaveLength(2);
+    expect(screen.getByRole('link', { name: 'Laggard' })).toHaveAttribute(
+      'href',
+      '/portfolios/low',
+    );
+    expect(screen.getByRole('link', { name: 'Leader' })).toHaveAttribute(
+      'href',
+      '/portfolios/high',
+    );
     // Leader (higher cost) appears before Laggard.
     const leaderIndex = rows.findIndex((r) => within(r).queryByText('Leader'));
     const laggardIndex = rows.findIndex((r) => within(r).queryByText('Laggard'));
@@ -46,6 +51,7 @@ describe('AiCostBreakdown', () => {
           total_ai_cost_usd: 0,
         })}
       />,
+    { wrapper: MemoryRouter },
     );
     // Both the row and the total read $0.00 (two occurrences), not an em dash.
     expect(screen.getAllByText('$0.00')).toHaveLength(2);
@@ -62,6 +68,7 @@ describe('AiCostBreakdown', () => {
           total_ai_cost_usd: null,
         })}
       />,
+    { wrapper: MemoryRouter },
     );
     expect(screen.getByText('Cost tracking unavailable')).toBeInTheDocument();
     // The row cost and the total both render as em dashes.
@@ -73,6 +80,7 @@ describe('AiCostBreakdown', () => {
       <AiCostBreakdown
         data={makeAiCosts({ portfolios: [], total_ai_cost_usd: 0 })}
       />,
+    { wrapper: MemoryRouter },
     );
     expect(
       screen.getByText(/No active portfolios or orchestrators yet/i),
@@ -80,7 +88,7 @@ describe('AiCostBreakdown', () => {
     expect(screen.queryByRole('table')).not.toBeInTheDocument();
   });
 
-  it('lists orchestrators tagged and linked, ordered by cost with portfolios', () => {
+  it('links and tags portfolios and orchestrators alike, ordered by cost', () => {
     render(
       <MemoryRouter>
         <AiCostBreakdown
@@ -102,7 +110,11 @@ describe('AiCostBreakdown', () => {
     );
     expect(within(body[0]).getByText('Orchestrator')).toBeInTheDocument();
     expect(within(body[0]).getByText('$2.50')).toBeInTheDocument();
-    expect(within(body[1]).getByText('Portfolio')).toBeInTheDocument();
+    expect(within(body[1]).getByRole('link', { name: 'Portfolio' })).toHaveAttribute(
+      'href',
+      '/portfolios/p1',
+    );
+    expect(within(body[1]).getByText('AI')).toBeInTheDocument();
     expect(screen.getByText('$3.50')).toBeInTheDocument();
   });
 

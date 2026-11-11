@@ -777,6 +777,7 @@ def _build_run_stats(
     account_summary: dict[str, Any] | None = None,
     trend_context: dict[str, Any] | None = None,
     guardrail_observations: dict[str, Any] | None = None,
+    enabled_signals: list[str] | None = None,
 ) -> dict[str, Any]:
     """Assemble the machine-readable run-outcome blob for offline learning.
 
@@ -784,7 +785,9 @@ def _build_run_stats(
     which ``actions_taken`` drops), the run's realized P&L and account/valuation
     snapshot where applicable, trend-gate counts derived from ``trend_context``,
     and any guardrail observations (e.g. the AI returning fewer holdings than the
-    configured minimum). Deliberately not exposed via the API/UI (see
+    configured minimum), and the effective opt-in signals the run actually attached
+    (``enabled_signals``; after prompt-version and crypto-only gating, not the raw
+    session toggles). Deliberately not exposed via the API/UI (see
     ``AIPortfolioEvent.run_stats``).
     """
     stats: dict[str, Any] = {
@@ -808,6 +811,8 @@ def _build_run_stats(
         }
     if guardrail_observations:
         stats["guardrails"] = guardrail_observations
+    if enabled_signals is not None:
+        stats["enabled_signals"] = enabled_signals
     return stats
 
 

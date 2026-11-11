@@ -82,6 +82,7 @@ const detail: BotOrchestratorDetail = {
       label: null,
       preset_key: 'rsi_mean_reversion_algo16',
       preset_name: 'RSI Mean Reversion (Algo 16)',
+      display_name: 'RSI Mean Reversion (Algo 16) · 2 symbols',
       strategy_key: 'rsi_mean_reversion',
       tickers: ['AAPL', 'NVDA'],
       status: 'active',
@@ -99,6 +100,7 @@ const detail: BotOrchestratorDetail = {
       label: null,
       preset_key: 'ma_crossover_algo6',
       preset_name: 'MA Crossover (Algo 6)',
+      display_name: 'MA Crossover (Algo 6) · XOM',
       strategy_key: 'ma_crossover',
       tickers: ['XOM'],
       status: 'stopped',
@@ -155,13 +157,15 @@ describe('OrchestratorDetailPage', () => {
     expect(screen.getByText('2 / 3')).toBeInTheDocument();
     expect(screen.getByText('1 being sold')).toBeInTheDocument();
 
-    const rsi = screen.getByRole('link', { name: 'RSI Mean Reversion (Algo 16)' });
+    const rsi = screen.getByRole('link', {
+      name: 'RSI Mean Reversion (Algo 16) · 2 symbols',
+    });
     expect(rsi).toHaveAttribute('href', '/bots/b1');
     const rsiRow = rsi.closest('tr') as HTMLElement;
     expect(within(rsiRow).getByText('AAPL, NVDA')).toBeInTheDocument();
     expect(within(rsiRow).getByText('Active')).toBeInTheDocument();
     const stoppedRow = screen
-      .getByRole('link', { name: 'MA Crossover (Algo 6)' })
+      .getByRole('link', { name: 'MA Crossover (Algo 6) · XOM' })
       .closest('tr') as HTMLElement;
     expect(within(stoppedRow).getByText('Selling')).toBeInTheDocument();
   });

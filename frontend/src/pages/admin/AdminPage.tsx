@@ -1,0 +1,474 @@
+import { useState } from 'react';
+import { useAdminAccount, useFlattenOrphans } from '../../api/admin';
+import { Modal } from '../../components/Modal';
+import { formatCurrency, formatQuantity } from '../../lib/format';
+import type {
+  AdminAccount,
+  AdminCashCheck,
+  AdminCashContributorKind,
+  AdminFlattenOutcome,
+  AdminOpenOrder,
+  AdminPosition,
+  AdminPositionStatus,
+} from '../../types/api';
+
+const CARD_CLASS = 'rounded-lg border border-slate-200 bg-white shadow-sm';
+const TH_CLASS = 'px-4 py-2 text-left text-xs font-semibold uppercase tracking-wide text-slate-500';
+const BUTTON_CLASS =
+  'rounded border border-slate-300 bg-white px-3 py-1.5 text-sm font-medium text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60';
+const DANGER_BUTTON_CLASS =
+  'rounded bg-red-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-red-700 disabled:cursor-not-allowed disabled:opacity-60';
+
+const KIND_LABELS: Record<AdminCashContributorKind, string> = {
+  portfolio: 'AI portfolio',
+  bot: 'Bot',
+  orchestrator: 'Orchestrator (free capital)',
+  returning_bot: 'Stopped bot (cash returning)',
+};
+
+const STATUS_LABELS: Record<AdminPositionStatus, string> = {
+  matched: 'Matched',
+  orphan: 'Orphan',
+  shortfall: 'Shortfall',
+  short: 'Short',
+};
+
+const STATUS_STYLES: Record<AdminPositionStatus, string> = {
+  matched: 'bg-emerald-50 text-emerald-700',
+  orphan: 'bg-amber-100 text-amber-800',
+  shortfall: 'bg-red-50 text-red-700',
+  short: 'bg-red-50 text-red-700',
+};
+
+const SKIP_REASONS: Record<string, string> = {
+  not_orphan: 'no longer an orphan',
+  pending_order: 'has an open order',
+  market_closed: 'equity market is closed',
+  not_found: 'not held in the account',
+};
+
+/** A titled card section. */
+function Card({
+  title,
+  actions,
+  children,
+}: {
+  title: string;
+  actions?: React.ReactNode;
+  children: React.ReactNode;
+}) {
+  return (
+    <div className={CARD_CLASS}>
+      <div className="flex items-center justify-between gap-3 border-b border-slate-200 p-4">
+        <h2 className="text-lg font-semibold text-slate-900">{title}</h2>
+        {actions}
+      </div>
+      {children}
+    </div>
+  );
+}
+
+function AccountCard({ account }: { account: NonNullable<AdminAccount['account']> }) {
+  const figures = [
+    { label: 'Cash', value: account.cash },
+    { label: 'Buying power', value: account.buying_power },
+    { label: 'Total value', value: account.portfolio_value },
+  ];
+  return (
+    <Card title="Account">
+      <dl className="grid grid-cols-1 gap-4 p-4 sm:grid-cols-3">
+        {figures.map((f) => (
+          <div key={f.label}>
+            <dt className="text-sm text-slate-500">{f.label}</dt>
+            <dd className="text-xl font-semibold tabular-nums text-slate-900">
+              {formatCurrency(f.value)}
+            </dd>
+          </div>
+        ))}
+      </dl>
+    </Card>
+  );
+}
+
+function CashCheckCard({ check }: { check: AdminCashCheck }) {
+  return (
+    <Card title="Cash check">
+      {check.shortfall && (
+        <div
+          role="alert"
+          className="m-4 rounded border border-red-300 bg-red-50 p-3 text-sm text-red-800"
+        >
+          Cadence has committed {formatCurrency(-check.difference)} more cash than the account
+          holds. Orders may be rejected for insufficient buying power.
+        </div>
+      )}
+      <div className="overflow-x-auto">
+        <table className="w-full min-w-[420px] border-collapse text-sm">
+          <thead>
+            <tr className="border-b border-slate-200 bg-slate-50">
+              <th className={TH_CLASS}>Holder</th>
+              <th className={TH_CLASS}>Kind</th>
+              <th className={`${TH_CLASS} text-right`}>Cash</th>
+            </tr>
+          </thead>
+          <tbody>
+            {check.contributors.map((c) => (
+              <tr key={`${c.kind}-${c.id}`} className="border-b border-slate-100">
+                <td className="px-4 py-2 text-slate-700">{c.label}</td>
+                <td className="px-4 py-2 text-slate-500">{KIND_LABELS[c.kind]}</td>
+                <td className="px-4 py-2 text-right tabular-nums text-slate-700">
+                  {formatCurrency(c.amount)}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+          <tfoot className="bg-slate-50">
+            <tr>
+              <td colSpan={2} className="px-4 py-2 font-semibold text-slate-900">
+                Committed by Cadence
+              </td>
+              <td className="px-4 py-2 text-right font-semibold tabular-nums text-slate-900">
+                {formatCurrency(check.committed_total)}
+              </td>
+            </tr>
+            <tr>
+              <td colSpan={2} className="px-4 py-2 text-slate-700">
+                Account cash
+              </td>
+              <td className="px-4 py-2 text-right tabular-nums text-slate-700">
+                {formatCurrency(check.account_cash)}
+              </td>
+            </tr>
+            <tr>
+              <td colSpan={2} className="px-4 py-2 font-semibold text-slate-900">
+                Difference
+              </td>
+              <td
+                data-testid="cash-difference"
+                className={`px-4 py-2 text-right font-semibold tabular-nums ${
+                  check.shortfall ? 'text-red-700' : 'text-emerald-700'
+                }`}
+              >
+                {formatCurrency(check.difference)}
+              </td>
+            </tr>
+          </tfoot>
+        </table>
+      </div>
+    </Card>
+  );
+}
+
+function OpenOrdersCard({ orders }: { orders: AdminOpenOrder[] }) {
+  return (
+    <Card title="Open orders">
+      {orders.length === 0 ? (
+        <p className="p-4 text-sm text-slate-500">No open orders.</p>
+      ) : (
+        <div className="overflow-x-auto">
+          <table className="w-full min-w-[520px] border-collapse text-sm">
+            <thead>
+              <tr className="border-b border-slate-200 bg-slate-50">
+                <th className={TH_CLASS}>Symbol</th>
+                <th className={TH_CLASS}>Side</th>
+                <th className={`${TH_CLASS} text-right`}>Quantity</th>
+                <th className={TH_CLASS}>Type</th>
+                <th className={TH_CLASS}>Status</th>
+                <th className={TH_CLASS}>Submitted</th>
+              </tr>
+            </thead>
+            <tbody>
+              {orders.map((o, i) => (
+                <tr key={o.order_id ?? `${o.symbol}-${i}`} className="border-b border-slate-100">
+                  <td className="px-4 py-2 font-medium text-slate-900">{o.symbol}</td>
+                  <td className="px-4 py-2 text-slate-700">{o.side}</td>
+                  <td className="px-4 py-2 text-right tabular-nums text-slate-700">
+                    {formatQuantity(o.quantity)}
+                  </td>
+                  <td className="px-4 py-2 text-slate-700">{o.order_type}</td>
+                  <td className="px-4 py-2 text-slate-700">{o.status}</td>
+                  <td className="px-4 py-2 text-slate-500">
+                    {o.submitted_at ? new Date(o.submitted_at).toLocaleString() : '—'}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </Card>
+  );
+}
+
+function PositionStatus({ position }: { position: AdminPosition }) {
+  return (
+    <span className="inline-flex flex-wrap items-center gap-1">
+      <span
+        className={`rounded px-1.5 py-0.5 text-xs font-semibold ${STATUS_STYLES[position.status]}`}
+      >
+        {STATUS_LABELS[position.status]}
+      </span>
+      {position.pending_order && (
+        <span className="rounded bg-slate-100 px-1.5 py-0.5 text-xs font-medium text-slate-600">
+          Pending order
+        </span>
+      )}
+    </span>
+  );
+}
+
+function PositionsCard({
+  positions,
+  onFlatten,
+  busy,
+}: {
+  positions: AdminPosition[];
+  onFlatten: (targets: AdminPosition[], symbol: string | null) => void;
+  busy: boolean;
+}) {
+  const flattenable = positions.filter((p) => p.flattenable);
+  return (
+    <Card
+      title="Positions"
+      actions={
+        flattenable.length > 0 && (
+          <button
+            type="button"
+            className={DANGER_BUTTON_CLASS}
+            disabled={busy}
+            onClick={() => onFlatten(flattenable, null)}
+          >
+            Flatten all orphans
+          </button>
+        )
+      }
+    >
+      <p className="px-4 pt-3 text-sm text-slate-500">
+        Broker holdings compared with every Cadence portfolio and bot. An orphan is the
+        quantity no Cadence record claims; only that excess is ever sold.
+      </p>
+      {positions.length === 0 ? (
+        <p className="p-4 text-sm text-slate-500">No positions.</p>
+      ) : (
+        <div className="overflow-x-auto">
+          <table className="w-full min-w-[640px] border-collapse text-sm">
+            <thead>
+              <tr className="border-b border-slate-200 bg-slate-50">
+                <th className={TH_CLASS}>Symbol</th>
+                <th className={`${TH_CLASS} text-right`}>Broker</th>
+                <th className={`${TH_CLASS} text-right`}>Cadence</th>
+                <th className={`${TH_CLASS} text-right`}>Orphan</th>
+                <th className={`${TH_CLASS} text-right`}>Market value</th>
+                <th className={TH_CLASS}>Status</th>
+                <th className={TH_CLASS}>
+                  <span className="sr-only">Action</span>
+                </th>
+              </tr>
+            </thead>
+            <tbody>
+              {positions.map((p) => (
+                <tr key={p.symbol} className="border-b border-slate-100">
+                  <td className="px-4 py-2 font-medium text-slate-900">
+                    {p.symbol}
+                    {p.asset_class === 'crypto' && (
+                      <span className="ml-2 text-xs text-slate-400">crypto</span>
+                    )}
+                  </td>
+                  <td className="px-4 py-2 text-right tabular-nums text-slate-700">
+                    {formatQuantity(p.broker_quantity)}
+                  </td>
+                  <td className="px-4 py-2 text-right tabular-nums text-slate-700">
+                    {formatQuantity(p.cadence_quantity)}
+                  </td>
+                  <td className="px-4 py-2 text-right tabular-nums text-slate-700">
+                    {p.status === 'orphan' ? formatQuantity(p.orphan_quantity) : '—'}
+                  </td>
+                  <td className="px-4 py-2 text-right tabular-nums text-slate-700">
+                    {p.market_value === null ? '—' : formatCurrency(p.market_value)}
+                  </td>
+                  <td className="px-4 py-2">
+                    <PositionStatus position={p} />
+                  </td>
+                  <td className="px-4 py-2 text-right">
+                    {p.flattenable && (
+                      <button
+                        type="button"
+                        className={BUTTON_CLASS}
+                        disabled={busy}
+                        aria-label={`Flatten ${p.symbol}`}
+                        onClick={() => onFlatten([p], p.symbol)}
+                      >
+                        Flatten
+                      </button>
+                    )}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </Card>
+  );
+}
+
+function ConfirmFlatten({
+  targets,
+  onCancel,
+  onConfirm,
+}: {
+  targets: AdminPosition[];
+  onCancel: () => void;
+  onConfirm: () => void;
+}) {
+  return (
+    <div className="mx-auto w-full max-w-lg rounded-lg bg-white p-6 shadow-xl">
+      <h2 className="text-lg font-semibold text-slate-900">Sell orphan positions?</h2>
+      <p className="mt-2 text-sm text-slate-600">
+        This places market sell orders in the broker account for:
+      </p>
+      <ul className="mt-3 flex flex-col gap-1 text-sm">
+        {targets.map((t) => (
+          <li key={t.symbol} className="flex justify-between gap-4">
+            <span className="font-medium text-slate-900">{t.symbol}</span>
+            <span className="tabular-nums text-slate-700">{formatQuantity(t.orphan_quantity)}</span>
+          </li>
+        ))}
+      </ul>
+      <p className="mt-3 text-xs text-slate-500">
+        Quantities are recomputed when the order is placed, so only what no Cadence portfolio
+        or bot claims at that moment is sold.
+      </p>
+      <div className="mt-5 flex justify-end gap-2">
+        <button type="button" className={BUTTON_CLASS} onClick={onCancel}>
+          Cancel
+        </button>
+        <button type="button" className={DANGER_BUTTON_CLASS} onClick={onConfirm}>
+          Sell
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function outcomeText(o: AdminFlattenOutcome): string {
+  if (o.result === 'sold') return `sold ${formatQuantity(o.quantity ?? 0)}`;
+  if (o.result === 'skipped') return `skipped — ${SKIP_REASONS[o.reason ?? ''] ?? o.reason}`;
+  return `failed — ${o.reason ?? 'broker rejected the order'}`;
+}
+
+function Outcomes({ outcomes }: { outcomes: AdminFlattenOutcome[] }) {
+  return (
+    <div
+      role="status"
+      data-testid="flatten-outcomes"
+      className="rounded border border-slate-200 bg-slate-50 p-4 text-sm"
+    >
+      <p className="font-semibold text-slate-900">Flatten result</p>
+      {outcomes.length === 0 ? (
+        <p className="mt-1 text-slate-600">Nothing to flatten.</p>
+      ) : (
+        <ul className="mt-1 flex flex-col gap-0.5">
+          {outcomes.map((o) => (
+            <li
+              key={o.symbol}
+              className={o.result === 'failed' ? 'text-red-700' : 'text-slate-700'}
+            >
+              <span className="font-medium">{o.symbol}</span>: {outcomeText(o)}
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
+/**
+ * Admin — the shared broker account every portfolio, bot and orchestrator trades in:
+ * live balances, the cash Cadence has committed against the account's cash, open
+ * orders, and a per-symbol comparison of broker holdings with Cadence's books. Orphan
+ * positions (shares no Cadence record claims) can be sold after confirmation; the
+ * server recomputes the quantity at execution.
+ */
+export function AdminPage() {
+  const { data, isPending, isError, refetch, isFetching } = useAdminAccount();
+  const flatten = useFlattenOrphans();
+  const [pending, setPending] = useState<{
+    targets: AdminPosition[];
+    symbol: string | null;
+  } | null>(null);
+
+  const confirm = () => {
+    if (pending === null) return;
+    flatten.mutate(pending.symbol);
+    setPending(null);
+  };
+
+  return (
+    <section className="flex flex-col gap-6">
+      <div className="flex items-start justify-between gap-4">
+        <div>
+          <h1 className="text-2xl font-bold tracking-tight text-slate-900">Admin</h1>
+          <p className="mt-1 text-sm text-slate-500">
+            The broker account shared by every portfolio, bot and orchestrator.
+          </p>
+        </div>
+        <button
+          type="button"
+          onClick={() => refetch()}
+          disabled={isFetching}
+          className="shrink-0 rounded border border-slate-300 bg-white px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-60"
+        >
+          {isFetching ? 'Refreshing…' : 'Refresh'}
+        </button>
+      </div>
+
+      {isPending && (
+        <p role="status" aria-live="polite" className="text-slate-500">
+          Loading the broker account…
+        </p>
+      )}
+
+      {(isError || (data && !data.broker_available)) && (
+        <div role="alert" className="rounded border border-red-300 bg-red-50 p-4 text-red-800">
+          <p className="font-semibold">Broker unavailable</p>
+          <p className="mt-1 text-sm">
+            {data?.reason ?? 'The broker account could not be read. Please try again later.'}
+          </p>
+        </div>
+      )}
+
+      {flatten.isError && (
+        <div role="alert" className="rounded border border-red-300 bg-red-50 p-4 text-red-800">
+          The flatten request failed. Nothing may have been sold; refresh to check.
+        </div>
+      )}
+      {flatten.data && <Outcomes outcomes={flatten.data.outcomes} />}
+
+      {data?.broker_available && data.account && data.cash_check && (
+        <>
+          <AccountCard account={data.account} />
+          <CashCheckCard check={data.cash_check} />
+          <PositionsCard
+            positions={data.positions}
+            busy={flatten.isPending}
+            onFlatten={(targets, symbol) => setPending({ targets, symbol })}
+          />
+          <OpenOrdersCard orders={data.open_orders} />
+        </>
+      )}
+
+      <Modal open={pending !== null} onClose={() => setPending(null)} title="Confirm flatten">
+        {pending && (
+          <ConfirmFlatten
+            targets={pending.targets}
+            onCancel={() => setPending(null)}
+            onConfirm={confirm}
+          />
+        )}
+      </Modal>
+    </section>
+  );
+}
+
+export default AdminPage;

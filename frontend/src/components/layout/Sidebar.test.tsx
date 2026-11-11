@@ -41,6 +41,21 @@ describe('Sidebar', () => {
     expect(link).toHaveAttribute('href', '/system');
   });
 
+  it('renders the Admin nav entry directly after System', () => {
+    renderSidebar();
+
+    const link = screen.getByRole('link', { name: /^admin$/i });
+    expect(link).toHaveAttribute('href', '/admin');
+    const labels = screen.getAllByRole('link').map((l) => l.textContent?.trim());
+    expect(labels.indexOf('Admin')).toBe(labels.indexOf('System') + 1);
+  });
+
+  it('highlights Admin on the admin page', () => {
+    renderSidebar('/admin');
+
+    expect(isHighlighted(screen.getByRole('link', { name: /^admin$/i }))).toBe(true);
+  });
+
   it('renders a single Portfolios nav entry and no Paper Trading entry', () => {
     renderSidebar();
 

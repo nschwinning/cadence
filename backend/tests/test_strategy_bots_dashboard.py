@@ -307,3 +307,31 @@ def test_ai_rows_default_to_ai_kind(db_session: Session) -> None:
 
     assert [perf.kind for perf in overview.sessions] == ["ai"]
     assert SessionStatus.ACTIVE  # sanity: imported symbol used
+
+
+def test_orchestrator_bots_are_not_bot_rows(db_session: Session) -> None:
+    from cadence.bot_orchestrator import service as orchestrator_service
+    from cadence.strategy_bots.constants import BotOrigin
+
+    manual = _make_bot(db_session)
+    _add_asset(db_session, "MSFT")
+    orchestrator = orchestrator_service.create_orchestrator(
+        db_session, label="First Orchestrator", capital=10_000.0
+    )
+    orchestrator.free_capital -= 3_000.0
+    bot_service.create_bot_session(
+        db_session,
+        preset_key="donchian_turtle_algo25",
+        tickers=["MSFT"],
+        initial_capital=3_000.0,
+        benchmark="SP500",
+        origin=BotOrigin.ORCHESTRATOR,
+        orchestrator_id=orchestrator.id,
+    )
+
+    rows = bot_service.dashboard_performances(
+        db_session, range_=DashboardRange.MAX, today=_TODAY
+    )
+
+    assert [r.id for r in rows] == [manual.id]  # type: ignore[attr-defined]
+    assert rows[0].kind == "bot"

@@ -8,6 +8,7 @@ import {
   useBotTrades,
   usePresets,
   useStopBotSession,
+  useStrategies,
   useArchiveBotSession,
 } from '../../api/bots';
 import { useBenchmarks } from '../../api/paperTrading';
@@ -118,10 +119,6 @@ function symbolsSummary(bot: BotSession): string {
   return `${tickers[0]} +${tickers.length - 1}`;
 }
 
-/** A bot's display label: its explicit label, else strategy + symbol summary. */
-function botLabel(bot: BotSession): string {
-  return bot.label || `${bot.strategy_key} · ${symbolsSummary(bot)}`;
-}
 
 /** Render a strategy-param object as a compact `key: value` list. */
 function paramsSummary(params: Record<string, unknown>): string {
@@ -130,13 +127,19 @@ function paramsSummary(params: Record<string, unknown>): string {
   return entries.map(([k, v]) => `${k}: ${String(v)}`).join(', ');
 }
 
-function BackLink() {
+/** Orchestrator-deployed bots return to their orchestrator; manual bots to the list. */
+function BackLink({ sessionId }: { sessionId: string }) {
+  const { data: bot } = useBotSession(sessionId);
+  const orchestratorId = bot?.orchestrator_id ?? null;
   return (
     <Link
-      to="/bots"
+      to={orchestratorId ? `/orchestrators/${orchestratorId}` : '/bots'}
       className="inline-flex items-center gap-1 text-sm font-medium text-emerald-700 hover:text-emerald-800 hover:underline"
     >
-      <span aria-hidden="true">←</span> Back to bots
+      <span aria-hidden="true">←</span>{' '}
+      {orchestratorId
+        ? `Back to ${bot?.orchestrator_label ?? 'orchestrator'}`
+        : 'Back to bots'}
     </Link>
   );
 }
@@ -257,6 +260,7 @@ function PresetProvenance({
 
 function SessionHeader({ sessionId }: { sessionId: string }) {
   const { data: bot } = useBotSession(sessionId);
+  const { data: strategies } = useStrategies();
   const stop = useStopBotSession();
   const archive = useArchiveBotSession();
 
@@ -306,9 +310,13 @@ function SessionHeader({ sessionId }: { sessionId: string }) {
         <div className="flex flex-wrap items-center gap-3">
           <div>
             <h1 className="text-2xl font-bold tracking-tight text-slate-900">
-              {botLabel(bot)}
+              {bot.display_name}
             </h1>
-            <p className="text-sm text-slate-500">{bot.strategy_key}</p>
+            <p className="text-sm text-slate-500">
+              {(Array.isArray(strategies)
+                ? strategies.find((s) => s.key === bot.strategy_key)?.display_name
+                : undefined) ?? bot.strategy_key}
+            </p>
           </div>
           <StatusBadge status={bot.status} />
           {bot.archived_at != null && (
@@ -899,7 +907,7 @@ export function BotSessionPage() {
   const { id = '' } = useParams<{ id: string }>();
   return (
     <section className="flex flex-col gap-6">
-      <BackLink />
+      <BackLink sessionId={id} />
       <SessionHeader sessionId={id} />
       <KpiRow sessionId={id} />
       <SessionSummary sessionId={id} />

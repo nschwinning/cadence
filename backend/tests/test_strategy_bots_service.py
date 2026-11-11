@@ -1935,3 +1935,67 @@ def test_orchestrator_bots_are_snapshotted_without_their_own_push(
     # Only the manual bot pushes; the orchestrator bot is rolled up.
     assert len(notifier.sent) == 1
     assert "MSFT" not in notifier.sent[0][1]
+
+
+# Display name ------------------------------------------------------------------
+def test_display_name_uses_label_when_set(db_session: Session) -> None:
+    _add_asset(db_session)
+    bot = _create(db_session, label="My momentum bot")
+    assert service.bot_display_name(bot) == "My momentum bot"
+
+
+def test_display_name_uses_preset_then_ticker(db_session: Session) -> None:
+    _add_asset(db_session, "MSFT")
+    bot = _create(
+        db_session,
+        strategy_key=None,
+        strategy_params=service.UNSET,
+        preset_key="donchian_turtle_algo25",
+        tickers=["MSFT"],
+    )
+    assert service.bot_display_name(bot) == "Turtle Breakout (Algo 25) · MSFT"
+
+
+def test_display_name_falls_back_to_strategy_display_name(db_session: Session) -> None:
+    _add_asset(db_session, "MSFT")
+    bot = _create(
+        db_session,
+        strategy_key="donchian_breakout",
+        strategy_params={"version": "turtle", "entry_period": 20, "exit_period": 10},
+        tickers=["MSFT"],
+    )
+    assert service.bot_display_name(bot) == "Donchian Range Breakout · MSFT"
+
+
+def test_display_name_counts_several_symbols(db_session: Session) -> None:
+    for ticker in ("AAPL", "MSFT", "NVDA"):
+        _add_asset(db_session, ticker)
+    bot = _create(
+        db_session,
+        strategy_key=None,
+        strategy_params=service.UNSET,
+        preset_key="rsi_mean_reversion_algo16",
+        tickers=["AAPL", "MSFT", "NVDA"],
+    )
+    assert service.bot_display_name(bot) == "RSI Mean Reversion (Algo 16) · 3 symbols"
+
+
+def test_push_titles_use_the_display_name(db_session: Session) -> None:
+    _add_asset(db_session, "AAPL")
+    bot = _create(
+        db_session,
+        strategy_key=None,
+        strategy_params=service.UNSET,
+        preset_key="ma_crossover_algo6",
+    )
+    notifier = RecordingNotifier()
+
+    service.run_bot_snapshots(
+        db_session,
+        broker=_OpenableBroker(),
+        now=datetime(2026, 1, 6, 21, 0, tzinfo=UTC),
+        notifier=notifier,
+    )
+
+    assert notifier.sent[0][1] == "Cadence bot: MA Crossover (Algo 6) · AAPL daily P&L"
+    assert service.bot_display_name(bot) in notifier.sent[0][1]

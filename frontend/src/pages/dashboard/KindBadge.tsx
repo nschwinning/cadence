@@ -1,20 +1,22 @@
 import type { DashboardSessionPerformance } from '../../types/api';
 
-/** Chip styles per session kind: AI-managed portfolios vs. deterministic bots. */
+/** Chip styles per session kind: AI portfolios, manual bots, bot orchestrators. */
 const KIND_STYLES: Record<DashboardSessionPerformance['kind'], string> = {
   ai: 'bg-indigo-100 text-indigo-700',
   bot: 'bg-amber-100 text-amber-800',
+  orchestrator: 'bg-teal-100 text-teal-800',
 };
 
 const KIND_LABELS: Record<DashboardSessionPerformance['kind'], string> = {
   ai: 'AI',
   bot: 'Bot',
+  orchestrator: 'Orchestrator',
 };
 
 /**
- * A small badge marking whether a dashboard session row is an AI-managed portfolio
- * or a deterministic strategy bot, so the two kinds read apart in the shared
- * leaderboard and the combined-equity selection legend.
+ * A small badge marking whether a dashboard session row is an AI-managed portfolio,
+ * a manually created strategy bot, or a bot orchestrator (covering its own bots), so
+ * the kinds read apart in the shared leaderboard and the combined-equity selection.
  */
 export function KindBadge({
   kind,

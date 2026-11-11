@@ -77,6 +77,7 @@ from cadence.strategy_bots.errors import (
     IneligibleAssetError,
     InvalidBotBenchmarkError,
     InvalidBotConfigError,
+    UnknownPresetError,
 )
 from cadence.strategy_bots.market_data import MarketData
 from cadence.strategy_bots.models import (
@@ -284,12 +285,24 @@ def _traded_set_label(bot: BotSession) -> str:
     return f"{len(bot.symbols)} symbols"
 
 
-def _bot_label(bot: BotSession) -> str:
-    """The session's display label (explicit label, else strategy · traded set)."""
+def bot_display_name(bot: BotSession) -> str:
+    """The name a bot is shown under everywhere (lists, detail, dashboard, pushes).
+
+    The explicit label when set; otherwise the display name of the preset it started
+    from (or, without a preset, the strategy's display name), then `` · `` and its
+    traded set. Internal strategy keys are never used as a name.
+    """
     if bot.label:
         return bot.label
-    registration = registry.get_strategy(bot.strategy_key)
-    return f"{registration.display_name} · {_traded_set_label(bot)}"
+    name: str | None = None
+    if bot.preset_key:
+        try:
+            name = presets.get_preset(bot.preset_key).display_name
+        except UnknownPresetError:
+            name = None
+    if name is None:
+        name = registry.get_strategy(bot.strategy_key).display_name
+    return f"{name} · {_traded_set_label(bot)}"
 
 
 # Lifecycle ---------------------------------------------------------------
@@ -699,7 +712,7 @@ def _tick_session(
         _record_value_point(session, bot, marks, captured_at=tick_now)
         _notify_safely(
             notifier,
-            title=f"Cadence bot: {_bot_label(bot)} drawdown kill-switch",
+            title=f"Cadence bot: {bot_display_name(bot)} drawdown kill-switch",
             message=_kill_switch_message(
                 liquidated, bot.realised_pnl - realised_before
             ),
@@ -1064,7 +1077,7 @@ def run_bot_snapshots(
         ]
         _notify_safely(
             notifier,
-            title=f"Cadence bot: {_bot_label(bot)} daily P&L",
+            title=f"Cadence bot: {bot_display_name(bot)} daily P&L",
             message=_bot_summary_message(
                 kpis,
                 daily_pnl=daily_pnl,
@@ -1660,7 +1673,7 @@ def dashboard_performance(
         as_of=as_of,
     )
 
-    label = _bot_label(bot)
+    label = bot_display_name(bot)
 
     return SessionPerformance(
         id=bot.id,
@@ -1684,8 +1697,14 @@ def dashboard_performances(
     range_: DashboardRange,
     today: date | None = None,
 ) -> list[SessionPerformance]:
-    """Dashboard performance rows for every active bot session (``kind='bot'``)."""
+    """Dashboard rows for every active **manually created** bot (``kind='bot'``).
+
+    Bots deployed by a bot orchestrator are excluded: the orchestrator's own row (see
+    :mod:`cadence.bot_orchestrator.dashboard`) covers them, so their money is counted
+    exactly once.
+    """
     return [
         dashboard_performance(session, bot, range_=range_, today=today)
         for bot in active_bot_sessions(session)
+        if bot.orchestrator_id is None
     ]

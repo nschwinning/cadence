@@ -131,6 +131,7 @@ def test_stop_stops_its_bots(
     assert detail["active_bots"] == 1
     assert detail["allocated_capital"] == 3_000.0
     assert detail["bots"][0]["preset_name"] == "MA Crossover (Algo 6)"
+    assert detail["bots"][0]["display_name"] == "MA Crossover (Algo 6) · AAPL"
     assert detail["bots"][0]["tickers"] == ["AAPL"]
 
     stopped = client.post(f"{_BASE}/{body['id']}/stop").json()
@@ -146,6 +147,7 @@ def test_stop_stops_its_bots(
     assert bot_read["origin"] == "orchestrator"
     assert bot_read["orchestrator_id"] == body["id"]
     assert bot_read["orchestrator_label"] == "Core"
+    assert bot_read["display_name"] == "MA Crossover (Algo 6) · AAPL"
 
 
 def test_manual_run_is_queued_and_submitted(

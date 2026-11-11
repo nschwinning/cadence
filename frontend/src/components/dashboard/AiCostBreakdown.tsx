@@ -1,6 +1,7 @@
 import { Link } from 'react-router-dom';
 import type { DashboardAiCosts } from '../../types/api';
 import { formatCurrency } from '../../lib/format';
+import { KindBadge } from '../../pages/dashboard/KindBadge';
 
 const CARD_CLASS = 'rounded-lg border border-slate-200 bg-white shadow-sm';
 
@@ -9,15 +10,16 @@ interface CostRow {
   key: string;
   label: string;
   cost: number | null;
-  /** Orchestrator rows link to their detail view and carry a tag. */
-  orchestratorId: string | null;
+  /** Every row links to its detail view and carries a kind badge. */
+  kind: 'ai' | 'orchestrator';
+  href: string;
 }
 
 /**
  * AI (LLM) cost breakdown: one row per active portfolio and per active bot
  * orchestrator with its all-time cumulative spend, sorted by cost descending,
- * plus a grand-total row. Orchestrator rows are tagged and link to the
- * orchestrator. All-time and range-independent — it does not react to the
+ * plus a grand-total row. Each row links to its portfolio or orchestrator and
+ * carries the same kind badge as the leaderboard. All-time and range-independent — it does not react to the
  * dashboard range or the combined-equity selection.
  *
  * Degradation mirrors the per-session AI cost tile: a cost of `null` (the source
@@ -31,13 +33,15 @@ export function AiCostBreakdown({ data }: { data: DashboardAiCosts }) {
       key: `portfolio-${p.session_id}`,
       label: p.label,
       cost: p.ai_cost_usd,
-      orchestratorId: null,
+      kind: 'ai' as const,
+      href: `/portfolios/${p.session_id}`,
     })),
     ...(data.orchestrators ?? []).map((o) => ({
       key: `orchestrator-${o.orchestrator_id}`,
       label: o.label,
       cost: o.ai_cost_usd,
-      orchestratorId: o.orchestrator_id,
+      kind: 'orchestrator' as const,
+      href: `/orchestrators/${o.orchestrator_id}`,
     })),
   ].sort((a, b) => {
     // Available costs first, then descending by cost; unavailable (null) costs
@@ -81,21 +85,15 @@ export function AiCostBreakdown({ data }: { data: DashboardAiCosts }) {
               {rows.map((row) => (
                 <tr key={row.key} className="border-b border-slate-100 hover:bg-slate-50">
                   <td className="px-4 py-3 text-slate-700">
-                    {row.orchestratorId ? (
-                      <span className="inline-flex flex-wrap items-center gap-2">
-                        <Link
-                          to={`/orchestrators/${row.orchestratorId}`}
-                          className="text-emerald-700 hover:underline"
-                        >
-                          {row.label}
-                        </Link>
-                        <span className="rounded bg-indigo-50 px-1.5 py-0.5 text-xs font-medium text-indigo-700">
-                          Orchestrator
-                        </span>
-                      </span>
-                    ) : (
-                      row.label
-                    )}
+                    <span className="inline-flex flex-wrap items-center gap-2">
+                      <Link
+                        to={row.href}
+                        className="font-medium text-emerald-700 hover:text-emerald-800 hover:underline focus:outline-none focus:ring-1 focus:ring-emerald-500"
+                      >
+                        {row.label}
+                      </Link>
+                      <KindBadge kind={row.kind} />
+                    </span>
                   </td>
                   <td
                     className={`px-4 py-3 text-right tabular-nums ${

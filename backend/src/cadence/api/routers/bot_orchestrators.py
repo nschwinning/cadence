@@ -46,6 +46,7 @@ from cadence.database import get_db
 from cadence.notify import get_notifier
 from cadence.notify.base import Notifier
 from cadence.strategy_bots import presets
+from cadence.strategy_bots import service as bot_service
 from cadence.strategy_bots.errors import UnknownPresetError
 from cadence.strategy_bots.models import BotSession
 
@@ -106,6 +107,7 @@ def _bot_read(db: Session, bot: BotSession) -> OrchestratorBotRead:
     value = service.bot_value(db, bot)
     return OrchestratorBotRead(
         id=bot.id,
+        display_name=bot_service.bot_display_name(bot),
         label=bot.label,
         preset_key=bot.preset_key,
         preset_name=_preset_name(bot.preset_key),

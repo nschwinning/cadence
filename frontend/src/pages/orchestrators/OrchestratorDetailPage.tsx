@@ -233,7 +233,7 @@ function BotsPanel({ bots }: { bots: OrchestratorBot[] }) {
                     to={`/bots/${bot.id}`}
                     className="text-emerald-700 hover:text-emerald-800 hover:underline"
                   >
-                    {bot.preset_name ?? bot.label ?? bot.strategy_key}
+                    {bot.display_name}
                   </Link>
                 </td>
                 <td className="px-4 py-3 text-slate-700">{bot.tickers.join(', ')}</td>

@@ -5,6 +5,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { MemoryRouter, Routes, Route } from 'react-router-dom';
 import type { ReactNode } from 'react';
 import { BotSessionPage } from './BotSessionPage';
+import type { AxiosRequestConfig } from 'axios';
 import { apiClient } from '../../api/client';
 import type {
   BotKpis,
@@ -24,6 +25,7 @@ const bot: BotSession = {
   id: 'b1',
   strategy_key: 'ma_crossover',
   label: 'Apple crossover',
+  display_name: 'Apple crossover',
   status: 'active',
   benchmark: 'SP500',
   initial_capital: 10000,
@@ -199,6 +201,18 @@ function routeGet(
             stop_loss_pct: 0.02,
             drawdown_stop_pct: 0.05,
             is_default: true,
+          },
+        ],
+      });
+    if (url.endsWith('/bots/strategies'))
+      return Promise.resolve({
+        data: [
+          {
+            key: 'ma_crossover',
+            display_name: 'Moving-Average Crossover',
+            explanation: '',
+            required_history: 13,
+            params_schema: {},
           },
         ],
       });
@@ -433,12 +447,13 @@ describe('BotSessionPage', () => {
   it('paginates the trade ledger with Previous/Next controls', async () => {
     // 25 trades over a page size of 20 → two pages. Items differ by page so we
     // can tell which page is showing; total drives the "Page X of N" indicator.
-    mockedGet.mockImplementation((url: string, config?: { params?: { offset?: number } }) => {
+    mockedGet.mockImplementation((url: string, config?: AxiosRequestConfig) => {
       if (url.endsWith('/kpis')) return Promise.resolve({ data: kpis });
       if (url.endsWith('/value-history'))
         return Promise.resolve({ data: { items: [], total: 0 } });
       if (url.endsWith('/trades')) {
-        const offset = config?.params?.offset ?? 0;
+        const params = config?.params as { offset?: number } | undefined;
+        const offset = params?.offset ?? 0;
         const reason = offset === 0 ? 'page-one-trade' : 'page-two-trade';
         return Promise.resolve({
           data: { items: [{ ...trade, id: `t-${offset}`, reason }], total: 25 },
@@ -671,11 +686,49 @@ describe('BotSessionPage', () => {
     );
   });
 
+  it('returns an orchestrator-deployed bot to its orchestrator', async () => {
+    mockedGet.mockImplementation(
+      routeGet({
+        session: {
+          ...bot,
+          origin: 'orchestrator',
+          orchestrator_id: 'o1',
+          orchestrator_label: 'Core rotation',
+        },
+      }),
+    );
+    renderDetail(<BotSessionPage />);
+
+    expect(
+      await screen.findByRole('link', { name: /Back to Core rotation/ }),
+    ).toHaveAttribute('href', '/orchestrators/o1');
+    expect(screen.queryByRole('link', { name: /Back to bots/ })).not.toBeInTheDocument();
+  });
+
   it('shows no orchestrator link for a manual bot', async () => {
     mockedGet.mockImplementation(routeGet());
     renderDetail(<BotSessionPage />);
 
     await screen.findByText('Preset');
     expect(screen.queryByText('Deployed by')).not.toBeInTheDocument();
+    expect(screen.getByRole('link', { name: /Back to bots/ })).toHaveAttribute(
+      'href',
+      '/bots',
+    );
+  });
+
+  it('heads an unlabelled bot with its display name and strategy name', async () => {
+    mockedGet.mockImplementation(
+      routeGet({
+        session: { ...bot, label: null, display_name: 'MA Crossover (Algo 6) · AAPL' },
+      }),
+    );
+    renderDetail(<BotSessionPage />);
+
+    expect(
+      await screen.findByRole('heading', { name: 'MA Crossover (Algo 6) · AAPL' }),
+    ).toBeInTheDocument();
+    expect(await screen.findByText('Moving-Average Crossover')).toBeInTheDocument();
+    expect(screen.queryByText('ma_crossover')).not.toBeInTheDocument();
   });
 });

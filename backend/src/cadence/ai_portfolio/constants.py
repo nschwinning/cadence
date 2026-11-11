@@ -90,3 +90,9 @@ PRICE_ML_PROMPT_VERSION = 5
 #: version, or that opted out, keep their original behaviour and receive no block.
 #: The block is advisory only — the agent remains long-only.
 NEWS_SENTIMENT_PROMPT_VERSION = 6
+
+#: First rebalance-prompt version carrying the signal-reconciliation guidance (seeded
+#: by the v7 migration): how to weigh several optional advisory blocks against each
+#: other. Instructions only; no change to which blocks attach or to the output schema.
+#: Sessions frozen on an earlier version keep their original instructions.
+SIGNAL_RECONCILIATION_PROMPT_VERSION = 7

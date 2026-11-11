@@ -125,6 +125,8 @@ class Position:
     market_value: float | None = None
     unrealized_pnl: float | None = None
     realized_pnl: float = 0.0
+    # The broker's asset class when it reports one (``None`` = unknown, e.g. the stub).
+    asset_class: AssetClass | None = None
 
     @property
     def cost_basis(self) -> float:

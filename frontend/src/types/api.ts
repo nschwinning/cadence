@@ -1068,7 +1068,7 @@ export interface DashboardSessionPerformance {
    * deterministic strategy bot (`bot`). Drives the leaderboard/legend badge and
    * where a row's link points (`/portfolios/:id` vs `/bots/:id`).
    */
-  kind: 'ai' | 'bot';
+  kind: 'ai' | 'bot' | 'orchestrator';
   allocated_capital: number;
   current_value: number;
   pnl: number;
@@ -1397,6 +1397,8 @@ export interface BotSession {
   preset_customized: boolean;
   /** Who created the session (`manual` for the build form, `orchestrator` when deployed by one). */
   origin: string;
+  /** The name the bot is shown under (label, else preset/strategy name · traded set). */
+  display_name: string;
   /** The bot orchestrator that deployed the session, or null for manual sessions. */
   orchestrator_id: string | null;
   /** That orchestrator's label, or null. */
@@ -1625,6 +1627,8 @@ export interface OrchestratorRun extends OrchestratorRunSummary {
 /** One bot an orchestrator deployed. Mirrors `OrchestratorBotRead`. */
 export interface OrchestratorBot {
   id: string;
+  /** The name the bot is shown under (label, else preset/strategy name · traded set). */
+  display_name: string;
   label: string | null;
   preset_key: string | null;
   preset_name: string | null;
@@ -1682,4 +1686,82 @@ export interface BotOrchestratorListResponse {
 export interface OrchestratorRunListResponse {
   items: OrchestratorRunSummary[];
   total: number;
+}
+
+// --- Broker-account admin ---------------------------------------------------
+
+/** Live broker account balances. */
+export interface AdminAccountFigures {
+  cash: number;
+  buying_power: number;
+  portfolio_value: number;
+  currency: string;
+}
+
+export type AdminCashContributorKind = 'portfolio' | 'bot' | 'orchestrator' | 'returning_bot';
+
+/** One holder of cash Cadence considers committed. */
+export interface AdminCashContributor {
+  kind: AdminCashContributorKind;
+  id: string;
+  label: string;
+  amount: number;
+}
+
+/** Committed cash vs the account's cash (`difference` = account − committed). */
+export interface AdminCashCheck {
+  contributors: AdminCashContributor[];
+  committed_total: number;
+  account_cash: number;
+  difference: number;
+  shortfall: boolean;
+}
+
+/** An open order in the broker account. */
+export interface AdminOpenOrder {
+  order_id: string | null;
+  symbol: string;
+  side: string;
+  quantity: number;
+  order_type: string;
+  status: string;
+  submitted_at: string | null;
+}
+
+export type AdminPositionStatus = 'matched' | 'orphan' | 'shortfall' | 'short';
+
+/** Broker vs Cadence quantity for one symbol, with its orphan classification. */
+export interface AdminPosition {
+  symbol: string;
+  asset_class: string;
+  broker_quantity: number;
+  cadence_quantity: number;
+  orphan_quantity: number;
+  market_value: number | null;
+  status: AdminPositionStatus;
+  pending_order: boolean;
+  flattenable: boolean;
+}
+
+/** The Admin page payload; sections are empty when the broker is unavailable. */
+export interface AdminAccount {
+  broker_available: boolean;
+  reason: string | null;
+  account: AdminAccountFigures | null;
+  cash_check: AdminCashCheck | null;
+  open_orders: AdminOpenOrder[];
+  positions: AdminPosition[];
+}
+
+/** Per-symbol result of a flatten action. */
+export interface AdminFlattenOutcome {
+  symbol: string;
+  result: 'sold' | 'skipped' | 'failed';
+  quantity: number | null;
+  order_id: string | null;
+  reason: string | null;
+}
+
+export interface AdminFlattenResponse {
+  outcomes: AdminFlattenOutcome[];
 }

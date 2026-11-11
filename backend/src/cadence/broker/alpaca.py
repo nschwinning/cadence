@@ -598,6 +598,9 @@ class AlpacaBroker:
             current_price=float(pos.get("current_price", 0)),
             market_value=float(pos.get("market_value", 0)),
             unrealized_pnl=float(pos.get("unrealized_pl", 0)),
+            asset_class=(
+                AssetClass.CRYPTO if "crypto" in raw_class else AssetClass.EQUITY
+            ),
         )
 
     @staticmethod

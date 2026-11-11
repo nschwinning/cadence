@@ -12,6 +12,7 @@ from fastapi.responses import JSONResponse
 from cadence.agents import configure_model_gateway
 from cadence.ai_portfolio.background import cleanup_orphaned_events_on_startup
 from cadence.api.routers import (
+    admin_router,
     ai_portfolio_router,
     assets_router,
     bot_orchestrators_router,
@@ -101,6 +102,7 @@ def create_app() -> FastAPI:
     app.include_router(technical_indicators_router, prefix="/api/v1")
     app.include_router(price_ml_router, prefix="/api/v1")
     app.include_router(system_router, prefix="/api/v1")
+    app.include_router(admin_router, prefix="/api/v1")
 
     return app
 

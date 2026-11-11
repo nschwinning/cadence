@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { useBotSessions } from '../../api/bots';
+import { useBotSessions, useStrategies } from '../../api/bots';
 import type { BotSession } from '../../types/api';
 import { formatAge, formatCurrency } from '../../lib/format';
 import { BuildBotCard } from './BuildBotCard';
@@ -40,12 +40,14 @@ function symbolsSummary(bot: BotSession): string {
   return `${tickers[0]} +${tickers.length - 1}`;
 }
 
-/** A bot's display label: its explicit label, else strategy + symbol summary. */
-function botLabel(bot: BotSession): string {
-  return bot.label || `${bot.strategy_key} · ${symbolsSummary(bot)}`;
-}
-
-function BotRow({ bot }: { bot: BotSession }) {
+function BotRow({
+  bot,
+  strategyName,
+}: {
+  bot: BotSession;
+  /** The strategy's display name (falls back to its key while the catalog loads). */
+  strategyName: string;
+}) {
   const isArchived = bot.archived_at !== null;
   return (
     <tr className="border-b border-slate-100 hover:bg-slate-50">
@@ -54,7 +56,7 @@ function BotRow({ bot }: { bot: BotSession }) {
           to={`/bots/${bot.id}`}
           className="text-emerald-700 hover:text-emerald-800 hover:underline focus:outline-none focus:ring-1 focus:ring-emerald-500"
         >
-          {botLabel(bot)}
+          {bot.display_name}
         </Link>
         {isArchived && (
           <span className="ml-2 inline-flex items-center rounded-full bg-slate-100 px-2 py-0.5 text-xs font-medium text-slate-500">
@@ -62,8 +64,16 @@ function BotRow({ bot }: { bot: BotSession }) {
           </span>
         )}
         <span className="mt-0.5 block text-xs font-normal text-slate-500">
-          {bot.strategy_key}
+          {strategyName}
         </span>
+        {bot.orchestrator_id !== null && (
+          <Link
+            to={`/orchestrators/${bot.orchestrator_id}`}
+            className="mt-1 inline-flex items-center gap-1 rounded bg-teal-50 px-1.5 py-0.5 text-xs font-medium text-teal-800 hover:underline"
+          >
+            Orchestrator · {bot.orchestrator_label ?? 'unknown'}
+          </Link>
+        )}
       </td>
       <td className="px-4 py-3">
         <StatusBadge status={bot.status} />
@@ -113,6 +123,14 @@ export function BotsPage() {
   const [showArchived, setShowArchived] = useState(false);
   const [buildOpen, setBuildOpen] = useState(false);
   const { data, isPending, isError } = useBotSessions(showArchived);
+  const { data: strategies } = useStrategies();
+  const strategyNames = useMemo(
+    () =>
+      new Map(
+        (Array.isArray(strategies) ? strategies : []).map((s) => [s.key, s.display_name]),
+      ),
+    [strategies],
+  );
 
   // Stable order everywhere: oldest-created first, so a new bot appends at the end.
   const bots = useMemo(
@@ -207,7 +225,11 @@ export function BotsPage() {
               </thead>
               <tbody>
                 {bots.map((bot) => (
-                  <BotRow key={bot.id} bot={bot} />
+                  <BotRow
+                    key={bot.id}
+                    bot={bot}
+                    strategyName={strategyNames.get(bot.strategy_key) ?? bot.strategy_key}
+                  />
                 ))}
               </tbody>
             </table>

@@ -16,6 +16,7 @@ import { RunsPage } from './pages/runs/RunsPage';
 import { RunDetailPage } from './pages/runs/RunDetailPage';
 import { TechnicalIndicatorsPage } from './pages/technical-indicators/TechnicalIndicatorsPage';
 import { SystemStatusPage } from './pages/system/SystemStatusPage';
+import { AdminPage } from './pages/admin/AdminPage';
 
 /**
  * Redirect a legacy `/paper-trading/:id` deep link to the merged
@@ -60,6 +61,7 @@ export function App() {
           element={<TechnicalIndicatorsPage />}
         />
         <Route path="system" element={<SystemStatusPage />} />
+        <Route path="admin" element={<AdminPage />} />
       </Route>
     </Routes>
   );

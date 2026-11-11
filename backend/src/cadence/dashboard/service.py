@@ -288,8 +288,9 @@ class SessionPerformance:
     a contribution-aware buy-and-hold of ``contributions`` in the session's own
     benchmark (``None`` when unpriceable), which the client aggregates into the live
     excess-return tile. ``kind`` discriminates an AI-driven paper-trading session
-    (``'ai'``, the default) from a deterministic strategy bot (``'bot'``), so the
-    combined overview can union both row sources while the client badges/routes them.
+    (``'ai'``, the default), a manually created strategy bot (``'bot'``) and a bot
+    orchestrator covering its own bots (``'orchestrator'``), so the combined overview
+    can union the row sources while the client badges/routes them.
     """
 
     id: uuid.UUID
@@ -303,7 +304,7 @@ class SessionPerformance:
     points: list[SessionValuePoint]
     contributions: list[SessionContribution]
     benchmark_value: float | None
-    kind: Literal["ai", "bot"] = "ai"
+    kind: Literal["ai", "bot", "orchestrator"] = "ai"
 
 
 @dataclass(frozen=True)
@@ -908,6 +909,15 @@ def get_dashboard_overview(
 
     sessions.extend(
         strategy_bots_service.dashboard_performances(
+            session, range_=range_, today=today
+        )
+    )
+    # Bot orchestrators are one row each, covering their free capital and their bots
+    # (which the bot rows above exclude). Lazy for the same import-cycle reason.
+    from cadence.bot_orchestrator import dashboard as orchestrator_dashboard
+
+    sessions.extend(
+        orchestrator_dashboard.dashboard_performances(
             session, range_=range_, today=today
         )
     )

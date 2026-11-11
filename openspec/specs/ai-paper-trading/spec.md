@@ -2258,8 +2258,8 @@ The system SHALL maintain a backend-only learning record that consolidates, for
 each AI-managed paper-trading session (portfolio), a single row per calendar day
 that ties together everything needed to learn offline from that day's AI trading
 decision: the day's rebalancing result, the AI's reasoning, the technical-indicator
-values the agent saw, the orders that were actually filled including their filled
-price, and that day's profit and loss.
+values the agent saw, the other opt-in signals the agent saw, the orders that were
+actually filled including their filled price, and that day's profit and loss.
 
 Each learning snapshot SHALL be keyed by session and calendar day (`run_date`, the
 same calendar day in the same timezone used by the end-of-day snapshot job) and
@@ -2269,19 +2269,32 @@ assembly on the same calendar day SHALL update that day's learning snapshot rath
 than create a duplicate.
 
 Each learning snapshot SHALL consolidate, from data already persisted elsewhere
-(without re-computing technical indicators or re-running the agent):
+(without re-computing technical indicators, re-fetching or re-scoring any signal, or
+re-running the agent):
 
 - a reference to the day's rebalancing run and its AI reasoning / result (target
   allocations, thesis, confidence, portfolio health) as produced by that run;
 - the technical-indicator values handed to the agent for that run (per candidate,
   holding, and dropped candidate, including reversal flags) as recorded on the run;
+- the **set of opt-in signals that were enabled for the run** — which of the
+  available signals (for example the technical-indicator trend strategy, company
+  fundamentals, news sentiment, and the price-ML direction signal) were in effect
+  for that session's run — so a reader can tell which signals could have influenced
+  the decision;
+- the **per-ticker payloads the agent was shown for each enabled opt-in signal
+  beyond the technical indicators** (for example the fundamentals block, the
+  news-sentiment block, and the price-ML block), per candidate and per holding (and,
+  for the gated signals, per dropped candidate), taken verbatim from what the run
+  recorded, **including the explicit "unavailable" marker where a signal had no
+  value for an asset**, so each day's decision is attributable to the signals that
+  informed it;
 - the run's outcome statistics (order counts, realized profit and loss, account
   snapshot, gate counts, and guardrail observations) as recorded on the run;
 - the day's filled orders including each order's reconciled filled price, filled
-  timestamp, order status, **and the transaction fee assessed on that order when it
-  was recorded**, taken from the session's reconciled trade ledger for that day,
-  **together with the count of the day's filled orders and the day's total
-  transaction fees** so the day's trading activity and its cost are recorded
+  timestamp, order status, and the transaction fee assessed on that order when it
+  was recorded, taken from the session's reconciled trade ledger for that day,
+  together with the count of the day's filled orders and the day's total
+  transaction fees so the day's trading activity and its cost are recorded
   explicitly for offline learning; and
 - the day's profit and loss and valuation (total value, cash value, positions
   value, absolute and percent day's P&L, and the per-position breakdown) taken from
@@ -2295,14 +2308,20 @@ export and offline learning only.
 On a day a session has **no rebalancing run** (for example a skipped run, a weekend,
 or a stocks-only session on a non-trading day) but **does** have a value snapshot,
 the system SHALL still record a learning snapshot carrying that day's P&L and
-valuation with the rebalancing, reasoning, indicator, and order portions absent (its
-recorded order count being zero and its recorded day's total transaction fees being
-zero). On a day a session has **no value snapshot** (it was not selected for the
-day), the system SHALL skip the session, recording no learning snapshot for it.
+valuation with the rebalancing, reasoning, indicator, signal, and order portions
+absent (its recorded order count being zero and its recorded day's total transaction
+fees being zero). On a day a session has **no value snapshot** (it was not selected
+for the day), the system SHALL skip the session, recording no learning snapshot for
+it.
 
 Transaction fees recorded for a day SHALL be those assessed when the orders were
 recorded; days whose orders predate per-order fee recording MAY report a zero or
 unknown fee for those orders rather than recomputing them.
+
+A run that enabled no opt-in signals beyond none at all, or that predates a given
+signal, SHALL simply omit that signal from the recorded enabled set and its per-ticker
+payloads rather than causing an error, so older snapshots and signal-free runs remain
+valid.
 
 #### Scenario: Learning snapshot consolidates a day's run
 
@@ -2312,6 +2331,34 @@ unknown fee for those orders rather than recomputing them.
   containing the run's reasoning/result, the indicator values the run used, the run's
   outcome statistics, the day's filled orders with their reconciled filled prices, and
   the day's P&L and valuation
+
+#### Scenario: Learning snapshot records the enabled signal set
+
+- **WHEN** the assembly runs for a session whose run had one or more opt-in signals
+  enabled
+- **THEN** the recorded learning snapshot SHALL include the set of opt-in signals that
+  were enabled for that run
+
+#### Scenario: Learning snapshot records the per-ticker signal payloads
+
+- **WHEN** the assembly runs for a session whose run attached opt-in signal blocks
+  (beyond the technical indicators) to its candidates and holdings
+- **THEN** the recorded learning snapshot SHALL include, per ticker, the signal payloads
+  the agent was shown for each enabled signal, taken verbatim from what the run recorded
+
+#### Scenario: Unavailable signal value is recorded as unavailable
+
+- **WHEN** the assembly runs for a session whose run showed a signal as "unavailable"
+  for an asset
+- **THEN** the recorded learning snapshot SHALL preserve that "unavailable" marker for
+  that asset rather than inventing a value or omitting the asset
+
+#### Scenario: Run predating a signal omits it
+
+- **WHEN** the assembly runs for a session whose run enabled no opt-in signals, or
+  predates a given signal
+- **THEN** the system SHALL record the snapshot with that signal omitted from the enabled
+  set and per-ticker payloads rather than failing
 
 #### Scenario: Learning snapshot records the day's order count
 
@@ -2337,8 +2384,8 @@ unknown fee for those orders rather than recomputing them.
 - **WHEN** the assembly runs for a session that has a value snapshot for the day but
   had no rebalancing run that day
 - **THEN** the system SHALL record a learning snapshot carrying the day's P&L and
-  valuation with the rebalancing, reasoning, indicator, and order portions absent and
-  its recorded order count being zero
+  valuation with the rebalancing, reasoning, indicator, signal, and order portions absent
+  and its recorded order count being zero
 
 #### Scenario: Day with no value snapshot is skipped
 
@@ -2732,3 +2779,64 @@ The system SHALL include, in a session returned to a client — both when listin
 
 - **WHEN** a client lists sessions or reads a single session
 - **THEN** each returned session SHALL include its rebalance cadence, defaulting to daily when none was recorded
+
+### Requirement: Rebalancing prompt reconciles multiple advisory signals
+
+The system SHALL provide a **signal-reconciliation** section in the rebalance prompt,
+delivered as a new rebalance prompt version (per the versioned-prompt requirement). When a
+session is frozen on a prompt version at or after the reconciliation-aware version, its
+rebalance prompt SHALL instruct the agent how to weigh the per-ticker advisory signal blocks
+that may be attached (technical indicators, company fundamentals, news sentiment, and the
+price-ML direction signal — whichever exist and are attached for that run):
+
+- all attached signals are **advisory inputs to the agent's judgement**, never a mechanical
+  weight tilt;
+- when signals **converge** for a ticker, that SHALL be treated as strengthening the case
+  for the corresponding action;
+- when signals **conflict** for a ticker, the agent SHALL resolve the conflict in its
+  reasoning and surface it in the thesis rather than silently following a single block or
+  ignoring the disagreement;
+- an **"unavailable"** marker on any signal SHALL be treated as absence of that signal for
+  that ticker, not as a negative reading.
+
+The reconciliation section SHALL be written **defensively** so that the prompt reads
+correctly whether zero, one, or several signal blocks are actually attached for a run — a
+session that enabled only one signal, or none, SHALL read correctly on the
+reconciliation-aware version with nothing to reconcile. A session frozen on a prompt version
+predating the reconciliation-aware version SHALL receive no reconciliation section and SHALL
+behave exactly as it did before this change.
+
+This requirement SHALL NOT change which signal blocks attach to candidates or holdings, the
+per-session opt-in flags, the AI output schema, or any existing rebalance constraint
+(long-only, target weights summing to approximately 1.0, per-trade transaction-cost
+discipline, crypto handled with around-the-clock tickers, discovery and web-search caps); an
+omitted or ~0-weight holding still means sell/exit.
+
+#### Scenario: Reconciliation-aware prompt guides conflict handling
+
+- **WHEN** a rebalance runs for a session frozen on the reconciliation-aware prompt version
+  (or later) with two or more advisory signal blocks attached for a ticker
+- **THEN** the prompt SHALL instruct the agent to weigh the signals as advisory inputs,
+  treat convergence as strengthening the case, and resolve and surface any conflict in its
+  reasoning rather than silently following one block
+
+#### Scenario: Reconciliation-aware prompt reads correctly with one or no signals
+
+- **WHEN** a rebalance runs for a session frozen on the reconciliation-aware prompt version
+  with at most one signal block attached
+- **THEN** the prompt SHALL still read correctly, with nothing to reconcile, and the run
+  SHALL proceed unchanged from attaching that one (or no) signal
+
+#### Scenario: Older sessions receive no reconciliation section
+
+- **WHEN** a rebalance runs for a session frozen on a prompt version predating the
+  reconciliation-aware version
+- **THEN** the agent SHALL be given the prompt without any reconciliation section, unchanged
+  from that frozen version's behavior
+
+#### Scenario: Reconciliation-aware prompt preserves the output contract
+
+- **WHEN** the reconciliation-aware rebalance prompt is used for a run
+- **THEN** the agent SHALL still return long-only target allocations summing to
+  approximately 1.0, with an omitted or ~0-weight holding meaning exit, unchanged from the
+  prior prompt version's output schema

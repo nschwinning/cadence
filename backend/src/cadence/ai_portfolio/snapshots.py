@@ -246,8 +246,17 @@ def _build_run_document(
             "duration_ms": event.duration_ms,
             "error": event.error,
         }
+    # The effective opt-in signals the run attached (recorded at run time on its
+    # backend-only run_stats); the per-signal payloads live under run.trend_context.
+    # ``None`` on a no-run day or for runs predating the key.
+    enabled_signals = (
+        event.run_stats.get("enabled_signals")
+        if event is not None and isinstance(event.run_stats, dict)
+        else None
+    )
     return {
         "run": run,
+        "enabled_signals": enabled_signals,
         "orders": [_order_document(t) for t in trades],
         "orders_count": len(trades),
         "fees_total": sum(t.fee for t in trades),

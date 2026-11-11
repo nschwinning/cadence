@@ -9,6 +9,7 @@ import { OrchestratorIcon } from '../icons/OrchestratorIcon';
 import { RunsIcon } from '../icons/RunsIcon';
 import { TechnicalIndicatorsIcon } from '../icons/TechnicalIndicatorsIcon';
 import { SystemIcon } from '../icons/SystemIcon';
+import { AdminIcon } from '../icons/AdminIcon';
 
 interface SidebarProps {
   /** Whether the off-canvas sidebar is open (narrow viewports only). */
@@ -47,6 +48,7 @@ const NAV_ITEMS: NavItem[] = [
     icon: <TechnicalIndicatorsIcon className="h-5 w-5" />,
   },
   { to: '/system', label: 'System', icon: <SystemIcon className="h-5 w-5" /> },
+  { to: '/admin', label: 'Admin', icon: <AdminIcon className="h-5 w-5" /> },
 ];
 
 /**

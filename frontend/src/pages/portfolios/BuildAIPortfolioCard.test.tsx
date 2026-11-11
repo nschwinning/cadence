@@ -680,4 +680,66 @@ describe('BuildAIPortfolioCard', () => {
       expect.objectContaining({ model: 'gpt-5.6-luna' }),
     );
   });
+
+  // ------------------------------------------------------- many-signals hint
+  it('shows the soft many-signals hint only at three or more signals, live', async () => {
+    mockedGet.mockImplementation(routeGet(() => 'running'));
+    const user = userEvent.setup();
+    renderWithClient(<BuildAIPortfolioCard />);
+
+    const toggles = [
+      screen.getByRole('checkbox', { name: 'Use technical-indicator trend strategy' }),
+      screen.getByRole('checkbox', { name: 'Use company fundamentals' }),
+      screen.getByRole('checkbox', { name: 'Use price ML' }),
+    ];
+    await user.click(toggles[0]);
+    await user.click(toggles[1]);
+    expect(screen.queryByTestId('many-signals-hint')).not.toBeInTheDocument();
+
+    await user.click(toggles[2]);
+    expect(screen.getByTestId('many-signals-hint')).toHaveTextContent(
+      '2–3 complementary signals usually work best',
+    );
+
+    await user.click(toggles[2]);
+    expect(screen.queryByTestId('many-signals-hint')).not.toBeInTheDocument();
+  });
+
+  it('never blocks the build or changes the request when the hint shows', async () => {
+    mockedPost.mockResolvedValue({ data: { event_id: 'evt-1', status: 'queued' } });
+    mockedGet.mockImplementation(routeGet(() => 'running'));
+    const user = userEvent.setup();
+    renderWithClient(<BuildAIPortfolioCard />);
+
+    for (const name of [
+      'Use technical-indicator trend strategy',
+      'Use company fundamentals',
+      'Use price ML',
+      'Use news sentiment',
+    ]) {
+      await user.click(screen.getByRole('checkbox', { name }));
+    }
+    expect(screen.getByTestId('many-signals-hint')).toBeInTheDocument();
+    // Every toggle stays checked and enabled.
+    for (const name of ['Use price ML', 'Use news sentiment']) {
+      const box = screen.getByRole('checkbox', { name });
+      expect(box).toBeChecked();
+      expect(box).toBeEnabled();
+    }
+
+    await chooseCadence(user);
+    const build = screen.getByRole('button', { name: 'Build portfolio' });
+    expect(build).toBeEnabled();
+    await user.click(build);
+
+    expect(mockedPost).toHaveBeenCalledWith(
+      '/api/v1/ai-portfolio/build',
+      expect.objectContaining({
+        use_technical_indicators: true,
+        use_fundamentals: true,
+        use_price_ml: true,
+        use_news_sentiment: true,
+      }),
+    );
+  });
 });

@@ -4,6 +4,7 @@ import userEvent from '@testing-library/user-event';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import type { ReactNode } from 'react';
 import { BotValueChart, buildBotValueOption, trendOf } from './BotValueChart';
+import type { AxiosRequestConfig } from 'axios';
 import { apiClient } from '../../api/client';
 import type { BotValuePoint } from '../../types/api';
 
@@ -238,8 +239,9 @@ describe('BotValueChart', () => {
 
   it('defaults to 5m and refetches with the new resolution when the switcher changes', async () => {
     // Route the mock by the requested resolution param (default = 5min).
-    mockedGet.mockImplementation((_url: string, config?: { params?: { resolution?: string } }) => {
-      const resolution = config?.params?.resolution ?? '5min';
+    mockedGet.mockImplementation((_url: string, config?: AxiosRequestConfig) => {
+      const params = config?.params as { resolution?: string } | undefined;
+      const resolution = params?.resolution ?? '5min';
       return Promise.resolve({
         data: {
           items: [dailyPoint('2026-01-04', 10000), dailyPoint('2026-01-05', 10100)],
@@ -278,8 +280,9 @@ describe('BotValueChart', () => {
   });
 
   it('marks the badge intraday for 5m by default and end-of-day for coarse resolutions', async () => {
-    mockedGet.mockImplementation((_url: string, config?: { params?: { resolution?: string } }) => {
-      const resolution = config?.params?.resolution ?? '5min';
+    mockedGet.mockImplementation((_url: string, config?: AxiosRequestConfig) => {
+      const params = config?.params as { resolution?: string } | undefined;
+      const resolution = params?.resolution ?? '5min';
       return Promise.resolve({
         data: {
           items: [dailyPoint('2026-01-04', 10000), dailyPoint('2026-01-05', 10100)],

@@ -102,6 +102,21 @@ describe('PortfolioLeaderboard', () => {
     ).toBeInTheDocument();
   });
 
+  it('badges an orchestrator row and routes it to the orchestrator detail', () => {
+    const orchestrator = makeSession({
+      id: 'o1',
+      label: 'First Orchestrator',
+      kind: 'orchestrator',
+    });
+    renderWithRouter(<PortfolioLeaderboard sessions={[orchestrator]} range="1M" />);
+
+    const link = screen.getByRole('link', { name: 'First Orchestrator' });
+    expect(link).toHaveAttribute('href', '/orchestrators/o1');
+    expect(
+      within(link.closest('tr') as HTMLElement).getByText('Orchestrator'),
+    ).toBeInTheDocument();
+  });
+
   it('groups the range columns under a spanning sub-header tracking the range', () => {
     const { rerender } = renderWithRouter(
       <PortfolioLeaderboard sessions={[high]} range="1M" />,

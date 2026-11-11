@@ -936,7 +936,7 @@ The Dashboard SHALL also present range-scoped performance tiles showing, over th
 
 ### Requirement: Dashboard combined equity curve
 
-The Dashboard SHALL present a combined equity curve as a single line equal to the summed value of the selected active sessions over the selected range, on a common date axis. The selectable sessions SHALL include both AI paper-trading sessions and strategy-bot sessions, each visually badged by its kind (AI or bot) in the selection list. A session SHALL contribute zero before its first recorded value (carry-forward thereafter). The common date axis SHALL span the union of the selected sessions' snapshot dates extended to a trailing horizon of the current day (US Eastern), so the combined line — and the benchmark lines described below — extend flat across trailing non-trading days (for example the current weekend) at their last known value rather than ending at the latest snapshot date. The Dashboard SHALL offer a selectable list of the active sessions, all selected by default, letting the user include or exclude each session; the selection SHALL also drive the hero tiles and the leaderboard. Toggling a session SHALL re-aggregate from already-fetched per-session data without issuing a new request per toggle. When no session is selected, the chart SHALL show an empty state instead of a line.
+The Dashboard SHALL present a combined equity curve as a single line equal to the summed value of the selected active sessions over the selected range, on a common date axis. The selectable sessions SHALL include AI paper-trading sessions, manually created strategy-bot sessions and bot orchestrators, each visually badged by its kind (AI, bot or orchestrator) in the selection list; an orchestrator is one selectable series covering its bots. A session SHALL contribute zero before its first recorded value (carry-forward thereafter). The common date axis SHALL span the union of the selected sessions' snapshot dates extended to a trailing horizon of the current day (US Eastern), so the combined line — and the benchmark lines described below — extend flat across trailing non-trading days (for example the current weekend) at their last known value rather than ending at the latest snapshot date. The Dashboard SHALL offer a selectable list of the active sessions, all selected by default, letting the user include or exclude each session; the selection SHALL also drive the hero tiles and the leaderboard. Toggling a session SHALL re-aggregate from already-fetched per-session data without issuing a new request per toggle. When no session is selected, the chart SHALL show an empty state instead of a line.
 
 The chart SHALL also overlay **benchmark index lines** on the same dollar axis. It SHALL present a benchmark legend listing every index in the benchmark catalog, each individually selectable, with the S&P 500 selected by default and the others deselected. For each selected benchmark that has price data over the range, the chart SHALL draw a line equal to the **sum over the selected sessions of a buy-and-hold of each session's contributed capital in that index** — for each selected session, its opening capital is treated as invested in the index on the session's first date and each later capital increase as invested on its effective date, each held thereafter and valued forward by the index's price movement, and these per-session positions are summed on the common date axis. Consequently the benchmark line starts from zero before any selected session has opened and **steps up as each selected session opens** (and on each later capital increase), mirroring how the combined equity line aggregates, so the two curves are directly comparable in USD (no percent/dollar toggle). A selected benchmark that has no price data over the range SHALL draw no line, and its legend control SHALL be inert rather than erroring. Benchmark lines SHALL be visually distinguishable from the portfolio line and from one another. Toggling a benchmark SHALL add or remove its line without issuing a new request, and changing the session selection SHALL re-aggregate the benchmark lines over the newly selected sessions. When no session is selected, no benchmark lines SHALL be drawn (the empty state is shown instead).
 
@@ -997,9 +997,16 @@ When the equity curve plots a line, it SHALL support **hover inspection**: movin
 - **WHEN** no session is selected
 - **THEN** the equity curve SHALL show an empty state rather than a line, and SHALL draw no benchmark lines
 
+#### Scenario: Orchestrator is one selectable series
+
+- **WHEN** the dashboard renders with an active orchestrator that has deployed bots
+- **THEN** the selection list SHALL show one entry badged as an orchestrator and no
+  separate entries for its bots, and selecting it SHALL add the orchestrator's value to
+  the summed equity line
+
 ### Requirement: Dashboard portfolio leaderboard
 
-The Dashboard SHALL present a leaderboard table of the selected active sessions, sorted by return over the selected range in descending order (best first). The leaderboard SHALL include both AI paper-trading sessions and strategy-bot sessions, each row visually badged by its kind (AI or bot). Each row SHALL show the portfolio's name, current value, range realised profit/loss, range unrealised profit/loss, range return, and range fees, using the same money-weighted basis as the hero tiles, and SHALL link to that session's detail view (an AI row links to the paper-trading session detail; a bot row links to the bot session detail). The current value column SHALL be marked as a point-in-time/live figure, and the range-scoped columns (realised profit/loss, unrealised profit/loss, return, and fees) SHALL be visually grouped under an indication of the active range, so the user can tell the point-in-time value apart from the range-scoped figures. Return direction and the realised and unrealised profit/loss SHALL be visually distinguished by sign (for example gains and losses colored differently). Deselecting a session in the equity curve SHALL remove it from the leaderboard.
+The Dashboard SHALL present a leaderboard table of the selected active sessions, sorted by return over the selected range in descending order (best first). The leaderboard SHALL include AI paper-trading sessions, manually created strategy-bot sessions and bot orchestrators, each row visually badged by its kind (AI, bot or orchestrator); bots deployed by an orchestrator SHALL NOT appear as rows of their own. Each row SHALL show the portfolio's name, current value, range realised profit/loss, range unrealised profit/loss, range return, and range fees, using the same money-weighted basis as the hero tiles, and SHALL link to that session's detail view (an AI row links to the paper-trading session detail; a bot row links to the bot session detail; an orchestrator row links to the orchestrator detail). The current value column SHALL be marked as a point-in-time/live figure, and the range-scoped columns (realised profit/loss, unrealised profit/loss, return, and fees) SHALL be visually grouped under an indication of the active range, so the user can tell the point-in-time value apart from the range-scoped figures. Return direction and the realised and unrealised profit/loss SHALL be visually distinguished by sign (for example gains and losses colored differently). Deselecting a session in the equity curve SHALL remove it from the leaderboard.
 
 #### Scenario: Sessions ranked by range return
 
@@ -1020,6 +1027,12 @@ The Dashboard SHALL present a leaderboard table of the selected active sessions,
 
 - **WHEN** a user deselects a session
 - **THEN** that session SHALL no longer appear in the leaderboard
+
+#### Scenario: Leaderboard shows the orchestrator, not its bots
+
+- **WHEN** the leaderboard renders with an active orchestrator that has deployed bots
+- **THEN** it SHALL show one row badged as an orchestrator, ranked by its range return and
+  linking to the orchestrator's detail view, and SHALL NOT show its bots as separate rows
 
 ### Requirement: Dashboard automation panel
 
@@ -1137,6 +1150,24 @@ navigation entries.
 
 - **WHEN** a user selects the "Orchestrators" entry
 - **THEN** the shell SHALL show the orchestrator list view and mark the entry as active
+
+### Requirement: Orchestrator bots on the Bots list
+
+The Bots list SHALL keep listing every bot session, including bots deployed by a bot
+orchestrator, so each can still be opened. A bot deployed by an orchestrator SHALL be visibly
+marked as such in the list, naming its orchestrator and linking to the orchestrator's detail
+view. Every bot in the list and on its detail view SHALL be shown under its display name.
+
+#### Scenario: Orchestrator bot is badged and linked
+
+- **WHEN** the Bots list shows a bot deployed by the orchestrator "First Orchestrator"
+- **THEN** its row SHALL carry a marker naming "First Orchestrator" that links to that
+  orchestrator's detail view
+
+#### Scenario: Manual bots carry no orchestrator marker
+
+- **WHEN** the Bots list shows a manually created bot
+- **THEN** its row SHALL carry no orchestrator marker
 
 ### Requirement: Strategy explanation navigation entry and page
 
@@ -1569,3 +1600,99 @@ rather than an empty table.
 - **WHEN** the breakdown includes an active orchestrator
 - **THEN** its row is marked as an orchestrator, shows its label and all-time cost, and is
   ordered by cost together with the portfolio rows
+
+### Requirement: AI build form hints when many signals are enabled
+
+The AI build form SHALL show a **soft, non-blocking hint** when three or more of its opt-in
+signal toggles (for example the technical-indicator trend, company-fundamentals,
+news-sentiment, and price-ML toggles — whichever exist) are turned on at once, advising that
+a focused set of complementary signals usually serves a strategy better than enabling every
+signal (for example "Using many signals can dilute focus — 2–3 complementary signals usually
+work best").
+
+The hint SHALL be **advisory only**: it SHALL NOT disable the build action, SHALL NOT cap,
+uncheck, or disable any toggle, and SHALL NOT change the request submitted to the backend.
+When fewer than three opt-in signals are enabled, the hint SHALL NOT be shown. Toggling a
+signal on or off SHALL update the hint's visibility live.
+
+#### Scenario: Hint appears when three or more signals are enabled
+
+- **WHEN** the operator has three or more of the AI build form's opt-in signal toggles turned
+  on
+- **THEN** the form SHALL display a soft advisory hint about focusing on a smaller set of
+  complementary signals
+- **AND** the build action SHALL remain enabled and the toggles SHALL remain exactly as the
+  operator set them
+
+#### Scenario: Hint is hidden below the threshold
+
+- **WHEN** the operator has fewer than three opt-in signal toggles turned on
+- **THEN** the form SHALL not display the hint
+
+#### Scenario: Hint does not alter the submitted request
+
+- **WHEN** the operator submits the build with three or more opt-in signals enabled despite
+  the hint
+- **THEN** the submitted request SHALL carry exactly the signals the operator enabled,
+  unaffected by the hint
+
+### Requirement: Admin navigation entry and page
+
+The application shell SHALL provide an "Admin" navigation entry, placed directly after the
+"System" entry, leading to an Admin page. The entry SHALL indicate when it is the active view,
+like the other navigation entries. The System page SHALL remain unchanged.
+
+The Admin page SHALL show the broker account overview: account cash, buying power and total
+value; the committed-cash check with its itemised contributors, committed total, account cash
+and difference, visibly warning on a shortfall; the open orders; and the positions comparison
+with each row's broker quantity, Cadence quantity, classification and orphan quantity. The page
+SHALL offer a manual refresh. When the broker is unavailable the page SHALL say so instead of
+showing figures.
+
+Each flattenable orphan row SHALL offer a "Flatten" action, and the page SHALL offer a
+"Flatten all orphans" action when at least one row is flattenable. Each action SHALL first open
+a confirmation dialog naming the symbols and orphan quantities that will be sold and noting
+that the final quantities are recomputed at execution. Nothing SHALL be sold unless the
+operator confirms. After the action completes the page SHALL show the per-symbol outcome and
+refresh the overview. Rows that are not flattenable SHALL show why (matched, shortfall, short,
+or pending order) and offer no flatten action.
+
+#### Scenario: Admin entry follows System
+
+- **WHEN** a user views the sidebar navigation
+- **THEN** it SHALL show an "Admin" entry directly after the "System" entry
+
+#### Scenario: Admin page shows the account and cash check
+
+- **WHEN** the operator opens the Admin page and the broker is reachable
+- **THEN** the page SHALL show the account's cash, buying power and total value, the cash
+  check with its contributors and difference, the open orders, and the positions comparison
+
+#### Scenario: Shortfall is highlighted
+
+- **WHEN** the cash check reports a shortfall
+- **THEN** the page SHALL visibly warn that Cadence has committed more cash than the account
+  holds
+
+#### Scenario: Flatten requires confirmation
+
+- **WHEN** the operator selects "Flatten" on an orphan row
+- **THEN** the page SHALL show a confirmation dialog naming the symbol and orphan quantity, and
+  SHALL submit nothing if the operator cancels
+
+#### Scenario: Outcome is shown after flattening
+
+- **WHEN** the operator confirms a flatten action
+- **THEN** the page SHALL show each symbol's outcome (sold, skipped or failed with its reason)
+  and refresh the overview
+
+#### Scenario: Non-flattenable rows explain themselves
+
+- **WHEN** a row is matched, a shortfall, short, or has a pending order
+- **THEN** it SHALL show that status and offer no flatten action
+
+#### Scenario: Broker unavailable on the Admin page
+
+- **WHEN** the broker cannot be reached
+- **THEN** the Admin page SHALL say the broker is unavailable and show no figures or flatten
+  actions

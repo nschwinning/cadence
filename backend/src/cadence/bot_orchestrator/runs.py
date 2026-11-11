@@ -337,6 +337,7 @@ def _apply(
             {
                 "kind": "stop",
                 "bot_id": stop.bot_id,
+                "bot_name": bot_service.bot_display_name(bot),
                 "preset_key": bot.preset_key,
                 "tickers": [s.ticker for s in bot.symbols],
                 "reason": stop.reason,
@@ -362,6 +363,7 @@ def _apply(
             {
                 "kind": "deploy",
                 "bot_id": str(bot.id),
+                "bot_name": bot_service.bot_display_name(bot),
                 "preset_key": deploy.preset_key,
                 "tickers": deploy.tickers,
                 "capital": deploy.capital,
@@ -490,7 +492,9 @@ def execute_run(
 
 # Notifications ---------------------------------------------------------------
 def _describe(action: dict[str, Any]) -> str:
-    """'Preset name on TICKER, TICKER' for an applied action."""
+    """An applied action's bot display name (older runs: 'Preset on TICKERS')."""
+    if action.get("bot_name"):
+        return str(action["bot_name"])
     key = action.get("preset_key")
     try:
         name = presets.get_preset(key).display_name if key else "custom bot"

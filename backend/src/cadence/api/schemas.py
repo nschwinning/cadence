@@ -1360,7 +1360,7 @@ class DashboardSessionPerformance(BaseModel):
     # Which subsystem produced this row: an AI-driven paper-trading session
     # (``'ai'``, the default for legacy rows) or a deterministic strategy bot
     # (``'bot'``). The client badges and routes the row by this discriminator.
-    kind: Literal["ai", "bot"] = "ai"
+    kind: Literal["ai", "bot", "orchestrator"] = "ai"
 
 
 class DashboardAutomationRun(BaseModel):
@@ -1546,6 +1546,112 @@ class SystemStatusRead(BaseModel):
     backends: list[BackendStatusRead]
 
 
+# --- Broker-account admin -----------------------------------------------------
+
+
+class AdminAccountFiguresRead(BaseModel):
+    """Live broker account balances."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    cash: float
+    buying_power: float
+    portfolio_value: float
+    currency: str
+
+
+class AdminCashContributorRead(BaseModel):
+    """One holder of cash Cadence considers committed."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    kind: Literal["portfolio", "bot", "orchestrator", "returning_bot"]
+    id: str
+    label: str
+    amount: float
+
+
+class AdminCashCheckRead(BaseModel):
+    """Committed cash vs the account's cash (``difference`` = account − committed)."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    contributors: list[AdminCashContributorRead]
+    committed_total: float
+    account_cash: float
+    difference: float
+    shortfall: bool
+
+
+class AdminOpenOrderRead(BaseModel):
+    """An open order in the broker account."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    order_id: str | None
+    symbol: str
+    side: str
+    quantity: float
+    order_type: str
+    status: str
+    submitted_at: datetime | None
+
+
+class AdminPositionRead(BaseModel):
+    """Broker vs Cadence quantity for one symbol, with its orphan classification."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    symbol: str
+    asset_class: str
+    broker_quantity: float
+    cadence_quantity: float
+    orphan_quantity: float
+    market_value: float | None
+    status: Literal["matched", "orphan", "shortfall", "short"]
+    pending_order: bool
+    flattenable: bool
+
+
+class AdminAccountRead(BaseModel):
+    """The Admin page payload; sections are empty when the broker is unavailable."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    broker_available: bool
+    reason: str | None
+    account: AdminAccountFiguresRead | None
+    cash_check: AdminCashCheckRead | None
+    open_orders: list[AdminOpenOrderRead]
+    positions: list[AdminPositionRead]
+
+
+class AdminFlattenRequest(BaseModel):
+    """Which orphan to flatten (``None`` = all). Quantities are never accepted."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    symbol: str | None = None
+
+
+class AdminFlattenOutcomeRead(BaseModel):
+    """Per-symbol result of a flatten action."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    symbol: str
+    result: Literal["sold", "skipped", "failed"]
+    quantity: float | None
+    order_id: str | None
+    reason: str | None
+
+
+class AdminFlattenResponse(BaseModel):
+    """Outcomes of a flatten action, one per targeted symbol."""
+
+    outcomes: list[AdminFlattenOutcomeRead]
+
+
 # --- Strategy bots -----------------------------------------------------------
 
 
@@ -1668,6 +1774,9 @@ class BotSessionRead(BaseModel):
     preset_key: str | None
     preset_customized: bool
     origin: str
+    #: The name the bot is shown under (label, else preset/strategy name · traded set).
+    #: Not an ORM attribute; set by the router.
+    display_name: str = ""
     #: The bot orchestrator that deployed the session (null for manual sessions).
     orchestrator_id: uuid.UUID | None
     #: That orchestrator's label. Not an ORM attribute; set by the router.
@@ -1871,6 +1980,7 @@ class OrchestratorBotRead(BaseModel):
     """One bot an orchestrator deployed, with its live figures."""
 
     id: uuid.UUID
+    display_name: str
     label: str | None
     preset_key: str | None
     preset_name: str | None
