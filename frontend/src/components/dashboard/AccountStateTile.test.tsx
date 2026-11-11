@@ -28,11 +28,16 @@ function short(symbol: string): AdminPosition {
   };
 }
 
-function account(free: number, positions: AdminPosition[] = [], shortProceeds = 0): AdminAccount {
+function account(
+  free: number,
+  positions: AdminPosition[] = [],
+  shortProceeds = 0,
+  buyingPower = 100000,
+): AdminAccount {
   return {
     broker_available: true,
     reason: null,
-    account: { cash: 100000, buying_power: 100000, portfolio_value: 100000, currency: 'USD' },
+    account: { cash: 100000, buying_power: buyingPower, portfolio_value: 100000, currency: 'USD' },
     cash_check: {
       contributors: [],
       committed_total: 75000,
@@ -120,5 +125,31 @@ describe('AccountStateTile', () => {
     renderTile(new Error('503'));
 
     expect(await screen.findByText('Broker unavailable')).toBeInTheDocument();
+  });
+
+  it('caps free capital at the buying power', async () => {
+    renderTile(account(25000, [], 0, 8000));
+
+    expect(await screen.findByTestId('free-capital')).toHaveTextContent('$8,000.00');
+    expect(screen.getByTestId('buying-power')).toHaveTextContent('$8,000.00');
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+  });
+
+  it('warns red when buying power is gone even though cash is free', async () => {
+    renderTile(account(25000, [short('TSLA')], 201000, 0));
+
+    expect(await screen.findByTestId('free-capital')).toHaveTextContent('$0.00');
+    const alerts = await screen.findAllByRole('alert');
+    expect(alerts.map((a) => a.textContent)).toEqual([
+      expect.stringContaining('No buying power'),
+      expect.stringContaining('1 short position worth $201,000.00'),
+    ]);
+    expect(screen.queryByText(/No capital left/)).not.toBeInTheDocument();
+  });
+
+  it('flags low capital when buying power is the limit', async () => {
+    renderTile(account(25000, [], 0, 500));
+
+    expect(await screen.findByRole('note')).toHaveTextContent('Low capital');
   });
 });

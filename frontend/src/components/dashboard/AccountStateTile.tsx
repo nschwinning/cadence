@@ -11,10 +11,13 @@ const CARD_CLASS = 'rounded-lg border border-slate-200 bg-white shadow-sm';
 export const LOW_CAPITAL_THRESHOLD_USD = 1_000;
 
 /**
- * Broker account tile: the shared Alpaca account's **free capital** — its cash excluding
- * short-sale proceeds, minus everything Cadence has committed — i.e. what is left for
- * new bots and portfolios. Warns amber when that is below the smallest buildable
- * capital, red when nothing is left, and red when the account holds short positions.
+ * Broker account tile: the capital still usable for new bots and portfolios — the
+ * shared Alpaca account's **free capital** (its cash excluding short-sale proceeds,
+ * minus everything Cadence has committed), capped by Alpaca's **buying power**, since
+ * the broker rejects any buy beyond that regardless of cash (e.g. when short positions
+ * tie up all margin). Warns amber when that is below the smallest buildable capital,
+ * red when nothing is left or buying power is gone, and red when the account holds
+ * short positions.
  * Account-wide: independent of the dashboard range and the equity-chart selection.
  * Reuses the Admin page's account query (polled every minute).
  */
@@ -43,8 +46,10 @@ export function AccountStateTile() {
     );
   }
 
-  const free = check.difference;
+  const buyingPower = data.account?.buying_power ?? 0;
+  const free = Math.min(check.difference, buyingPower);
   const shorts = (data.positions ?? []).filter((p) => p.status === 'short');
+  const noBuyingPower = buyingPower <= 0;
   const noneLeft = free <= 0;
   const low = !noneLeft && free < LOW_CAPITAL_THRESHOLD_USD;
 
@@ -63,7 +68,8 @@ export function AccountStateTile() {
           </p>
           <p className="mt-1 text-xs text-slate-500">
             Account cash {formatCurrency(check.account_cash)} · committed by Cadence{' '}
-            {formatCurrency(check.committed_total)}
+            {formatCurrency(check.committed_total)} · buying power{' '}
+            <span data-testid="buying-power">{formatCurrency(buyingPower)}</span>
           </p>
         </div>
         <Link
@@ -76,7 +82,13 @@ export function AccountStateTile() {
 
       {(noneLeft || low || shorts.length > 0) && (
         <div className="mt-3 flex flex-col gap-2 text-sm">
-          {noneLeft && (
+          {noBuyingPower && (
+            <p role="alert" className="rounded border border-red-300 bg-red-50 p-2 text-red-800">
+              No buying power: Alpaca rejects every buy until margin is freed (for example by
+              covering short positions).
+            </p>
+          )}
+          {noneLeft && !noBuyingPower && (
             <p role="alert" className="rounded border border-red-300 bg-red-50 p-2 text-red-800">
               No capital left: new bots or portfolios cannot be funded.
             </p>

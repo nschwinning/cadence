@@ -1715,11 +1715,13 @@ SHALL show why (matched or pending order) and offer no action.
 ### Requirement: Dashboard broker account tile
 
 The dashboard SHALL show a "Broker account" section containing a tile with the shared broker
-account's **free capital** — the capital still available for new bots and AI portfolios —
-defined as the account's cash excluding short-sale proceeds minus the cash Cadence has
-committed (the committed-cash check's difference). The tile SHALL also show the committed
-total and the account cash it is measured against, in the app's USD formatting, and SHALL
-link to the Admin page. The tile SHALL be account-wide: it SHALL NOT react to the dashboard
+account's **free capital** — the capital still usable for new bots and AI portfolios —
+defined as the lower of (a) the account's cash excluding short-sale proceeds minus the cash
+Cadence has committed (the committed-cash check's difference) and (b) the account's buying
+power as reported by the broker, because the broker rejects any buy beyond its buying power
+regardless of cash. The tile SHALL also show the committed total, the account cash and the
+buying power it is measured against, in the app's USD formatting, and SHALL link to the Admin
+page. The tile SHALL be account-wide: it SHALL NOT react to the dashboard
 range selector or to the combined-equity chart's portfolio selection. It SHALL refresh
 periodically like the rest of the live dashboard figures.
 
@@ -1727,20 +1729,23 @@ The tile SHALL warn:
 
 - with an amber "low capital" warning when free capital is positive but below $1,000, the
   smallest capital a new bot or AI portfolio can be built with;
-- with a red "no capital left" warning when free capital is zero or negative, stating that new
-  bots or portfolios cannot be funded;
+- with a red "no buying power" warning when the account's buying power is zero or negative,
+  stating that the broker rejects every buy until margin is freed (for example by covering
+  short positions);
+- with a red "no capital left" warning when free capital is zero or negative while buying power
+  remains, stating that new bots or portfolios cannot be funded;
 - with a red "short positions" warning when the account holds one or more short positions,
   stating how many and their total value.
 
-Both red warnings SHALL be shown together when both apply. When none applies the tile SHALL
+The short-positions warning SHALL be shown together with whichever capital warning applies. When none applies the tile SHALL
 show no warning. When the broker account cannot be read the tile SHALL say the broker is
 unavailable instead of showing figures or warnings.
 
 #### Scenario: Healthy account
 
 - **WHEN** free capital is $25,000 and the account holds no short positions
-- **THEN** the tile SHALL show $25,000 of free capital, the committed total and account cash,
-  and no warning
+- **THEN** the tile SHALL show $25,000 of free capital, the committed total, account cash and
+  buying power, and no warning
 
 #### Scenario: Low capital
 
@@ -1749,9 +1754,21 @@ unavailable instead of showing figures or warnings.
 
 #### Scenario: No capital left
 
-- **WHEN** free capital is zero or negative
+- **WHEN** free capital is zero or negative while the account still has buying power
 - **THEN** the tile SHALL show a red warning that no capital is left for new bots or
   portfolios
+
+#### Scenario: Buying power caps free capital
+
+- **WHEN** Cadence's cash arithmetic leaves $25,000 free but the account's buying power is
+  $8,000
+- **THEN** the tile SHALL show $8,000 of free capital
+
+#### Scenario: No buying power
+
+- **WHEN** the account's buying power is $0 while short positions tie up its margin
+- **THEN** the tile SHALL show $0 of free capital and a red "no buying power" warning together
+  with the short-positions warning, and no "no capital left" warning
 
 #### Scenario: Short positions
 
