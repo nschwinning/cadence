@@ -705,6 +705,33 @@ describe('BotSessionPage', () => {
     expect(screen.queryByRole('link', { name: /Back to bots/ })).not.toBeInTheDocument();
   });
 
+  it('shows a failure banner while the bot is failing', async () => {
+    mockedGet.mockImplementation(
+      routeGet({
+        session: {
+          ...bot,
+          consecutive_failures: 3,
+          last_failure_at: '2026-11-11T14:40:00Z',
+          last_failure_error: 'Alpaca API error: insufficient buying power',
+        },
+      }),
+    );
+    renderDetail(<BotSessionPage />);
+
+    const banner = await screen.findByTestId('bot-failure-banner');
+    expect(banner).toHaveTextContent('The last 3 ticks failed for this bot');
+    expect(banner).toHaveTextContent('latest');
+    expect(banner).toHaveTextContent('insufficient buying power');
+  });
+
+  it('shows no failure banner for a healthy bot', async () => {
+    mockedGet.mockImplementation(routeGet({ session: { ...bot, consecutive_failures: 0 } }));
+    renderDetail(<BotSessionPage />);
+
+    await screen.findByText('Preset');
+    expect(screen.queryByTestId('bot-failure-banner')).not.toBeInTheDocument();
+  });
+
   it('shows no orchestrator link for a manual bot', async () => {
     mockedGet.mockImplementation(routeGet());
     renderDetail(<BotSessionPage />);

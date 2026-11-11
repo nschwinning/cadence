@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import uuid
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from sqlalchemy import select
@@ -122,6 +122,20 @@ def test_broker_error_leaves_the_row_submitted(db_session: Session) -> None:
     [row] = _rows(db_session)
     assert row.state == JournalState.SUBMITTED.value
     assert "forbidden" in (row.error or "")
+    # An explicit rejection hands the row to reconciliation at once (no lease wait).
+    assert row.lease_until <= datetime.now(UTC)
+
+
+def test_ambiguous_failure_keeps_the_lease(db_session: Session) -> None:
+    class _TimeoutBroker(StubBroker):
+        def buy(self, *args: object, **kwargs: object) -> Order:  # type: ignore[override]
+            raise TimeoutError("read timed out")
+
+    with pytest.raises(TimeoutError):
+        _gateway(_TimeoutBroker()).buy("AAPL", 1, purpose="entry")
+
+    [row] = _rows(db_session)
+    assert row.lease_until > datetime.now(UTC)
 
 
 def test_admin_orders_are_closed_at_submission(db_session: Session) -> None:

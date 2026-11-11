@@ -1460,6 +1460,42 @@ class DashboardBenchmarkSeries(BaseModel):
     points: list[DashboardBenchmarkPricePoint]
 
 
+class DashboardFailingBot(BaseModel):
+    """A bot session whose latest tick processing failed."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    display_name: str
+    consecutive_failures: int
+    last_failure_at: datetime | None
+    last_failure_error: str | None
+
+
+class DashboardLatestTick(BaseModel):
+    """The most recently recorded bot tick outcome."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    ran_at: datetime
+    market_open: bool
+    processed: int
+    skipped: int
+    failed: int
+    reconciled: int
+    error: str | None
+
+
+class DashboardTickHealth(BaseModel):
+    """Bot tick health: latest tick, staleness (market open, no recent tick), failing bots."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    latest: DashboardLatestTick | None
+    stale: bool
+    failing_bots: list[DashboardFailingBot]
+
+
 class DashboardOverview(BaseModel):
     """The full range-scoped dashboard overview payload."""
 
@@ -1473,6 +1509,7 @@ class DashboardOverview(BaseModel):
     universe_performers: DashboardUniversePerformers
     benchmark_series: list[DashboardBenchmarkSeries]
     market_open: bool
+    tick_health: DashboardTickHealth
 
 
 # --- Dashboard AI cost per portfolio (all-time, range-independent) ------------
@@ -1823,6 +1860,10 @@ class BotSessionRead(BaseModel):
     updated_at: datetime
     last_tick_at: datetime | None
     archived_at: datetime | None
+    #: Tick failure state (cleared by the next successful tick).
+    last_failure_at: datetime | None = None
+    last_failure_error: str | None = None
+    consecutive_failures: int = 0
 
 
 class BotSessionListResponse(BaseModel):

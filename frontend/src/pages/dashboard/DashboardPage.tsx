@@ -4,6 +4,7 @@ import { useDashboardAiCosts, useDashboardOverview } from '../../api/dashboard';
 import type { DashboardRange } from '../../types/api';
 import { AiCostBreakdown } from '../../components/dashboard/AiCostBreakdown';
 import { AccountStateTile } from '../../components/dashboard/AccountStateTile';
+import { HealthSection } from '../../components/dashboard/HealthSection';
 import { RangeSelector } from './RangeSelector';
 import { ValueTiles, PerformanceTiles } from './HeroTiles';
 import { CombinedEquityChart } from './CombinedEquityChart';
@@ -205,8 +206,11 @@ export function DashboardPage() {
             <ValueTiles sessions={selectedSessions} />
           </ScopeBand>
 
-          <ScopeBand title="Broker account">
-            <AccountStateTile />
+          <ScopeBand title="Account & health">
+            <div className="grid grid-cols-1 items-start gap-6 lg:grid-cols-2">
+              <AccountStateTile />
+              <HealthSection tickHealth={data.tick_health} />
+            </div>
           </ScopeBand>
 
           <ScopeBand

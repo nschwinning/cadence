@@ -112,7 +112,8 @@ describe('DashboardPage', () => {
 
     renderWithClient(<DashboardPage />);
 
-    expect(await screen.findByText('Broker account')).toBeInTheDocument();
+    expect(await screen.findByText('Account & health')).toBeInTheDocument();
+    expect(screen.getByTestId('health-section')).toBeInTheDocument();
     expect(await screen.findByTestId('free-capital')).toHaveTextContent('$25,000.00');
 
     await userEvent.click(screen.getByRole('button', { name: 'YTD' }));

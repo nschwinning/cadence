@@ -144,6 +144,35 @@ function BackLink({ sessionId }: { sessionId: string }) {
   );
 }
 
+/** Red banner while the bot's recent ticks have failed (cleared by a successful tick). */
+function FailureBanner({ sessionId }: { sessionId: string }) {
+  const { data: bot } = useBotSession(sessionId);
+  const failures = bot?.consecutive_failures ?? 0;
+  if (!bot || failures <= 0) return null;
+  return (
+    <div
+      role="alert"
+      data-testid="bot-failure-banner"
+      className="rounded-lg border border-red-300 bg-red-50 p-4 text-red-800"
+    >
+      <p className="font-semibold">
+        {failures === 1
+          ? 'The last tick failed for this bot'
+          : `The last ${failures} ticks failed for this bot`}
+        {bot.last_failure_at && (
+          <span className="font-normal">
+            {' '}
+            · latest {new Date(bot.last_failure_at).toLocaleString()}
+          </span>
+        )}
+      </p>
+      {bot.last_failure_error && (
+        <p className="mt-1 text-sm">{bot.last_failure_error}</p>
+      )}
+    </div>
+  );
+}
+
 // Bot KPI tiles are always rendered at the compact density.
 function KpiTile(props: Omit<ComponentProps<typeof StatTile>, 'size'>) {
   return <StatTile size="compact" {...props} />;
@@ -908,6 +937,7 @@ export function BotSessionPage() {
   return (
     <section className="flex flex-col gap-6">
       <BackLink sessionId={id} />
+      <FailureBanner sessionId={id} />
       <SessionHeader sessionId={id} />
       <KpiRow sessionId={id} />
       <SessionSummary sessionId={id} />

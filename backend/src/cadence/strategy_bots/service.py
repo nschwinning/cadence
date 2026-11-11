@@ -27,6 +27,7 @@ from typing import Final, Literal
 from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
+from cadence import database
 from cadence.agents import llm_trace
 from cadence.assets import service as assets_service
 from cadence.assets.category import AssetCategory, AssetMembership
@@ -85,6 +86,7 @@ from cadence.strategy_bots.market_data import MarketData
 from cadence.strategy_bots.models import (
     BotSession,
     BotSymbol,
+    BotTickRun,
     BotTrade,
     BotValuePoint,
     BotValueSnapshot,
@@ -113,6 +115,9 @@ from cadence.strategy_bots.summary_agent import (
 )
 
 _logger = logging.getLogger(__name__)
+
+#: Stored tick/bot error messages are truncated to this many characters.
+_FAILURE_MESSAGE_MAX = 500
 
 
 class _Unset(Enum):
@@ -845,13 +850,15 @@ def run_tick(
         bot_id = stopped.id
         try:
             flattened += _flatten_session(stopped, engine=engine, tick_now=tick_now)
+            _clear_failure(stopped)
             session.commit()
-        except Exception:  # one bot must not fail the tick
+        except Exception as exc:  # one bot must not fail the tick
             session.rollback()
             failed += 1
             _logger.warning(
                 "tick: flattening bot session %s failed", bot_id, exc_info=True
             )
+            _record_failure(session, bot_id, exc, at=tick_now)
 
     processed = 0
     skipped = 0
@@ -866,11 +873,14 @@ def run_tick(
                 tick_now=tick_now,
                 notifier=notifier,
             )
+            if ticked:
+                _clear_failure(bot)
             session.commit()
-        except Exception:  # one bot must not fail the tick
+        except Exception as exc:  # one bot must not fail the tick
             session.rollback()
             failed += 1
             _logger.warning("tick: bot session %s failed", bot_id, exc_info=True)
+            _record_failure(session, bot_id, exc, at=tick_now)
             continue
         if ticked:
             processed += 1
@@ -886,6 +896,35 @@ def run_tick(
         failed=failed,
         reconciled=reconciled.booked,
     )
+
+
+def _clear_failure(bot: BotSession) -> None:
+    """Reset a session's tick failure state after it was processed successfully."""
+    if bot.consecutive_failures or bot.last_failure_at is not None:
+        bot.consecutive_failures = 0
+        bot.last_failure_at = None
+        bot.last_failure_error = None
+
+
+def _record_failure(
+    session: Session, bot_id: uuid.UUID, exc: Exception, *, at: datetime
+) -> None:
+    """Record that processing a session failed this tick (best-effort, own commit).
+
+    Runs after the session's own work was rolled back; a failure to record is logged
+    and never fails the tick.
+    """
+    try:
+        bot = session.get(BotSession, bot_id)
+        if bot is None:
+            return
+        bot.consecutive_failures = (bot.consecutive_failures or 0) + 1
+        bot.last_failure_at = at
+        bot.last_failure_error = (str(exc) or type(exc).__name__)[:_FAILURE_MESSAGE_MAX]
+        session.commit()
+    except Exception:  # the failure state is diagnostic only
+        session.rollback()
+        _logger.warning("tick: could not record the failure of %s", bot_id, exc_info=True)
 
 
 def _flatten_session(
@@ -1136,6 +1175,7 @@ def run_bot_snapshots(
             ),
         )
     _prune_value_points(session, now=now or datetime.now(UTC))
+    _prune_tick_runs(session, now=now or datetime.now(UTC))
     session.flush()
     return count
 
@@ -1152,6 +1192,77 @@ def _prune_value_points(session: Session, *, now: datetime) -> None:
     session.execute(
         delete(BotValuePoint).where(BotValuePoint.captured_at < cutoff)
     )
+
+
+def _prune_tick_runs(session: Session, *, now: datetime) -> None:
+    """Delete tick outcomes older than the tick-run retention window (daily job)."""
+    cutoff = now - timedelta(days=settings.BOT_TICK_RUN_RETENTION_DAYS)
+    session.execute(delete(BotTickRun).where(BotTickRun.ran_at < cutoff))
+
+
+# Tick outcomes -------------------------------------------------------------
+def record_tick_run(
+    session: Session, *, ran_at: datetime, result: TickResult
+) -> BotTickRun:
+    """Record a completed tick's outcome in the caller's unit of work."""
+    run = BotTickRun(
+        ran_at=ran_at,
+        market_open=result.market_open,
+        processed=result.processed,
+        skipped=result.skipped,
+        failed=result.failed,
+        flattened=result.flattened,
+        reconciled=result.reconciled,
+    )
+    session.add(run)
+    session.flush()
+    return run
+
+
+def record_failed_tick(*, ran_at: datetime, error: str, market_open: bool) -> None:
+    """Record a tick that crashed, in its own committed session.
+
+    The tick's request session is rolled back with the failure, so the outcome is written
+    independently; a failure to record is logged and swallowed so it never masks the
+    tick's own error.
+    """
+    try:
+        with database.SessionLocal() as db:
+            db.add(
+                BotTickRun(
+                    ran_at=ran_at,
+                    market_open=market_open,
+                    processed=0,
+                    skipped=0,
+                    failed=0,
+                    flattened=0,
+                    reconciled=0,
+                    error=error[:_FAILURE_MESSAGE_MAX],
+                )
+            )
+            db.commit()
+    except Exception:  # never mask the tick's own failure
+        _logger.warning("could not record the failed tick", exc_info=True)
+
+
+def latest_tick_run(session: Session) -> BotTickRun | None:
+    """The most recently recorded tick outcome, if any."""
+    return session.execute(
+        select(BotTickRun).order_by(BotTickRun.ran_at.desc()).limit(1)
+    ).scalar_one_or_none()
+
+
+def failing_bot_sessions(session: Session) -> list[BotSession]:
+    """Non-archived sessions whose latest tick processing failed, most failures first."""
+    stmt = (
+        select(BotSession)
+        .where(BotSession.consecutive_failures > 0)
+        .where(BotSession.status != BotSessionStatus.ARCHIVED.value)
+        .order_by(
+            BotSession.consecutive_failures.desc(), BotSession.last_failure_at.desc()
+        )
+    )
+    return list(session.execute(stmt).scalars())
 
 
 def _max_drawdown(values: list[float]) -> float:

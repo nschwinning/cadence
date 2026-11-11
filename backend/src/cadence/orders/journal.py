@@ -114,12 +114,16 @@ def record_submitted(
     order: Order | None,
     error: str | None = None,
     resolved: bool = False,
+    expire_lease: bool = False,
 ) -> None:
     """Record the broker's answer (or the submission error) for an intended order.
 
     The row stays ``submitted`` even on an error: the broker may have received the order
     before the failure, so only reconciliation can tell. ``resolved`` closes the row as
     booked right away (administrator orders, which have no ledger to book into).
+    ``expire_lease`` hands the row to reconciliation immediately — used when the broker
+    explicitly rejected the order, so the next pass confirms there is nothing to book
+    instead of keeping the owner's symbol blocked for the whole lease.
     """
     values: dict[str, Any] = {"state": JournalState.SUBMITTED.value, "error": error}
     if order is not None:
@@ -131,6 +135,8 @@ def record_submitted(
         )
     if resolved and error is None:
         values.update(state=JournalState.RESOLVED.value, booked_at=_now())
+    if expire_lease:
+        values["lease_until"] = _now()
     with _independent() as db:
         db.execute(
             update(BrokerOrder)

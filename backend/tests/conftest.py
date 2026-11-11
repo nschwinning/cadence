@@ -158,10 +158,11 @@ class _NullJournalSession:
 
 @pytest.fixture(autouse=True)
 def _clean_order_journal(request: pytest.FixtureRequest) -> Iterator[None]:
-    """Empty the order journal after every DB-backed test.
+    """Empty the order journal (and crashed-tick records) after every DB-backed test.
 
-    The journal commits through its own sessions (so a record survives the caller's
-    rollback), which puts its rows outside the test's rolled-back transaction. Autouse
+    The journal — like the record of a crashed bot tick — commits through its own
+    sessions (so it survives the caller's rollback), which puts its rows outside the
+    test's rolled-back transaction. Autouse
     fixtures are set up first and torn down last, so this runs after ``db_session`` has
     released any row lock it held on a journal row.
     """
@@ -176,6 +177,7 @@ def _clean_order_journal(request: pytest.FixtureRequest) -> Iterator[None]:
     yield
     with engine.begin() as conn:
         conn.execute(text("DELETE FROM broker_orders"))
+        conn.execute(text("DELETE FROM bot_tick_runs"))
 
 
 @pytest.fixture

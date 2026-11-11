@@ -65,6 +65,10 @@ id, and SHALL then:
 Administrator orders SHALL be marked booked without any ledger change. Reconciliation SHALL run
 before every strategy-bot tick processes its bots, before every AI-portfolio run trades, and on
 demand. A failure to resolve one record SHALL NOT prevent the others from being resolved.
+When the broker explicitly rejects a submission, the owner's lease on that record SHALL end
+immediately, so the next reconciliation pass confirms there is nothing to book and the owner is
+not kept from trading the symbol for the rest of the lease; a submission whose outcome is unknown
+(for example a timeout) SHALL keep its lease.
 
 #### Scenario: Fill lost to a rollback is booked once
 
@@ -90,6 +94,12 @@ demand. A failure to resolve one record SHALL NOT prevent the others from being 
 
 - **WHEN** reconciliation runs while the owner is still within its lease on a record
 - **THEN** the record SHALL NOT be touched
+
+#### Scenario: Explicit rejection is handed over at once
+
+- **WHEN** the broker explicitly rejects a bot's order
+- **THEN** the next reconciliation pass SHALL close the record without waiting for the lease, and
+  the bot SHALL be free to submit a new order for that symbol in the same tick
 
 ### Requirement: Long-only sell guard
 

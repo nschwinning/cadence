@@ -92,6 +92,19 @@ export function makeOverview(
     },
     benchmark_series: [],
     market_open: true,
+    tick_health: {
+      latest: {
+        ran_at: '2026-06-15T14:00:00Z',
+        market_open: true,
+        processed: 2,
+        skipped: 0,
+        failed: 0,
+        reconciled: 0,
+        error: null,
+      },
+      stale: false,
+      failing_bots: [],
+    },
     ...overrides,
   };
 }

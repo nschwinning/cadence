@@ -350,14 +350,26 @@ def run_tick(
 ) -> BotTickResponse:
     """Flatten stopped sessions and advance every active bot session once.
 
-    Cron-guarded and market-hours gated.
+    Cron-guarded and market-hours gated. Every call records its outcome (including
+    market-closed no-ops and crashes) for the dashboard's tick health.
     """
-    result = service.run_tick(
-        db, broker=broker, market_data=market_data, notifier=notifier
-    )
-    # Bots the tick just finished flattening hand their cash back to the orchestrator
-    # that deployed them (composed here so strategy_bots stays orchestrator-agnostic).
-    orchestrator_service.settle_all_returned_capital(db)
+    ran_at = datetime.now(UTC)
+    try:
+        result = service.run_tick(
+            db, broker=broker, market_data=market_data, notifier=notifier, now=ran_at
+        )
+        # Bots the tick just finished flattening hand their cash back to the orchestrator
+        # that deployed them (composed here so strategy_bots stays orchestrator-agnostic).
+        orchestrator_service.settle_all_returned_capital(db)
+    except Exception as exc:
+        # The request session rolls back; record the crashed tick on its own so the
+        # dashboard sees it, then let the cron see the 500 as before.
+        db.rollback()
+        service.record_failed_tick(
+            ran_at=ran_at, error=str(exc) or type(exc).__name__, market_open=True
+        )
+        raise
+    service.record_tick_run(db, ran_at=ran_at, result=result)
     return BotTickResponse(
         market_open=result.market_open,
         processed=result.processed,

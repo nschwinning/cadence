@@ -288,6 +288,12 @@ class Settings(BaseSettings):
     #: ``5min`` and ``hourly`` chart resolutions read these points, both span roughly
     #: this window; ``daily``/``monthly`` come from daily snapshots and stay unbounded.
     BOT_VALUE_POINT_RETENTION_DAYS: int = 30
+    #: Days of bot tick outcomes (``bot_tick_runs``) kept for the dashboard's tick
+    #: health; the daily bot snapshot job prunes older rows.
+    BOT_TICK_RUN_RETENTION_DAYS: int = 7
+    #: While the equity market is open, bot ticks are reported as stale on the dashboard
+    #: when none has been recorded for longer than this (the tick runs every 5 minutes).
+    BOT_TICK_STALE_MINUTES: int = 15
     #: Market-data feed (a ``MarketDataFeed`` value) the tick requests bars with. The
     #: tick ALWAYS sets this explicitly rather than relying on the account default.
     #: ``iex`` is real-time on the free tier; ``sip`` requires a paid subscription.

@@ -214,6 +214,16 @@ class BotSession(Base):
     capital_returned_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+    # Tick failure state: when processing this session last failed, why (non-secret,
+    # e.g. the broker's rejection), and how many ticks in a row have failed. Cleared by
+    # the next tick that processes the session successfully.
+    last_failure_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    last_failure_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    consecutive_failures: Mapped[int] = mapped_column(
+        Integer, nullable=False, server_default="0", default=0
+    )
 
     symbols: Mapped[list[BotSymbol]] = relationship(
         back_populates="session",
@@ -456,3 +466,32 @@ class BotValuePoint(Base):
     unrealised_pnl: Mapped[float] = mapped_column(Float, nullable=False)
 
     session: Mapped[BotSession] = relationship(back_populates="value_points")
+
+
+class BotTickRun(Base):
+    """The outcome of one bot tick request — kept for a week to surface tick health.
+
+    Written for every tick, including market-closed no-ops and ticks that crashed (with
+    their error); the daily snapshot job deletes rows past the retention window.
+    """
+
+    __tablename__ = "bot_tick_runs"
+    __table_args__ = (Index("idx_bot_tick_runs_ran_at", "ran_at"),)
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        server_default=func.gen_random_uuid(),
+    )
+    ran_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    market_open: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    processed: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    skipped: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    failed: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    flattened: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    reconciled: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    # Set only when the tick itself failed before completing.
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )

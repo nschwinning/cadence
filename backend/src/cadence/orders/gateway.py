@@ -20,7 +20,7 @@ import uuid
 from datetime import timedelta
 from typing import Any
 
-from cadence.broker.base import Broker, BrokerError
+from cadence.broker.base import Broker, BrokerError, OrderError
 from cadence.broker.models import AssetClass, Order, OrderSide
 from cadence.broker.symbols import symbol_key
 from cadence.orders import journal
@@ -145,7 +145,15 @@ class OrderGateway:
                 symbol, quantity, asset_class=asset_class, client_order_id=client_order_id
             )
         except Exception as exc:
-            journal.record_submitted(client_order_id, order=None, error=str(exc) or repr(exc))
+            # An explicit broker rejection (``OrderError``) means no order was created:
+            # let reconciliation confirm that right away. Anything else (a timeout, a
+            # dropped connection) is ambiguous and keeps the owner's lease.
+            journal.record_submitted(
+                client_order_id,
+                order=None,
+                error=str(exc) or repr(exc),
+                expire_lease=isinstance(exc, OrderError),
+            )
             raise
         order.client_order_id = client_order_id
         journal.record_submitted(

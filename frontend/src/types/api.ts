@@ -1171,6 +1171,36 @@ export interface DashboardOverview {
   benchmark_series: DashboardBenchmarkSeries[];
   /** Whether the US equity market is currently open (default-open on clock failure). */
   market_open: boolean;
+  /** Strategy-bot tick health (range-independent). */
+  tick_health: DashboardTickHealth;
+}
+
+/** A bot session whose latest tick processing failed. */
+export interface DashboardFailingBot {
+  id: string;
+  display_name: string;
+  consecutive_failures: number;
+  last_failure_at: string | null;
+  last_failure_error: string | null;
+}
+
+/** The most recently recorded bot tick outcome. */
+export interface DashboardLatestTick {
+  ran_at: string;
+  market_open: boolean;
+  processed: number;
+  skipped: number;
+  failed: number;
+  reconciled: number;
+  /** Set only when the tick itself crashed. */
+  error: string | null;
+}
+
+/** Bot tick health: latest tick, staleness (market open, no recent tick), failing bots. */
+export interface DashboardTickHealth {
+  latest: DashboardLatestTick | null;
+  stale: boolean;
+  failing_bots: DashboardFailingBot[];
 }
 
 /** One portfolio's all-time cumulative AI cost (null when unavailable). */
@@ -1412,6 +1442,10 @@ export interface BotSession {
   updated_at: string;
   last_tick_at: string | null;
   archived_at: string | null;
+  /** Tick failure state (cleared by the next successful tick); absent on older payloads. */
+  last_failure_at?: string | null;
+  last_failure_error?: string | null;
+  consecutive_failures?: number;
 }
 
 /** A list of strategy-bot sessions plus the matching total. Mirrors `BotSessionListResponse`. */

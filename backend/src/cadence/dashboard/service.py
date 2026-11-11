@@ -404,6 +404,44 @@ class BenchmarkOverlaySeries:
 
 
 @dataclass(frozen=True)
+class FailingBot:
+    """A bot session whose latest tick processing failed."""
+
+    id: uuid.UUID
+    display_name: str
+    consecutive_failures: int
+    last_failure_at: datetime | None
+    last_failure_error: str | None
+
+
+@dataclass(frozen=True)
+class LatestTick:
+    """The most recently recorded bot tick outcome."""
+
+    ran_at: datetime
+    market_open: bool
+    processed: int
+    skipped: int
+    failed: int
+    reconciled: int
+    error: str | None
+
+
+@dataclass(frozen=True)
+class TickHealth:
+    """Strategy-bot tick health: the latest tick, staleness, and failing bots.
+
+    ``stale`` is true while the equity market is open and no tick has been recorded for
+    longer than ``settings.BOT_TICK_STALE_MINUTES`` (or none at all) — the signature of a
+    tick that stopped running or crashes before recording anything useful.
+    """
+
+    latest: LatestTick | None
+    stale: bool
+    failing_bots: list[FailingBot]
+
+
+@dataclass(frozen=True)
 class DashboardOverview:
     """The full range-scoped dashboard overview payload."""
 
@@ -415,6 +453,7 @@ class DashboardOverview:
     universe_performers: UniversePerformers
     benchmark_series: list[BenchmarkOverlaySeries]
     market_open: bool
+    tick_health: TickHealth
 
 
 def _range_start_datetime(start_date: date | None) -> datetime | None:
@@ -944,6 +983,10 @@ def get_dashboard_overview(
     ]
     overlay_floor = min([*session_point_dates, *contribution_dates], default=None)
 
+    # Reuse the valuation layer's fault-tolerant clock check so the badge stays
+    # consistent with how equities are actually priced: both default to "open" when
+    # the broker clock is unreachable.
+    market_open = paper_trading_service._market_is_open(broker)
     return DashboardOverview(
         range=range_,
         sessions=sessions,
@@ -961,8 +1004,40 @@ def get_dashboard_overview(
             session, range_=range_, today=today
         ),
         benchmark_series=_benchmark_overlays(session, floor=overlay_floor),
-        # Reuse the valuation layer's fault-tolerant clock check so the badge
-        # stays consistent with how equities are actually priced: both default
-        # to "open" when the broker clock is unreachable.
-        market_open=paper_trading_service._market_is_open(broker),
+        market_open=market_open,
+        tick_health=_tick_health(session, market_open=market_open, now=now),
     )
+
+
+def _tick_health(session: Session, *, market_open: bool, now: datetime) -> TickHealth:
+    """Latest bot tick, whether ticks are stale, and the failing bots (range-free)."""
+    # Imported lazily: strategy_bots.service imports this module (see above).
+    from cadence.strategy_bots import service as strategy_bots_service
+
+    run = strategy_bots_service.latest_tick_run(session)
+    latest = (
+        LatestTick(
+            ran_at=run.ran_at,
+            market_open=run.market_open,
+            processed=run.processed,
+            skipped=run.skipped,
+            failed=run.failed,
+            reconciled=run.reconciled,
+            error=run.error,
+        )
+        if run is not None
+        else None
+    )
+    max_age = timedelta(minutes=settings.BOT_TICK_STALE_MINUTES)
+    stale = market_open and (latest is None or now - latest.ran_at > max_age)
+    failing = [
+        FailingBot(
+            id=bot.id,
+            display_name=strategy_bots_service.bot_display_name(bot),
+            consecutive_failures=bot.consecutive_failures,
+            last_failure_at=bot.last_failure_at,
+            last_failure_error=bot.last_failure_error,
+        )
+        for bot in strategy_bots_service.failing_bot_sessions(session)
+    ]
+    return TickHealth(latest=latest, stale=stale, failing_bots=failing)
