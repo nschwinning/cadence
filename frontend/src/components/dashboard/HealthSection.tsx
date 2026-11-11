@@ -3,7 +3,7 @@ import { useAdminAccount } from '../../api/admin';
 import { formatRelativeTime } from '../../lib/format';
 import type { DashboardTickHealth } from '../../types/api';
 
-const CARD_CLASS = 'rounded-lg border border-slate-200 bg-white shadow-sm';
+const CARD_CLASS = 'h-full rounded-lg border border-slate-200 bg-white shadow-sm';
 const ALERT_CLASS = 'rounded border border-red-300 bg-red-50 p-2 text-sm text-red-800';
 
 interface Consistency {

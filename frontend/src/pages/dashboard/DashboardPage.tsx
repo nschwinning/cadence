@@ -207,7 +207,8 @@ export function DashboardPage() {
           </ScopeBand>
 
           <ScopeBand title="Account & health">
-            <div className="grid grid-cols-1 items-start gap-6 lg:grid-cols-2">
+            {/* Stretched rows: both cards share the taller one's height. */}
+            <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
               <AccountStateTile />
               <HealthSection tickHealth={data.tick_health} />
             </div>

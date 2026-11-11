@@ -2,7 +2,7 @@ import { Link } from 'react-router-dom';
 import { useAdminAccount } from '../../api/admin';
 import { formatCurrency } from '../../lib/format';
 
-const CARD_CLASS = 'rounded-lg border border-slate-200 bg-white shadow-sm';
+const CARD_CLASS = 'h-full rounded-lg border border-slate-200 bg-white shadow-sm';
 
 /**
  * Free capital below this is flagged as low: it is the smallest capital a new bot or
