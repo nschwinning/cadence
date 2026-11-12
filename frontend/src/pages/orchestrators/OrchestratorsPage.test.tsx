@@ -5,7 +5,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { OrchestratorsPage } from './OrchestratorsPage';
 import { apiClient } from '../../api/client';
-import type { BotOrchestrator } from '../../types/api';
+import type { BotOrchestrator, BotPreset } from '../../types/api';
 
 vi.mock('../../api/client', () => ({
   apiClient: { get: vi.fn(), post: vi.fn() },
@@ -53,12 +53,38 @@ const orchestrator: BotOrchestrator = {
   ai_cost_usd: 0.42,
 };
 
+const preset: BotPreset = {
+  key: 'rsi_mean_reversion_algo16',
+  display_name: 'RSI Mean Reversion (Algo 16)',
+  description: 'Buys when RSI drops below 30.',
+  course_ref: 'Algo 16',
+  strategy_key: 'rsi_mean_reversion',
+  strategy_params: { period: 14, oversold: 30, exit_level: 50 },
+  take_profit_pct: 0.005,
+  stop_loss_pct: null,
+  drawdown_stop_pct: 0.05,
+  is_default: true,
+};
+
 function routeGet(items: BotOrchestrator[] = [orchestrator]) {
   return (url: string) => {
     if (url.endsWith('/models'))
       return Promise.resolve({ data: [{ id: 'gpt-6-luna', name: 'GPT-6 Luna' }] });
     if (url.endsWith('/benchmarks'))
       return Promise.resolve({ data: [{ id: 'SP500', name: 'S&P 500' }] });
+    if (url.endsWith('/bots/presets')) return Promise.resolve({ data: [preset] });
+    if (url.endsWith('/bots/strategies'))
+      return Promise.resolve({
+        data: [
+          {
+            key: 'rsi_mean_reversion',
+            display_name: 'RSI Mean Reversion',
+            explanation: '',
+            required_history: 15,
+            params_schema: {},
+          },
+        ],
+      });
     return Promise.resolve({ data: { items, total: items.length } });
   };
 }
@@ -181,5 +207,24 @@ describe('OrchestratorsPage', () => {
       });
     });
     expect(await screen.findByText('Detail page')).toBeInTheDocument();
+  });
+
+  it('lists the preset catalog the orchestrators deploy from', async () => {
+    mockedGet.mockImplementation(routeGet());
+    renderPage();
+
+    const panel = (await screen.findByRole('heading', { name: 'Preset catalog' })).closest(
+      'div.rounded-lg',
+    ) as HTMLElement;
+    expect(await within(panel).findByText('RSI Mean Reversion (Algo 16)')).toBeInTheDocument();
+    expect(within(panel).getByText('1 preset')).toBeInTheDocument();
+    expect(within(panel).getByText('period 14 · oversold 30 · exit level 50')).toBeInTheDocument();
+    expect(within(panel).getByText('0.5%')).toBeInTheDocument();
+    expect(within(panel).getByText('Off')).toBeInTheDocument();
+    expect(within(panel).getByText('5%')).toBeInTheDocument();
+    expect(await within(panel).findByRole('link', { name: 'RSI Mean Reversion' })).toHaveAttribute(
+      'href',
+      '/bots/strategies/rsi_mean_reversion',
+    );
   });
 });

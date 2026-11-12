@@ -239,6 +239,21 @@ export function BuildBotCard() {
   const [macdFast, setMacdFast] = useState('');
   const [macdSlow, setMacdSlow] = useState('');
   const [macdSignal, setMacdSignal] = useState('');
+  // Trend Confirmation: trend (SMA), momentum (MACD), strength (RSI) legs, plus the
+  // optional rate-of-change and on-balance-volume legs.
+  const [tcSmaFast, setTcSmaFast] = useState('');
+  const [tcSmaSlow, setTcSmaSlow] = useState('');
+  const [tcMacdFast, setTcMacdFast] = useState('');
+  const [tcMacdSlow, setTcMacdSlow] = useState('');
+  const [tcMacdSignal, setTcMacdSignal] = useState('');
+  const [tcRsiPeriod, setTcRsiPeriod] = useState('');
+  const [tcRsiEntry, setTcRsiEntry] = useState('');
+  const [tcRsiMax, setTcRsiMax] = useState('');
+  const [tcRsiExit, setTcRsiExit] = useState('');
+  const [tcUseRoc, setTcUseRoc] = useState(false);
+  const [tcRocPeriod, setTcRocPeriod] = useState('12');
+  const [tcUseObv, setTcUseObv] = useState(false);
+  const [tcObvWindow, setTcObvWindow] = useState('20');
   // Price Velocity Reversal: the drop threshold, entered in percent per bar.
   const [pvThresholdPct, setPvThresholdPct] = useState('');
   // VAMA: lookback, smoothing range, and fixed (course) vs adaptive smoothing.
@@ -300,6 +315,22 @@ export function BuildBotCard() {
     adx_lookback: setRaAdxLookback,
     adx_threshold: setRaAdxThreshold,
   };
+  // Trend Confirmation's fields (its param names are unique, but booleans need care).
+  const trendConfirmationSetters: Record<string, (value: unknown) => void> = {
+    sma_fast: (v) => setTcSmaFast(String(v)),
+    sma_slow: (v) => setTcSmaSlow(String(v)),
+    macd_fast: (v) => setTcMacdFast(String(v)),
+    macd_slow: (v) => setTcMacdSlow(String(v)),
+    macd_signal: (v) => setTcMacdSignal(String(v)),
+    rsi_period: (v) => setTcRsiPeriod(String(v)),
+    rsi_entry: (v) => setTcRsiEntry(String(v)),
+    rsi_max: (v) => setTcRsiMax(String(v)),
+    rsi_exit: (v) => setTcRsiExit(String(v)),
+    use_roc: (v) => setTcUseRoc(Boolean(v)),
+    roc_period: (v) => setTcRocPeriod(String(v)),
+    use_obv: (v) => setTcUseObv(Boolean(v)),
+    obv_window: (v) => setTcObvWindow(String(v)),
+  };
   // MACD Momentum's `fast_period` / `slow_period` would collide with MA Crossover's.
   const macdSetters: Record<string, (value: string) => void> = {
     fast_period: setMacdFast,
@@ -341,6 +372,8 @@ export function BuildBotCard() {
         adxSetters[name]?.(String(value));
       } else if (preset.strategy_key === 'macd_momentum') {
         macdSetters[name]?.(String(value));
+      } else if (preset.strategy_key === 'trend_confirmation') {
+        trendConfirmationSetters[name]?.(value);
       } else if (preset.strategy_key === 'price_velocity_reversal') {
         // The threshold is a fraction in the preset but a percent in the form.
         if (name === 'threshold_pct') setPvThresholdPct(fractionToPercent(Number(value)));
@@ -445,6 +478,7 @@ export function BuildBotCard() {
   const isRibbon = strategyKey === 'ma_ribbon';
   const isVama = strategyKey === 'vama';
   const isVelocity = strategyKey === 'price_velocity_reversal';
+  const isTrendConfirmation = strategyKey === 'trend_confirmation';
 
   const fastValue = Number.parseInt(fastPeriod, 10);
   const slowValue = Number.parseInt(slowPeriod, 10);
@@ -578,6 +612,51 @@ export function BuildBotCard() {
   const pvThresholdValid =
     Number.isFinite(pvThresholdFraction) && pvThresholdFraction > 0 && pvThresholdFraction < 1;
   const velocityParamsValid = !isVelocity || pvThresholdValid;
+  const tcInt = (value: string, min: number) => {
+    const n = Number.parseInt(value, 10);
+    return Number.isInteger(n) && n >= min ? n : null;
+  };
+  const tcNum = (value: string) => {
+    const n = Number.parseFloat(value);
+    return Number.isFinite(n) ? n : null;
+  };
+  const tcValues = {
+    smaFast: tcInt(tcSmaFast, 2),
+    smaSlow: tcInt(tcSmaSlow, 3),
+    macdFast: tcInt(tcMacdFast, 2),
+    macdSlow: tcInt(tcMacdSlow, 3),
+    macdSignal: tcInt(tcMacdSignal, 2),
+    rsiPeriod: tcInt(tcRsiPeriod, 2),
+    rsiEntry: tcNum(tcRsiEntry),
+    rsiMax: tcNum(tcRsiMax),
+    rsiExit: tcNum(tcRsiExit),
+    rocPeriod: tcInt(tcRocPeriod, 1),
+    obvWindow: tcInt(tcObvWindow, 1),
+  };
+  const tcSmaOrdered =
+    tcValues.smaFast !== null && tcValues.smaSlow !== null && tcValues.smaFast < tcValues.smaSlow;
+  const tcMacdOrdered =
+    tcValues.macdFast !== null &&
+    tcValues.macdSlow !== null &&
+    tcValues.macdFast < tcValues.macdSlow;
+  // RSI levels: 0 ≤ exit ≤ entry < cap ≤ 100 (the exit sits below the entry: hysteresis).
+  const tcRsiOrdered =
+    tcValues.rsiExit !== null &&
+    tcValues.rsiEntry !== null &&
+    tcValues.rsiMax !== null &&
+    tcValues.rsiExit >= 0 &&
+    tcValues.rsiExit <= tcValues.rsiEntry &&
+    tcValues.rsiEntry < tcValues.rsiMax &&
+    tcValues.rsiMax <= 100;
+  const trendConfirmationValid =
+    !isTrendConfirmation ||
+    (tcSmaOrdered &&
+      tcMacdOrdered &&
+      tcValues.macdSignal !== null &&
+      tcValues.rsiPeriod !== null &&
+      tcRsiOrdered &&
+      (!tcUseRoc || tcValues.rocPeriod !== null) &&
+      (!tcUseObv || tcValues.obvWindow !== null));
   const raAdxLookbackValue = Number.parseInt(raAdxLookback, 10);
   const raAdxLookbackValid = Number.isInteger(raAdxLookbackValue) && raAdxLookbackValue >= 2;
   const raAdxThresholdValue = Number.parseFloat(raAdxThreshold);
@@ -681,7 +760,23 @@ export function BuildBotCard() {
           ? atrBandParams
           : isAdx
             ? { period: adxPeriodValue, threshold: adxThresholdValue }
-            : isVelocity
+            : isTrendConfirmation
+              ? {
+                  sma_fast: tcValues.smaFast,
+                  sma_slow: tcValues.smaSlow,
+                  macd_fast: tcValues.macdFast,
+                  macd_slow: tcValues.macdSlow,
+                  macd_signal: tcValues.macdSignal,
+                  rsi_period: tcValues.rsiPeriod,
+                  rsi_entry: tcValues.rsiEntry,
+                  rsi_max: tcValues.rsiMax,
+                  rsi_exit: tcValues.rsiExit,
+                  use_roc: tcUseRoc,
+                  roc_period: tcValues.rocPeriod,
+                  use_obv: tcUseObv,
+                  obv_window: tcValues.obvWindow,
+                }
+              : isVelocity
               ? { threshold_pct: pvThresholdFraction }
               : isVama
               ? {
@@ -737,6 +832,7 @@ export function BuildBotCard() {
     ribbonParamsValid &&
     vamaParamsValid &&
     velocityParamsValid &&
+    trendConfirmationValid &&
     raAdxValid &&
     riskValid &&
     atrPeriodValid &&
@@ -774,6 +870,8 @@ export function BuildBotCard() {
   const macdFastInvalid = isMacd && macdFast.length > 0 && (!macdFastValid || !macdOrdered);
   const macdSlowInvalid = isMacd && macdSlow.length > 0 && (!macdSlowValid || !macdOrdered);
   const macdSignalInvalid = isMacd && macdSignal.length > 0 && !macdSignalValid;
+  const tcFieldInvalid = (value: string, ok: boolean) =>
+    isTrendConfirmation && value.length > 0 && !ok;
   const pvThresholdInvalid = isVelocity && pvThresholdPct.length > 0 && !pvThresholdValid;
   const vamaLookbackInvalid = isVama && vamaLookback.length > 0 && !vamaLookbackValid;
   const vamaAlphaInvalid = (value: string) => isVama && value.length > 0 && !vamaAlphasValid;
@@ -1182,6 +1280,163 @@ export function BuildBotCard() {
                     Exit when the close falls below the moving average
                   </label>
                 )}
+              </div>
+            ) : isTrendConfirmation ? (
+              <div className="flex flex-col gap-4">
+                <p className="text-xs text-slate-500">
+                  Buys only when every check below agrees; sells as soon as one fails.
+                </p>
+                <fieldset className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                  <legend className="mb-1 text-sm font-medium text-slate-700">
+                    Trend — fast SMA above slow SMA
+                  </legend>
+                  <NumberField
+                    id="bot-tc-sma-fast"
+                    label="Fast SMA"
+                    min={2}
+                    step={1}
+                    value={tcSmaFast}
+                    onChange={setTcSmaFast}
+                    hint="Must be below the slow SMA."
+                    invalid={tcFieldInvalid(tcSmaFast, tcSmaOrdered)}
+                  />
+                  <NumberField
+                    id="bot-tc-sma-slow"
+                    label="Slow SMA"
+                    min={3}
+                    step={1}
+                    value={tcSmaSlow}
+                    onChange={setTcSmaSlow}
+                    hint="Must be above the fast SMA."
+                    invalid={tcFieldInvalid(tcSmaSlow, tcSmaOrdered)}
+                  />
+                </fieldset>
+                <fieldset className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+                  <legend className="mb-1 text-sm font-medium text-slate-700">
+                    Momentum — MACD histogram above 0
+                  </legend>
+                  <NumberField
+                    id="bot-tc-macd-fast"
+                    label="MACD fast"
+                    min={2}
+                    step={1}
+                    value={tcMacdFast}
+                    onChange={setTcMacdFast}
+                    hint="Fast EMA; below the slow one."
+                    invalid={tcFieldInvalid(tcMacdFast, tcMacdOrdered)}
+                  />
+                  <NumberField
+                    id="bot-tc-macd-slow"
+                    label="MACD slow"
+                    min={3}
+                    step={1}
+                    value={tcMacdSlow}
+                    onChange={setTcMacdSlow}
+                    hint="Slow EMA; above the fast one."
+                    invalid={tcFieldInvalid(tcMacdSlow, tcMacdOrdered)}
+                  />
+                  <NumberField
+                    id="bot-tc-macd-signal"
+                    label="MACD signal"
+                    min={2}
+                    step={1}
+                    value={tcMacdSignal}
+                    onChange={setTcMacdSignal}
+                    hint="Signal-line EMA."
+                    invalid={tcFieldInvalid(tcMacdSignal, tcValues.macdSignal !== null)}
+                  />
+                </fieldset>
+                <fieldset className="grid grid-cols-1 gap-3 sm:grid-cols-4">
+                  <legend className="mb-1 text-sm font-medium text-slate-700">
+                    Strength — RSI strong but not overheated
+                  </legend>
+                  <NumberField
+                    id="bot-tc-rsi-period"
+                    label="RSI period"
+                    min={2}
+                    step={1}
+                    value={tcRsiPeriod}
+                    onChange={setTcRsiPeriod}
+                    hint="Bars in the RSI."
+                    invalid={tcFieldInvalid(tcRsiPeriod, tcValues.rsiPeriod !== null)}
+                  />
+                  <NumberField
+                    id="bot-tc-rsi-entry"
+                    label="RSI entry above"
+                    min={0}
+                    step={1}
+                    value={tcRsiEntry}
+                    onChange={setTcRsiEntry}
+                    hint="Buys only above this."
+                    invalid={tcFieldInvalid(tcRsiEntry, tcRsiOrdered)}
+                  />
+                  <NumberField
+                    id="bot-tc-rsi-max"
+                    label="RSI cap"
+                    min={1}
+                    step={1}
+                    value={tcRsiMax}
+                    onChange={setTcRsiMax}
+                    hint="No new buys at or above it."
+                    invalid={tcFieldInvalid(tcRsiMax, tcRsiOrdered)}
+                  />
+                  <NumberField
+                    id="bot-tc-rsi-exit"
+                    label="RSI exit below"
+                    min={0}
+                    step={1}
+                    value={tcRsiExit}
+                    onChange={setTcRsiExit}
+                    hint="Sells below this; at most the entry level."
+                    invalid={tcFieldInvalid(tcRsiExit, tcRsiOrdered)}
+                  />
+                </fieldset>
+                <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                  <div className="flex flex-col gap-2">
+                    <label className="inline-flex items-center gap-2 text-sm text-slate-700">
+                      <input
+                        type="checkbox"
+                        checked={tcUseRoc}
+                        onChange={(e) => setTcUseRoc(e.target.checked)}
+                      />
+                      Also require a positive rate of change
+                    </label>
+                    {tcUseRoc && (
+                      <NumberField
+                        id="bot-tc-roc-period"
+                        label="ROC period (bars)"
+                        min={1}
+                        step={1}
+                        value={tcRocPeriod}
+                        onChange={setTcRocPeriod}
+                        hint="Price must be higher than this many bars ago."
+                        invalid={tcFieldInvalid(tcRocPeriod, tcValues.rocPeriod !== null)}
+                      />
+                    )}
+                  </div>
+                  <div className="flex flex-col gap-2">
+                    <label className="inline-flex items-center gap-2 text-sm text-slate-700">
+                      <input
+                        type="checkbox"
+                        checked={tcUseObv}
+                        onChange={(e) => setTcUseObv(e.target.checked)}
+                      />
+                      Also require rising on-balance volume
+                    </label>
+                    {tcUseObv && (
+                      <NumberField
+                        id="bot-tc-obv-window"
+                        label="OBV window (bars)"
+                        min={1}
+                        step={1}
+                        value={tcObvWindow}
+                        onChange={setTcObvWindow}
+                        hint="Volume must back the move over this many bars."
+                        invalid={tcFieldInvalid(tcObvWindow, tcValues.obvWindow !== null)}
+                      />
+                    )}
+                  </div>
+                </div>
               </div>
             ) : isVelocity ? (
               <NumberField

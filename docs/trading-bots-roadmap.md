@@ -14,7 +14,7 @@ new `StrategyKey`.
 
 **Key insight — consolidation.** Once periods, thresholds, MA-type, and optional
 filters become *config*, many course folders collapse into the same bot. The ~35
-feasible/caveat folders reduce to **16 distinct bots** (13 shipped); a 17th
+feasible/caveat folders reduce to **16 distinct bots** (14 shipped); a 17th
 (Trend-Confirmation, #13) is derived from the AI-portfolio technical gate rather
 than a course algo. Each item below is one shippable bot; "Absorbs" lists the
 course folders it subsumes so we never build the same signal twice.
@@ -36,6 +36,7 @@ course folders it subsumes so we never build the same signal twice.
 - **MA Ribbon** (`ma_ribbon`) — Tier 2 #9, Algo 18. SMA 5/10/20; enter when fast > mid > slow, exits via the engine bracket (course has no ribbon exit). Preset: MA Ribbon (Algo 18, default).
 - **VAMA** (`vama`) — Tier 2 #10, Algo 30. The course's "adaptive" α divides the current volatility by itself, so it is always α_max (0.20) — a fixed EMA. Shipped with both: fixed smoothing (course, used by the preset) and a real adaptive mode (α = α_max × current ÷ average volatility, clamped). Close above the VAMA in, at/below out; no TP/SL. Preset: VAMA (Algo 30, default, fixed smoothing).
 - **Price Velocity Reversal** (`price_velocity_reversal`) — Tier 2 #11, Algo 48 (file `algo 49.py`). Velocity = latest bar's % change; enter when velocity < −threshold and acceleration > 0 (a slowing sell-off), exit when velocity turns positive. The course's absolute ₹2 threshold (on a ₹1,000 simulated price) is expressed as 0.2% so it works at any share price (user decision). Preset: Price Velocity Reversal (Algo 48, default).
+- **Trend Confirmation** (`trend_confirmation`) — Tier 2 #13, Cadence's own design (option B below). AND of SMA 20 > 50, MACD 12/26/9 histogram > 0, RSI 14 in (50, 70), optional ROC 12 > 0 and OBV-20 rising; exit when any breaks, RSI exit below 45 (hysteresis), never sold for RSI above the cap. Shares the AI gate's indicator maths (`technical_indicators/series.py`, golden-value parity test). Preset: Trend Confirmation (Cadence, default; TP 1% / SL 1% / DD 5%).
 
 Every shipped strategy also has its course presets in the preset catalog (`strategy_bots/presets.py`), which is all the AI orchestrator may deploy.
 
@@ -62,7 +63,7 @@ Every shipped strategy also has its course presets in the preset catalog (`strat
 | 10 | ✅ **VAMA** | 30 | **Shipped** (`vama`). Fixed (course) and adaptive smoothing. |
 | 11 | ✅ **Price Velocity Reversal** | 48 | **Shipped** (`price_velocity_reversal`). Velocity/acceleration reversal, percent threshold (file mislabeled `algo 49.py`). |
 | 12 | ✅ **Gradient Convergence** | 3 | **Shipped as a Rolling-Average Reversion preset** (`rolling_reversion_gradient_algo3`): long while close < SMA(5), flat once back at/above — the same signal, so no separate strategy. |
-| 13 | **Trend-Confirmation (multi-indicator AND)** | — (new; derived from the AI-portfolio technical gate) | Intraday, re-tuned. See note below. |
+| 13 | ✅ **Trend-Confirmation (multi-indicator AND)** | — (new; derived from the AI-portfolio technical gate) | **Shipped** (`trend_confirmation`). Intraday, re-tuned; shares the gate's indicator maths. See note below. |
 
 ## Tier 3 — Volume-dependent (data-quality caveat)
 
@@ -129,6 +130,6 @@ Cadence's AI-portfolio **technical gate** could become a bot.
 - Range 13–24 contains **zero** algos that truly require news, order book, pairs,
   or external models.
 
-**Scorecard:** 17 distinct bots (13 shipped) — 16 replace all ~35 feasible course
+**Scorecard:** 17 distinct bots (14 shipped) — Tiers 1 and 2 complete — 16 replace all ~35 feasible course
 folders, plus the Trend-Confirmation bot (#13) derived from the AI-portfolio
 technical gate. Tier 1's 4 bots alone cover ~15 course folders.

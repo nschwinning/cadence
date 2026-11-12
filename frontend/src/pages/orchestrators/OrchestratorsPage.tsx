@@ -5,6 +5,7 @@ import { Modal } from '../../components/Modal';
 import { formatCurrency } from '../../lib/format';
 import type { BotOrchestrator } from '../../types/api';
 import { DeployOrchestratorCard } from './DeployOrchestratorCard';
+import { PresetCatalogPanel } from './PresetCatalogPanel';
 import {
   CADENCE_LABELS,
   RunStatusBadge,
@@ -154,6 +155,8 @@ export function OrchestratorsPage() {
           </div>
         )}
       </div>
+
+      <PresetCatalogPanel />
     </section>
   );
 }

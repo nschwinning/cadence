@@ -1449,6 +1449,9 @@ The catalog SHALL include these presets, reproducing the reference-course recipe
 - **Price Velocity Reversal (Algo 48)** — default for the Price Velocity Reversal strategy: velocity
   threshold 0.2% per bar (the course's ₹2 move on its ₹1,000 simulated price); take-profit 0.5%,
   stop-loss 1%, drawdown limit 5%.
+- **Trend Confirmation (Cadence)** — default for the Trend Confirmation strategy (Cadence's own
+  recipe, not a course algorithm): SMA 20 / 50, MACD 12 / 26 / 9, RSI 14 entering between 50 and
+  70 and exiting below 45, ROC and OBV legs off; take-profit 1%, stop-loss 1%, drawdown limit 5%.
 
 #### Scenario: List presets
 
@@ -1526,6 +1529,12 @@ The catalog SHALL include these presets, reproducing the reference-course recipe
 - **WHEN** a client requests the preset catalog
 - **THEN** it SHALL include the Gradient Convergence (Algo 3) preset for the Rolling-Average
   Reversion strategy
+
+#### Scenario: Trend Confirmation preset listed
+
+- **WHEN** a client requests the preset catalog
+- **THEN** it SHALL include the Trend Confirmation (Cadence) preset as the Trend Confirmation
+  strategy's default
 
 ### Requirement: Preset-driven build form
 
@@ -2108,4 +2117,70 @@ SHALL never signal a short entry.
 #### Scenario: Insufficient history
 
 - **WHEN** fewer than three bars are available
+- **THEN** it SHALL signal HOLD
+
+### Requirement: Trend Confirmation strategy
+
+The system SHALL provide a **Trend Confirmation** strategy, registered alongside the existing
+strategies. It is Cadence's own design (not a course port), reusing the indicator calculations of
+the AI-portfolio technical gate on the bots' bars. It SHALL be a pure, long-only signal generator
+that, given recent bars, the current position, and its parameters, returns one of ENTER_LONG,
+EXIT, or HOLD together with a human-readable reason, performing no I/O and holding no persisted
+state.
+
+Its parameters SHALL be: `sma_fast` < `sma_slow` (defaults 20, 50); `macd_fast` < `macd_slow`
+and `macd_signal` (defaults 12, 26, 9); `rsi_period` (default 14); `rsi_exit` ≤ `rsi_entry` <
+`rsi_max` ≤ 100 (defaults 45, 50, 70); `use_roc` (default off) with `roc_period` (default 12);
+`use_obv` (default off) with `obv_window` (default 20). It SHALL compute, on the closes (and
+volumes for OBV) of the bars provided: simple moving averages; the MACD histogram from exponential
+moving averages; a Wilder-smoothed RSI; the rate of change over `roc_period` bars; and the
+on-balance-volume change over `obv_window` bars — using the same formulas as the AI-portfolio
+technical indicators.
+
+While flat, the strategy SHALL signal ENTER_LONG only when **all** active legs agree: the fast SMA
+is strictly above the slow SMA, the MACD histogram is strictly above 0, the RSI is strictly above
+`rsi_entry` and strictly below `rsi_max`, and — when enabled — the rate of change is strictly above
+0 and the OBV change is strictly above 0. While holding, it SHALL signal EXIT when **any** active
+leg breaks: the fast SMA strictly below the slow SMA, the MACD histogram strictly below 0, the RSI
+strictly below `rsi_exit`, or — when enabled — the rate of change or the OBV change strictly below
+0; it SHALL NOT exit because the RSI is above `rsi_max`. Otherwise it SHALL signal HOLD. When any
+active indicator is undefined it SHALL signal HOLD. With fewer bars than it needs it SHALL signal
+HOLD. It SHALL never signal a short entry.
+
+#### Scenario: All legs agree enters
+
+- **WHEN** the strategy is flat, the fast SMA is above the slow SMA, the MACD histogram is
+  positive and the RSI is between the entry level and the cap
+- **THEN** it SHALL signal ENTER_LONG
+
+#### Scenario: One disagreeing leg blocks entry
+
+- **WHEN** the strategy is flat and every leg agrees except that the RSI is at or above the cap
+- **THEN** it SHALL signal HOLD
+
+#### Scenario: Any broken leg exits
+
+- **WHEN** the strategy holds and the MACD histogram turns negative while the other legs still
+  agree
+- **THEN** it SHALL signal EXIT
+
+#### Scenario: RSI hysteresis avoids churn
+
+- **WHEN** the strategy holds and the RSI dips to 47 — below the entry level, above the exit
+  level — while the other legs agree
+- **THEN** it SHALL signal HOLD
+
+#### Scenario: Strength is not a reason to sell
+
+- **WHEN** the strategy holds and the RSI rises above the cap while the other legs agree
+- **THEN** it SHALL signal HOLD
+
+#### Scenario: Optional legs join the conjunction
+
+- **WHEN** the ROC leg is enabled and the rate of change is negative while the other legs agree
+- **THEN** a flat strategy SHALL signal HOLD and a holding strategy SHALL signal EXIT
+
+#### Scenario: Insufficient history
+
+- **WHEN** fewer bars than the strategy needs are available
 - **THEN** it SHALL signal HOLD

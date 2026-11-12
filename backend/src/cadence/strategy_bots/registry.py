@@ -55,6 +55,10 @@ from cadence.strategy_bots.rsi_mean_reversion import (
     RsiMeanReversionStrategy,
 )
 from cadence.strategy_bots.strategy import Strategy, StrategyParams
+from cadence.strategy_bots.trend_confirmation import (
+    TrendConfirmationParams,
+    TrendConfirmationStrategy,
+)
 from cadence.strategy_bots.vama import VamaParams, VamaStrategy
 
 
@@ -164,6 +168,13 @@ _REGISTRY: dict[StrategyKey, StrategyRegistration] = {
         explanation=STRATEGY_EXPLANATIONS[StrategyKey.PRICE_VELOCITY_REVERSAL],
         strategy=PriceVelocityReversalStrategy(),
         params_schema=PriceVelocityReversalParams,
+    ),
+    StrategyKey.TREND_CONFIRMATION: StrategyRegistration(
+        key=StrategyKey.TREND_CONFIRMATION,
+        display_name=STRATEGY_DISPLAY_NAMES[StrategyKey.TREND_CONFIRMATION],
+        explanation=STRATEGY_EXPLANATIONS[StrategyKey.TREND_CONFIRMATION],
+        strategy=TrendConfirmationStrategy(),
+        params_schema=TrendConfirmationParams,
     ),
 }
 

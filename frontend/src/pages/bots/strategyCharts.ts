@@ -9,6 +9,7 @@ import { buildHeikinAshiChartOption } from './heikinAshiChart';
 import { buildHmaChartOption } from './hmaChart';
 import { buildRollingReversionChartOption } from './rollingReversionChart';
 import { buildRsiChartOption } from './rsiChart';
+import { buildTrendConfirmationChartOption } from './trendConfirmationChart';
 import { buildVamaChartOption } from './vamaChart';
 import { buildVelocityChartOption } from './velocityChart';
 
@@ -87,6 +88,11 @@ const STRATEGY_CHARTS: Record<string, StrategyChartDescriptor> = {
     buildOption: buildVelocityChartOption,
     ariaLabel:
       'Illustrative price velocity reversal with an entry on a slowing sell-off and an exit on the first up-bar',
+  },
+  trend_confirmation: {
+    buildOption: buildTrendConfirmationChartOption,
+    ariaLabel:
+      'Illustrative trend confirmation with an entry where every trend check agrees and an exit where one breaks',
   },
 };
 

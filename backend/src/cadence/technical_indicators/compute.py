@@ -30,6 +30,7 @@ import pandas as pd
 
 from cadence.assets.market_data import HistoryBar
 from cadence.technical_indicators import constants as c
+from cadence.technical_indicators import series
 
 
 @dataclass(frozen=True)
@@ -82,41 +83,6 @@ class IndicatorSnapshot:
     reversal_flags: ReversalFlags
 
 
-def _wilder(series: pd.Series, n: int) -> pd.Series:
-    """Wilder's smoothing (SMMA); NaN until ``n`` observations are available."""
-    values = series.to_numpy(dtype="float64")
-    out = np.full(values.shape, np.nan)
-    valid = ~np.isnan(values)
-    if int(valid.sum()) < n:
-        return pd.Series(out, index=series.index)
-    cum = np.cumsum(valid)
-    seed_pos = int(np.argmax(cum >= n))
-    window = values[: seed_pos + 1]
-    prev = float(np.nanmean(window[~np.isnan(window)][-n:]))
-    out[seed_pos] = prev
-    for i in range(seed_pos + 1, len(values)):
-        x = values[i]
-        if np.isnan(x):
-            out[i] = prev
-            continue
-        prev = (prev * (n - 1) + x) / n
-        out[i] = prev
-    return pd.Series(out, index=series.index)
-
-
-def _rsi(price: pd.Series, n: int) -> pd.Series:
-    delta = price.diff()
-    gain = delta.clip(lower=0.0)
-    loss = (-delta).clip(lower=0.0)
-    avg_gain = _wilder(gain, n)
-    avg_loss = _wilder(loss, n)
-    rs = avg_gain / avg_loss
-    rsi = 100.0 - 100.0 / (1.0 + rs)
-    rsi = rsi.where(avg_loss != 0.0, other=100.0)
-    rsi = rsi.where(~((avg_gain == 0.0) & (avg_loss == 0.0)), other=np.nan)
-    return rsi.where(~avg_gain.isna())
-
-
 def _clean(value: float | None) -> float | None:
     """Normalise NaN/inf to ``None`` and everything else to ``float``."""
     if value is None:
@@ -158,23 +124,20 @@ def compute_snapshot(bars: Sequence[HistoryBar]) -> IndicatorSnapshot | None:
     )
 
     # --- Moving averages / trend ------------------------------------------
-    sma_50 = p.rolling(c.SMA_SHORT).mean()
-    sma_200 = p.rolling(c.SMA_LONG).mean()
-    ema_20 = p.ewm(span=c.EMA_SPAN, adjust=False, min_periods=c.EMA_SPAN).mean()
+    sma_50 = series.sma(p, c.SMA_SHORT)
+    sma_200 = series.sma(p, c.SMA_LONG)
+    ema_20 = series.ema(p, c.EMA_SPAN)
     close_sma200 = p / sma_200
     sma50_sma200 = sma_50 / sma_200
     sma200_slope = sma_200 / sma_200.shift(c.SLOPE_WINDOW) - 1.0
 
     # --- Momentum ----------------------------------------------------------
-    rsi_14 = _rsi(p, c.RSI_PERIOD)
-    roc_120 = p / p.shift(c.ROC_PERIOD) - 1.0
-    ema_fast = p.ewm(span=c.MACD_FAST, adjust=False, min_periods=c.MACD_FAST).mean()
-    ema_slow = p.ewm(span=c.MACD_SLOW, adjust=False, min_periods=c.MACD_SLOW).mean()
-    macd_line = ema_fast - ema_slow
-    macd_signal = macd_line.ewm(
-        span=c.MACD_SIGNAL, adjust=False, min_periods=c.MACD_SIGNAL
-    ).mean()
-    macd_hist = macd_line - macd_signal
+    rsi_14 = series.rsi(p, c.RSI_PERIOD)
+    roc_120 = series.roc(p, c.ROC_PERIOD)
+    macd = series.macd(p, c.MACD_FAST, c.MACD_SLOW, c.MACD_SIGNAL)
+    macd_line = macd.line
+    macd_signal = macd.signal
+    macd_hist = macd.histogram
     macd_hist_change = macd_hist.diff()
 
     # Return acceleration (momentum fading proxy).
@@ -200,8 +163,8 @@ def compute_snapshot(bars: Sequence[HistoryBar]) -> IndicatorSnapshot | None:
     # --- Volume -----------------------------------------------------------
     avg_vol_50 = volume.rolling(c.AVG_VOL_PERIOD).mean()
     vol_ratio_50 = volume / avg_vol_50.replace(0.0, np.nan)
-    obv = (np.sign(close.diff()).fillna(0.0) * volume).cumsum()
-    obv_change_20d = obv - obv.shift(c.OBV_CHANGE_WINDOW)
+    obv = series.obv(close, volume)
+    obv_change_20d = series.change(obv, c.OBV_CHANGE_WINDOW)
 
     snapshot = IndicatorSnapshot(
         trading_date=dates[-1],

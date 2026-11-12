@@ -71,6 +71,7 @@ class StrategyKey(StrEnum):
     MA_RIBBON = "ma_ribbon"
     VAMA = "vama"
     PRICE_VELOCITY_REVERSAL = "price_velocity_reversal"
+    TREND_CONFIRMATION = "trend_confirmation"
 
 
 class SizingMethod(StrEnum):
@@ -101,6 +102,7 @@ STRATEGY_DISPLAY_NAMES: dict[StrategyKey, str] = {
     StrategyKey.MA_RIBBON: "MA Ribbon",
     StrategyKey.VAMA: "VAMA",
     StrategyKey.PRICE_VELOCITY_REVERSAL: "Price Velocity Reversal",
+    StrategyKey.TREND_CONFIRMATION: "Trend Confirmation",
 }
 
 #: Human-readable explanations for the strategy catalog, shown on the strategy
@@ -237,6 +239,18 @@ STRATEGY_EXPLANATIONS: dict[StrategyKey, str] = {
         "on a bounce. It sells as soon as the price turns up again. It is deterministic "
         "and long-only, and leaves take-profit, stop-loss, sizing and the drawdown "
         "kill-switch to the bot's risk controls."
+    ),
+    StrategyKey.TREND_CONFIRMATION: (
+        "The Trend Confirmation strategy only buys when several independent trend "
+        "readings agree. The fast moving average must be above the slow one (the trend), "
+        "the MACD histogram must be positive (momentum building) and the RSI must be "
+        "strong but not overheated; optionally the rate of change must be positive and "
+        "on-balance volume rising. It buys once every active check passes and sells as "
+        "soon as one fails — with a little slack on the RSI and never because the RSI is "
+        "too high, so a strong trend is not sold early. It uses the same indicator maths "
+        "as the AI portfolio's technical gate, tuned for intraday bars. It is "
+        "deterministic and long-only, and leaves take-profit, stop-loss, sizing and the "
+        "drawdown kill-switch to the bot's risk controls."
     ),
 }
 

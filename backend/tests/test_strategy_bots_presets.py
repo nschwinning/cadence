@@ -125,6 +125,15 @@ def test_get_preset_unknown_key_raises() -> None:
             False,
         ),
         (
+            "trend_confirmation_cadence",
+            StrategyKey.TREND_CONFIRMATION,
+            {"sma_fast": 20, "sma_slow": 50, "macd_fast": 12, "macd_slow": 26, "macd_signal": 9, "rsi_period": 14, "rsi_entry": 50.0, "rsi_max": 70.0, "rsi_exit": 45.0, "use_roc": False, "roc_period": 12, "use_obv": False, "obv_window": 20},
+            0.01,
+            0.01,
+            0.05,
+            True,
+        ),
+        (
             "price_velocity_algo48",
             StrategyKey.PRICE_VELOCITY_REVERSAL,
             {"threshold_pct": 0.002},

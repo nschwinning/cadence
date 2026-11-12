@@ -201,6 +201,7 @@ def test_list_presets(client: TestClient) -> None:
         "vama_algo30",
         "rolling_reversion_gradient_algo3",
         "price_velocity_algo48",
+        "trend_confirmation_cadence",
     ]
     turtle = body[2]
     assert turtle == {

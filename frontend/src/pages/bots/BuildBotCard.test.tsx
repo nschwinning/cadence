@@ -319,6 +319,32 @@ const PRESETS: BotPreset[] = [
     drawdown_stop_pct: 0.05,
     is_default: false,
   },
+  {
+    key: 'trend_confirmation_cadence',
+    display_name: 'Trend Confirmation (Cadence)',
+    description: 'All legs agree.',
+    course_ref: 'Cadence — no course algorithm',
+    strategy_key: 'trend_confirmation',
+    strategy_params: {
+      sma_fast: 20,
+      sma_slow: 50,
+      macd_fast: 12,
+      macd_slow: 26,
+      macd_signal: 9,
+      rsi_period: 14,
+      rsi_entry: 50,
+      rsi_max: 70,
+      rsi_exit: 45,
+      use_roc: false,
+      roc_period: 12,
+      use_obv: false,
+      obv_window: 20,
+    },
+    take_profit_pct: 0.01,
+    stop_loss_pct: 0.01,
+    drawdown_stop_pct: 0.05,
+    is_default: true,
+  },
 ];
 
 /** Route the catalog GETs the form issues on mount plus the picker's asset search. */
@@ -353,6 +379,13 @@ function routeCatalogs({ presetsFail = false }: { presetsFail?: boolean } = {}) 
             display_name: 'Rolling-Average Reversion',
             explanation: 'Buys dips below the rolling average.',
             required_history: 20,
+            params_schema: {},
+          },
+          {
+            key: 'trend_confirmation',
+            display_name: 'Trend Confirmation',
+            explanation: 'Buys when every trend check agrees.',
+            required_history: 87,
             params_schema: {},
           },
           {
@@ -1607,5 +1640,87 @@ describe('BuildBotCard', () => {
         }),
       );
     });
+  });
+
+  it('applies the Trend Confirmation preset and submits every leg', async () => {
+    mockedPost.mockResolvedValue({ data: { id: 'b1' } });
+    const user = userEvent.setup();
+    renderCard(<BuildBotCard />);
+
+    await waitForPreset();
+    await user.selectOptions(screen.getByLabelText('Strategy'), 'trend_confirmation');
+
+    await waitForPreset('Trend Confirmation (Cadence)');
+    expect(screen.getByLabelText('Fast SMA')).toHaveValue(20);
+    expect(screen.getByLabelText('MACD signal')).toHaveValue(9);
+    expect(screen.getByLabelText('RSI cap')).toHaveValue(70);
+    expect(screen.getByLabelText('RSI exit below')).toHaveValue(45);
+    expect(screen.queryByLabelText('ROC period (bars)')).not.toBeInTheDocument();
+    await pickAAPL(user);
+    await user.click(screen.getByRole('button', { name: 'Create bot' }));
+
+    await waitFor(() => {
+      expect(mockedPost).toHaveBeenCalledWith(
+        '/api/v1/bots/sessions',
+        expect.objectContaining({
+          strategy_key: 'trend_confirmation',
+          preset_key: 'trend_confirmation_cadence',
+          take_profit_pct: 0.01,
+          strategy_params: {
+            sma_fast: 20,
+            sma_slow: 50,
+            macd_fast: 12,
+            macd_slow: 26,
+            macd_signal: 9,
+            rsi_period: 14,
+            rsi_entry: 50,
+            rsi_max: 70,
+            rsi_exit: 45,
+            use_roc: false,
+            roc_period: 12,
+            use_obv: false,
+            obv_window: 20,
+          },
+        }),
+      );
+    });
+  });
+
+  it('enabling the ROC leg sends it with its period', async () => {
+    mockedPost.mockResolvedValue({ data: { id: 'b1' } });
+    const user = userEvent.setup();
+    renderCard(<BuildBotCard />);
+
+    await waitForPreset();
+    await user.selectOptions(screen.getByLabelText('Strategy'), 'trend_confirmation');
+    await waitForPreset('Trend Confirmation (Cadence)');
+    await user.click(screen.getByLabelText('Also require a positive rate of change'));
+    expect(screen.getByLabelText('ROC period (bars)')).toHaveValue(12);
+    await pickAAPL(user);
+    await user.click(screen.getByRole('button', { name: 'Create bot' }));
+
+    await waitFor(() => {
+      expect(mockedPost).toHaveBeenCalledWith(
+        '/api/v1/bots/sessions',
+        expect.objectContaining({
+          strategy_params: expect.objectContaining({ use_roc: true, roc_period: 12 }),
+        }),
+      );
+    });
+  });
+
+  it('blocks Trend Confirmation submission when the RSI exit is above the entry', async () => {
+    const user = userEvent.setup();
+    renderCard(<BuildBotCard />);
+
+    await waitForPreset();
+    await user.selectOptions(screen.getByLabelText('Strategy'), 'trend_confirmation');
+    await waitForPreset('Trend Confirmation (Cadence)');
+    await pickAAPL(user);
+    const exit = screen.getByLabelText('RSI exit below');
+    await user.clear(exit);
+    await user.type(exit, '55');
+
+    expect(screen.getByRole('button', { name: 'Create bot' })).toBeDisabled();
   });
 });

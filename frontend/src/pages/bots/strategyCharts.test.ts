@@ -10,6 +10,7 @@ import { macdEntryIndex, macdPoints } from './macdChart';
 import { ribbonEntryIndex, smaSeries } from './maRibbonChart';
 import { smoothingFactors, vamaSignals } from './vamaChart';
 import { velocitySignals } from './velocityChart';
+import { rsi, sma, trendConfirmationSignals } from './trendConfirmationChart';
 import { reversionSignals, rollingMean } from './rollingReversionChart';
 import { rsiSignals, wilderRsiSeries } from './rsiChart';
 
@@ -331,6 +332,33 @@ describe('velocityChart', () => {
       series: { id: string; markLine?: { data: unknown[] } }[];
     };
     expect(option.series.map((s) => s.id)).toEqual(['price', 'velocity']);
+    expect(option.series[0].markLine?.data).toHaveLength(2);
+  });
+});
+
+describe('trendConfirmationChart', () => {
+  it('is registered for trend_confirmation', () => {
+    expect(getStrategyChart('trend_confirmation')?.ariaLabel).toMatch(/trend confirmation/i);
+  });
+
+  it('computes SMAs and a Wilder RSI like the backend', () => {
+    expect(sma([1, 2, 3, 4], 2)).toEqual([null, 1.5, 2.5, 3.5]);
+    const rising = rsi([1, 2, 3, 4, 5], 3);
+    expect(rising[3]).toBe(100);
+    expect(rising[2]).toBeNull();
+  });
+
+  it('enters when every leg agrees and exits when one breaks', () => {
+    const signals = trendConfirmationSignals();
+    expect(signals.map((s) => s.kind)).toEqual(['entry', 'exit']);
+    expect(signals[0].index).toBeLessThan(signals[1].index);
+  });
+
+  it('builds price and two SMA series with entry/exit mark-lines', () => {
+    const option = getStrategyChart('trend_confirmation')!.buildOption() as {
+      series: { id: string; markLine?: { data: unknown[] } }[];
+    };
+    expect(option.series.map((s) => s.id)).toEqual(['price', 'sma-fast', 'sma-slow']);
     expect(option.series[0].markLine?.data).toHaveLength(2);
   });
 });

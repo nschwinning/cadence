@@ -421,6 +421,36 @@ _PRESETS: tuple[BotPreset, ...] = (
         drawdown_stop_pct=0.05,
         is_default=True,
     ),
+    BotPreset(
+        key="trend_confirmation_cadence",
+        display_name="Trend Confirmation (Cadence)",
+        description=(
+            "Cadence's own recipe for 5-minute bars: buys when SMA 20 is above SMA 50, the "
+            "MACD 12/26/9 histogram is positive and RSI 14 is between 50 and 70; sells when "
+            "any of these breaks (RSI below 45). 1% take-profit and 1% stop-loss."
+        ),
+        course_ref="Cadence — no course algorithm",
+        strategy_key=StrategyKey.TREND_CONFIRMATION,
+        strategy_params={
+            "sma_fast": 20,
+            "sma_slow": 50,
+            "macd_fast": 12,
+            "macd_slow": 26,
+            "macd_signal": 9,
+            "rsi_period": 14,
+            "rsi_entry": 50.0,
+            "rsi_max": 70.0,
+            "rsi_exit": 45.0,
+            "use_roc": False,
+            "roc_period": 12,
+            "use_obv": False,
+            "obv_window": 20,
+        },
+        take_profit_pct=0.01,
+        stop_loss_pct=0.01,
+        drawdown_stop_pct=0.05,
+        is_default=True,
+    ),
 )
 
 _BY_KEY: dict[str, BotPreset] = {preset.key: preset for preset in _PRESETS}
