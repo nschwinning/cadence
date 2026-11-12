@@ -46,6 +46,20 @@ export async function restorePositions(
   return data;
 }
 
+/**
+ * Lower crypto ledgers to the account's holding where only fee residue differs, for one
+ * symbol or every eligible one. No order is sent; the server recomputes at execution.
+ */
+export async function writeOffPositions(
+  symbol: string | null,
+): Promise<AdminFlattenResponse> {
+  const { data } = await apiClient.post<AdminFlattenResponse>(
+    '/api/v1/admin/write-off-positions',
+    { symbol },
+  );
+  return data;
+}
+
 /** Resolve unbooked journaled orders now. */
 export async function reconcileOrders(): Promise<AdminReconcileResult> {
   const { data } = await apiClient.post<AdminReconcileResult>(
@@ -86,6 +100,15 @@ export function useReconcileOrders() {
   const queryClient = useQueryClient();
   return useMutation<AdminReconcileResult, unknown, void>({
     mutationFn: reconcileOrders,
+    onSettled: () => queryClient.invalidateQueries({ queryKey: adminKeys.all }),
+  });
+}
+
+/** Mutation writing off crypto fee residue; refreshes the overview once it settles. */
+export function useWriteOffPositions() {
+  const queryClient = useQueryClient();
+  return useMutation<AdminFlattenResponse, unknown, string | null>({
+    mutationFn: writeOffPositions,
     onSettled: () => queryClient.invalidateQueries({ queryKey: adminKeys.all }),
   });
 }

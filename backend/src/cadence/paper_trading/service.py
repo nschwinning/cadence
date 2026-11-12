@@ -78,6 +78,9 @@ SCOPE_CHANGE_RUN_TRIGGER = "scope_change"
 # fully exited and its row removed. Sized to the executor's crypto quantity
 # precision (8 decimals) so fractional dust nets cleanly to a closed position.
 LEDGER_QUANTITY_EPSILON = 1e-8
+#: A crypto ledger remainder at most this fraction of the position after a sell is fee
+#: dust (the broker took its buy fee in the coin) and is closed with the sale.
+CRYPTO_DUST_FRACTION = 0.01
 
 
 def create_session(
@@ -932,10 +935,26 @@ def book_fill(
     mark, then commits them together. A journal row already booked (e.g. by
     reconciliation) raises :class:`~cadence.orders.journal.AlreadyBookedError` before
     anything is written, so a fill is never booked twice.
+
+    Crypto follows the broker's coin-denominated fee: a crypto **buy** adds the quantity
+    actually received — the filled quantity less ``CRYPTO_FEE_PCT`` — to the ledger (the
+    trade keeps the filled quantity, and the fee is charged once, into ``total_fees``);
+    a crypto **sell** that leaves at most :data:`CRYPTO_DUST_FRACTION` of the position
+    closes it, so a full exit capped at the account's holding leaves no phantom dust.
     """
     if client_order_id is not None:
         journal.mark_booked(session, client_order_id)
     fill_price = filled_price or price
+    ledger_quantity = quantity
+    if asset_class is AssetClass.CRYPTO:
+        if side == OrderSide.BUY:
+            ledger_quantity = quantity * (1.0 - settings.CRYPTO_FEE_PCT)
+        else:
+            held = get_open_position(session, session_id, ticker)
+            if held is not None and held.quantity - quantity <= (
+                CRYPTO_DUST_FRACTION * held.quantity
+            ):
+                ledger_quantity = max(quantity, held.quantity)
     realised = 0.0
     if side == OrderSide.SELL:
         basis = get_position_entry_basis(session, session_id, ticker)
@@ -959,7 +978,7 @@ def book_fill(
         session_id=session_id,
         ticker=ticker,
         side=side,
-        shares=quantity,
+        shares=ledger_quantity,
         price=fill_price,
         commit=False,
     )

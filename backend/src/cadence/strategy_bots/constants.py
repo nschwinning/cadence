@@ -63,6 +63,14 @@ class StrategyKey(StrEnum):
     RSI_MEAN_REVERSION = "rsi_mean_reversion"
     DONCHIAN_BREAKOUT = "donchian_breakout"
     ROLLING_AVERAGE_REVERSION = "rolling_average_reversion"
+    ATR_BAND_TREND = "atr_band_trend"
+    ADX_TREND = "adx_trend"
+    MACD_MOMENTUM = "macd_momentum"
+    HEIKIN_ASHI_TREND = "heikin_ashi_trend"
+    HMA_TREND = "hma_trend"
+    MA_RIBBON = "ma_ribbon"
+    VAMA = "vama"
+    PRICE_VELOCITY_REVERSAL = "price_velocity_reversal"
 
 
 class SizingMethod(StrEnum):
@@ -85,6 +93,14 @@ STRATEGY_DISPLAY_NAMES: dict[StrategyKey, str] = {
     StrategyKey.RSI_MEAN_REVERSION: "RSI Mean Reversion",
     StrategyKey.DONCHIAN_BREAKOUT: "Donchian Range Breakout",
     StrategyKey.ROLLING_AVERAGE_REVERSION: "Rolling-Average Reversion",
+    StrategyKey.ATR_BAND_TREND: "ATR-Band Trend",
+    StrategyKey.ADX_TREND: "ADX Trend Strength",
+    StrategyKey.MACD_MOMENTUM: "MACD Momentum",
+    StrategyKey.HEIKIN_ASHI_TREND: "Heikin-Ashi Trend",
+    StrategyKey.HMA_TREND: "HMA Trend",
+    StrategyKey.MA_RIBBON: "MA Ribbon",
+    StrategyKey.VAMA: "VAMA",
+    StrategyKey.PRICE_VELOCITY_REVERSAL: "Price Velocity Reversal",
 }
 
 #: Human-readable explanations for the strategy catalog, shown on the strategy
@@ -137,6 +153,90 @@ STRATEGY_EXPLANATIONS: dict[StrategyKey, str] = {
         "trade. It is deterministic and long-only — a price above its average never "
         "opens a short — and leaves sizing and the drawdown kill-switch to the bot's "
         "risk controls."
+    ),
+    StrategyKey.ATR_BAND_TREND: (
+        "The ATR-Band Trend strategy rides trends that break out of a volatility band "
+        "around the recent price. It measures volatility as the average move from one "
+        "close to the next (an ATR) and places bands a multiple of it around a midline. "
+        "In the SuperTrend version the midline is the middle of the recent range and "
+        "the bands only tighten while a trend lasts; the bot buys when the trend is up "
+        "and the price sits above the SuperTrend line, then holds and lets the "
+        "take-profit / stop-loss bracket close the trade. In the Keltner version the "
+        "midline is a simple moving average; the bot buys when the price breaks above "
+        "the upper band and sells when it falls back below the average. It is "
+        "deterministic and long-only, and leaves sizing and the drawdown kill-switch to "
+        "the bot's risk controls."
+    ),
+    StrategyKey.ADX_TREND: (
+        "The ADX Trend Strength strategy only trades trends that are strong. It compares "
+        "how far each bar's high rises against how far its low falls, scaled by the "
+        "bar's true range, to get two directional readings: +DI for buying pressure and "
+        "−DI for selling pressure. How far apart they are gives the trend strength, and "
+        "the ADX averages it over recent bars. The bot buys when the ADX is above its "
+        "threshold and +DI leads −DI — a strong up-trend — and sells once the ADX falls "
+        "back below the threshold and the trend has lost its strength. It is "
+        "deterministic and long-only, and leaves take-profit, stop-loss, sizing and the "
+        "drawdown kill-switch to the bot's risk controls."
+    ),
+    StrategyKey.MACD_MOMENTUM: (
+        "The MACD Momentum strategy buys when upward momentum is confirmed. It follows "
+        "two exponential moving averages of the closing price — a fast one and a slow "
+        "one — and their difference, the MACD, plus a signal line that smooths the MACD. "
+        "When the MACD crosses above its signal line while the MACD itself is above zero "
+        "(the fast average already leads the slow one), momentum has turned up on the "
+        "bullish side and the bot enters a long position. It then holds and lets the "
+        "take-profit / stop-loss bracket close the trade. It is deterministic and "
+        "long-only, and leaves sizing and the drawdown kill-switch to the bot's risk "
+        "controls."
+    ),
+    StrategyKey.HEIKIN_ASHI_TREND: (
+        "The Heikin-Ashi Trend strategy rides runs of smoothed candles. It redraws each "
+        "price bar as a Heikin-Ashi candle — its close is the average of the bar's open, "
+        "high, low and close, and its open is the midpoint of the previous Heikin-Ashi "
+        "candle — which filters out much of the bar-to-bar noise. A green candle (close "
+        "above open) means buyers are in control: the bot buys. The first red candle "
+        "means the run is over: the bot sells. An optional volume filter only buys when "
+        "the bar's volume is above its recent average and also sells when volume fades. "
+        "It is deterministic and long-only, and leaves sizing and the drawdown "
+        "kill-switch to the bot's risk controls."
+    ),
+    StrategyKey.HMA_TREND: (
+        "The HMA Trend strategy follows trends with Hull Moving Averages, which track "
+        "price with far less lag than ordinary moving averages. It keeps a fast and a "
+        "slow Hull average of the closing price. When the fast one is above the slow "
+        "one and still rising, an up-trend is under way and the bot buys. It sells on a "
+        "trend reversal — the fast average dropping below the slow one while falling. "
+        "It is deterministic and long-only, and leaves take-profit, stop-loss, sizing "
+        "and the drawdown kill-switch to the bot's risk controls."
+    ),
+    StrategyKey.MA_RIBBON: (
+        "The MA Ribbon strategy waits until the trend agrees on every horizon. It keeps "
+        "three simple moving averages of the closing price — fast, mid and slow — like "
+        "the strands of a ribbon. When they stack in order, fast above mid above slow, "
+        "prices are rising over the short, medium and longer term at once and the bot "
+        "buys. It then holds and lets the take-profit / stop-loss bracket close the "
+        "trade. It is deterministic and long-only, and leaves sizing and the drawdown "
+        "kill-switch to the bot's risk controls."
+    ),
+    StrategyKey.VAMA: (
+        "The VAMA strategy follows a volatility-adaptive moving average. Each bar the "
+        "average moves a fraction of the way toward the latest close; that fraction is "
+        "its speed. With adaptive smoothing the speed rises when the market is volatile "
+        "and falls when it is calm, so the average keeps up with fast moves without "
+        "chasing noise in quiet ones; without it the speed is fixed, as in the course. "
+        "The bot buys when the price is above the average and sells when it falls back "
+        "to or below it. It is deterministic and long-only, and leaves sizing and the "
+        "drawdown kill-switch to the bot's risk controls."
+    ),
+    StrategyKey.PRICE_VELOCITY_REVERSAL: (
+        "The Price Velocity Reversal strategy buys the moment a sharp drop starts to run "
+        "out of steam. It measures how fast the price is moving — its velocity, the "
+        "latest bar's percentage change — and whether that move is speeding up or "
+        "slowing down. When the price is falling faster than a threshold but by less "
+        "than on the bar before, sellers are losing momentum and the bot buys, betting "
+        "on a bounce. It sells as soon as the price turns up again. It is deterministic "
+        "and long-only, and leaves take-profit, stop-loss, sizing and the drawdown "
+        "kill-switch to the bot's risk controls."
     ),
 }
 

@@ -153,6 +153,8 @@ class OrderGateway:
                 order=None,
                 error=str(exc) or repr(exc),
                 expire_lease=isinstance(exc, OrderError),
+                # Administrator orders have no ledger: an explicit rejection is final.
+                close=isinstance(exc, OrderError) and self.owner_kind is OrderOwnerKind.ADMIN,
             )
             raise
         order.client_order_id = client_order_id

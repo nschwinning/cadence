@@ -21,6 +21,8 @@ type DonchianVersion = 'turtle' | 'locked';
 type ReversionAverage = 'sma' | 'typical' | 'vwap';
 type ReversionDistance = 'band' | 'zscore';
 type ReversionExitMode = 'revert' | 'bracket';
+/** ATR-Band Trend versions (mirror the backend params literal). */
+type AtrBandVersion = 'supertrend' | 'keltner';
 
 /** Risk-control form values a preset sets (percent strings, as the user types them). */
 export interface PresetRiskFormValues {
@@ -224,6 +226,40 @@ export function BuildBotCard() {
   const [raEntryZ, setRaEntryZ] = useState('');
   const [raExitZ, setRaExitZ] = useState('');
   const [raExitMode, setRaExitMode] = useState<ReversionExitMode>('revert');
+  // ATR-Band Trend: version (SuperTrend / Keltner), window, ATR multiplier, and the
+  // Keltner-only exit below the midline.
+  const [abVersion, setAbVersion] = useState<AtrBandVersion>('supertrend');
+  const [abWindow, setAbWindow] = useState('');
+  const [abMult, setAbMult] = useState('');
+  const [abExitOnMidline, setAbExitOnMidline] = useState(true);
+  // ADX Trend Strength: ADX period and threshold.
+  const [adxPeriod, setAdxPeriod] = useState('');
+  const [adxThreshold, setAdxThreshold] = useState('');
+  // MACD Momentum: fast / slow / signal EMA periods.
+  const [macdFast, setMacdFast] = useState('');
+  const [macdSlow, setMacdSlow] = useState('');
+  const [macdSignal, setMacdSignal] = useState('');
+  // Price Velocity Reversal: the drop threshold, entered in percent per bar.
+  const [pvThresholdPct, setPvThresholdPct] = useState('');
+  // VAMA: lookback, smoothing range, and fixed (course) vs adaptive smoothing.
+  const [vamaLookback, setVamaLookback] = useState('');
+  const [vamaAlphaMin, setVamaAlphaMin] = useState('');
+  const [vamaAlphaMax, setVamaAlphaMax] = useState('');
+  const [vamaAdaptive, setVamaAdaptive] = useState(false);
+  // MA Ribbon: fast / mid / slow simple moving average periods.
+  const [ribbonFast, setRibbonFast] = useState('');
+  const [ribbonMid, setRibbonMid] = useState('');
+  const [ribbonSlow, setRibbonSlow] = useState('');
+  // HMA Trend: fast / slow Hull Moving Average periods.
+  const [hmaFast, setHmaFast] = useState('');
+  const [hmaSlow, setHmaSlow] = useState('');
+  // Heikin-Ashi Trend: the optional above-average-volume filter (course Algo 37).
+  const [haVolumeFilter, setHaVolumeFilter] = useState(false);
+  const [haVolumeWindow, setHaVolumeWindow] = useState('20');
+  // Rolling-Average Reversion's optional ADX danger exit (course Algo 15).
+  const [raAdxExit, setRaAdxExit] = useState(false);
+  const [raAdxLookback, setRaAdxLookback] = useState('20');
+  const [raAdxThreshold, setRaAdxThreshold] = useState('20');
   // Sizing controls (ATR risk-based by default; all-in is the legacy N=1 method).
   const [sizingMethod, setSizingMethod] = useState('atr_risk');
   const [riskPct, setRiskPct] = useState('1');
@@ -260,12 +296,72 @@ export function BuildBotCard() {
     entry_z: setRaEntryZ,
     exit_z: setRaExitZ,
     exit_mode: (v) => setRaExitMode(v as ReversionExitMode),
+    adx_exit: (v) => setRaAdxExit(v === 'true'),
+    adx_lookback: setRaAdxLookback,
+    adx_threshold: setRaAdxThreshold,
+  };
+  // MACD Momentum's `fast_period` / `slow_period` would collide with MA Crossover's.
+  const macdSetters: Record<string, (value: string) => void> = {
+    fast_period: setMacdFast,
+    slow_period: setMacdSlow,
+    signal_period: setMacdSignal,
+  };
+  // ADX Trend Strength's `period` / `threshold` would collide with RSI's `period`.
+  const adxSetters: Record<string, (value: string) => void> = {
+    period: setAdxPeriod,
+    threshold: setAdxThreshold,
+  };
+
+  // ATR-Band Trend shares param names (version, window) with other strategies, so its
+  // presets fill their own fields.
+  const atrBandSetters: Record<string, (value: unknown) => void> = {
+    version: (v) => setAbVersion(v as AtrBandVersion),
+    window: (v) => setAbWindow(String(v)),
+    atr_mult: (v) => setAbMult(String(v)),
+    exit_on_midline: (v) => setAbExitOnMidline(Boolean(v)),
   };
 
   // Fill the strategy params and risk controls from a preset.
   const applyPreset = (preset: BotPreset) => {
+    if (preset.strategy_key === 'heikin_ashi_trend') {
+      // Presets without the volume filter leave it off at its default window.
+      setHaVolumeFilter(false);
+      setHaVolumeWindow('20');
+    }
+    if (preset.strategy_key === 'rolling_average_reversion') {
+      // Presets without the ADX danger exit leave it off (and at its defaults).
+      setRaAdxExit(false);
+      setRaAdxLookback('20');
+      setRaAdxThreshold('20');
+    }
     for (const [name, value] of Object.entries(preset.strategy_params)) {
-      if (name === 'version') {
+      if (preset.strategy_key === 'atr_band_trend') {
+        atrBandSetters[name]?.(value);
+      } else if (preset.strategy_key === 'adx_trend') {
+        adxSetters[name]?.(String(value));
+      } else if (preset.strategy_key === 'macd_momentum') {
+        macdSetters[name]?.(String(value));
+      } else if (preset.strategy_key === 'price_velocity_reversal') {
+        // The threshold is a fraction in the preset but a percent in the form.
+        if (name === 'threshold_pct') setPvThresholdPct(fractionToPercent(Number(value)));
+      } else if (preset.strategy_key === 'vama') {
+        if (name === 'lookback') setVamaLookback(String(value));
+        if (name === 'alpha_min') setVamaAlphaMin(String(value));
+        if (name === 'alpha_max') setVamaAlphaMax(String(value));
+        if (name === 'adaptive') setVamaAdaptive(Boolean(value));
+      } else if (preset.strategy_key === 'ma_ribbon') {
+        // `fast_period` / `slow_period` would collide with MA Crossover's fields.
+        if (name === 'fast_period') setRibbonFast(String(value));
+        if (name === 'mid_period') setRibbonMid(String(value));
+        if (name === 'slow_period') setRibbonSlow(String(value));
+      } else if (preset.strategy_key === 'hma_trend') {
+        // `fast_period` / `slow_period` would collide with MA Crossover's fields.
+        if (name === 'fast_period') setHmaFast(String(value));
+        if (name === 'slow_period') setHmaSlow(String(value));
+      } else if (preset.strategy_key === 'heikin_ashi_trend') {
+        if (name === 'volume_filter') setHaVolumeFilter(Boolean(value));
+        if (name === 'volume_window') setHaVolumeWindow(String(value));
+      } else if (name === 'version') {
         setDonchianVersion(value as DonchianVersion);
       } else {
         paramSetters[name]?.(String(value));
@@ -310,6 +406,16 @@ export function BuildBotCard() {
     if (preset) applyPreset(preset);
   };
 
+  // Switching ATR-Band version applies the preset for that version.
+  const handleAtrBandVersionChange = (version: AtrBandVersion) => {
+    setAbVersion(version);
+    const preset = presetCatalog?.find(
+      (p) =>
+        p.strategy_key === 'atr_band_trend' && p.strategy_params.version === version,
+    );
+    if (preset) applyPreset(preset);
+  };
+
   const appliedPreset =
     presetCatalog?.find((p) => p.key === appliedPresetKey) ?? null;
   // The selected strategy's presets; a selector is offered when there are several.
@@ -331,6 +437,14 @@ export function BuildBotCard() {
   const isReversion = strategyKey === 'rolling_average_reversion';
   const isReversionBand = isReversion && raDistance === 'band';
   const isReversionZ = isReversion && raDistance === 'zscore';
+  const isAtrBand = strategyKey === 'atr_band_trend';
+  const isAdx = strategyKey === 'adx_trend';
+  const isMacd = strategyKey === 'macd_momentum';
+  const isHeikinAshi = strategyKey === 'heikin_ashi_trend';
+  const isHma = strategyKey === 'hma_trend';
+  const isRibbon = strategyKey === 'ma_ribbon';
+  const isVama = strategyKey === 'vama';
+  const isVelocity = strategyKey === 'price_velocity_reversal';
 
   const fastValue = Number.parseInt(fastPeriod, 10);
   const slowValue = Number.parseInt(slowPeriod, 10);
@@ -376,8 +490,8 @@ export function BuildBotCard() {
       : channelPeriodValid && atrPaddingValid);
 
   // Rolling-Average Reversion params: integer window ≥ 2; band thresholds as percents
-  // in [0, 100); z thresholds ≥ 0. In revert mode the exit level must sit strictly
-  // above the entry level (exit < entry), otherwise an entry could exit at once.
+  // in [0, 100); z thresholds ≥ 0. In revert mode the exit level must not sit below the
+  // entry level (exit ≤ entry); equal is fine — entry is strict, the exit is at-or-above.
   const raWindowValue = Number.parseInt(raWindow, 10);
   const raWindowValid = Number.isInteger(raWindowValue) && raWindowValue >= 2;
   const raEntryFraction = Number.parseFloat(raEntryPct) / 100;
@@ -393,9 +507,9 @@ export function BuildBotCard() {
   const raReverting = raExitMode === 'revert';
   const raBandOrdered =
     !raReverting ||
-    (raEntryPctValid && raExitPctValid && raExitFraction < raEntryFraction);
+    (raEntryPctValid && raExitPctValid && raExitFraction <= raEntryFraction);
   const raZOrdered =
-    !raReverting || (raEntryZValid && raExitZValid && raExitZValue < raEntryZValue);
+    !raReverting || (raEntryZValid && raExitZValid && raExitZValue <= raEntryZValue);
   const reversionParamsValid =
     !isReversion ||
     (raWindowValid &&
@@ -404,6 +518,72 @@ export function BuildBotCard() {
       raEntryZValid &&
       raExitZValid &&
       (raDistance === 'band' ? raBandOrdered : raZOrdered));
+
+  // ATR-Band Trend params: integer window ≥ 2 and a positive ATR multiplier.
+  const abWindowValue = Number.parseInt(abWindow, 10);
+  const abWindowValid = Number.isInteger(abWindowValue) && abWindowValue >= 2;
+  const abMultValue = Number.parseFloat(abMult);
+  const abMultValid = Number.isFinite(abMultValue) && abMultValue > 0;
+  const atrBandParamsValid = !isAtrBand || (abWindowValid && abMultValid);
+
+  // ADX thresholds are on the 0–100 DI scale (exclusive); periods are integers ≥ 2.
+  const adxPeriodValue = Number.parseInt(adxPeriod, 10);
+  const adxPeriodValid = Number.isInteger(adxPeriodValue) && adxPeriodValue >= 2;
+  const adxThresholdValue = Number.parseFloat(adxThreshold);
+  const adxThresholdValid =
+    Number.isFinite(adxThresholdValue) && adxThresholdValue > 0 && adxThresholdValue < 100;
+  const adxParamsValid = !isAdx || (adxPeriodValid && adxThresholdValid);
+  // MACD periods are integers; the slow EMA must be longer than the fast one.
+  const macdFastValue = Number.parseInt(macdFast, 10);
+  const macdSlowValue = Number.parseInt(macdSlow, 10);
+  const macdSignalValue = Number.parseInt(macdSignal, 10);
+  const macdFastValid = Number.isInteger(macdFastValue) && macdFastValue >= 2;
+  const macdSlowValid = Number.isInteger(macdSlowValue) && macdSlowValue >= 3;
+  const macdSignalValid = Number.isInteger(macdSignalValue) && macdSignalValue >= 2;
+  const macdOrdered = macdFastValid && macdSlowValid && macdSlowValue > macdFastValue;
+  const macdParamsValid = !isMacd || (macdOrdered && macdSignalValid);
+  const haWindowValue = Number.parseInt(haVolumeWindow, 10);
+  const haWindowValid = Number.isInteger(haWindowValue) && haWindowValue >= 2;
+  const haParamsValid = !isHeikinAshi || !haVolumeFilter || haWindowValid;
+  const hmaFastValue = Number.parseInt(hmaFast, 10);
+  const hmaSlowValue = Number.parseInt(hmaSlow, 10);
+  const hmaFastValid = Number.isInteger(hmaFastValue) && hmaFastValue >= 2;
+  const hmaSlowValid = Number.isInteger(hmaSlowValue) && hmaSlowValue >= 3;
+  const hmaOrdered = hmaFastValid && hmaSlowValid && hmaSlowValue > hmaFastValue;
+  const hmaParamsValid = !isHma || hmaOrdered;
+  const ribbonFastValue = Number.parseInt(ribbonFast, 10);
+  const ribbonMidValue = Number.parseInt(ribbonMid, 10);
+  const ribbonSlowValue = Number.parseInt(ribbonSlow, 10);
+  const ribbonIntegers =
+    Number.isInteger(ribbonFastValue) &&
+    Number.isInteger(ribbonMidValue) &&
+    Number.isInteger(ribbonSlowValue) &&
+    ribbonFastValue >= 1;
+  // The ribbon periods must increase strictly: fast < mid < slow.
+  const ribbonOrdered =
+    ribbonIntegers && ribbonFastValue < ribbonMidValue && ribbonMidValue < ribbonSlowValue;
+  const ribbonParamsValid = !isRibbon || ribbonOrdered;
+  const vamaLookbackValue = Number.parseInt(vamaLookback, 10);
+  const vamaAlphaMinValue = Number.parseFloat(vamaAlphaMin);
+  const vamaAlphaMaxValue = Number.parseFloat(vamaAlphaMax);
+  const vamaLookbackValid = Number.isInteger(vamaLookbackValue) && vamaLookbackValue >= 2;
+  const vamaAlphaInRange = (v: number) => Number.isFinite(v) && v > 0 && v <= 1;
+  // The smoothing range must be valid and ordered: 0 < α min < α max ≤ 1.
+  const vamaAlphasValid =
+    vamaAlphaInRange(vamaAlphaMinValue) &&
+    vamaAlphaInRange(vamaAlphaMaxValue) &&
+    vamaAlphaMinValue < vamaAlphaMaxValue;
+  const vamaParamsValid = !isVama || (vamaLookbackValid && vamaAlphasValid);
+  const pvThresholdFraction = Number.parseFloat(pvThresholdPct) / 100;
+  const pvThresholdValid =
+    Number.isFinite(pvThresholdFraction) && pvThresholdFraction > 0 && pvThresholdFraction < 1;
+  const velocityParamsValid = !isVelocity || pvThresholdValid;
+  const raAdxLookbackValue = Number.parseInt(raAdxLookback, 10);
+  const raAdxLookbackValid = Number.isInteger(raAdxLookbackValue) && raAdxLookbackValue >= 2;
+  const raAdxThresholdValue = Number.parseFloat(raAdxThreshold);
+  const raAdxThresholdValid =
+    Number.isFinite(raAdxThresholdValue) && raAdxThresholdValue > 0 && raAdxThresholdValue < 100;
+  const raAdxValid = !isReversion || !raAdxExit || (raAdxLookbackValid && raAdxThresholdValid);
 
   const isAtr = sizingMethod === 'atr_risk';
   // ATR sizing params are entered in friendly units: risk/cap as percentages.
@@ -467,7 +647,26 @@ export function BuildBotCard() {
     entry_z: raEntryZValue,
     exit_z: raExitZValue,
     exit_mode: raExitMode,
+    // The ADX danger exit is only sent when on, so presets without it still match.
+    ...(raAdxExit
+      ? {
+          adx_exit: true,
+          adx_lookback: raAdxLookbackValue,
+          adx_threshold: raAdxThresholdValue,
+        }
+      : {}),
   };
+  // SuperTrend presets omit exit_on_midline (it only applies to Keltner), so it is
+  // sent for Keltner only — keeping the customized check exact against each preset.
+  const atrBandParams: Record<string, unknown> =
+    abVersion === 'keltner'
+      ? {
+          version: 'keltner',
+          window: abWindowValue,
+          atr_mult: abMultValue,
+          exit_on_midline: abExitOnMidline,
+        }
+      : { version: 'supertrend', window: abWindowValue, atr_mult: abMultValue };
   const strategyParams: Record<string, unknown> = isRsi
     ? {
         period: rsiPeriodValue,
@@ -478,7 +677,38 @@ export function BuildBotCard() {
       ? donchianParams
       : isReversion
         ? reversionParams
-        : { fast_period: fastValue, slow_period: slowValue };
+        : isAtrBand
+          ? atrBandParams
+          : isAdx
+            ? { period: adxPeriodValue, threshold: adxThresholdValue }
+            : isVelocity
+              ? { threshold_pct: pvThresholdFraction }
+              : isVama
+              ? {
+                  lookback: vamaLookbackValue,
+                  alpha_min: vamaAlphaMinValue,
+                  alpha_max: vamaAlphaMaxValue,
+                  adaptive: vamaAdaptive,
+                }
+              : isRibbon
+              ? {
+                  fast_period: ribbonFastValue,
+                  mid_period: ribbonMidValue,
+                  slow_period: ribbonSlowValue,
+                }
+              : isHma
+              ? { fast_period: hmaFastValue, slow_period: hmaSlowValue }
+              : isHeikinAshi
+              ? haVolumeFilter
+                ? { volume_filter: true, volume_window: haWindowValue }
+                : { volume_filter: false }
+              : isMacd
+              ? {
+                  fast_period: macdFastValue,
+                  slow_period: macdSlowValue,
+                  signal_period: macdSignalValue,
+                }
+              : { fast_period: fastValue, slow_period: slowValue };
 
   const customized =
     appliedPreset !== null &&
@@ -499,6 +729,15 @@ export function BuildBotCard() {
     rsiParamsValid &&
     donchianParamsValid &&
     reversionParamsValid &&
+    atrBandParamsValid &&
+    adxParamsValid &&
+    macdParamsValid &&
+    haParamsValid &&
+    hmaParamsValid &&
+    ribbonParamsValid &&
+    vamaParamsValid &&
+    velocityParamsValid &&
+    raAdxValid &&
     riskValid &&
     atrPeriodValid &&
     atrKValid &&
@@ -529,6 +768,24 @@ export function BuildBotCard() {
   const atrPaddingInvalid =
     isDonchianLocked && atrPadding.length > 0 && !atrPaddingValid;
   const raWindowInvalid = isReversion && raWindow.length > 0 && !raWindowValid;
+  const abWindowInvalid = isAtrBand && abWindow.length > 0 && !abWindowValid;
+  const abMultInvalid = isAtrBand && abMult.length > 0 && !abMultValid;
+  const adxPeriodInvalid = isAdx && adxPeriod.length > 0 && !adxPeriodValid;
+  const macdFastInvalid = isMacd && macdFast.length > 0 && (!macdFastValid || !macdOrdered);
+  const macdSlowInvalid = isMacd && macdSlow.length > 0 && (!macdSlowValid || !macdOrdered);
+  const macdSignalInvalid = isMacd && macdSignal.length > 0 && !macdSignalValid;
+  const pvThresholdInvalid = isVelocity && pvThresholdPct.length > 0 && !pvThresholdValid;
+  const vamaLookbackInvalid = isVama && vamaLookback.length > 0 && !vamaLookbackValid;
+  const vamaAlphaInvalid = (value: string) => isVama && value.length > 0 && !vamaAlphasValid;
+  const ribbonInvalid = (value: string) => isRibbon && value.length > 0 && !ribbonOrdered;
+  const hmaFastInvalid = isHma && hmaFast.length > 0 && (!hmaFastValid || !hmaOrdered);
+  const hmaSlowInvalid = isHma && hmaSlow.length > 0 && (!hmaSlowValid || !hmaOrdered);
+  const haWindowInvalid =
+    isHeikinAshi && haVolumeFilter && haVolumeWindow.length > 0 && !haWindowValid;
+  const adxThresholdInvalid = isAdx && adxThreshold.length > 0 && !adxThresholdValid;
+  const raAdxLookbackInvalid = raAdxExit && raAdxLookback.length > 0 && !raAdxLookbackValid;
+  const raAdxThresholdInvalid =
+    raAdxExit && raAdxThreshold.length > 0 && !raAdxThresholdValid;
   const raEntryPctInvalid =
     isReversionBand && raEntryPct.length > 0 && (!raEntryPctValid || !raBandOrdered);
   const raExitPctInvalid =
@@ -867,6 +1124,257 @@ export function BuildBotCard() {
                   </div>
                 )}
               </div>
+            ) : isAtrBand ? (
+              <div className="flex flex-col gap-3">
+                <div>
+                  <label
+                    htmlFor="bot-atr-band-version"
+                    className="block text-sm font-medium text-slate-700"
+                  >
+                    Version
+                  </label>
+                  <select
+                    id="bot-atr-band-version"
+                    value={abVersion}
+                    onChange={(e) =>
+                      handleAtrBandVersionChange(e.target.value as AtrBandVersion)
+                    }
+                    className={FIELD_CLASS}
+                  >
+                    <option value="supertrend">SuperTrend</option>
+                    <option value="keltner">Keltner channel</option>
+                  </select>
+                  <p className="mt-1 text-xs text-slate-500">
+                    {abVersion === 'supertrend'
+                      ? 'Buys in an up-trend above the SuperTrend line; the exit is left to the risk controls below.'
+                      : 'Buys on a break above the upper band; optionally sells back below the moving average.'}
+                  </p>
+                </div>
+                <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                  <NumberField
+                    id="bot-atr-band-window"
+                    label="Window"
+                    min={2}
+                    step={1}
+                    value={abWindow}
+                    onChange={setAbWindow}
+                    hint="Bars in the rolling window the bands are measured over."
+                    invalid={abWindowInvalid}
+                  />
+                  <NumberField
+                    id="bot-atr-band-mult"
+                    label="ATR multiplier (×)"
+                    min={0.1}
+                    step={0.1}
+                    value={abMult}
+                    onChange={setAbMult}
+                    hint="Band distance from the midline, in multiples of ATR."
+                    invalid={abMultInvalid}
+                  />
+                </div>
+                {abVersion === 'keltner' && (
+                  <label className="inline-flex items-center gap-2 text-sm text-slate-700">
+                    <input
+                      type="checkbox"
+                      checked={abExitOnMidline}
+                      onChange={(e) => setAbExitOnMidline(e.target.checked)}
+                    />
+                    Exit when the close falls below the moving average
+                  </label>
+                )}
+              </div>
+            ) : isVelocity ? (
+              <NumberField
+                id="bot-velocity-threshold"
+                label="Velocity threshold (% per bar)"
+                min={0.01}
+                step={0.01}
+                value={pvThresholdPct}
+                onChange={setPvThresholdPct}
+                hint="Buys once a bar falls more than this, by less than the bar before; sells on the first up-bar."
+                invalid={pvThresholdInvalid}
+              />
+            ) : isVama ? (
+              <div className="flex flex-col gap-3">
+                <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+                  <NumberField
+                    id="bot-vama-lookback"
+                    label="Lookback (bars)"
+                    min={2}
+                    step={1}
+                    value={vamaLookback}
+                    onChange={setVamaLookback}
+                    hint="Bars the volatility is measured over."
+                    invalid={vamaLookbackInvalid}
+                  />
+                  <NumberField
+                    id="bot-vama-alpha-min"
+                    label="Smoothing min (α)"
+                    min={0.01}
+                    step={0.01}
+                    value={vamaAlphaMin}
+                    onChange={setVamaAlphaMin}
+                    hint="Slowest speed (0–1). Must be below the max."
+                    invalid={vamaAlphaInvalid(vamaAlphaMin)}
+                  />
+                  <NumberField
+                    id="bot-vama-alpha-max"
+                    label="Smoothing max (α)"
+                    min={0.01}
+                    step={0.01}
+                    value={vamaAlphaMax}
+                    onChange={setVamaAlphaMax}
+                    hint="Fastest speed (0–1). Used whenever smoothing is fixed."
+                    invalid={vamaAlphaInvalid(vamaAlphaMax)}
+                  />
+                </div>
+                <label className="inline-flex items-center gap-2 text-sm text-slate-700">
+                  <input
+                    type="checkbox"
+                    checked={vamaAdaptive}
+                    onChange={(e) => setVamaAdaptive(e.target.checked)}
+                  />
+                  Adaptive smoothing (faster when volatile, slower when calm)
+                </label>
+              </div>
+            ) : isRibbon ? (
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+                <NumberField
+                  id="bot-ribbon-fast"
+                  label="Fast SMA"
+                  min={1}
+                  step={1}
+                  value={ribbonFast}
+                  onChange={setRibbonFast}
+                  hint="Bars in the fast average. Must be below the mid SMA."
+                  invalid={ribbonInvalid(ribbonFast)}
+                />
+                <NumberField
+                  id="bot-ribbon-mid"
+                  label="Mid SMA"
+                  min={2}
+                  step={1}
+                  value={ribbonMid}
+                  onChange={setRibbonMid}
+                  hint="Bars in the middle average. Between the fast and slow SMA."
+                  invalid={ribbonInvalid(ribbonMid)}
+                />
+                <NumberField
+                  id="bot-ribbon-slow"
+                  label="Slow SMA"
+                  min={3}
+                  step={1}
+                  value={ribbonSlow}
+                  onChange={setRibbonSlow}
+                  hint="Bars in the slow average. Must be above the mid SMA."
+                  invalid={ribbonInvalid(ribbonSlow)}
+                />
+              </div>
+            ) : isHma ? (
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                <NumberField
+                  id="bot-hma-fast"
+                  label="Fast HMA"
+                  min={2}
+                  step={1}
+                  value={hmaFast}
+                  onChange={setHmaFast}
+                  hint="Bars in the fast Hull Moving Average. Must be below the slow HMA."
+                  invalid={hmaFastInvalid}
+                />
+                <NumberField
+                  id="bot-hma-slow"
+                  label="Slow HMA"
+                  min={3}
+                  step={1}
+                  value={hmaSlow}
+                  onChange={setHmaSlow}
+                  hint="Bars in the slow Hull Moving Average. Must be above the fast HMA."
+                  invalid={hmaSlowInvalid}
+                />
+              </div>
+            ) : isHeikinAshi ? (
+              <div className="flex flex-col gap-3">
+                <p className="text-xs text-slate-500">
+                  Buys on a green Heikin-Ashi candle and sells on the first red one.
+                </p>
+                <label className="inline-flex items-center gap-2 text-sm text-slate-700">
+                  <input
+                    type="checkbox"
+                    checked={haVolumeFilter}
+                    onChange={(e) => setHaVolumeFilter(e.target.checked)}
+                  />
+                  Require above-average volume (and sell when it fades)
+                </label>
+                {haVolumeFilter && (
+                  <NumberField
+                    id="bot-ha-volume-window"
+                    label="Volume window (bars)"
+                    min={2}
+                    step={1}
+                    value={haVolumeWindow}
+                    onChange={setHaVolumeWindow}
+                    hint="Bars the average volume is measured over (the current bar included)."
+                    invalid={haWindowInvalid}
+                  />
+                )}
+              </div>
+            ) : isMacd ? (
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+                <NumberField
+                  id="bot-macd-fast"
+                  label="Fast EMA"
+                  min={2}
+                  step={1}
+                  value={macdFast}
+                  onChange={setMacdFast}
+                  hint="Bars in the fast moving average. Must be below the slow EMA."
+                  invalid={macdFastInvalid}
+                />
+                <NumberField
+                  id="bot-macd-slow"
+                  label="Slow EMA"
+                  min={3}
+                  step={1}
+                  value={macdSlow}
+                  onChange={setMacdSlow}
+                  hint="Bars in the slow moving average. Must be above the fast EMA."
+                  invalid={macdSlowInvalid}
+                />
+                <NumberField
+                  id="bot-macd-signal"
+                  label="Signal EMA"
+                  min={2}
+                  step={1}
+                  value={macdSignal}
+                  onChange={setMacdSignal}
+                  hint="Bars in the signal line that smooths the MACD."
+                  invalid={macdSignalInvalid}
+                />
+              </div>
+            ) : isAdx ? (
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                <NumberField
+                  id="bot-adx-period"
+                  label="ADX period"
+                  min={2}
+                  step={1}
+                  value={adxPeriod}
+                  onChange={setAdxPeriod}
+                  hint="Bars in each directional-movement sum and in the ADX average."
+                  invalid={adxPeriodInvalid}
+                />
+                <NumberField
+                  id="bot-adx-threshold"
+                  label="ADX threshold"
+                  min={1}
+                  step={1}
+                  value={adxThreshold}
+                  onChange={setAdxThreshold}
+                  hint="Buys above it (with +DI leading); sells once the ADX drops below."
+                  invalid={adxThresholdInvalid}
+                />
+              </div>
             ) : isReversion ? (
               <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                 <div>
@@ -956,7 +1464,7 @@ export function BuildBotCard() {
                       onChange={setRaExitPct}
                       hint={
                         raExitMode === 'revert'
-                          ? 'Sell once back within this of the average. Must be below the entry.'
+                          ? 'Sell once back within this of the average. At most the entry.'
                           : 'Unused while exits go via take-profit / stop-loss.'
                       }
                       invalid={raExitPctInvalid}
@@ -983,13 +1491,47 @@ export function BuildBotCard() {
                       onChange={setRaExitZ}
                       hint={
                         raExitMode === 'revert'
-                          ? 'Sell once back above this many std devs below. Must be below the entry.'
+                          ? 'Sell once back above this many std devs below. At most the entry.'
                           : 'Unused while exits go via take-profit / stop-loss.'
                       }
                       invalid={raExitZInvalid}
                     />
                   </>
                 )}
+                <div className="flex flex-col gap-3 sm:col-span-2">
+                  <label className="inline-flex items-center gap-2 text-sm text-slate-700">
+                    <input
+                      type="checkbox"
+                      checked={raAdxExit}
+                      onChange={(e) => setRaAdxExit(e.target.checked)}
+                    />
+                    ADX danger exit: sell a losing trade in a strong downtrend
+                  </label>
+                  {raAdxExit && (
+                    <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                      <NumberField
+                        id="bot-ra-adx-lookback"
+                        label="ADX lookback (bars)"
+                        min={2}
+                        step={1}
+                        value={raAdxLookback}
+                        onChange={setRaAdxLookback}
+                        hint="Bars the directional strength is measured over."
+                        invalid={raAdxLookbackInvalid}
+                      />
+                      <NumberField
+                        id="bot-ra-adx-threshold"
+                        label="ADX danger threshold"
+                        min={1}
+                        step={1}
+                        value={raAdxThreshold}
+                        onChange={setRaAdxThreshold}
+                        hint="Sells when the strength is above this and −DI leads +DI."
+                        invalid={raAdxThresholdInvalid}
+                      />
+                    </div>
+                  )}
+                </div>
               </div>
             ) : (
               <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">

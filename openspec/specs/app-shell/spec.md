@@ -1642,8 +1642,8 @@ The application shell SHALL provide an "Admin" navigation entry, placed directly
 "System" entry, leading to an Admin page. The entry SHALL indicate when it is the active view,
 like the other navigation entries. The System page SHALL remain unchanged.
 
-The Admin page SHALL show the broker account overview: account cash, buying power and total
-value; the committed-cash check with its itemised contributors, committed total, account cash
+The Admin page SHALL show the broker account overview: account cash, cash buying power, margin
+buying power and total value; the committed-cash check with its itemised contributors, committed total, account cash
 (excluding short-sale proceeds, with the excluded amount shown) and difference, visibly warning
 on a shortfall; the open orders; the unresolved orders with a "Reconcile now" action that shows
 the reconciliation result; and the positions comparison with each row's broker quantity, Cadence
@@ -1656,7 +1656,11 @@ without a pending order SHALL offer a "Restore" action showing the quantity that
 and the page SHALL offer a "Restore all" action when at least one row is restorable. Each action
 SHALL first open a confirmation dialog naming the symbols and quantities that will be sold or
 bought and noting that the final quantities are recomputed at execution. Nothing SHALL be sold or
-bought unless the operator confirms. After the action completes the page SHALL show the
+bought unless the operator confirms. Each crypto row eligible for a fee write-off SHALL offer a
+"Write off" action showing the quantity that would be removed from Cadence's records, and the page
+SHALL offer "Write off all" when at least one row is eligible; each SHALL first open a
+confirmation dialog stating that Cadence's records are lowered to the account's holding and no
+order is sent. After the action completes the page SHALL show the
 per-symbol outcome and refresh the overview. Rows that are neither flattenable nor restorable
 SHALL show why (matched or pending order) and offer no action.
 
@@ -1712,14 +1716,21 @@ SHALL show why (matched or pending order) and offer no action.
 - **THEN** the page SHALL run reconciliation, show the booked, closed-out and remaining counts,
   and refresh the overview
 
+#### Scenario: Write off requires confirmation
+
+- **WHEN** the operator selects "Write off" on an eligible crypto row
+- **THEN** the page SHALL show a confirmation naming the coin and quantity, stating that no order
+  is sent, and SHALL change nothing if the operator cancels
+
 ### Requirement: Dashboard broker account tile
 
 The dashboard SHALL show a "Broker account" section containing a tile with the shared broker
 account's **free capital** — the capital still usable for new bots and AI portfolios —
 defined as the lower of (a) the account's cash excluding short-sale proceeds minus the cash
 Cadence has committed (the committed-cash check's difference) and (b) the account's buying
-power as reported by the broker, because the broker rejects any buy beyond its buying power
-regardless of cash. The tile SHALL also show the committed total, the account cash and the
+power, taken as the lower of its cash buying power and its margin buying power as reported by the
+broker — Cadence never borrows, and the broker rejects any buy beyond its buying power regardless
+of cash. The tile SHALL also show the committed total, the account cash and the
 buying power it is measured against, in the app's USD formatting, and SHALL link to the Admin
 page. The tile SHALL be account-wide: it SHALL NOT react to the dashboard
 range selector or to the combined-equity chart's portfolio selection. It SHALL refresh
@@ -1729,7 +1740,8 @@ The tile SHALL warn:
 
 - with an amber "low capital" warning when free capital is positive but below $1,000, the
   smallest capital a new bot or AI portfolio can be built with;
-- with a red "no buying power" warning when the account's buying power is zero or negative,
+- with a red "no buying power" warning when that buying power (the lower of cash and margin
+  buying power) is zero or negative,
   stating that the broker rejects every buy until margin is freed (for example by covering
   short positions);
 - with a red "no capital left" warning when free capital is zero or negative while buying power
@@ -1784,6 +1796,12 @@ unavailable instead of showing figures or warnings.
 
 - **WHEN** the operator changes the dashboard range or deselects portfolios in the equity chart
 - **THEN** the tile's figures SHALL NOT change
+
+#### Scenario: Margin buying power does not inflate free capital
+
+- **WHEN** Cadence's arithmetic leaves $40,000 free, cash buying power is $30,000 and margin
+  buying power is $325,000
+- **THEN** the tile SHALL show $30,000 of free capital
 
 ### Requirement: Dashboard health section
 

@@ -1192,11 +1192,24 @@ The strategy's parameters SHALL be `average_type` (`sma`, `typical` or `vwap`, d
 default `band`), `entry_threshold` and `exit_threshold` (fractions of at least 0 and below
 1, defaults 0.01 and 0.005), `entry_z` and `exit_z` (at least 0, defaults 1.0 and 0.2),
 and `exit_mode` (`revert` or `bracket`, default `revert`). In `revert` mode the exit level
-SHALL lie strictly above the entry level — `exit_threshold` strictly less than
-`entry_threshold` for `band`, `exit_z` strictly less than `entry_z` for `zscore` —
-otherwise the parameters SHALL be rejected. The strategy SHALL require `window` bars of
+SHALL NOT lie below the entry level — `exit_threshold` at most `entry_threshold` for `band`,
+`exit_z` at most `entry_z` for `zscore` — otherwise the parameters SHALL be rejected. Equal
+levels are allowed: entry requires the measure to be strictly below the entry level and the
+revert exit fires at or above the exit level, so a position is never entered and exited on the
+same bar; equal zero thresholds therefore buy any close below the average and sell once the
+close is back at or above it. The strategy SHALL require `window` bars of
 history and, when given fewer, SHALL signal HOLD rather than erroring. The strategy SHALL
 appear in the strategy catalog with a display name and a human-readable explanation.
+
+The strategy SHALL also offer an optional **ADX danger exit** (`adx_exit`, off by default) with
+an `adx_lookback` (at least 2, default 20) and an `adx_threshold` (default 20). Over the latest
+`adx_lookback` bars it SHALL sum the true ranges and the directional movements (+DM when the
+high rises more than the low falls and by more than zero, −DM symmetrically), derive
++DI = 100 × Σ+DM / ΣTR and −DI = 100 × Σ−DM / ΣTR, and the directional strength
+DX = 100 × |+DI − −DI| / (+DI + −DI). While holding with `adx_exit` on, when the latest close
+is below the position's average price and DX is strictly above `adx_threshold` with −DI above
++DI, the strategy SHALL signal EXIT — in either exit mode, before any other exit check. With
+`adx_exit` off the strategy SHALL behave exactly as before.
 
 #### Scenario: Band entry below the average while flat
 
@@ -1266,7 +1279,7 @@ appear in the strategy catalog with a display name and a human-readable explanat
 
 - **WHEN** a session is created with an unknown `average_type`, `distance` or
   `exit_mode`, a `window` below 2, a negative threshold, or, in `revert` mode, an exit
-  level not strictly above the entry level
+  level below the entry level
 - **THEN** the system SHALL reject the parameters with a validation error
 
 #### Scenario: Catalog lists the Rolling-Average Reversion strategy
@@ -1274,6 +1287,30 @@ appear in the strategy catalog with a display name and a human-readable explanat
 - **WHEN** a client requests the strategy catalog
 - **THEN** the Rolling-Average Reversion strategy SHALL be included with its display
   name, explanation, required history, and parameter schema
+
+#### Scenario: ADX danger exit on a losing trade in a strong downtrend
+
+- **WHEN** the strategy holds with `adx_exit` on, the close is below the average price, DX over
+  the lookback is above the threshold and −DI exceeds +DI
+- **THEN** the strategy SHALL signal EXIT
+
+#### Scenario: No ADX exit while the trade is in profit
+
+- **WHEN** the strategy holds with `adx_exit` on and the close is above the average price, even
+  in a strong downtrend
+- **THEN** the ADX danger exit SHALL NOT fire
+
+#### Scenario: ADX exit off leaves behaviour unchanged
+
+- **WHEN** `adx_exit` is off
+- **THEN** the strategy SHALL produce the same signals as without the filter
+
+#### Scenario: Equal zero thresholds revert at the average
+
+- **WHEN** the strategy uses `band` distance with `entry_threshold` and `exit_threshold` both 0 in
+  `revert` mode
+- **THEN** it SHALL enter on a close strictly below the average and exit once a close is at or
+  above it
 
 ### Requirement: Stopped-session summary
 
@@ -1383,6 +1420,35 @@ The catalog SHALL include these presets, reproducing the reference-course recipe
 - **VWAP Cross Reversion (Algo 39)** — Rolling-Average Reversion strategy: volume-weighted
   average, window 60, band distance with entry threshold 0 (bare cross), bracket exit;
   take-profit 0.5%, stop-loss 1%, drawdown limit 5%.
+- **SuperTrend (Algo 9)** — default for the ATR-Band Trend strategy: SuperTrend version,
+  window 20, ATR multiplier 3; take-profit 0.5%, stop-loss 0.5%, drawdown limit 5%.
+- **Keltner Breakout (Algo 21)** — ATR-Band Trend strategy, Keltner version, window 20, ATR
+  multiplier 1, midline exit on; take-profit 0.5%, stop-loss 1%, drawdown limit 5% (the course
+  script has no drawdown stop; 5% follows the catalog convention).
+- **ADX Trend Strength (Algo 12)** — default for the ADX Trend Strength strategy: period 10,
+  threshold 20; take-profit 0.5%, stop-loss 1%, drawdown limit 5%.
+- **VWAP + ADX Reversion (Algo 15)** — Rolling-Average Reversion strategy: typical-price
+  average, window 20, band distance with entry threshold 0 (bare cross), bracket exit, ADX danger
+  exit on with lookback 20 and threshold 20; take-profit 0.5%, stop-loss off, drawdown limit 5%.
+- **MACD Momentum (Algo 10)** — default for the MACD Momentum strategy: fast 12, slow 26, signal
+  9; take-profit 0.5%, stop-loss 0.5%, drawdown limit 5%.
+- **Heikin-Ashi Trend (Algo 11)** — default for the Heikin-Ashi Trend strategy: volume filter off;
+  take-profit 0.5%, stop-loss 1%, drawdown limit 5%.
+- **Heikin-Ashi + Volume (Algo 37)** — Heikin-Ashi Trend strategy with the volume filter on over a
+  20-bar volume average; take-profit off, stop-loss off, drawdown limit 5%.
+- **HMA Trend (Algos 19 / 26)** — default for the HMA Trend strategy: fast period 9, slow period
+  21; take-profit 0.5%, stop-loss 1%, drawdown limit 5% (Algo 26 trades identically to Algo 19).
+- **MA Ribbon (Algo 18)** — default for the MA Ribbon strategy: fast 5, mid 10, slow 20; take-profit
+  0.5%, stop-loss 1%, drawdown limit 5%.
+- **VAMA (Algo 30)** — default for the VAMA strategy: lookback 20, smoothing 0.02–0.20, adaptive
+  smoothing off (reproducing the course script, whose smoothing is fixed at 0.20); take-profit off,
+  stop-loss off, drawdown limit 5%.
+- **Gradient Convergence (Algo 3)** — Rolling-Average Reversion strategy: SMA average, window 5,
+  band distance with entry and exit thresholds 0 (buy below the 5-bar average, sell once back at
+  or above it), revert exit; take-profit off, stop-loss off, drawdown limit 5%.
+- **Price Velocity Reversal (Algo 48)** — default for the Price Velocity Reversal strategy: velocity
+  threshold 0.2% per bar (the course's ₹2 move on its ₹1,000 simulated price); take-profit 0.5%,
+  stop-loss 1%, drawdown limit 5%.
 
 #### Scenario: List presets
 
@@ -1407,6 +1473,59 @@ The catalog SHALL include these presets, reproducing the reference-course recipe
 - **WHEN** a client requests the preset catalog
 - **THEN** it SHALL include the four Rolling-Average Reversion presets for Algos 5, 4, 14
   and 39, with the Algo 5 preset marked as the strategy's default
+
+#### Scenario: ATR-Band Trend course presets listed
+
+- **WHEN** a client requests the preset catalog
+- **THEN** it SHALL include the SuperTrend (Algo 9) and Keltner Breakout (Algo 21) presets for the
+  ATR-Band Trend strategy, with the Algo 9 preset marked as the strategy's default
+
+#### Scenario: ADX course presets listed
+
+- **WHEN** a client requests the preset catalog
+- **THEN** it SHALL include the ADX Trend Strength (Algo 12) preset as the ADX strategy's
+  default and the VWAP + ADX Reversion (Algo 15) preset for the Rolling-Average Reversion
+  strategy
+
+#### Scenario: MACD course preset listed
+
+- **WHEN** a client requests the preset catalog
+- **THEN** it SHALL include the MACD Momentum (Algo 10) preset as the MACD Momentum strategy's
+  default
+
+#### Scenario: Heikin-Ashi course presets listed
+
+- **WHEN** a client requests the preset catalog
+- **THEN** it SHALL include the Heikin-Ashi Trend (Algo 11) preset as the Heikin-Ashi strategy's
+  default and the Heikin-Ashi + Volume (Algo 37) preset
+
+#### Scenario: HMA course preset listed
+
+- **WHEN** a client requests the preset catalog
+- **THEN** it SHALL include the HMA Trend (Algos 19 / 26) preset as the HMA Trend strategy's
+  default
+
+#### Scenario: MA Ribbon course preset listed
+
+- **WHEN** a client requests the preset catalog
+- **THEN** it SHALL include the MA Ribbon (Algo 18) preset as the MA Ribbon strategy's default
+
+#### Scenario: VAMA course preset listed
+
+- **WHEN** a client requests the preset catalog
+- **THEN** it SHALL include the VAMA (Algo 30) preset as the VAMA strategy's default, with adaptive
+  smoothing off
+
+#### Scenario: Price Velocity Reversal course preset listed
+
+- **WHEN** a client requests the preset catalog
+- **THEN** it SHALL include the Price Velocity Reversal (Algo 48) preset as the strategy's default
+
+#### Scenario: Gradient Convergence preset listed
+
+- **WHEN** a client requests the preset catalog
+- **THEN** it SHALL include the Gradient Convergence (Algo 3) preset for the Rolling-Average
+  Reversion strategy
 
 ### Requirement: Preset-driven build form
 
@@ -1595,3 +1714,398 @@ banner SHALL be shown for a bot without a recorded failure.
 
 - **WHEN** the operator opens a bot without a recorded failure
 - **THEN** no failure banner SHALL be shown
+
+### Requirement: ATR-Band Trend strategy
+
+The system SHALL provide an **ATR-Band Trend** strategy, registered alongside the existing
+strategies. It SHALL be a pure, long-only signal generator that, given recent bars, the current
+position, and its parameters, returns one of ENTER_LONG, EXIT, or HOLD together with a
+human-readable reason, performing no I/O and holding no persisted state. Its parameters SHALL be
+a `version` (`supertrend` or `keltner`, default `supertrend`), a `window` (at least 2, default
+20), an `atr_mult` (greater than 0, default 3) and `exit_on_midline` (default true, used by the
+Keltner version). ATR SHALL be the mean absolute change between consecutive closes over the
+window.
+
+**SuperTrend version.** Over each rolling window of `window` closes, the strategy SHALL compute
+the mid-range (highest + lowest close) / 2 and basic bands at mid-range ± `atr_mult` × ATR. While
+the trend is up the upper band SHALL never rise above its previous value, and while the trend is
+down the lower band SHALL never fall below its previous value. The first full window SHALL set
+the trend up when its close is above the mid-range; afterwards the trend SHALL be up when the
+close is above the previous SuperTrend line and down otherwise, and the SuperTrend line SHALL be
+the lower band in an up-trend and the upper band in a down-trend. These values SHALL be computed
+by replaying the bars provided, oldest first, so the result is deterministic for the same bars.
+While flat, the strategy SHALL signal ENTER_LONG when the trend is up and the latest close is
+above the SuperTrend line. While holding, it SHALL signal HOLD, leaving every exit to the
+engine's take-profit / stop-loss bracket and drawdown kill-switch.
+
+**Keltner version.** The strategy SHALL compute the simple moving average of the latest `window`
+closes, including the current bar, and bands at that average ± `atr_mult` × ATR. While flat, it
+SHALL signal ENTER_LONG when the latest close is strictly above the upper band. While holding,
+it SHALL signal EXIT when `exit_on_midline` is on and the latest close is strictly below the
+average, and HOLD otherwise.
+
+With fewer bars than the strategy needs it SHALL signal HOLD. It SHALL never signal a short
+entry.
+
+#### Scenario: SuperTrend enters in an up-trend above the line
+
+- **WHEN** the SuperTrend version is flat, the replayed trend is up and the latest close is
+  above the SuperTrend line
+- **THEN** the strategy SHALL signal ENTER_LONG
+
+#### Scenario: SuperTrend does not enter in a down-trend
+
+- **WHEN** the SuperTrend version is flat and the replayed trend is down
+- **THEN** the strategy SHALL signal HOLD
+
+#### Scenario: SuperTrend holds while in a position
+
+- **WHEN** the SuperTrend version holds a position, even after the trend turns down
+- **THEN** the strategy SHALL signal HOLD and leave the exit to the engine
+
+#### Scenario: Keltner enters on an upper-band breakout
+
+- **WHEN** the Keltner version is flat and the latest close is above SMA + `atr_mult` × ATR
+- **THEN** the strategy SHALL signal ENTER_LONG
+
+#### Scenario: Keltner exits below the midline
+
+- **WHEN** the Keltner version holds a position, `exit_on_midline` is on and the latest close is
+  below the SMA
+- **THEN** the strategy SHALL signal EXIT
+
+#### Scenario: Keltner without midline exit holds
+
+- **WHEN** the Keltner version holds a position, `exit_on_midline` is off and the close is below
+  the SMA
+- **THEN** the strategy SHALL signal HOLD
+
+#### Scenario: Insufficient history
+
+- **WHEN** fewer bars than the strategy needs are available
+- **THEN** the strategy SHALL signal HOLD
+
+#### Scenario: Deterministic replay
+
+- **WHEN** the strategy is evaluated twice on the same bars and position
+- **THEN** it SHALL return the same signal both times
+
+### Requirement: ADX Trend Strength strategy
+
+The system SHALL provide an **ADX Trend Strength** strategy, registered alongside the existing
+strategies. It SHALL be a pure, long-only signal generator that, given recent bars, the current
+position, and its parameters, returns one of ENTER_LONG, EXIT, or HOLD together with a
+human-readable reason, performing no I/O and holding no persisted state. Its parameters SHALL be
+a `period` (at least 2, default 10) and a `threshold` (greater than 0 and below 100, default 20).
+
+For each bar after the first it SHALL compute the true range (the largest of high − low,
+|high − previous close| and |low − previous close|), +DM (the rise in the high when it exceeds the
+fall in the low and is positive, else 0) and −DM (the fall in the low when it exceeds the rise in
+the high and is positive, else 0). Over each rolling `period` of those values it SHALL compute
++DI = 100 × Σ+DM / ΣTR, −DI = 100 × Σ−DM / ΣTR and DX = 100 × |+DI − −DI| / (+DI + −DI); ADX
+SHALL be the mean of the latest `period` DX values. The latest +DI and −DI are those of the latest
+window.
+
+While flat, the strategy SHALL signal ENTER_LONG when ADX is strictly above `threshold` and +DI is
+strictly above −DI. While holding, it SHALL signal EXIT when ADX falls strictly below `threshold`,
+and HOLD otherwise (take-profit, stop-loss and the drawdown kill-switch remain the engine's). With
+fewer bars than it needs (2 × `period`) it SHALL signal HOLD. It SHALL never signal a short entry.
+
+#### Scenario: Strong up-trend entry
+
+- **WHEN** the strategy is flat, ADX is above the threshold and +DI exceeds −DI
+- **THEN** it SHALL signal ENTER_LONG
+
+#### Scenario: Strong down-trend is not entered
+
+- **WHEN** the strategy is flat, ADX is above the threshold and −DI exceeds +DI
+- **THEN** it SHALL signal HOLD
+
+#### Scenario: Weak trend is not entered
+
+- **WHEN** the strategy is flat and ADX is below the threshold
+- **THEN** it SHALL signal HOLD
+
+#### Scenario: Exit when the trend weakens
+
+- **WHEN** the strategy holds and ADX falls below the threshold
+- **THEN** it SHALL signal EXIT
+
+#### Scenario: Insufficient history
+
+- **WHEN** fewer than 2 × `period` bars are available
+- **THEN** it SHALL signal HOLD
+
+### Requirement: MACD Momentum strategy
+
+The system SHALL provide a **MACD Momentum** strategy, registered alongside the existing
+strategies. It SHALL be a pure, long-only signal generator that, given recent bars, the current
+position, and its parameters, returns one of ENTER_LONG, EXIT, or HOLD together with a
+human-readable reason, performing no I/O and holding no persisted state. Its parameters SHALL be a
+`fast_period` (at least 2, default 12), a `slow_period` (strictly greater than `fast_period`,
+default 26) and a `signal_period` (at least 2, default 9).
+
+Over the closes provided, oldest first, the strategy SHALL seed the slow EMA with the simple mean
+of the first `slow_period` closes and the fast EMA with the simple mean of the last `fast_period`
+of those closes, set MACD = fast EMA − slow EMA and seed the signal line with that MACD. For every
+later close it SHALL update each EMA as `price × α + previous × (1 − α)` with α = 2 / (period + 1),
+recompute MACD, and update the signal line as an EMA of MACD with `signal_period`. The result SHALL
+be deterministic for the same bars.
+
+While flat, the strategy SHALL signal ENTER_LONG when, on the latest bar, MACD crosses above the
+signal line (MACD was at or below it on the previous bar and is strictly above it now) **and** MACD
+is strictly above zero. While holding, it SHALL signal HOLD, leaving every exit to the engine's
+take-profit / stop-loss bracket and drawdown kill-switch, as the course does. With fewer bars than
+it needs it SHALL signal HOLD. It SHALL never signal a short entry.
+
+#### Scenario: Bullish cross above zero enters
+
+- **WHEN** the strategy is flat and MACD crosses above its signal line on the latest bar while MACD
+  is above zero
+- **THEN** it SHALL signal ENTER_LONG
+
+#### Scenario: Bullish cross below zero is not entered
+
+- **WHEN** the strategy is flat and MACD crosses above its signal line while MACD is below zero
+- **THEN** it SHALL signal HOLD
+
+#### Scenario: No cross, no entry
+
+- **WHEN** the strategy is flat and MACD stays above its signal line without crossing on the
+  latest bar
+- **THEN** it SHALL signal HOLD
+
+#### Scenario: Holds while in a position
+
+- **WHEN** the strategy holds a position, even after MACD crosses below its signal line
+- **THEN** it SHALL signal HOLD and leave the exit to the engine
+
+#### Scenario: Insufficient history
+
+- **WHEN** fewer bars than the strategy needs are available
+- **THEN** it SHALL signal HOLD
+
+### Requirement: Heikin-Ashi Trend strategy
+
+The system SHALL provide a **Heikin-Ashi Trend** strategy, registered alongside the existing
+strategies. It SHALL be a pure, long-only signal generator that, given recent bars, the current
+position, and its parameters, returns one of ENTER_LONG, EXIT, or HOLD together with a
+human-readable reason, performing no I/O and holding no persisted state. Its parameters SHALL be
+`volume_filter` (default off) and `volume_window` (at least 2, default 20).
+
+The strategy SHALL build Heikin-Ashi candles over the bars provided, oldest first: each candle's
+close is (open + high + low + close) / 4 of its bar; the first candle's open is (open + close) / 2
+of its bar and every later candle's open is the mean of the previous Heikin-Ashi candle's open and
+close. The latest candle is **green** when its close is strictly above its open and **red**
+otherwise. The result SHALL be deterministic for the same bars.
+
+With the volume filter off: while flat, the strategy SHALL signal ENTER_LONG on a green latest
+candle; while holding, it SHALL signal EXIT on a red latest candle and HOLD otherwise.
+
+With the volume filter on, volume is **strong** when the latest bar's volume is strictly above the
+mean volume of the latest `volume_window` bars (the latest bar included); a window whose mean
+volume is zero is never strong. While flat, the strategy SHALL signal ENTER_LONG only on a green
+latest candle with strong volume; while holding, it SHALL signal EXIT on a red latest candle or
+when volume is not strong, and HOLD otherwise.
+
+With fewer bars than it needs it SHALL signal HOLD. It SHALL never signal a short entry.
+
+#### Scenario: Green candle enters
+
+- **WHEN** the strategy is flat, the volume filter is off and the latest Heikin-Ashi candle is green
+- **THEN** it SHALL signal ENTER_LONG
+
+#### Scenario: Red candle exits
+
+- **WHEN** the strategy holds a position and the latest Heikin-Ashi candle is red
+- **THEN** it SHALL signal EXIT
+
+#### Scenario: Green candle without strong volume is not entered
+
+- **WHEN** the strategy is flat, the volume filter is on, the latest candle is green and the latest
+  volume is at or below the window's mean
+- **THEN** it SHALL signal HOLD
+
+#### Scenario: Fading volume exits
+
+- **WHEN** the strategy holds a position with the volume filter on, the latest candle is green and
+  the latest volume is at or below the window's mean
+- **THEN** it SHALL signal EXIT
+
+#### Scenario: Insufficient history
+
+- **WHEN** fewer bars than the strategy needs are available
+- **THEN** it SHALL signal HOLD
+
+### Requirement: HMA Trend strategy
+
+The system SHALL provide an **HMA Trend** strategy, registered alongside the existing strategies.
+It SHALL be a pure, long-only signal generator that, given recent bars, the current position, and
+its parameters, returns one of ENTER_LONG, EXIT, or HOLD together with a human-readable reason,
+performing no I/O and holding no persisted state. Its parameters SHALL be a `fast_period` (at
+least 2, default 9) and a `slow_period` (strictly greater than `fast_period`, default 21).
+
+The strategy SHALL use the Hull Moving Average of the closes. For a period n, WMA(m) is the
+linearly weighted mean of the latest m values (weights 1 … m, the latest weighted most); the raw
+Hull value at a bar is 2 × WMA(⌊n / 2⌋) − WMA(n) of the closes up to that bar, and HMA(n) is the
+WMA over ⌊√n⌋ of the raw Hull values of the latest ⌊√n⌋ bars. The fast HMA's **slope** is its
+latest value minus its value on the previous bar.
+
+While flat, the strategy SHALL signal ENTER_LONG when the fast HMA is strictly above the slow HMA
+and the slope is strictly positive. While holding, it SHALL signal EXIT on a trend reversal — the
+fast HMA strictly below the slow HMA with a strictly negative slope — and HOLD otherwise
+(take-profit, stop-loss and the drawdown kill-switch remain the engine's). With fewer bars than it
+needs it SHALL signal HOLD. It SHALL never signal a short entry.
+
+#### Scenario: Rising fast HMA above the slow HMA enters
+
+- **WHEN** the strategy is flat, the fast HMA is above the slow HMA and rising
+- **THEN** it SHALL signal ENTER_LONG
+
+#### Scenario: Fast HMA above but falling is not entered
+
+- **WHEN** the strategy is flat and the fast HMA is above the slow HMA but falling
+- **THEN** it SHALL signal HOLD
+
+#### Scenario: Trend reversal exits
+
+- **WHEN** the strategy holds and the fast HMA is below the slow HMA and falling
+- **THEN** it SHALL signal EXIT
+
+#### Scenario: No reversal holds
+
+- **WHEN** the strategy holds and the fast HMA is below the slow HMA but rising
+- **THEN** it SHALL signal HOLD
+
+#### Scenario: Insufficient history
+
+- **WHEN** fewer bars than the strategy needs are available
+- **THEN** it SHALL signal HOLD
+
+### Requirement: MA Ribbon strategy
+
+The system SHALL provide an **MA Ribbon** strategy, registered alongside the existing strategies.
+It SHALL be a pure, long-only signal generator that, given recent bars, the current position, and
+its parameters, returns one of ENTER_LONG, EXIT, or HOLD together with a human-readable reason,
+performing no I/O and holding no persisted state. Its parameters SHALL be a `fast_period` (at least
+1, default 5), a `mid_period` (strictly greater than `fast_period`, default 10) and a `slow_period`
+(strictly greater than `mid_period`, default 20).
+
+The strategy SHALL compute the simple moving averages of the latest `fast_period`, `mid_period` and
+`slow_period` closes (the current bar included). While flat, it SHALL signal ENTER_LONG when the
+ribbon is aligned upward — fast strictly above mid and mid strictly above slow. While holding, it
+SHALL signal HOLD, leaving every exit to the engine's take-profit / stop-loss bracket and drawdown
+kill-switch, as the course does. With fewer than `slow_period` bars it SHALL signal HOLD. It SHALL
+never signal a short entry.
+
+#### Scenario: Upward alignment enters
+
+- **WHEN** the strategy is flat and fast SMA > mid SMA > slow SMA
+- **THEN** it SHALL signal ENTER_LONG
+
+#### Scenario: Partial alignment is not entered
+
+- **WHEN** the strategy is flat and fast SMA > mid SMA but mid SMA ≤ slow SMA
+- **THEN** it SHALL signal HOLD
+
+#### Scenario: Holds while in a position
+
+- **WHEN** the strategy holds a position, even after the ribbon turns down
+- **THEN** it SHALL signal HOLD and leave the exit to the engine
+
+#### Scenario: Insufficient history
+
+- **WHEN** fewer than `slow_period` bars are available
+- **THEN** it SHALL signal HOLD
+
+### Requirement: VAMA strategy
+
+The system SHALL provide a **VAMA** (volatility-adaptive moving average) strategy, registered
+alongside the existing strategies. It SHALL be a pure, long-only signal generator that, given recent
+bars, the current position, and its parameters, returns one of ENTER_LONG, EXIT, or HOLD together
+with a human-readable reason, performing no I/O and holding no persisted state. Its parameters SHALL
+be a `lookback` (at least 2, default 20), an `alpha_min` and an `alpha_max` (each greater than 0 and
+at most 1, with `alpha_min` < `alpha_max`; defaults 0.02 and 0.20), and `adaptive` (default off).
+
+For each bar the strategy SHALL determine a smoothing factor α. The **current volatility** is the
+population standard deviation of the latest `lookback` closes. With `adaptive` **off** (the course
+behaviour) α SHALL be `alpha_max`, or `alpha_min` when the current volatility is zero. With
+`adaptive` **on**, the **average volatility** is the mean of the current volatility over the latest
+`lookback` bars, and α SHALL be `alpha_max` × current ÷ average volatility, clamped to
+[`alpha_min`, `alpha_max`] (`alpha_min` when the average volatility is zero). Over the bars provided,
+oldest first, the VAMA SHALL start at the close of the first bar for which α is defined and then
+update as α × close + (1 − α) × previous VAMA. The result SHALL be deterministic for the same bars.
+
+While flat, the strategy SHALL signal ENTER_LONG when the latest close is strictly above the VAMA.
+While holding, it SHALL signal EXIT when the latest close is at or below the VAMA, and HOLD otherwise.
+With fewer bars than it needs it SHALL signal HOLD. It SHALL never signal a short entry.
+
+#### Scenario: Close above the VAMA enters
+
+- **WHEN** the strategy is flat and the latest close is above the VAMA
+- **THEN** it SHALL signal ENTER_LONG
+
+#### Scenario: Close at or below the VAMA exits
+
+- **WHEN** the strategy holds and the latest close is at or below the VAMA
+- **THEN** it SHALL signal EXIT
+
+#### Scenario: Course behaviour uses fixed smoothing
+
+- **WHEN** adaptive smoothing is off and prices move
+- **THEN** α SHALL be `alpha_max` on every bar
+
+#### Scenario: Adaptive smoothing speeds up in volatile markets
+
+- **WHEN** adaptive smoothing is on and the current volatility is half the average volatility
+- **THEN** α SHALL be half of `alpha_max`, but never below `alpha_min`
+
+#### Scenario: Insufficient history
+
+- **WHEN** fewer bars than the strategy needs are available
+- **THEN** it SHALL signal HOLD
+
+### Requirement: Price Velocity Reversal strategy
+
+The system SHALL provide a **Price Velocity Reversal** strategy, registered alongside the existing
+strategies. It SHALL be a pure, long-only signal generator that, given recent bars, the current
+position, and its parameters, returns one of ENTER_LONG, EXIT, or HOLD together with a
+human-readable reason, performing no I/O and holding no persisted state. Its parameter SHALL be a
+`threshold_pct` (greater than 0 and below 1, default 0.002, a fraction of price).
+
+The strategy SHALL measure **velocity** as the latest close's fractional change from the previous
+close, the **previous velocity** as the previous close's fractional change from the close before
+it, and **acceleration** as velocity minus previous velocity.
+
+While flat, the strategy SHALL signal ENTER_LONG when the price is falling fast but decelerating —
+velocity strictly below −`threshold_pct` and acceleration strictly above 0. While holding, it SHALL
+signal EXIT when velocity turns strictly positive, and HOLD otherwise (take-profit, stop-loss and
+the drawdown kill-switch remain the engine's). With fewer than three bars it SHALL signal HOLD. It
+SHALL never signal a short entry.
+
+#### Scenario: Decelerating sharp drop enters
+
+- **WHEN** the strategy is flat, the latest close fell by more than the threshold and by less than
+  the bar before
+- **THEN** it SHALL signal ENTER_LONG
+
+#### Scenario: Accelerating drop is not entered
+
+- **WHEN** the strategy is flat and the latest close fell by more than the threshold and by more
+  than the bar before
+- **THEN** it SHALL signal HOLD
+
+#### Scenario: Small drop is not entered
+
+- **WHEN** the strategy is flat and the latest close fell by less than the threshold
+- **THEN** it SHALL signal HOLD
+
+#### Scenario: Velocity flip exits
+
+- **WHEN** the strategy holds and the latest close is above the previous close
+- **THEN** it SHALL signal EXIT
+
+#### Scenario: Insufficient history
+
+- **WHEN** fewer than three bars are available
+- **THEN** it SHALL signal HOLD

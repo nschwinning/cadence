@@ -18,10 +18,11 @@ run; the outcome of each ticker is a :class:`TradeResult`.
 from __future__ import annotations
 
 import logging
+import math
 import time
 import uuid
 from collections import defaultdict
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 
 from cadence.ai_portfolio.agent import AIPortfolioStock, AITargetAllocation
@@ -42,7 +43,7 @@ logger = logging.getLogger(__name__)
 
 #: Brokerage minimum tradable notional for crypto (USD). Allocations (or deltas)
 #: worth less than this are skipped rather than sent as dust orders.
-MIN_CRYPTO_NOTIONAL_USD = 1.0
+MIN_CRYPTO_NOTIONAL_USD = 10.0
 
 #: Decimal places to round fractional crypto quantities to.
 CRYPTO_QTY_PRECISION = 8
@@ -836,6 +837,22 @@ class AIPortfolioExecutor:
 
         return results
 
+    def _cap_crypto_sell(self, ticker: str, quantity: float) -> float:
+        """Cap a crypto sell at the account's holding of the coin.
+
+        The broker takes its crypto buy fee in the coin received, so the ledger can sit
+        marginally above the account; selling the ledger quantity would be refused.
+        """
+        try:
+            held = self.orders.held_quantity(ticker)
+        except Exception:  # noqa: BLE001 - fall back to the ledger quantity
+            return quantity
+        if 0 < held < quantity:
+            # Round down: rounding up could ask for more than is held.
+            scale = 10**CRYPTO_QTY_PRECISION
+            return float(math.floor(held * scale) / scale)
+        return quantity
+
     def _submit_intent(self, intent: _OrderIntent) -> TradeResult:
         """Submit one planned order, retrying a rejection up to the configured cap.
 
@@ -845,6 +862,10 @@ class AIPortfolioExecutor:
         a broker order error — returns a not-executed result; a single failure
         never aborts the run.
         """
+        if intent.side == "sell" and intent.asset_class is AssetClass.CRYPTO:
+            capped = self._cap_crypto_sell(intent.ticker, intent.quantity)
+            if capped != intent.quantity:
+                intent = replace(intent, quantity=capped)
         attempts = max(1, settings.REBALANCE_ORDER_MAX_ATTEMPTS)
         last_exc: Exception | None = None
         rejected = False
@@ -987,7 +1008,9 @@ class AIPortfolioExecutor:
                 quote = self.broker.get_quote(ticker, cls)
                 price = quote.last or quote.ask
                 if cls == AssetClass.CRYPTO:
-                    qty = round(abs(pos.quantity), CRYPTO_QTY_PRECISION)
+                    qty = self._cap_crypto_sell(
+                        ticker, round(abs(pos.quantity), CRYPTO_QTY_PRECISION)
+                    )
                 else:
                     # Liquidate the full held quantity. Rounding to the equity
                     # precision sells a fractional holding whole and is identical

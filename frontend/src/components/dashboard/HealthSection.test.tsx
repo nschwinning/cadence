@@ -44,6 +44,8 @@ function row(symbol: string, status: AdminPositionStatus): AdminPosition {
     flattenable: false,
     restorable: false,
     restore_quantity: 0,
+    write_off_eligible: false,
+    write_off_quantity: 0,
   };
 }
 
@@ -51,7 +53,7 @@ function account(positions: AdminPosition[] = [], unresolved = 0): AdminAccount 
   return {
     broker_available: true,
     reason: null,
-    account: { cash: 1, buying_power: 1, portfolio_value: 1, currency: 'USD' },
+    account: { cash: 1, buying_power: 1, portfolio_value: 1, currency: 'USD', cash_buying_power: null },
     cash_check: {
       contributors: [],
       committed_total: 0,

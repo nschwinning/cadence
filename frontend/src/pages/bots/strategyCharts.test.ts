@@ -1,7 +1,15 @@
 import { describe, it, expect } from 'vitest';
 import { getStrategyChart } from './strategyCharts';
 import { crossoverSignals } from './crossoverChart';
+import { adxSeries, adxSignals } from './adxChart';
+import { atrBandSignals } from './atrBandChart';
 import { donchianSignals } from './donchianChart';
+import { heikinAshiCandles, heikinAshiSignals } from './heikinAshiChart';
+import { hma, hmaSignals } from './hmaChart';
+import { macdEntryIndex, macdPoints } from './macdChart';
+import { ribbonEntryIndex, smaSeries } from './maRibbonChart';
+import { smoothingFactors, vamaSignals } from './vamaChart';
+import { velocitySignals } from './velocityChart';
 import { reversionSignals, rollingMean } from './rollingReversionChart';
 import { rsiSignals, wilderRsiSeries } from './rsiChart';
 
@@ -142,5 +150,187 @@ describe('rollingReversionChart', () => {
     };
     expect(option.series).toHaveLength(3);
     expect(option.series[0].markLine?.data.length).toBeGreaterThanOrEqual(2);
+  });
+});
+
+describe('atrBandChart', () => {
+  it('is registered for atr_band_trend', () => {
+    const chart = getStrategyChart('atr_band_trend');
+    expect(chart).toBeDefined();
+    expect(chart?.ariaLabel).toMatch(/atr-band trend/i);
+  });
+
+  it('detects an upper-band breakout entry followed by a below-the-average exit', () => {
+    const signals = atrBandSignals();
+    expect(signals.map((s) => s.kind)).toEqual(['entry', 'exit']);
+    expect(signals[0].index).toBeLessThan(signals[1].index);
+  });
+
+  it('builds price, average and two bands with entry/exit mark-lines', () => {
+    const option = getStrategyChart('atr_band_trend')!.buildOption() as {
+      series: { id: string; markLine?: { data: unknown[] } }[];
+    };
+    expect(option.series.map((s) => s.id)).toEqual(['price', 'mean', 'upper', 'lower']);
+    expect(option.series[0].markLine?.data).toHaveLength(2);
+  });
+});
+
+describe('adxChart', () => {
+  it('is registered for adx_trend', () => {
+    expect(getStrategyChart('adx_trend')?.ariaLabel).toMatch(/adx trend strength/i);
+  });
+
+  it('rises above the threshold in the trend and falls back in the chop', () => {
+    const series = adxSeries().filter((v): v is number => v != null);
+    expect(Math.max(...series)).toBeGreaterThan(20);
+    expect(series[series.length - 1]).toBeLessThan(20);
+    expect(adxSignals().map((s) => s.kind)).toEqual(['entry', 'exit']);
+  });
+
+  it('builds price and ADX series with entry/exit mark-lines', () => {
+    const option = getStrategyChart('adx_trend')!.buildOption() as {
+      series: { id: string; markLine?: { data: unknown[] } }[];
+    };
+    expect(option.series.map((s) => s.id)).toEqual(['price', 'adx']);
+    expect(option.series[0].markLine?.data).toHaveLength(2);
+  });
+});
+
+describe('macdChart', () => {
+  it('is registered for macd_momentum', () => {
+    expect(getStrategyChart('macd_momentum')?.ariaLabel).toMatch(/macd momentum/i);
+  });
+
+  it('finds a bullish cross above zero after the pull-back', () => {
+    const entry = macdEntryIndex();
+    expect(entry).not.toBeNull();
+    const point = macdPoints()[entry!]!;
+    expect(point.macd).toBeGreaterThan(0);
+    expect(point.macd).toBeGreaterThan(point.signal);
+    expect(entry!).toBeGreaterThan(14); // after the dip
+  });
+
+  it('builds price, MACD and signal series with an entry mark-line', () => {
+    const option = getStrategyChart('macd_momentum')!.buildOption() as {
+      series: { id: string; markLine?: { data: unknown[] } }[];
+    };
+    expect(option.series.map((s) => s.id)).toEqual(['price', 'macd', 'signal']);
+    expect(option.series[0].markLine?.data).toHaveLength(1);
+  });
+});
+
+describe('heikinAshiChart', () => {
+  it('is registered for heikin_ashi_trend', () => {
+    expect(getStrategyChart('heikin_ashi_trend')?.ariaLabel).toMatch(/heikin-ashi/i);
+  });
+
+  it('builds Heikin-Ashi candles from the bars (open = previous midpoint)', () => {
+    const [first, second] = heikinAshiCandles();
+    expect(second.open).toBeCloseTo((first.open + first.close) / 2);
+  });
+
+  it('enters on the first green candle and exits on the next red one', () => {
+    const signals = heikinAshiSignals();
+    expect(signals.map((s) => s.kind)).toEqual(['entry', 'exit']);
+    expect(signals[0].index).toBeLessThan(signals[1].index);
+  });
+
+  it('builds a candlestick series with entry/exit mark-lines', () => {
+    const option = getStrategyChart('heikin_ashi_trend')!.buildOption() as {
+      series: { id: string; type: string; markLine?: { data: unknown[] } }[];
+    };
+    expect(option.series.map((s) => [s.id, s.type])).toEqual([['heikin-ashi', 'candlestick']]);
+    expect(option.series[0].markLine?.data).toHaveLength(2);
+  });
+});
+
+describe('hmaChart', () => {
+  it('is registered for hma_trend', () => {
+    expect(getStrategyChart('hma_trend')?.ariaLabel).toMatch(/hma trend/i);
+  });
+
+  it('equals the latest value on a straight line (proper HMA)', () => {
+    const line = Array.from({ length: 20 }, (_, i) => 100 + 2 * i);
+    expect(hma(line, 9)).toBeCloseTo(line[line.length - 1]);
+  });
+
+  it('enters on the rally and exits on the roll-over', () => {
+    expect(hmaSignals().map((s) => s.kind)).toEqual(['entry', 'exit']);
+  });
+
+  it('builds price and two HMA series with entry/exit mark-lines', () => {
+    const option = getStrategyChart('hma_trend')!.buildOption() as {
+      series: { id: string; markLine?: { data: unknown[] } }[];
+    };
+    expect(option.series.map((s) => s.id)).toEqual(['price', 'fast-hma', 'slow-hma']);
+    expect(option.series[0].markLine?.data).toHaveLength(2);
+  });
+});
+
+describe('maRibbonChart', () => {
+  it('is registered for ma_ribbon', () => {
+    expect(getStrategyChart('ma_ribbon')?.ariaLabel).toMatch(/ma ribbon/i);
+  });
+
+  it('enters where the ribbon first stacks fast > mid > slow, after the choppy base', () => {
+    const entry = ribbonEntryIndex();
+    expect(entry).not.toBeNull();
+    const [f, m, s] = [smaSeries(3), smaSeries(6), smaSeries(10)].map((x) => x[entry!]!);
+    expect(f).toBeGreaterThan(m);
+    expect(m).toBeGreaterThan(s);
+    expect(entry!).toBeGreaterThan(10);
+  });
+
+  it('builds price and three SMA series with an entry mark-line', () => {
+    const option = getStrategyChart('ma_ribbon')!.buildOption() as {
+      series: { id: string; markLine?: { data: unknown[] } }[];
+    };
+    expect(option.series.map((s) => s.id)).toEqual(['price', 'fast', 'mid', 'slow']);
+    expect(option.series[0].markLine?.data).toHaveLength(1);
+  });
+});
+
+describe('vamaChart', () => {
+  it('is registered for vama', () => {
+    expect(getStrategyChart('vama')?.ariaLabel).toMatch(/vama/i);
+  });
+
+  it('keeps fixed smoothing at α max and lets adaptive smoothing slow down in calm bars', () => {
+    const fixed = smoothingFactors(false).filter((a): a is number => a != null);
+    expect(new Set(fixed)).toEqual(new Set([0.3]));
+    const adaptive = smoothingFactors(true).filter((a): a is number => a != null);
+    expect(Math.min(...adaptive)).toBeLessThan(0.3);
+  });
+
+  it('enters on the rally and exits on the slide', () => {
+    expect(vamaSignals().map((s) => s.kind)).toEqual(['entry', 'exit']);
+  });
+
+  it('builds price and both VAMA series with entry/exit mark-lines', () => {
+    const option = getStrategyChart('vama')!.buildOption() as {
+      series: { id: string; markLine?: { data: unknown[] } }[];
+    };
+    expect(option.series.map((s) => s.id)).toEqual(['price', 'vama-fixed', 'vama-adaptive']);
+    expect(option.series[0].markLine?.data).toHaveLength(2);
+  });
+});
+
+describe('velocityChart', () => {
+  it('is registered for price_velocity_reversal', () => {
+    expect(getStrategyChart('price_velocity_reversal')?.ariaLabel).toMatch(/price velocity/i);
+  });
+
+  it('enters on the slowing sell-off and exits on the first up-bar', () => {
+    const signals = velocitySignals();
+    expect(signals.map((s) => s.kind)).toEqual(['entry', 'exit']);
+    expect(signals[0].index).toBeLessThan(signals[1].index);
+  });
+
+  it('builds price and velocity series with entry/exit mark-lines', () => {
+    const option = getStrategyChart('price_velocity_reversal')!.buildOption() as {
+      series: { id: string; markLine?: { data: unknown[] } }[];
+    };
+    expect(option.series.map((s) => s.id)).toEqual(['price', 'velocity']);
+    expect(option.series[0].markLine?.data).toHaveLength(2);
   });
 });

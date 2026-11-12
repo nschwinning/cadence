@@ -70,6 +70,7 @@ class StubBroker:
             account_id="STUB",
             cash_balance=self._cash,
             buying_power=self._cash,
+            cash_buying_power=self._cash,
             portfolio_value=portfolio_value,
             unrealized_pnl=unrealized_pnl,
             realized_pnl=self._realized_pnl,

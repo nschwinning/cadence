@@ -13,8 +13,9 @@ export const LOW_CAPITAL_THRESHOLD_USD = 1_000;
 /**
  * Broker account tile: the capital still usable for new bots and portfolios — the
  * shared Alpaca account's **free capital** (its cash excluding short-sale proceeds,
- * minus everything Cadence has committed), capped by Alpaca's **buying power**, since
- * the broker rejects any buy beyond that regardless of cash (e.g. when short positions
+ * minus everything Cadence has committed), capped by Alpaca's **buying power** — the
+ * lower of its cash and margin figures, since Cadence never borrows — because the
+ * broker rejects any buy beyond that regardless of cash (e.g. when short positions
  * tie up all margin). Warns amber when that is below the smallest buildable capital,
  * red when nothing is left or buying power is gone, and red when the account holds
  * short positions.
@@ -46,7 +47,12 @@ export function AccountStateTile() {
     );
   }
 
-  const buyingPower = data.account?.buying_power ?? 0;
+  // Cadence never borrows: the ceiling is the lower of cash and margin buying power.
+  const marginBuyingPower = data.account?.buying_power ?? 0;
+  const buyingPower = Math.min(
+    marginBuyingPower,
+    data.account?.cash_buying_power ?? marginBuyingPower,
+  );
   const free = Math.min(check.difference, buyingPower);
   const shorts = (data.positions ?? []).filter((p) => p.status === 'short');
   const noBuyingPower = buyingPower <= 0;

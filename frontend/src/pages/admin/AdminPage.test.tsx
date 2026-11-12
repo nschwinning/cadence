@@ -26,6 +26,8 @@ function position(overrides: Partial<AdminPosition>): AdminPosition {
     flattenable: true,
     restorable: false,
     restore_quantity: 0,
+    write_off_eligible: false,
+    write_off_quantity: 0,
     ...overrides,
   };
 }
@@ -34,7 +36,7 @@ function account(overrides: Partial<AdminAccount> = {}): AdminAccount {
   return {
     broker_available: true,
     reason: null,
-    account: { cash: 20000, buying_power: 40000, portfolio_value: 95000, currency: 'USD' },
+    account: { cash: 20000, buying_power: 40000, portfolio_value: 95000, currency: 'USD', cash_buying_power: null },
     cash_check: {
       contributors: [
         { kind: 'portfolio', id: 'p1', label: 'Growth', amount: 9000 },
@@ -389,6 +391,100 @@ describe('AdminPage', () => {
 
     expect(await screen.findByTestId('flatten-outcomes')).toHaveTextContent(
       'PSA: bought 75 — cover of 75 still filling; run Restore again to buy the remaining 1',
+    );
+  });
+
+  it('labels cash and margin buying power separately', async () => {
+    const base = account();
+    mockedGet.mockResolvedValue({
+      data: account({
+        account: { ...base.account!, buying_power: 325946.55, cash_buying_power: 57899.03 },
+      }),
+    });
+
+    renderPage();
+
+    expect(await screen.findByText('Cash buying power')).toBeInTheDocument();
+    expect(screen.getByText('Margin buying power')).toBeInTheDocument();
+    expect(screen.getByText('$325,946.55')).toBeInTheDocument();
+    expect(screen.getByText('$57,899.03')).toBeInTheDocument();
+  });
+
+  it('writes off crypto fee residue after confirmation, posting only the symbol', async () => {
+    mockedGet.mockResolvedValue({
+      data: account({
+        positions: [
+          position({
+            symbol: 'ADA-USD',
+            asset_class: 'crypto',
+            broker_quantity: 997.5,
+            cadence_quantity: 1000,
+            orphan_quantity: 0,
+            status: 'shortfall',
+            flattenable: false,
+            restorable: false,
+            write_off_eligible: true,
+            write_off_quantity: 2.5,
+          }),
+        ],
+      }),
+    });
+    mockedPost.mockResolvedValue({
+      data: {
+        outcomes: [
+          { symbol: 'ADA-USD', result: 'written_off', quantity: 2.5, order_id: null, reason: null },
+        ],
+      },
+    });
+    const user = userEvent.setup();
+
+    renderPage();
+    await user.click(await screen.findByRole('button', { name: 'Write off ADA-USD' }));
+    const dialog = screen.getByRole('dialog', { name: 'Confirm write-off' });
+    expect(within(dialog).getByText(/No order is sent/)).toBeInTheDocument();
+    await user.click(within(dialog).getByRole('button', { name: 'Cancel' }));
+    expect(mockedPost).not.toHaveBeenCalled();
+
+    await user.click(screen.getByRole('button', { name: 'Write off all' }));
+    await user.click(screen.getByRole('button', { name: 'Write off' }));
+
+    expect(mockedPost).toHaveBeenCalledWith('/api/v1/admin/write-off-positions', {
+      symbol: null,
+    });
+    expect(await screen.findByTestId('flatten-outcomes')).toHaveTextContent(
+      'ADA-USD: written off 2.5',
+    );
+  });
+
+  it('explains a crypto order below the minimum', async () => {
+    mockedGet.mockResolvedValue({
+      data: account({
+        positions: [
+          position({
+            symbol: 'SOL-USD',
+            status: 'shortfall',
+            flattenable: false,
+            restorable: true,
+            restore_quantity: 0.0226,
+          }),
+        ],
+      }),
+    });
+    mockedPost.mockResolvedValue({
+      data: {
+        outcomes: [
+          { symbol: 'SOL-USD', result: 'skipped', quantity: null, order_id: null, reason: 'below_minimum' },
+        ],
+      },
+    });
+    const user = userEvent.setup();
+
+    renderPage();
+    await user.click(await screen.findByRole('button', { name: 'Restore SOL-USD' }));
+    await user.click(screen.getByRole('button', { name: 'Buy' }));
+
+    expect(await screen.findByTestId('flatten-outcomes')).toHaveTextContent(
+      'SOL-USD: skipped — below the $10 minimum for crypto orders',
     );
   });
 });

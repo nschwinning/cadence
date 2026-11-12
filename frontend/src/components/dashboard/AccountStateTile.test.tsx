@@ -25,6 +25,8 @@ function short(symbol: string): AdminPosition {
     flattenable: false,
     restorable: true,
     restore_quantity: 10,
+    write_off_eligible: false,
+    write_off_quantity: 0,
   };
 }
 
@@ -37,7 +39,7 @@ function account(
   return {
     broker_available: true,
     reason: null,
-    account: { cash: 100000, buying_power: buyingPower, portfolio_value: 100000, currency: 'USD' },
+    account: { cash: 100000, buying_power: buyingPower, portfolio_value: 100000, currency: 'USD', cash_buying_power: null },
     cash_check: {
       contributors: [],
       committed_total: 75000,
@@ -151,5 +153,13 @@ describe('AccountStateTile', () => {
     renderTile(account(25000, [], 0, 500));
 
     expect(await screen.findByRole('note')).toHaveTextContent('Low capital');
+  });
+
+  it('caps free capital at cash buying power, not the margin figure', async () => {
+    const data = account(40000, [], 0, 325000);
+    renderTile({ ...data, account: { ...data.account!, cash_buying_power: 30000 } });
+
+    expect(await screen.findByTestId('free-capital')).toHaveTextContent('$30,000.00');
+    expect(screen.getByTestId('buying-power')).toHaveTextContent('$30,000.00');
   });
 });

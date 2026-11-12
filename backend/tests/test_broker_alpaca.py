@@ -557,3 +557,27 @@ def test_get_order_by_client_id_unknown_returns_none(monkeypatch: pytest.MonkeyP
     monkeypatch.setattr(broker, "_request", _not_found)
 
     assert broker.get_order_by_client_id("cad-b-missing") is None
+
+
+def test_account_reports_cash_buying_power_separately() -> None:
+    broker, _ = _make_broker(
+        {
+            ("GET", "/v2/account"): {
+                "id": "acc",
+                "cash": "57899.03",
+                "buying_power": "325946.55",
+                "non_marginable_buying_power": "57899.03",
+                "portfolio_value": "93365.18",
+            }
+        }
+    )
+
+    info = broker.get_account_info()
+
+    assert (info.buying_power, info.cash_buying_power) == (325946.55, 57899.03)
+
+
+def test_account_without_cash_buying_power_leaves_it_unset() -> None:
+    broker, _ = _make_broker({("GET", "/v2/account"): {"id": "acc", "cash": "1"}})
+
+    assert broker.get_account_info().cash_buying_power is None

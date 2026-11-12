@@ -1,6 +1,6 @@
 import { useEffect, useRef } from 'react';
 import * as echarts from 'echarts/core';
-import { LineChart } from 'echarts/charts';
+import { CandlestickChart, LineChart } from 'echarts/charts';
 import {
   GridComponent,
   TooltipComponent,
@@ -16,9 +16,11 @@ import type { EChartsCoreOption } from 'echarts/core';
 // the rest of ECharts away. The SVG renderer (rather than canvas) keeps the output
 // as inspectable DOM — crisp text and testable in jsdom, which has no canvas.
 // DataZoom (slider + inside wheel/drag) and Toolbox (rubber-band box-select + reset)
-// power the charts' zoom controls — see `components/charts/zoom.ts`.
+// power the charts' zoom controls — see `components/charts/zoom.ts`. Candlesticks draw
+// the Heikin-Ashi strategy illustration.
 echarts.use([
   LineChart,
+  CandlestickChart,
   GridComponent,
   TooltipComponent,
   LegendComponent,

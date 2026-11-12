@@ -189,6 +189,18 @@ def test_list_presets(client: TestClient) -> None:
         "rolling_reversion_zscore_algo4",
         "rolling_reversion_mean_cross_algo14",
         "rolling_reversion_vwap_cross_algo39",
+        "atr_band_supertrend_algo9",
+        "atr_band_keltner_algo21",
+        "adx_trend_algo12",
+        "rolling_reversion_vwap_adx_algo15",
+        "macd_momentum_algo10",
+        "heikin_ashi_algo11",
+        "heikin_ashi_volume_algo37",
+        "hma_trend_algo19",
+        "ma_ribbon_algo18",
+        "vama_algo30",
+        "rolling_reversion_gradient_algo3",
+        "price_velocity_algo48",
     ]
     turtle = body[2]
     assert turtle == {

@@ -200,6 +200,9 @@ def test_defaults_match_the_course_sma_band_recipe() -> None:
         "entry_z": 1.0,
         "exit_z": 0.2,
         "exit_mode": "revert",
+        "adx_exit": False,
+        "adx_lookback": 20,
+        "adx_threshold": 20.0,
     }
     assert params.required_history == 20
 
@@ -215,8 +218,8 @@ def test_defaults_match_the_course_sma_band_recipe() -> None:
         {"exit_z": -0.1},
         {"entry_threshold": 1.0},
         {"unknown_field": 1},
-        # Revert mode needs the exit level strictly above the entry level.
-        {"entry_threshold": 0.01, "exit_threshold": 0.01},
+        # Revert mode rejects an exit level below the entry level (exit beyond entry).
+        {"entry_threshold": 0.01, "exit_threshold": 0.02},
         {"entry_threshold": 0.0},
         {"distance": "zscore", "entry_z": 1.0, "exit_z": 1.5},
     ],
@@ -231,3 +234,33 @@ def test_bracket_mode_skips_the_ordering_check() -> None:
         {"entry_threshold": 0.0, "exit_threshold": 0.005, "exit_mode": "bracket"}
     )
     assert params.entry_threshold == 0.0
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"entry_threshold": 0.01, "exit_threshold": 0.01},
+        {"entry_threshold": 0.0, "exit_threshold": 0.0},
+        {"distance": "zscore", "entry_z": 1.0, "exit_z": 1.0},
+    ],
+)
+def test_equal_entry_and_exit_levels_are_allowed(overrides: dict[str, object]) -> None:
+    RollingAverageReversionParams.model_validate(overrides)
+
+
+def test_zero_thresholds_buy_below_and_sell_back_at_the_average() -> None:
+    params = RollingAverageReversionParams(
+        window=5, entry_threshold=0.0, exit_threshold=0.0, exit_mode="revert"
+    )
+    held = PositionView(quantity=10, avg_price=99.0)
+
+    below = _STRATEGY.evaluate(_bars([100, 100, 100, 100, 99]), None, params)
+    at_average = _STRATEGY.evaluate(_bars([100, 100, 100, 100, 100]), None, params)
+    back = _STRATEGY.evaluate(_bars([100, 100, 100, 99, 100]), held, params)
+    still_below = _STRATEGY.evaluate(_bars([100, 100, 100, 100, 99]), held, params)
+
+    assert below.action is SignalAction.ENTER_LONG
+    assert at_average.action is SignalAction.HOLD
+    assert back.action is SignalAction.EXIT
+    assert still_below.action is SignalAction.HOLD
+

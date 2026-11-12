@@ -1,8 +1,16 @@
 import type { EChartsCoreOption } from 'echarts/core';
+import { buildAdxChartOption } from './adxChart';
+import { buildAtrBandChartOption } from './atrBandChart';
 import { buildCrossoverChartOption } from './crossoverChart';
+import { buildMacdChartOption } from './macdChart';
+import { buildMaRibbonChartOption } from './maRibbonChart';
 import { buildDonchianChartOption } from './donchianChart';
+import { buildHeikinAshiChartOption } from './heikinAshiChart';
+import { buildHmaChartOption } from './hmaChart';
 import { buildRollingReversionChartOption } from './rollingReversionChart';
 import { buildRsiChartOption } from './rsiChart';
+import { buildVamaChartOption } from './vamaChart';
+import { buildVelocityChartOption } from './velocityChart';
 
 /**
  * A strategy's illustrative (synthetic, client-side) chart: how to build its
@@ -39,6 +47,46 @@ const STRATEGY_CHARTS: Record<string, StrategyChartDescriptor> = {
     buildOption: buildRollingReversionChartOption,
     ariaLabel:
       'Illustrative rolling-average reversion with a dip-below-the-band entry and a revert-to-the-average exit marker',
+  },
+  atr_band_trend: {
+    buildOption: buildAtrBandChartOption,
+    ariaLabel:
+      'Illustrative ATR-band trend (Keltner) with an upper-band breakout entry and a below-the-average exit marker',
+  },
+  adx_trend: {
+    buildOption: buildAdxChartOption,
+    ariaLabel:
+      'Illustrative ADX trend strength with an entry as the ADX rises above its threshold and an exit as it falls back below',
+  },
+  macd_momentum: {
+    buildOption: buildMacdChartOption,
+    ariaLabel:
+      'Illustrative MACD momentum with an entry where the MACD crosses above its signal line above zero',
+  },
+  heikin_ashi_trend: {
+    buildOption: buildHeikinAshiChartOption,
+    ariaLabel:
+      'Illustrative Heikin-Ashi candles with an entry on the first green candle and an exit on the first red one',
+  },
+  hma_trend: {
+    buildOption: buildHmaChartOption,
+    ariaLabel:
+      'Illustrative HMA trend with an entry as the rising fast Hull average clears the slow one and an exit on the falling cross below',
+  },
+  ma_ribbon: {
+    buildOption: buildMaRibbonChartOption,
+    ariaLabel:
+      'Illustrative MA ribbon with an entry where the fast, mid and slow averages stack upward',
+  },
+  vama: {
+    buildOption: buildVamaChartOption,
+    ariaLabel:
+      'Illustrative VAMA with fixed and adaptive smoothing, an entry above the average and an exit back below it',
+  },
+  price_velocity_reversal: {
+    buildOption: buildVelocityChartOption,
+    ariaLabel:
+      'Illustrative price velocity reversal with an entry on a slowing sell-off and an exit on the first up-bar',
   },
 };
 

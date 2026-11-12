@@ -156,6 +156,9 @@ class AccountInfo:
     margin_available: float = 0.0
     currency: str = "USD"
     is_paper: bool = False
+    #: What can be bought without margin (Alpaca ``non_marginable_buying_power``; also the
+    #: crypto limit). ``None`` when the broker does not report it.
+    cash_buying_power: float | None = None
 
 
 @dataclass

@@ -4,6 +4,7 @@ import {
   useFlattenOrphans,
   useReconcileOrders,
   useRestorePositions,
+  useWriteOffPositions,
 } from '../../api/admin';
 import { Modal } from '../../components/Modal';
 import { formatCurrency, formatQuantity } from '../../lib/format';
@@ -48,11 +49,13 @@ const STATUS_STYLES: Record<AdminPositionStatus, string> = {
 };
 
 /** Which correction an action applies: sell orphans, or buy back shortfalls/shorts. */
-type AdminAction = 'flatten' | 'restore';
+type AdminAction = 'flatten' | 'restore' | 'writeoff';
 
 const SKIP_REASONS: Record<string, string> = {
   not_orphan: 'no longer an orphan',
   not_short: 'no longer short of Cadence’s quantity',
+  not_eligible: 'not a crypto fee difference within 1%',
+  below_minimum: 'below the $10 minimum for crypto orders',
   pending_order: 'has an open order',
   market_closed: 'equity market is closed',
   not_found: 'not held in the account',
@@ -82,17 +85,18 @@ function Card({
 function AccountCard({ account }: { account: NonNullable<AdminAccount['account']> }) {
   const figures = [
     { label: 'Cash', value: account.cash },
-    { label: 'Buying power', value: account.buying_power },
+    { label: 'Cash buying power', value: account.cash_buying_power },
+    { label: 'Margin buying power', value: account.buying_power },
     { label: 'Total value', value: account.portfolio_value },
   ];
   return (
     <Card title="Account">
-      <dl className="grid grid-cols-1 gap-4 p-4 sm:grid-cols-3">
+      <dl className="grid grid-cols-1 gap-4 p-4 sm:grid-cols-2 lg:grid-cols-4">
         {figures.map((f) => (
           <div key={f.label}>
             <dt className="text-sm text-slate-500">{f.label}</dt>
             <dd className="text-xl font-semibold tabular-nums text-slate-900">
-              {formatCurrency(f.value)}
+              {f.value === null ? '—' : formatCurrency(f.value)}
             </dd>
           </div>
         ))}
@@ -262,12 +266,23 @@ function PositionsCard({
 }) {
   const flattenable = positions.filter((p) => p.flattenable);
   const restorable = positions.filter((p) => p.restorable);
+  const writable = positions.filter((p) => p.write_off_eligible);
   return (
     <Card
       title="Positions"
       actions={
-        (flattenable.length > 0 || restorable.length > 0) && (
+        (flattenable.length > 0 || restorable.length > 0 || writable.length > 0) && (
           <span className="flex flex-wrap gap-2">
+            {writable.length > 0 && (
+              <button
+                type="button"
+                className={BUTTON_CLASS}
+                disabled={busy}
+                onClick={() => onAction('writeoff', writable, null)}
+              >
+                Write off all
+              </button>
+            )}
             {restorable.length > 0 && (
               <button
                 type="button"
@@ -351,6 +366,17 @@ function PositionsCard({
                         Flatten
                       </button>
                     )}
+                    {p.write_off_eligible && (
+                      <button
+                        type="button"
+                        className={BUTTON_CLASS}
+                        disabled={busy}
+                        aria-label={`Write off ${p.symbol}`}
+                        onClick={() => onAction('writeoff', [p], p.symbol)}
+                      >
+                        Write off {formatQuantity(p.write_off_quantity)}
+                      </button>
+                    )}
                     {p.restorable && (
                       <button
                         type="button"
@@ -373,6 +399,36 @@ function PositionsCard({
   );
 }
 
+const CONFIRM_COPY: Record<
+  AdminAction,
+  { title: string; intro: string; note: string; button: string }
+> = {
+  flatten: {
+    title: 'Sell orphan positions?',
+    intro: 'This places market sell orders in the broker account for:',
+    note: 'Quantities are recomputed when the order is placed, so the account ends up holding exactly what Cadence’s portfolios and bots track at that moment.',
+    button: 'Sell',
+  },
+  restore: {
+    title: 'Buy back to Cadence’s positions?',
+    intro: 'This places market buy orders in the broker account for:',
+    note: 'Quantities are recomputed when the order is placed, so the account ends up holding exactly what Cadence’s portfolios and bots track at that moment.',
+    button: 'Buy',
+  },
+  writeoff: {
+    title: 'Write off crypto fee differences?',
+    intro: 'This lowers Cadence’s recorded quantities to what the account holds for:',
+    note: 'No order is sent. The difference is the fee the broker took in the coin; it is removed from the AI portfolios holding it, in proportion to their share.',
+    button: 'Write off',
+  },
+};
+
+function actionQuantity(action: AdminAction, t: AdminPosition): number {
+  if (action === 'restore') return t.restore_quantity;
+  if (action === 'writeoff') return t.write_off_quantity;
+  return t.orphan_quantity;
+}
+
 function ConfirmAction({
   action,
   targets,
@@ -384,35 +440,28 @@ function ConfirmAction({
   onCancel: () => void;
   onConfirm: () => void;
 }) {
-  const restore = action === 'restore';
+  const copy = CONFIRM_COPY[action];
   return (
     <div className="mx-auto w-full max-w-lg rounded-lg bg-white p-6 shadow-xl">
-      <h2 className="text-lg font-semibold text-slate-900">
-        {restore ? 'Buy back to Cadence’s positions?' : 'Sell orphan positions?'}
-      </h2>
-      <p className="mt-2 text-sm text-slate-600">
-        This places market {restore ? 'buy' : 'sell'} orders in the broker account for:
-      </p>
+      <h2 className="text-lg font-semibold text-slate-900">{copy.title}</h2>
+      <p className="mt-2 text-sm text-slate-600">{copy.intro}</p>
       <ul className="mt-3 flex flex-col gap-1 text-sm">
         {targets.map((t) => (
           <li key={t.symbol} className="flex justify-between gap-4">
             <span className="font-medium text-slate-900">{t.symbol}</span>
             <span className="tabular-nums text-slate-700">
-              {formatQuantity(restore ? t.restore_quantity : t.orphan_quantity)}
+              {formatQuantity(actionQuantity(action, t))}
             </span>
           </li>
         ))}
       </ul>
-      <p className="mt-3 text-xs text-slate-500">
-        Quantities are recomputed when the order is placed, so the account ends up holding
-        exactly what Cadence’s portfolios and bots track at that moment.
-      </p>
+      <p className="mt-3 text-xs text-slate-500">{copy.note}</p>
       <div className="mt-5 flex justify-end gap-2">
         <button type="button" className={BUTTON_CLASS} onClick={onCancel}>
           Cancel
         </button>
         <button type="button" className={DANGER_BUTTON_CLASS} onClick={onConfirm}>
-          {restore ? 'Buy' : 'Sell'}
+          {copy.button}
         </button>
       </div>
     </div>
@@ -421,6 +470,7 @@ function ConfirmAction({
 
 function outcomeText(o: AdminFlattenOutcome): string {
   if (o.result === 'sold') return `sold ${formatQuantity(o.quantity ?? 0)}`;
+  if (o.result === 'written_off') return `written off ${formatQuantity(o.quantity ?? 0)}`;
   if (o.result === 'bought') {
     const bought = `bought ${formatQuantity(o.quantity ?? 0)}`;
     // A short's cover may still be filling: the note says what is left to buy.
@@ -538,6 +588,7 @@ export function AdminPage() {
   const { data, isPending, isError, refetch, isFetching } = useAdminAccount();
   const flatten = useFlattenOrphans();
   const restore = useRestorePositions();
+  const writeOff = useWriteOffPositions();
   const reconcile = useReconcileOrders();
   const [pending, setPending] = useState<{
     action: AdminAction;
@@ -546,11 +597,12 @@ export function AdminPage() {
   } | null>(null);
   // The most recent flatten/restore drives the outcome panel.
   const [lastAction, setLastAction] = useState<AdminAction | null>(null);
-  const lastMutation = lastAction === 'restore' ? restore : flatten;
+  const mutations = { flatten, restore, writeoff: writeOff };
+  const lastMutation = lastAction ? mutations[lastAction] : flatten;
 
   const confirm = () => {
     if (pending === null) return;
-    (pending.action === 'restore' ? restore : flatten).mutate(pending.symbol);
+    mutations[pending.action].mutate(pending.symbol);
     setLastAction(pending.action);
     setPending(null);
   };
@@ -602,7 +654,7 @@ export function AdminPage() {
           <CashCheckCard check={data.cash_check} />
           <PositionsCard
             positions={data.positions}
-            busy={flatten.isPending || restore.isPending}
+            busy={flatten.isPending || restore.isPending || writeOff.isPending}
             onAction={(action, targets, symbol) => setPending({ action, targets, symbol })}
           />
           <UnresolvedOrdersCard
@@ -618,7 +670,13 @@ export function AdminPage() {
       <Modal
         open={pending !== null}
         onClose={() => setPending(null)}
-        title={pending?.action === 'restore' ? 'Confirm restore' : 'Confirm flatten'}
+        title={
+          pending?.action === 'restore'
+            ? 'Confirm restore'
+            : pending?.action === 'writeoff'
+              ? 'Confirm write-off'
+              : 'Confirm flatten'
+        }
       >
         {pending && (
           <ConfirmAction

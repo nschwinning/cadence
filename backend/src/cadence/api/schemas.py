@@ -1592,9 +1592,12 @@ class AdminAccountFiguresRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     cash: float
+    #: Margin buying power as the broker reports it (up to 4× equity intraday).
     buying_power: float
     portfolio_value: float
     currency: str
+    #: What can be bought without margin; null when the broker does not report it.
+    cash_buying_power: float | None
 
 
 class AdminCashContributorRead(BaseModel):
@@ -1653,6 +1656,8 @@ class AdminPositionRead(BaseModel):
     flattenable: bool
     restorable: bool
     restore_quantity: float
+    write_off_eligible: bool
+    write_off_quantity: float
 
 
 class AdminUnresolvedOrderRead(BaseModel):
@@ -1700,7 +1705,7 @@ class AdminFlattenOutcomeRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     symbol: str
-    result: Literal["sold", "bought", "skipped", "failed"]
+    result: Literal["sold", "bought", "written_off", "skipped", "failed"]
     quantity: float | None
     order_id: str | None
     reason: str | None

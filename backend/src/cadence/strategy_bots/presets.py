@@ -201,6 +201,226 @@ _PRESETS: tuple[BotPreset, ...] = (
         drawdown_stop_pct=0.05,
         is_default=False,
     ),
+    BotPreset(
+        key="atr_band_supertrend_algo9",
+        display_name="SuperTrend (Algo 9)",
+        description=(
+            "SuperTrend over a 20-close window with a 3× ATR band: buys in an up-trend "
+            "above the SuperTrend line and exits on a 0.5% take-profit or stop-loss."
+        ),
+        course_ref="Algo 9",
+        strategy_key=StrategyKey.ATR_BAND_TREND,
+        strategy_params={"version": "supertrend", "window": 20, "atr_mult": 3.0},
+        take_profit_pct=0.005,
+        stop_loss_pct=0.005,
+        drawdown_stop_pct=0.05,
+        is_default=True,
+    ),
+    BotPreset(
+        key="atr_band_keltner_algo21",
+        display_name="Keltner Breakout (Algo 21)",
+        description=(
+            "Keltner channel of a 20-bar SMA ± 1× ATR: buys on a break above the upper "
+            "band and exits back below the SMA, with a 0.5% take-profit and 1% stop-loss. "
+            "The course script has no drawdown stop; 5% follows the catalog convention."
+        ),
+        course_ref="Algo 21",
+        strategy_key=StrategyKey.ATR_BAND_TREND,
+        strategy_params={
+            "version": "keltner",
+            "window": 20,
+            "atr_mult": 1.0,
+            "exit_on_midline": True,
+        },
+        take_profit_pct=0.005,
+        stop_loss_pct=0.01,
+        drawdown_stop_pct=0.05,
+        is_default=False,
+    ),
+    BotPreset(
+        key="adx_trend_algo12",
+        display_name="ADX Trend Strength (Algo 12)",
+        description=(
+            "Buys when the 10-bar ADX is above 20 with +DI leading −DI and exits once the "
+            "ADX falls back below 20, with a 0.5% take-profit and 1% stop-loss."
+        ),
+        course_ref="Algo 12",
+        strategy_key=StrategyKey.ADX_TREND,
+        strategy_params={"period": 10, "threshold": 20.0},
+        take_profit_pct=0.005,
+        stop_loss_pct=0.01,
+        drawdown_stop_pct=0.05,
+        is_default=True,
+    ),
+    BotPreset(
+        key="rolling_reversion_vwap_adx_algo15",
+        display_name="VWAP + ADX Reversion (Algo 15)",
+        description=(
+            "Buys any close below the 20-bar average of typical prices and takes profit "
+            "at 0.5%. Instead of a price stop, a losing trade is closed when the ADX "
+            "shows a strong downtrend (DX above 20 with −DI leading). The course measures "
+            "the ADX over every candle since the start; this preset uses the last 20 bars."
+        ),
+        course_ref="Algo 15",
+        strategy_key=StrategyKey.ROLLING_AVERAGE_REVERSION,
+        strategy_params={
+            "average_type": "typical",
+            "window": 20,
+            "distance": "band",
+            "entry_threshold": 0.0,
+            "exit_threshold": 0.005,
+            "entry_z": 1.0,
+            "exit_z": 0.2,
+            "exit_mode": "bracket",
+            "adx_exit": True,
+            "adx_lookback": 20,
+            "adx_threshold": 20.0,
+        },
+        take_profit_pct=0.005,
+        stop_loss_pct=None,
+        drawdown_stop_pct=0.05,
+        is_default=False,
+    ),
+    BotPreset(
+        key="macd_momentum_algo10",
+        display_name="MACD Momentum (Algo 10)",
+        description=(
+            "MACD 12 / 26 with a 9-period signal line: buys a bullish cross while the MACD "
+            "is above zero and exits on a 0.5% take-profit or 0.5% stop-loss."
+        ),
+        course_ref="Algo 10",
+        strategy_key=StrategyKey.MACD_MOMENTUM,
+        strategy_params={"fast_period": 12, "slow_period": 26, "signal_period": 9},
+        take_profit_pct=0.005,
+        stop_loss_pct=0.005,
+        drawdown_stop_pct=0.05,
+        is_default=True,
+    ),
+    BotPreset(
+        key="heikin_ashi_algo11",
+        display_name="Heikin-Ashi Trend (Algo 11)",
+        description=(
+            "Buys on a green Heikin-Ashi candle and sells on the first red one, with a "
+            "0.5% take-profit and 1% stop-loss."
+        ),
+        course_ref="Algo 11",
+        strategy_key=StrategyKey.HEIKIN_ASHI_TREND,
+        strategy_params={"volume_filter": False},
+        take_profit_pct=0.005,
+        stop_loss_pct=0.01,
+        drawdown_stop_pct=0.05,
+        is_default=True,
+    ),
+    BotPreset(
+        key="heikin_ashi_volume_algo37",
+        display_name="Heikin-Ashi + Volume (Algo 37)",
+        description=(
+            "Buys on a green Heikin-Ashi candle only when the bar's volume is above its "
+            "20-bar average; sells on a red candle or when volume fades. No take-profit or "
+            "stop-loss, as in the course."
+        ),
+        course_ref="Algo 37",
+        strategy_key=StrategyKey.HEIKIN_ASHI_TREND,
+        strategy_params={"volume_filter": True, "volume_window": 20},
+        take_profit_pct=None,
+        stop_loss_pct=None,
+        drawdown_stop_pct=0.05,
+        is_default=False,
+    ),
+    BotPreset(
+        key="hma_trend_algo19",
+        display_name="HMA Trend (Algos 19 / 26)",
+        description=(
+            "Fast 9 / slow 21 Hull Moving Averages: buys when the fast HMA is above the slow "
+            "one and rising, exits on a falling cross below, with a 0.5% take-profit and 1% "
+            "stop-loss. Uses the proper HMA (the course script skips its final smoothing); "
+            "Algo 26 trades identically."
+        ),
+        course_ref="Algos 19, 26",
+        strategy_key=StrategyKey.HMA_TREND,
+        strategy_params={"fast_period": 9, "slow_period": 21},
+        take_profit_pct=0.005,
+        stop_loss_pct=0.01,
+        drawdown_stop_pct=0.05,
+        is_default=True,
+    ),
+    BotPreset(
+        key="ma_ribbon_algo18",
+        display_name="MA Ribbon (Algo 18)",
+        description=(
+            "Buys when the 5, 10 and 20-bar simple moving averages stack upward "
+            "(fast > mid > slow), with a 0.5% take-profit and 1% stop-loss."
+        ),
+        course_ref="Algo 18",
+        strategy_key=StrategyKey.MA_RIBBON,
+        strategy_params={"fast_period": 5, "mid_period": 10, "slow_period": 20},
+        take_profit_pct=0.005,
+        stop_loss_pct=0.01,
+        drawdown_stop_pct=0.05,
+        is_default=True,
+    ),
+    BotPreset(
+        key="vama_algo30",
+        display_name="VAMA (Algo 30)",
+        description=(
+            "Buys when the close is above the VAMA and sells when it falls back to or below "
+            "it, with no take-profit or stop-loss, as in the course. Uses fixed smoothing "
+            "(0.20): the course's adaptive formula always resolves to its maximum."
+        ),
+        course_ref="Algo 30",
+        strategy_key=StrategyKey.VAMA,
+        strategy_params={
+            "lookback": 20,
+            "alpha_min": 0.02,
+            "alpha_max": 0.2,
+            "adaptive": False,
+        },
+        take_profit_pct=None,
+        stop_loss_pct=None,
+        drawdown_stop_pct=0.05,
+        is_default=True,
+    ),
+    BotPreset(
+        key="rolling_reversion_gradient_algo3",
+        display_name="Gradient Convergence (Algo 3)",
+        description=(
+            "Buys any close below its 5-bar average and sells once the close is back at or "
+            "above it — the course's gradient signal, read long-only. No take-profit or "
+            "stop-loss, as in the course."
+        ),
+        course_ref="Algo 3",
+        strategy_key=StrategyKey.ROLLING_AVERAGE_REVERSION,
+        strategy_params={
+            "average_type": "sma",
+            "window": 5,
+            "distance": "band",
+            "entry_threshold": 0.0,
+            "exit_threshold": 0.0,
+            "entry_z": 1.0,
+            "exit_z": 0.2,
+            "exit_mode": "revert",
+        },
+        take_profit_pct=None,
+        stop_loss_pct=None,
+        drawdown_stop_pct=0.05,
+        is_default=False,
+    ),
+    BotPreset(
+        key="price_velocity_algo48",
+        display_name="Price Velocity Reversal (Algo 48)",
+        description=(
+            "Buys a drop of more than 0.2% per bar that is slowing down and sells on the "
+            "first up-bar, with a 0.5% take-profit and 1% stop-loss. The course's ₹2 move "
+            "on its ₹1,000 price is expressed as 0.2% so it works at any share price."
+        ),
+        course_ref="Algo 48",
+        strategy_key=StrategyKey.PRICE_VELOCITY_REVERSAL,
+        strategy_params={"threshold_pct": 0.002},
+        take_profit_pct=0.005,
+        stop_loss_pct=0.01,
+        drawdown_stop_pct=0.05,
+        is_default=True,
+    ),
 )
 
 _BY_KEY: dict[str, BotPreset] = {preset.key: preset for preset in _PRESETS}

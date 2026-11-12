@@ -149,6 +149,176 @@ const PRESETS: BotPreset[] = [
     drawdown_stop_pct: 0.05,
     is_default: false,
   },
+  {
+    key: 'atr_band_supertrend_algo9',
+    display_name: 'SuperTrend (Algo 9)',
+    description: 'SuperTrend 20 / 3.',
+    course_ref: 'Algo 9',
+    strategy_key: 'atr_band_trend',
+    strategy_params: { version: 'supertrend', window: 20, atr_mult: 3.0 },
+    take_profit_pct: 0.005,
+    stop_loss_pct: 0.005,
+    drawdown_stop_pct: 0.05,
+    is_default: true,
+  },
+  {
+    key: 'atr_band_keltner_algo21',
+    display_name: 'Keltner Breakout (Algo 21)',
+    description: 'Keltner 20 / 1.',
+    course_ref: 'Algo 21',
+    strategy_key: 'atr_band_trend',
+    strategy_params: {
+      version: 'keltner',
+      window: 20,
+      atr_mult: 1.0,
+      exit_on_midline: true,
+    },
+    take_profit_pct: 0.005,
+    stop_loss_pct: 0.01,
+    drawdown_stop_pct: 0.05,
+    is_default: false,
+  },
+  {
+    key: 'adx_trend_algo12',
+    display_name: 'ADX Trend Strength (Algo 12)',
+    description: 'ADX 10 / 20.',
+    course_ref: 'Algo 12',
+    strategy_key: 'adx_trend',
+    strategy_params: { period: 10, threshold: 20 },
+    take_profit_pct: 0.005,
+    stop_loss_pct: 0.01,
+    drawdown_stop_pct: 0.05,
+    is_default: true,
+  },
+  {
+    key: 'rolling_reversion_vwap_adx_algo15',
+    display_name: 'VWAP + ADX Reversion (Algo 15)',
+    description: 'Typical-price cross with an ADX danger exit.',
+    course_ref: 'Algo 15',
+    strategy_key: 'rolling_average_reversion',
+    strategy_params: {
+      average_type: 'typical',
+      window: 20,
+      distance: 'band',
+      entry_threshold: 0.0,
+      exit_threshold: 0.005,
+      entry_z: 1.0,
+      exit_z: 0.2,
+      exit_mode: 'bracket',
+      adx_exit: true,
+      adx_lookback: 20,
+      adx_threshold: 20,
+    },
+    take_profit_pct: 0.005,
+    stop_loss_pct: null,
+    drawdown_stop_pct: 0.05,
+    is_default: false,
+  },
+  {
+    key: 'macd_momentum_algo10',
+    display_name: 'MACD Momentum (Algo 10)',
+    description: 'MACD 12 / 26 / 9.',
+    course_ref: 'Algo 10',
+    strategy_key: 'macd_momentum',
+    strategy_params: { fast_period: 12, slow_period: 26, signal_period: 9 },
+    take_profit_pct: 0.005,
+    stop_loss_pct: 0.005,
+    drawdown_stop_pct: 0.05,
+    is_default: true,
+  },
+  {
+    key: 'heikin_ashi_algo11',
+    display_name: 'Heikin-Ashi Trend (Algo 11)',
+    description: 'Green in, red out.',
+    course_ref: 'Algo 11',
+    strategy_key: 'heikin_ashi_trend',
+    strategy_params: { volume_filter: false },
+    take_profit_pct: 0.005,
+    stop_loss_pct: 0.01,
+    drawdown_stop_pct: 0.05,
+    is_default: true,
+  },
+  {
+    key: 'heikin_ashi_volume_algo37',
+    display_name: 'Heikin-Ashi + Volume (Algo 37)',
+    description: 'Green with volume.',
+    course_ref: 'Algo 37',
+    strategy_key: 'heikin_ashi_trend',
+    strategy_params: { volume_filter: true, volume_window: 20 },
+    take_profit_pct: null,
+    stop_loss_pct: null,
+    drawdown_stop_pct: 0.05,
+    is_default: false,
+  },
+  {
+    key: 'hma_trend_algo19',
+    display_name: 'HMA Trend (Algos 19 / 26)',
+    description: 'HMA 9 / 21.',
+    course_ref: 'Algos 19, 26',
+    strategy_key: 'hma_trend',
+    strategy_params: { fast_period: 9, slow_period: 21 },
+    take_profit_pct: 0.005,
+    stop_loss_pct: 0.01,
+    drawdown_stop_pct: 0.05,
+    is_default: true,
+  },
+  {
+    key: 'ma_ribbon_algo18',
+    display_name: 'MA Ribbon (Algo 18)',
+    description: 'Ribbon 5 / 10 / 20.',
+    course_ref: 'Algo 18',
+    strategy_key: 'ma_ribbon',
+    strategy_params: { fast_period: 5, mid_period: 10, slow_period: 20 },
+    take_profit_pct: 0.005,
+    stop_loss_pct: 0.01,
+    drawdown_stop_pct: 0.05,
+    is_default: true,
+  },
+  {
+    key: 'vama_algo30',
+    display_name: 'VAMA (Algo 30)',
+    description: 'Fixed smoothing as in the course.',
+    course_ref: 'Algo 30',
+    strategy_key: 'vama',
+    strategy_params: { lookback: 20, alpha_min: 0.02, alpha_max: 0.2, adaptive: false },
+    take_profit_pct: null,
+    stop_loss_pct: null,
+    drawdown_stop_pct: 0.05,
+    is_default: true,
+  },
+  {
+    key: 'price_velocity_algo48',
+    display_name: 'Price Velocity Reversal (Algo 48)',
+    description: 'Decelerating drop, 0.2%.',
+    course_ref: 'Algo 48',
+    strategy_key: 'price_velocity_reversal',
+    strategy_params: { threshold_pct: 0.002 },
+    take_profit_pct: 0.005,
+    stop_loss_pct: 0.01,
+    drawdown_stop_pct: 0.05,
+    is_default: true,
+  },
+  {
+    key: 'rolling_reversion_gradient_algo3',
+    display_name: 'Gradient Convergence (Algo 3)',
+    description: 'Below the 5-bar average in, back at it out.',
+    course_ref: 'Algo 3',
+    strategy_key: 'rolling_average_reversion',
+    strategy_params: {
+      average_type: 'sma',
+      window: 5,
+      distance: 'band',
+      entry_threshold: 0.0,
+      exit_threshold: 0.0,
+      entry_z: 1.0,
+      exit_z: 0.2,
+      exit_mode: 'revert',
+    },
+    take_profit_pct: null,
+    stop_loss_pct: null,
+    drawdown_stop_pct: 0.05,
+    is_default: false,
+  },
 ];
 
 /** Route the catalog GETs the form issues on mount plus the picker's asset search. */
@@ -183,6 +353,62 @@ function routeCatalogs({ presetsFail = false }: { presetsFail?: boolean } = {}) 
             display_name: 'Rolling-Average Reversion',
             explanation: 'Buys dips below the rolling average.',
             required_history: 20,
+            params_schema: {},
+          },
+          {
+            key: 'price_velocity_reversal',
+            display_name: 'Price Velocity Reversal',
+            explanation: 'Buys slowing sell-offs.',
+            required_history: 3,
+            params_schema: {},
+          },
+          {
+            key: 'vama',
+            display_name: 'VAMA',
+            explanation: 'Buys above a volatility-adaptive average.',
+            required_history: 80,
+            params_schema: {},
+          },
+          {
+            key: 'ma_ribbon',
+            display_name: 'MA Ribbon',
+            explanation: 'Buys when three averages stack upward.',
+            required_history: 20,
+            params_schema: {},
+          },
+          {
+            key: 'hma_trend',
+            display_name: 'HMA Trend',
+            explanation: 'Rides rising Hull averages.',
+            required_history: 25,
+            params_schema: {},
+          },
+          {
+            key: 'heikin_ashi_trend',
+            display_name: 'Heikin-Ashi Trend',
+            explanation: 'Rides green Heikin-Ashi runs.',
+            required_history: 10,
+            params_schema: {},
+          },
+          {
+            key: 'macd_momentum',
+            display_name: 'MACD Momentum',
+            explanation: 'Buys bullish MACD crosses above zero.',
+            required_history: 87,
+            params_schema: {},
+          },
+          {
+            key: 'adx_trend',
+            display_name: 'ADX Trend Strength',
+            explanation: 'Trades strong up-trends.',
+            required_history: 20,
+            params_schema: {},
+          },
+          {
+            key: 'atr_band_trend',
+            display_name: 'ATR-Band Trend',
+            explanation: 'Rides breakouts of a volatility band.',
+            required_history: 60,
             params_schema: {},
           },
         ],
@@ -810,6 +1036,8 @@ describe('BuildBotCard', () => {
       'Z-Score Reversion (Algo 4)',
       'Mean Cross Reversion (Algo 14)',
       'VWAP Cross Reversion (Algo 39)',
+      'VWAP + ADX Reversion (Algo 15)',
+      'Gradient Convergence (Algo 3)',
     ]);
 
     await user.selectOptions(selector, 'rolling_reversion_vwap_cross_algo39');
@@ -901,5 +1129,483 @@ describe('BuildBotCard', () => {
 
     await waitForPreset();
     expect(screen.queryByLabelText('Preset')).not.toBeInTheDocument();
+  });
+
+  it('applies the SuperTrend preset when selecting ATR-Band Trend', async () => {
+    const user = userEvent.setup();
+    renderCard(<BuildBotCard />);
+
+    await waitForPreset();
+    await user.selectOptions(screen.getByLabelText('Strategy'), 'atr_band_trend');
+
+    await waitForPreset('SuperTrend (Algo 9)');
+    expect(screen.getByLabelText('Version')).toHaveValue('supertrend');
+    expect(screen.getByLabelText('Window')).toHaveValue(20);
+    expect(screen.getByLabelText('ATR multiplier (×)')).toHaveValue(3);
+    expect(
+      screen.queryByLabelText('Exit when the close falls below the moving average'),
+    ).not.toBeInTheDocument();
+    expect(screen.getByLabelText('Stop-loss threshold (%)')).toHaveValue(0.5);
+  });
+
+  it('switching to Keltner applies the Algo 21 preset and submits its params', async () => {
+    mockedPost.mockResolvedValue({ data: { id: 'b1' } });
+    const user = userEvent.setup();
+    renderCard(<BuildBotCard />);
+
+    await waitForPreset();
+    await user.selectOptions(screen.getByLabelText('Strategy'), 'atr_band_trend');
+    await waitForPreset('SuperTrend (Algo 9)');
+    await user.selectOptions(screen.getByLabelText('Version'), 'keltner');
+
+    await waitForPreset('Keltner Breakout (Algo 21)');
+    expect(screen.getByLabelText('ATR multiplier (×)')).toHaveValue(1);
+    expect(
+      screen.getByLabelText('Exit when the close falls below the moving average'),
+    ).toBeChecked();
+    expect(screen.getByLabelText('Stop-loss threshold (%)')).toHaveValue(1);
+
+    await pickAAPL(user);
+    await user.click(screen.getByRole('button', { name: 'Create bot' }));
+
+    await waitFor(() => {
+      expect(mockedPost).toHaveBeenCalledWith(
+        '/api/v1/bots/sessions',
+        expect.objectContaining({
+          strategy_key: 'atr_band_trend',
+          preset_key: 'atr_band_keltner_algo21',
+          take_profit_pct: 0.005,
+          stop_loss_pct: 0.01,
+          strategy_params: {
+            version: 'keltner',
+            window: 20,
+            atr_mult: 1,
+            exit_on_midline: true,
+          },
+        }),
+      );
+    });
+  });
+
+  it('blocks ATR-Band submission with a non-positive multiplier', async () => {
+    const user = userEvent.setup();
+    renderCard(<BuildBotCard />);
+
+    await waitForPreset();
+    await user.selectOptions(screen.getByLabelText('Strategy'), 'atr_band_trend');
+    await waitForPreset('SuperTrend (Algo 9)');
+    await pickAAPL(user);
+    const mult = screen.getByLabelText('ATR multiplier (×)');
+    await user.clear(mult);
+    await user.type(mult, '0');
+
+    expect(screen.getByRole('button', { name: 'Create bot' })).toBeDisabled();
+  });
+
+  it('applies the Algo 12 preset and submits the ADX params', async () => {
+    mockedPost.mockResolvedValue({ data: { id: 'b1' } });
+    const user = userEvent.setup();
+    renderCard(<BuildBotCard />);
+
+    await waitForPreset();
+    await user.selectOptions(screen.getByLabelText('Strategy'), 'adx_trend');
+
+    await waitForPreset('ADX Trend Strength (Algo 12)');
+    expect(screen.getByLabelText('ADX period')).toHaveValue(10);
+    expect(screen.getByLabelText('ADX threshold')).toHaveValue(20);
+    await pickAAPL(user);
+    await user.click(screen.getByRole('button', { name: 'Create bot' }));
+
+    await waitFor(() => {
+      expect(mockedPost).toHaveBeenCalledWith(
+        '/api/v1/bots/sessions',
+        expect.objectContaining({
+          strategy_key: 'adx_trend',
+          preset_key: 'adx_trend_algo12',
+          strategy_params: { period: 10, threshold: 20 },
+        }),
+      );
+    });
+  });
+
+  it('applies the Algo 15 preset with the ADX danger exit and submits its fields', async () => {
+    mockedPost.mockResolvedValue({ data: { id: 'b1' } });
+    const user = userEvent.setup();
+    renderCard(<BuildBotCard />);
+
+    await waitForPreset();
+    await user.selectOptions(screen.getByLabelText('Strategy'), 'rolling_average_reversion');
+    await waitForPreset('SMA Band Reversion (Algo 5)');
+    expect(
+      screen.getByLabelText('ADX danger exit: sell a losing trade in a strong downtrend'),
+    ).not.toBeChecked();
+    await user.selectOptions(screen.getByLabelText('Preset'), 'rolling_reversion_vwap_adx_algo15');
+
+    await waitForPreset('VWAP + ADX Reversion (Algo 15)');
+    expect(
+      screen.getByLabelText('ADX danger exit: sell a losing trade in a strong downtrend'),
+    ).toBeChecked();
+    expect(screen.getByLabelText('ADX lookback (bars)')).toHaveValue(20);
+    expect(screen.getByLabelText('Enable stop-loss')).not.toBeChecked();
+    await pickAAPL(user);
+    await user.click(screen.getByRole('button', { name: 'Create bot' }));
+
+    await waitFor(() => {
+      expect(mockedPost).toHaveBeenCalledWith(
+        '/api/v1/bots/sessions',
+        expect.objectContaining({
+          preset_key: 'rolling_reversion_vwap_adx_algo15',
+          stop_loss_pct: null,
+          strategy_params: expect.objectContaining({
+            average_type: 'typical',
+            exit_mode: 'bracket',
+            adx_exit: true,
+            adx_lookback: 20,
+            adx_threshold: 20,
+          }),
+        }),
+      );
+    });
+  });
+
+  it('switching back to Algo 5 turns the ADX danger exit off', async () => {
+    const user = userEvent.setup();
+    renderCard(<BuildBotCard />);
+
+    await waitForPreset();
+    await user.selectOptions(screen.getByLabelText('Strategy'), 'rolling_average_reversion');
+    await waitForPreset('SMA Band Reversion (Algo 5)');
+    await user.selectOptions(screen.getByLabelText('Preset'), 'rolling_reversion_vwap_adx_algo15');
+    await waitForPreset('VWAP + ADX Reversion (Algo 15)');
+    await user.selectOptions(screen.getByLabelText('Preset'), 'rolling_reversion_sma_band_algo5');
+
+    await waitForPreset('SMA Band Reversion (Algo 5)');
+    expect(
+      screen.getByLabelText('ADX danger exit: sell a losing trade in a strong downtrend'),
+    ).not.toBeChecked();
+  });
+
+  it('applies the Algo 10 preset and submits the MACD params', async () => {
+    mockedPost.mockResolvedValue({ data: { id: 'b1' } });
+    const user = userEvent.setup();
+    renderCard(<BuildBotCard />);
+
+    await waitForPreset();
+    await user.selectOptions(screen.getByLabelText('Strategy'), 'macd_momentum');
+
+    await waitForPreset('MACD Momentum (Algo 10)');
+    expect(screen.getByLabelText('Fast EMA')).toHaveValue(12);
+    expect(screen.getByLabelText('Slow EMA')).toHaveValue(26);
+    expect(screen.getByLabelText('Signal EMA')).toHaveValue(9);
+    await pickAAPL(user);
+    await user.click(screen.getByRole('button', { name: 'Create bot' }));
+
+    await waitFor(() => {
+      expect(mockedPost).toHaveBeenCalledWith(
+        '/api/v1/bots/sessions',
+        expect.objectContaining({
+          strategy_key: 'macd_momentum',
+          preset_key: 'macd_momentum_algo10',
+          strategy_params: { fast_period: 12, slow_period: 26, signal_period: 9 },
+        }),
+      );
+    });
+  });
+
+  it('blocks MACD submission when the slow EMA is not above the fast one', async () => {
+    const user = userEvent.setup();
+    renderCard(<BuildBotCard />);
+
+    await waitForPreset();
+    await user.selectOptions(screen.getByLabelText('Strategy'), 'macd_momentum');
+    await waitForPreset('MACD Momentum (Algo 10)');
+    await pickAAPL(user);
+    const slow = screen.getByLabelText('Slow EMA');
+    await user.clear(slow);
+    await user.type(slow, '12');
+
+    expect(screen.getByRole('button', { name: 'Create bot' })).toBeDisabled();
+  });
+
+  it('applies the Algo 11 preset and submits the filter off', async () => {
+    mockedPost.mockResolvedValue({ data: { id: 'b1' } });
+    const user = userEvent.setup();
+    renderCard(<BuildBotCard />);
+
+    await waitForPreset();
+    await user.selectOptions(screen.getByLabelText('Strategy'), 'heikin_ashi_trend');
+
+    await waitForPreset('Heikin-Ashi Trend (Algo 11)');
+    expect(
+      screen.getByLabelText('Require above-average volume (and sell when it fades)'),
+    ).not.toBeChecked();
+    expect(screen.queryByLabelText('Volume window (bars)')).not.toBeInTheDocument();
+    await pickAAPL(user);
+    await user.click(screen.getByRole('button', { name: 'Create bot' }));
+
+    await waitFor(() => {
+      expect(mockedPost).toHaveBeenCalledWith(
+        '/api/v1/bots/sessions',
+        expect.objectContaining({
+          strategy_key: 'heikin_ashi_trend',
+          preset_key: 'heikin_ashi_algo11',
+          strategy_params: { volume_filter: false },
+        }),
+      );
+    });
+  });
+
+  it('applies the Algo 37 preset with the volume filter and submits its window', async () => {
+    mockedPost.mockResolvedValue({ data: { id: 'b1' } });
+    const user = userEvent.setup();
+    renderCard(<BuildBotCard />);
+
+    await waitForPreset();
+    await user.selectOptions(screen.getByLabelText('Strategy'), 'heikin_ashi_trend');
+    await waitForPreset('Heikin-Ashi Trend (Algo 11)');
+    await user.selectOptions(screen.getByLabelText('Preset'), 'heikin_ashi_volume_algo37');
+
+    await waitForPreset('Heikin-Ashi + Volume (Algo 37)');
+    expect(
+      screen.getByLabelText('Require above-average volume (and sell when it fades)'),
+    ).toBeChecked();
+    expect(screen.getByLabelText('Volume window (bars)')).toHaveValue(20);
+    expect(screen.getByLabelText('Enable take-profit')).not.toBeChecked();
+    await pickAAPL(user);
+    await user.click(screen.getByRole('button', { name: 'Create bot' }));
+
+    await waitFor(() => {
+      expect(mockedPost).toHaveBeenCalledWith(
+        '/api/v1/bots/sessions',
+        expect.objectContaining({
+          preset_key: 'heikin_ashi_volume_algo37',
+          take_profit_pct: null,
+          strategy_params: { volume_filter: true, volume_window: 20 },
+        }),
+      );
+    });
+  });
+
+  it('blocks Heikin-Ashi submission with a volume window below 2', async () => {
+    const user = userEvent.setup();
+    renderCard(<BuildBotCard />);
+
+    await waitForPreset();
+    await user.selectOptions(screen.getByLabelText('Strategy'), 'heikin_ashi_trend');
+    await waitForPreset('Heikin-Ashi Trend (Algo 11)');
+    await pickAAPL(user);
+    await user.click(
+      screen.getByLabelText('Require above-average volume (and sell when it fades)'),
+    );
+    const window = screen.getByLabelText('Volume window (bars)');
+    await user.clear(window);
+    await user.type(window, '1');
+
+    expect(screen.getByRole('button', { name: 'Create bot' })).toBeDisabled();
+  });
+
+  it('applies the HMA preset and submits its periods', async () => {
+    mockedPost.mockResolvedValue({ data: { id: 'b1' } });
+    const user = userEvent.setup();
+    renderCard(<BuildBotCard />);
+
+    await waitForPreset();
+    await user.selectOptions(screen.getByLabelText('Strategy'), 'hma_trend');
+
+    await waitForPreset('HMA Trend (Algos 19 / 26)');
+    expect(screen.getByLabelText('Fast HMA')).toHaveValue(9);
+    expect(screen.getByLabelText('Slow HMA')).toHaveValue(21);
+    await pickAAPL(user);
+    await user.click(screen.getByRole('button', { name: 'Create bot' }));
+
+    await waitFor(() => {
+      expect(mockedPost).toHaveBeenCalledWith(
+        '/api/v1/bots/sessions',
+        expect.objectContaining({
+          strategy_key: 'hma_trend',
+          preset_key: 'hma_trend_algo19',
+          strategy_params: { fast_period: 9, slow_period: 21 },
+        }),
+      );
+    });
+  });
+
+  it('blocks HMA submission when the slow HMA is not above the fast one', async () => {
+    const user = userEvent.setup();
+    renderCard(<BuildBotCard />);
+
+    await waitForPreset();
+    await user.selectOptions(screen.getByLabelText('Strategy'), 'hma_trend');
+    await waitForPreset('HMA Trend (Algos 19 / 26)');
+    await pickAAPL(user);
+    const slow = screen.getByLabelText('Slow HMA');
+    await user.clear(slow);
+    await user.type(slow, '9');
+
+    expect(screen.getByRole('button', { name: 'Create bot' })).toBeDisabled();
+  });
+
+  it('applies the MA Ribbon preset and submits its three periods', async () => {
+    mockedPost.mockResolvedValue({ data: { id: 'b1' } });
+    const user = userEvent.setup();
+    renderCard(<BuildBotCard />);
+
+    await waitForPreset();
+    await user.selectOptions(screen.getByLabelText('Strategy'), 'ma_ribbon');
+
+    await waitForPreset('MA Ribbon (Algo 18)');
+    expect(screen.getByLabelText('Fast SMA')).toHaveValue(5);
+    expect(screen.getByLabelText('Mid SMA')).toHaveValue(10);
+    expect(screen.getByLabelText('Slow SMA')).toHaveValue(20);
+    await pickAAPL(user);
+    await user.click(screen.getByRole('button', { name: 'Create bot' }));
+
+    await waitFor(() => {
+      expect(mockedPost).toHaveBeenCalledWith(
+        '/api/v1/bots/sessions',
+        expect.objectContaining({
+          strategy_key: 'ma_ribbon',
+          preset_key: 'ma_ribbon_algo18',
+          strategy_params: { fast_period: 5, mid_period: 10, slow_period: 20 },
+        }),
+      );
+    });
+  });
+
+  it('blocks MA Ribbon submission when the periods do not increase', async () => {
+    const user = userEvent.setup();
+    renderCard(<BuildBotCard />);
+
+    await waitForPreset();
+    await user.selectOptions(screen.getByLabelText('Strategy'), 'ma_ribbon');
+    await waitForPreset('MA Ribbon (Algo 18)');
+    await pickAAPL(user);
+    const mid = screen.getByLabelText('Mid SMA');
+    await user.clear(mid);
+    await user.type(mid, '5');
+
+    expect(screen.getByRole('button', { name: 'Create bot' })).toBeDisabled();
+  });
+
+  it('applies the VAMA preset and submits all five params', async () => {
+    mockedPost.mockResolvedValue({ data: { id: 'b1' } });
+    const user = userEvent.setup();
+    renderCard(<BuildBotCard />);
+
+    await waitForPreset();
+    await user.selectOptions(screen.getByLabelText('Strategy'), 'vama');
+
+    await waitForPreset('VAMA (Algo 30)');
+    expect(screen.getByLabelText('Lookback (bars)')).toHaveValue(20);
+    expect(screen.getByLabelText('Smoothing min (α)')).toHaveValue(0.02);
+    expect(screen.getByLabelText('Smoothing max (α)')).toHaveValue(0.2);
+    expect(
+      screen.getByLabelText('Adaptive smoothing (faster when volatile, slower when calm)'),
+    ).not.toBeChecked();
+    await pickAAPL(user);
+    await user.click(screen.getByRole('button', { name: 'Create bot' }));
+
+    await waitFor(() => {
+      expect(mockedPost).toHaveBeenCalledWith(
+        '/api/v1/bots/sessions',
+        expect.objectContaining({
+          strategy_key: 'vama',
+          preset_key: 'vama_algo30',
+          take_profit_pct: null,
+          stop_loss_pct: null,
+          strategy_params: { lookback: 20, alpha_min: 0.02, alpha_max: 0.2, adaptive: false },
+        }),
+      );
+    });
+  });
+
+  it('blocks VAMA submission when α min is not below α max', async () => {
+    const user = userEvent.setup();
+    renderCard(<BuildBotCard />);
+
+    await waitForPreset();
+    await user.selectOptions(screen.getByLabelText('Strategy'), 'vama');
+    await waitForPreset('VAMA (Algo 30)');
+    await pickAAPL(user);
+    const min = screen.getByLabelText('Smoothing min (α)');
+    await user.clear(min);
+    await user.type(min, '0.3');
+
+    expect(screen.getByRole('button', { name: 'Create bot' })).toBeDisabled();
+  });
+
+  it('applies the Algo 48 preset with the threshold in percent and submits a fraction', async () => {
+    mockedPost.mockResolvedValue({ data: { id: 'b1' } });
+    const user = userEvent.setup();
+    renderCard(<BuildBotCard />);
+
+    await waitForPreset();
+    await user.selectOptions(screen.getByLabelText('Strategy'), 'price_velocity_reversal');
+
+    await waitForPreset('Price Velocity Reversal (Algo 48)');
+    expect(screen.getByLabelText('Velocity threshold (% per bar)')).toHaveValue(0.2);
+    await pickAAPL(user);
+    await user.click(screen.getByRole('button', { name: 'Create bot' }));
+
+    await waitFor(() => {
+      expect(mockedPost).toHaveBeenCalledWith(
+        '/api/v1/bots/sessions',
+        expect.objectContaining({
+          strategy_key: 'price_velocity_reversal',
+          preset_key: 'price_velocity_algo48',
+          strategy_params: { threshold_pct: 0.002 },
+        }),
+      );
+    });
+  });
+
+  it('blocks velocity submission with a non-positive threshold', async () => {
+    const user = userEvent.setup();
+    renderCard(<BuildBotCard />);
+
+    await waitForPreset();
+    await user.selectOptions(screen.getByLabelText('Strategy'), 'price_velocity_reversal');
+    await waitForPreset('Price Velocity Reversal (Algo 48)');
+    await pickAAPL(user);
+    const threshold = screen.getByLabelText('Velocity threshold (% per bar)');
+    await user.clear(threshold);
+    await user.type(threshold, '0');
+
+    expect(screen.getByRole('button', { name: 'Create bot' })).toBeDisabled();
+  });
+
+  it('applies the Algo 3 preset with equal zero thresholds and submits it', async () => {
+    mockedPost.mockResolvedValue({ data: { id: 'b1' } });
+    const user = userEvent.setup();
+    renderCard(<BuildBotCard />);
+
+    await waitForPreset();
+    await user.selectOptions(screen.getByLabelText('Strategy'), 'rolling_average_reversion');
+    await waitForPreset('SMA Band Reversion (Algo 5)');
+    await user.selectOptions(screen.getByLabelText('Preset'), 'rolling_reversion_gradient_algo3');
+
+    await waitForPreset('Gradient Convergence (Algo 3)');
+    expect(screen.getByLabelText('Window (bars)')).toHaveValue(5);
+    expect(screen.getByLabelText('Entry below average (%)')).toHaveValue(0);
+    expect(screen.getByLabelText('Exit within average (%)')).toHaveValue(0);
+    await pickAAPL(user);
+    await user.click(screen.getByRole('button', { name: 'Create bot' }));
+
+    await waitFor(() => {
+      expect(mockedPost).toHaveBeenCalledWith(
+        '/api/v1/bots/sessions',
+        expect.objectContaining({
+          preset_key: 'rolling_reversion_gradient_algo3',
+          take_profit_pct: null,
+          stop_loss_pct: null,
+          strategy_params: expect.objectContaining({
+            window: 5,
+            entry_threshold: 0,
+            exit_threshold: 0,
+            exit_mode: 'revert',
+          }),
+        }),
+      );
+    });
   });
 });

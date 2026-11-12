@@ -73,6 +73,23 @@ def restore_positions(
     )
 
 
+@router.post("/write-off-positions", response_model=AdminFlattenResponse)
+def write_off_positions(
+    payload: AdminFlattenRequest, db: DbSession, broker: BrokerDep
+) -> AdminFlattenResponse:
+    """Lower crypto ledgers to the account's holding where only fee residue differs."""
+    try:
+        outcomes = service.write_off_positions(db, broker, symbol=payload.symbol)
+    except BrokerError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=str(exc) or "Brokerage is unavailable",
+        ) from exc
+    return AdminFlattenResponse(
+        outcomes=[AdminFlattenOutcomeRead.model_validate(o) for o in outcomes]
+    )
+
+
 @router.post("/reconcile-orders", response_model=AdminReconcileResponse)
 def reconcile_orders(db: DbSession, broker: BrokerDep) -> AdminReconcileResponse:
     """Resolve unbooked journaled orders now and report what happened."""

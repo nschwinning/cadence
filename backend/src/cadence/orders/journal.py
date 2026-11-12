@@ -115,6 +115,7 @@ def record_submitted(
     error: str | None = None,
     resolved: bool = False,
     expire_lease: bool = False,
+    close: bool = False,
 ) -> None:
     """Record the broker's answer (or the submission error) for an intended order.
 
@@ -137,6 +138,9 @@ def record_submitted(
         values.update(state=JournalState.RESOLVED.value, booked_at=_now())
     if expire_lease:
         values["lease_until"] = _now()
+    if close:
+        # Nothing exists to book (an explicit rejection of an order with no ledger).
+        values["state"] = JournalState.RESOLVED.value
     with _independent() as db:
         db.execute(
             update(BrokerOrder)

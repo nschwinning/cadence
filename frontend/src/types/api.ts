@@ -1727,9 +1727,12 @@ export interface OrchestratorRunListResponse {
 /** Live broker account balances. */
 export interface AdminAccountFigures {
   cash: number;
+  /** Margin buying power as the broker reports it (up to 4× equity intraday). */
   buying_power: number;
   portfolio_value: number;
   currency: string;
+  /** What can be bought without margin; null when the broker does not report it. */
+  cash_buying_power: number | null;
 }
 
 export type AdminCashContributorKind = 'portfolio' | 'bot' | 'orchestrator' | 'returning_bot';
@@ -1783,6 +1786,9 @@ export interface AdminPosition {
   /** Shortfall or short without an open order: buy `restore_quantity` to match Cadence. */
   restorable: boolean;
   restore_quantity: number;
+  /** Crypto fee residue: Cadence's records can be lowered by `write_off_quantity` (no order). */
+  write_off_eligible: boolean;
+  write_off_quantity: number;
 }
 
 /** A journaled order not yet booked or closed out. */
@@ -1813,7 +1819,7 @@ export interface AdminAccount {
 /** Per-symbol result of a flatten action. */
 export interface AdminFlattenOutcome {
   symbol: string;
-  result: 'sold' | 'bought' | 'skipped' | 'failed';
+  result: 'sold' | 'bought' | 'written_off' | 'skipped' | 'failed';
   quantity: number | null;
   order_id: string | null;
   reason: string | null;

@@ -169,6 +169,11 @@ class AlpacaBroker:
             account_id=account.get("id", ""),
             cash_balance=float(account.get("cash", 0)),
             buying_power=float(account.get("buying_power", 0)),
+            cash_buying_power=(
+                float(account["non_marginable_buying_power"])
+                if account.get("non_marginable_buying_power") is not None
+                else None
+            ),
             portfolio_value=float(account.get("portfolio_value", 0)),
             unrealized_pnl=float(account.get("unrealized_pl", 0)),
             realized_pnl=float(account.get("realized_pl", 0)),

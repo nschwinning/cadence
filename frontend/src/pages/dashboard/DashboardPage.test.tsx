@@ -89,7 +89,7 @@ describe('DashboardPage', () => {
     const accountData = {
       broker_available: true,
       reason: null,
-      account: { cash: 100000, buying_power: 100000, portfolio_value: 100000, currency: 'USD' },
+      account: { cash: 100000, buying_power: 100000, portfolio_value: 100000, currency: 'USD', cash_buying_power: null },
       cash_check: {
         contributors: [],
         committed_total: 75000,

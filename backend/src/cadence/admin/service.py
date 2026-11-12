@@ -50,22 +50,30 @@ _logger = logging.getLogger(__name__)
 QUANTITY_EPSILON = 1e-6
 # Alpaca accepts at most 9 decimal places on an order quantity.
 _ORDER_QTY_DECIMALS = 9
+#: The broker's minimum value for a crypto order (it rejects smaller ones).
+MIN_CRYPTO_ORDER_USD = 10.0
+#: A crypto shortfall up to this fraction of Cadence's quantity is fee residue that can
+#: be written off (the broker charges its crypto buy fee in the coin received).
+WRITE_OFF_TOLERANCE = 0.01
 # How long a short's cover is waited on before the long part of a restore is sent.
 _FILL_POLL_ATTEMPTS = 10
 _FILL_POLL_INTERVAL_SECONDS = 0.5
 
 PositionStatus = Literal["matched", "orphan", "shortfall", "short"]
 ContributorKind = Literal["portfolio", "bot", "orchestrator", "returning_bot"]
-FlattenResult = Literal["sold", "bought", "skipped", "failed"]
+FlattenResult = Literal["sold", "bought", "written_off", "skipped", "failed"]
 
 
 # Result shapes --------------------------------------------------------------
 @dataclass(frozen=True)
 class AccountFigures:
     cash: float
+    #: Alpaca's margin buying power (up to 4× equity intraday).
     buying_power: float
     portfolio_value: float
     currency: str
+    #: What can be bought without margin; ``None`` when the broker does not report it.
+    cash_buying_power: float | None = None
 
 
 @dataclass(frozen=True)
@@ -116,6 +124,10 @@ class PositionRow:
     #: account hold exactly what Cadence tracks.
     restorable: bool = False
     restore_quantity: float = 0.0
+    #: A crypto shortfall within the fee tolerance: Cadence's records can be lowered by
+    #: ``write_off_quantity`` to the account's holding (no order).
+    write_off_eligible: bool = False
+    write_off_quantity: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -285,6 +297,15 @@ def compare_positions(
             if position is not None and position.asset_class is not None
             else cadence_class
         )
+        # Fee residue: the broker took its crypto buy fee in the coin, so Cadence's
+        # records sit marginally above the holding. Written off, never bought back.
+        write_off = (
+            asset_class is AssetClass.CRYPTO
+            and status == "shortfall"
+            and broker_qty > QUANTITY_EPSILON
+            and restore_qty <= WRITE_OFF_TOLERANCE * cadence_qty
+            and not has_pending
+        )
         rows.append(
             PositionRow(
                 symbol=position.symbol if position is not None else display,
@@ -296,8 +317,10 @@ def compare_positions(
                 status=status,
                 pending_order=has_pending,
                 flattenable=status == "orphan" and not has_pending,
-                restorable=restore_qty > QUANTITY_EPSILON and not has_pending,
+                restorable=restore_qty > QUANTITY_EPSILON and not has_pending and not write_off,
                 restore_quantity=restore_qty,
+                write_off_eligible=write_off,
+                write_off_quantity=restore_qty if write_off else 0.0,
             )
         )
     return rows
@@ -342,6 +365,7 @@ def account_overview(db: Session, broker: Broker) -> AccountOverview:
             buying_power=info.buying_power,
             portfolio_value=info.portfolio_value,
             currency=info.currency,
+            cash_buying_power=info.cash_buying_power,
         ),
         cash_check=committed_cash(db, info.cash_balance, short_proceeds=short_proceeds),
         open_orders=[_open_order(o) for o in orders],
@@ -455,6 +479,11 @@ def _adjust(
         held = by_key.get(key)
         broker_symbol = held.symbol if held is not None else row.symbol
         ticker = cadence[key][0] if key in cadence else broker_symbol
+        if asset_class is AssetClass.CRYPTO:
+            amount = row.restore_quantity if restore else row.orphan_quantity
+            if _notional(broker, held, broker_symbol, amount) < MIN_CRYPTO_ORDER_USD:
+                outcomes.append(_skipped(row.symbol, "below_minimum"))
+                continue
         if restore and row.status == "short":
             # A single order may not take a position from short to long: cover first,
             # then buy Cadence's quantity once the cover has filled.
@@ -533,9 +562,7 @@ def _restore_short(
         )
     except BrokerError as exc:
         _logger.warning("admin restore: cover of %s %s rejected", cover, broker_symbol)
-        return FlattenOutcome(
-            symbol=row.symbol, result="failed", quantity=cover, reason=str(exc)
-        )
+        return FlattenOutcome(symbol=row.symbol, result="failed", quantity=cover, reason=str(exc))
     if long_part <= QUANTITY_EPSILON:
         return FlattenOutcome(
             symbol=row.symbol, result="bought", quantity=cover, order_id=covered.order_id
@@ -568,9 +595,7 @@ def _restore_short(
             order_id=covered.order_id,
             reason=f"covered {cover:g}; buying the remaining {long_part:g} failed: {exc}",
         )
-    _logger.info(
-        "admin restore: covered %s and bought %s %s", cover, long_part, broker_symbol
-    )
+    _logger.info("admin restore: covered %s and bought %s %s", cover, long_part, broker_symbol)
     return FlattenOutcome(
         symbol=row.symbol,
         result="bought",
@@ -589,6 +614,78 @@ def _await_fill(broker: Broker, order: Order) -> Order:
         if refreshed is not None:
             order = refreshed
     return order
+
+
+def _notional(broker: Broker, held: Position | None, broker_symbol: str, quantity: float) -> float:
+    """Approximate USD value of ``quantity`` of a crypto symbol (position price, else quote)."""
+    price: float | None = None
+    if held is not None:
+        price = held.current_price or (
+            abs(held.market_value / held.quantity) if held.market_value and held.quantity else None
+        )
+    if not price:
+        try:
+            quote = broker.get_quote(broker_symbol, AssetClass.CRYPTO)
+            price = quote.last if quote.last is not None else quote.mid
+        except BrokerError:
+            price = None
+    # Unknown price: let the broker decide rather than silently skipping.
+    return quantity * price if price else float("inf")
+
+
+# Write-off ---------------------------------------------------------------------------
+def write_off_positions(
+    db: Session, broker: Broker, *, symbol: str | None = None
+) -> list[FlattenOutcome]:
+    """Lower AI-portfolio crypto ledgers to the account's holding where only fee residue differs.
+
+    Recomputed at execution from live data. For each eligible coin (crypto shortfall of
+    at most :data:`WRITE_OFF_TOLERANCE` of Cadence's quantity, no open order) the gap is
+    split across the AI portfolios holding it in proportion to their ledger quantities,
+    at unchanged average cost. No order is sent. Raises :class:`BrokerError` when the
+    broker cannot be read.
+    """
+    positions = broker.get_positions()
+    orders = broker.get_open_orders()
+    rows = compare_positions(positions, _cadence_quantities(db), orders)
+    if symbol is None:
+        targets = [r for r in rows if r.write_off_eligible]
+    else:
+        wanted = symbol_key(symbol)
+        targets = [r for r in rows if symbol_key(r.symbol) == wanted]
+        if not targets:
+            return [FlattenOutcome(symbol=symbol, result="skipped", reason="not_found")]
+
+    outcomes: list[FlattenOutcome] = []
+    for row in targets:
+        if not row.write_off_eligible:
+            outcomes.append(_skipped(row.symbol, "not_eligible"))
+            continue
+        key = symbol_key(row.symbol)
+        ledgers = [
+            p for p in db.execute(select(SessionPosition)).scalars() if symbol_key(p.ticker) == key
+        ]
+        total = sum(p.quantity for p in ledgers)
+        remaining = row.write_off_quantity
+        for index, ledger in enumerate(ledgers):
+            share = (
+                remaining
+                if index == len(ledgers) - 1
+                else round(row.write_off_quantity * ledger.quantity / total, _ORDER_QTY_DECIMALS)
+            )
+            ledger.quantity = round(ledger.quantity - share, _ORDER_QTY_DECIMALS)
+            remaining -= share
+        db.commit()
+        _logger.info(
+            "admin write-off: lowered %s by %s across %d ledgers",
+            row.symbol,
+            row.write_off_quantity,
+            len(ledgers),
+        )
+        outcomes.append(
+            FlattenOutcome(symbol=row.symbol, result="written_off", quantity=row.write_off_quantity)
+        )
+    return outcomes
 
 
 def _skipped(symbol: str, reason: str) -> FlattenOutcome:
