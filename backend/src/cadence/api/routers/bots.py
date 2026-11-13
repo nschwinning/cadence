@@ -387,17 +387,21 @@ def run_snapshot_daily(
     notifier: NotifierDep,
     _token: Annotated[None, Depends(require_valid_cron_token)],
 ) -> BotSnapshotResponse:
-    """Snapshot every active bot, then every active orchestrator (cron-guarded).
+    """Reconcile bot orders, snapshot every active bot, then every orchestrator (cron-guarded).
+
+    Reconciling first books fills that landed after the last tick of the session.
 
     Bots first, so each orchestrator's daily push can rank its bots by today's P&L. Both
     steps share one ``now`` so their snapshot dates match. Orchestrator-deployed bots
     send no push of their own; their orchestrator's daily push covers them.
     """
     now = datetime.now(UTC)
-    count = service.run_bot_snapshots(db, broker=broker, notifier=notifier, now=now)
+    result = service.run_bot_snapshots(db, broker=broker, notifier=notifier, now=now)
     orchestrator_count = orchestrator_daily.run_orchestrator_daily(
         db, notifier=notifier, now=now
     )
     return BotSnapshotResponse(
-        snapshots=count, orchestrator_snapshots=orchestrator_count
+        snapshots=result.snapshots,
+        reconciled=result.reconciled,
+        orchestrator_snapshots=orchestrator_count,
     )

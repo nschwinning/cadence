@@ -72,6 +72,7 @@ class StrategyKey(StrEnum):
     VAMA = "vama"
     PRICE_VELOCITY_REVERSAL = "price_velocity_reversal"
     TREND_CONFIRMATION = "trend_confirmation"
+    VOLUME_BREAKOUT = "volume_breakout"
 
 
 class SizingMethod(StrEnum):
@@ -103,6 +104,7 @@ STRATEGY_DISPLAY_NAMES: dict[StrategyKey, str] = {
     StrategyKey.VAMA: "VAMA",
     StrategyKey.PRICE_VELOCITY_REVERSAL: "Price Velocity Reversal",
     StrategyKey.TREND_CONFIRMATION: "Trend Confirmation",
+    StrategyKey.VOLUME_BREAKOUT: "Volume Breakout",
 }
 
 #: Human-readable explanations for the strategy catalog, shown on the strategy
@@ -251,6 +253,19 @@ STRATEGY_EXPLANATIONS: dict[StrategyKey, str] = {
         "as the AI portfolio's technical gate, tuned for intraday bars. It is "
         "deterministic and long-only, and leaves take-profit, stop-loss, sizing and the "
         "drawdown kill-switch to the bot's risk controls."
+    ),
+    StrategyKey.VOLUME_BREAKOUT: (
+        "The Volume Breakout strategy trades moves that heavy volume confirms, in one of "
+        "three versions. Spike buys when the price breaks above its recent high on a bar "
+        "whose volume is well above average, and sells when it breaks below the recent "
+        "low on a volume spike. VROC watches for a sudden surge in volume while the price "
+        "is still in a tight range, then buys the first close above that range and sells "
+        "once volume starts falling. Chaikin tracks whether volume flows in on up-closes "
+        "or down-closes (accumulation versus distribution) and buys when that flow turns "
+        "positive, selling when it turns negative. Volume is naturally heavier near the "
+        "open and close, so signals cluster there. It is deterministic and long-only, and "
+        "leaves take-profit, stop-loss, sizing and the drawdown kill-switch to the bot's "
+        "risk controls."
     ),
 }
 

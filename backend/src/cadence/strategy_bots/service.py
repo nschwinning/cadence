@@ -149,6 +149,16 @@ class TickResult:
 
 
 @dataclass(frozen=True)
+class SnapshotResult:
+    """Summary of one daily snapshot run."""
+
+    #: Active sessions snapshotted.
+    snapshots: int = 0
+    #: Unrecorded bot orders booked by the reconciliation pass that opens the run.
+    reconciled: int = 0
+
+
+@dataclass(frozen=True)
 class BotValueHistoryPoint:
     """One timestamped point of a bot session's value history at some resolution.
 
@@ -1124,8 +1134,13 @@ def run_bot_snapshots(
     broker: Broker,
     now: datetime | None = None,
     notifier: Notifier | None = None,
-) -> int:
-    """Record a daily value snapshot for every active session; return the count.
+) -> SnapshotResult:
+    """Record a daily value snapshot for every active session.
+
+    Unrecorded bot orders are reconciled first, so a fill that landed after the
+    session's last tick (an order sent just before the close) is booked into its bot
+    the same evening and the snapshot includes it. A reconciliation failure is logged
+    and never prevents the snapshots.
 
     For each snapshotted session that was not deployed by a bot orchestrator it also
     sends one best-effort daily-summary push via ``notifier`` (orchestrator-deployed bots
@@ -1136,6 +1151,14 @@ def run_bot_snapshots(
     never fails the snapshot job.
     """
     when = (now or datetime.now(UTC)).date()
+    try:
+        reconciled = reconcile_orders(
+            session, broker, owner_kind=OrderOwnerKind.BOT, now=now
+        ).booked
+    except Exception:  # the snapshots must still run
+        session.rollback()
+        _logger.warning("snapshot: reconciling bot orders failed", exc_info=True)
+        reconciled = 0
     count = 0
     for bot in active_bot_sessions(session):
         marks = _mark_positions(bot, broker)
@@ -1177,7 +1200,7 @@ def run_bot_snapshots(
     _prune_value_points(session, now=now or datetime.now(UTC))
     _prune_tick_runs(session, now=now or datetime.now(UTC))
     session.flush()
-    return count
+    return SnapshotResult(snapshots=count, reconciled=reconciled)
 
 
 def _prune_value_points(session: Session, *, now: datetime) -> None:

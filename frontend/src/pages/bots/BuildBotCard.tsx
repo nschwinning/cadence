@@ -24,6 +24,9 @@ type ReversionExitMode = 'revert' | 'bracket';
 /** ATR-Band Trend versions (mirror the backend params literal). */
 type AtrBandVersion = 'supertrend' | 'keltner';
 
+/** Volume Breakout versions (mirror the backend params literal). */
+type VolumeVersion = 'spike' | 'vroc' | 'chaikin';
+
 /** Risk-control form values a preset sets (percent strings, as the user types them). */
 export interface PresetRiskFormValues {
   takeProfitEnabled: boolean;
@@ -232,6 +235,21 @@ export function BuildBotCard() {
   const [abWindow, setAbWindow] = useState('');
   const [abMult, setAbMult] = useState('');
   const [abExitOnMidline, setAbExitOnMidline] = useState(true);
+  // Volume Breakout: version plus each version's own fields (Spike: breakout lookback,
+  // volume window and multiplier; VROC: priming inputs, tight range as a percent;
+  // Chaikin: fast / slow EMA spans).
+  const [vbVersion, setVbVersion] = useState<VolumeVersion>('spike');
+  const [vbLookback, setVbLookback] = useState('');
+  const [vbVolumeWindow, setVbVolumeWindow] = useState('');
+  const [vbMultiplier, setVbMultiplier] = useState('');
+  const [vbVrocLookback, setVbVrocLookback] = useState('');
+  const [vbRangeLookback, setVbRangeLookback] = useState('');
+  const [vbVrocThreshold, setVbVrocThreshold] = useState('');
+  const [vbVrocSurge, setVbVrocSurge] = useState('');
+  const [vbTightPct, setVbTightPct] = useState('');
+  const [vbPrimeWindow, setVbPrimeWindow] = useState('');
+  const [vbChaikinFast, setVbChaikinFast] = useState('');
+  const [vbChaikinSlow, setVbChaikinSlow] = useState('');
   // ADX Trend Strength: ADX period and threshold.
   const [adxPeriod, setAdxPeriod] = useState('');
   const [adxThreshold, setAdxThreshold] = useState('');
@@ -352,6 +370,23 @@ export function BuildBotCard() {
     exit_on_midline: (v) => setAbExitOnMidline(Boolean(v)),
   };
 
+  // Volume Breakout's `version` / `lookback` would collide with other strategies.
+  const volumeSetters: Record<string, (value: unknown) => void> = {
+    version: (v) => setVbVersion(v as VolumeVersion),
+    lookback: (v) => setVbLookback(String(v)),
+    volume_window: (v) => setVbVolumeWindow(String(v)),
+    spike_multiplier: (v) => setVbMultiplier(String(v)),
+    vroc_lookback: (v) => setVbVrocLookback(String(v)),
+    range_lookback: (v) => setVbRangeLookback(String(v)),
+    vroc_threshold: (v) => setVbVrocThreshold(String(v)),
+    vroc_surge: (v) => setVbVrocSurge(String(v)),
+    // The tight range is a fraction in the preset but a percent in the form.
+    tight_range_pct: (v) => setVbTightPct(fractionToPercent(Number(v))),
+    prime_window: (v) => setVbPrimeWindow(String(v)),
+    chaikin_fast: (v) => setVbChaikinFast(String(v)),
+    chaikin_slow: (v) => setVbChaikinSlow(String(v)),
+  };
+
   // Fill the strategy params and risk controls from a preset.
   const applyPreset = (preset: BotPreset) => {
     if (preset.strategy_key === 'heikin_ashi_trend') {
@@ -368,6 +403,8 @@ export function BuildBotCard() {
     for (const [name, value] of Object.entries(preset.strategy_params)) {
       if (preset.strategy_key === 'atr_band_trend') {
         atrBandSetters[name]?.(value);
+      } else if (preset.strategy_key === 'volume_breakout') {
+        volumeSetters[name]?.(value);
       } else if (preset.strategy_key === 'adx_trend') {
         adxSetters[name]?.(String(value));
       } else if (preset.strategy_key === 'macd_momentum') {
@@ -449,6 +486,15 @@ export function BuildBotCard() {
     if (preset) applyPreset(preset);
   };
 
+  // Switching Volume Breakout version applies that version's default (first) preset.
+  const handleVolumeVersionChange = (version: VolumeVersion) => {
+    setVbVersion(version);
+    const preset = presetCatalog?.find(
+      (p) => p.strategy_key === 'volume_breakout' && p.strategy_params.version === version,
+    );
+    if (preset) applyPreset(preset);
+  };
+
   const appliedPreset =
     presetCatalog?.find((p) => p.key === appliedPresetKey) ?? null;
   // The selected strategy's presets; a selector is offered when there are several.
@@ -471,6 +517,7 @@ export function BuildBotCard() {
   const isReversionBand = isReversion && raDistance === 'band';
   const isReversionZ = isReversion && raDistance === 'zscore';
   const isAtrBand = strategyKey === 'atr_band_trend';
+  const isVolume = strategyKey === 'volume_breakout';
   const isAdx = strategyKey === 'adx_trend';
   const isMacd = strategyKey === 'macd_momentum';
   const isHeikinAshi = strategyKey === 'heikin_ashi_trend';
@@ -559,6 +606,75 @@ export function BuildBotCard() {
   const abMultValue = Number.parseFloat(abMult);
   const abMultValid = Number.isFinite(abMultValue) && abMultValue > 0;
   const atrBandParamsValid = !isAtrBand || (abWindowValid && abMultValid);
+
+  // Volume Breakout params, validated for the selected version only.
+  const vbInt = (value: string, min: number) => {
+    const n = Number.parseInt(value, 10);
+    return Number.isInteger(n) && n >= min ? n : null;
+  };
+  const vbNum = (value: string) => {
+    const n = Number.parseFloat(value);
+    return Number.isFinite(n) ? n : null;
+  };
+  const vbValues = {
+    lookback: vbInt(vbLookback, 3),
+    volumeWindow: vbInt(vbVolumeWindow, 1),
+    multiplier: vbNum(vbMultiplier),
+    vrocLookback: vbInt(vbVrocLookback, 1),
+    rangeLookback: vbInt(vbRangeLookback, 2),
+    vrocThreshold: vbNum(vbVrocThreshold),
+    vrocSurge: vbNum(vbVrocSurge),
+    tightPct: vbNum(vbTightPct),
+    primeWindow: vbInt(vbPrimeWindow, 1),
+    chaikinFast: vbInt(vbChaikinFast, 1),
+    chaikinSlow: vbInt(vbChaikinSlow, 2),
+  };
+  const vbMultiplierValid = vbValues.multiplier !== null && vbValues.multiplier > 0;
+  const vbSurgeOrdered =
+    vbValues.vrocThreshold !== null &&
+    vbValues.vrocSurge !== null &&
+    vbValues.vrocSurge >= vbValues.vrocThreshold;
+  const vbTightValid =
+    vbValues.tightPct !== null && vbValues.tightPct > 0 && vbValues.tightPct < 100;
+  const vbChaikinOrdered =
+    vbValues.chaikinFast !== null &&
+    vbValues.chaikinSlow !== null &&
+    vbValues.chaikinFast < vbValues.chaikinSlow;
+  const volumeParamsValid =
+    !isVolume ||
+    (vbVersion === 'spike'
+      ? vbValues.lookback !== null && vbValues.volumeWindow !== null && vbMultiplierValid
+      : vbVersion === 'vroc'
+        ? vbValues.vrocLookback !== null &&
+          vbValues.rangeLookback !== null &&
+          vbSurgeOrdered &&
+          vbTightValid &&
+          vbValues.primeWindow !== null
+        : vbChaikinOrdered);
+  // Only the selected version's fields are sent, matching each preset's params exactly.
+  const volumeParams: Record<string, unknown> =
+    vbVersion === 'spike'
+      ? {
+          version: 'spike',
+          lookback: vbValues.lookback,
+          volume_window: vbValues.volumeWindow,
+          spike_multiplier: vbValues.multiplier,
+        }
+      : vbVersion === 'vroc'
+        ? {
+            version: 'vroc',
+            vroc_lookback: vbValues.vrocLookback,
+            range_lookback: vbValues.rangeLookback,
+            vroc_threshold: vbValues.vrocThreshold,
+            vroc_surge: vbValues.vrocSurge,
+            tight_range_pct: vbValues.tightPct === null ? null : vbValues.tightPct / 100,
+            prime_window: vbValues.primeWindow,
+          }
+        : {
+            version: 'chaikin',
+            chaikin_fast: vbValues.chaikinFast,
+            chaikin_slow: vbValues.chaikinSlow,
+          };
 
   // ADX thresholds are on the 0–100 DI scale (exclusive); periods are integers ≥ 2.
   const adxPeriodValue = Number.parseInt(adxPeriod, 10);
@@ -758,6 +874,8 @@ export function BuildBotCard() {
         ? reversionParams
         : isAtrBand
           ? atrBandParams
+          : isVolume
+          ? volumeParams
           : isAdx
             ? { period: adxPeriodValue, threshold: adxThresholdValue }
             : isTrendConfirmation
@@ -825,6 +943,7 @@ export function BuildBotCard() {
     donchianParamsValid &&
     reversionParamsValid &&
     atrBandParamsValid &&
+    volumeParamsValid &&
     adxParamsValid &&
     macdParamsValid &&
     haParamsValid &&
@@ -870,6 +989,8 @@ export function BuildBotCard() {
   const macdFastInvalid = isMacd && macdFast.length > 0 && (!macdFastValid || !macdOrdered);
   const macdSlowInvalid = isMacd && macdSlow.length > 0 && (!macdSlowValid || !macdOrdered);
   const macdSignalInvalid = isMacd && macdSignal.length > 0 && !macdSignalValid;
+  const vbFieldInvalid = (value: string, ok: boolean) =>
+    isVolume && value.length > 0 && !ok;
   const tcFieldInvalid = (value: string, ok: boolean) =>
     isTrendConfirmation && value.length > 0 && !ok;
   const pvThresholdInvalid = isVelocity && pvThresholdPct.length > 0 && !pvThresholdValid;
@@ -1279,6 +1400,154 @@ export function BuildBotCard() {
                     />
                     Exit when the close falls below the moving average
                   </label>
+                )}
+              </div>
+            ) : isVolume ? (
+              <div className="flex flex-col gap-3">
+                <div>
+                  <label
+                    htmlFor="bot-volume-version"
+                    className="block text-sm font-medium text-slate-700"
+                  >
+                    Version
+                  </label>
+                  <select
+                    id="bot-volume-version"
+                    value={vbVersion}
+                    onChange={(e) => handleVolumeVersionChange(e.target.value as VolumeVersion)}
+                    className={FIELD_CLASS}
+                  >
+                    <option value="spike">Volume spike</option>
+                    <option value="vroc">Volume rate of change (VROC)</option>
+                    <option value="chaikin">Chaikin oscillator</option>
+                  </select>
+                  <p className="mt-1 text-xs text-slate-500">
+                    {vbVersion === 'spike'
+                      ? 'Buys a break above the recent high on a volume spike; sells a break below the recent low on a spike.'
+                      : vbVersion === 'vroc'
+                        ? 'Primes on a volume surge in a tight range, buys the first close above that range, sells when volume falls.'
+                        : 'Buys when accumulation/distribution momentum turns positive; sells when it turns negative.'}
+                  </p>
+                </div>
+                {vbVersion === 'spike' && (
+                  <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+                    <NumberField
+                      id="bot-volume-lookback"
+                      label="Lookback"
+                      min={3}
+                      step={1}
+                      value={vbLookback}
+                      onChange={setVbLookback}
+                      hint="Bars incl. the current one; the range is the earlier ones."
+                      invalid={vbFieldInvalid(vbLookback, vbValues.lookback !== null)}
+                    />
+                    <NumberField
+                      id="bot-volume-window"
+                      label="Volume window"
+                      min={1}
+                      step={1}
+                      value={vbVolumeWindow}
+                      onChange={setVbVolumeWindow}
+                      hint="Bars in the average volume."
+                      invalid={vbFieldInvalid(vbVolumeWindow, vbValues.volumeWindow !== null)}
+                    />
+                    <NumberField
+                      id="bot-volume-multiplier"
+                      label="Spike multiplier (×)"
+                      min={0.1}
+                      step={0.1}
+                      value={vbMultiplier}
+                      onChange={setVbMultiplier}
+                      hint="Volume must exceed this × the average."
+                      invalid={vbFieldInvalid(vbMultiplier, vbMultiplierValid)}
+                    />
+                  </div>
+                )}
+                {vbVersion === 'vroc' && (
+                  <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+                    <NumberField
+                      id="bot-volume-vroc-lookback"
+                      label="VROC lookback"
+                      min={1}
+                      step={1}
+                      value={vbVrocLookback}
+                      onChange={setVbVrocLookback}
+                      hint="Volume is compared with this many bars earlier."
+                      invalid={vbFieldInvalid(vbVrocLookback, vbValues.vrocLookback !== null)}
+                    />
+                    <NumberField
+                      id="bot-volume-range-lookback"
+                      label="Range lookback"
+                      min={2}
+                      step={1}
+                      value={vbRangeLookback}
+                      onChange={setVbRangeLookback}
+                      hint="Closes in the price range that is primed."
+                      invalid={vbFieldInvalid(vbRangeLookback, vbValues.rangeLookback !== null)}
+                    />
+                    <NumberField
+                      id="bot-volume-prime-window"
+                      label="Priming window"
+                      min={1}
+                      step={1}
+                      value={vbPrimeWindow}
+                      onChange={setVbPrimeWindow}
+                      hint="Bars a priming stays valid."
+                      invalid={vbFieldInvalid(vbPrimeWindow, vbValues.primeWindow !== null)}
+                    />
+                    <NumberField
+                      id="bot-volume-vroc-threshold"
+                      label="VROC threshold (%)"
+                      step={1}
+                      value={vbVrocThreshold}
+                      onChange={setVbVrocThreshold}
+                      hint="Surge needed to prime in a tight range."
+                      invalid={vbFieldInvalid(vbVrocThreshold, vbSurgeOrdered)}
+                    />
+                    <NumberField
+                      id="bot-volume-vroc-surge"
+                      label="VROC surge (%)"
+                      step={1}
+                      value={vbVrocSurge}
+                      onChange={setVbVrocSurge}
+                      hint="Primes even in a wide range; not below the threshold."
+                      invalid={vbFieldInvalid(vbVrocSurge, vbSurgeOrdered)}
+                    />
+                    <NumberField
+                      id="bot-volume-tight-range"
+                      label="Tight range (%)"
+                      min={0.01}
+                      step={0.01}
+                      value={vbTightPct}
+                      onChange={setVbTightPct}
+                      hint="Range below this % of the close counts as tight."
+                      invalid={vbFieldInvalid(vbTightPct, vbTightValid)}
+                    />
+                  </div>
+                )}
+                {vbVersion === 'chaikin' && (
+                  <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                    <NumberField
+                      id="bot-volume-chaikin-fast"
+                      label="Fast EMA"
+                      min={1}
+                      step={1}
+                      value={vbChaikinFast}
+                      onChange={setVbChaikinFast}
+                      hint="Must be below the slow EMA."
+                      invalid={vbFieldInvalid(vbChaikinFast, vbChaikinOrdered)}
+                    />
+                    <NumberField
+                      id="bot-volume-chaikin-slow"
+                      label="Slow EMA"
+                      min={2}
+                      step={1}
+                      value={vbChaikinSlow}
+                      onChange={setVbChaikinSlow}
+                      hint="Bars in the slow EMA of the A/D line."
+                      invalid={vbFieldInvalid(vbChaikinSlow, vbChaikinOrdered)}
+                    />
+                  </div>
                 )}
               </div>
             ) : isTrendConfirmation ? (

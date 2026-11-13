@@ -10,6 +10,7 @@ import { macdEntryIndex, macdPoints } from './macdChart';
 import { ribbonEntryIndex, smaSeries } from './maRibbonChart';
 import { smoothingFactors, vamaSignals } from './vamaChart';
 import { velocitySignals } from './velocityChart';
+import { volumeSignals } from './volumeBreakoutChart';
 import { rsi, sma, trendConfirmationSignals } from './trendConfirmationChart';
 import { reversionSignals, rollingMean } from './rollingReversionChart';
 import { rsiSignals, wilderRsiSeries } from './rsiChart';
@@ -359,6 +360,27 @@ describe('trendConfirmationChart', () => {
       series: { id: string; markLine?: { data: unknown[] } }[];
     };
     expect(option.series.map((s) => s.id)).toEqual(['price', 'sma-fast', 'sma-slow']);
+    expect(option.series[0].markLine?.data).toHaveLength(2);
+  });
+});
+
+describe('volumeBreakoutChart', () => {
+  it('is registered for volume_breakout', () => {
+    expect(getStrategyChart('volume_breakout')?.ariaLabel).toMatch(/volume breakout/i);
+  });
+
+  it('shows exactly one volume-confirmed entry followed by one exit', () => {
+    expect(volumeSignals()).toEqual([
+      { index: 10, kind: 'entry' },
+      { index: 21, kind: 'exit' },
+    ]);
+  });
+
+  it('builds price, prior-range and volume series with entry/exit mark-lines', () => {
+    const option = getStrategyChart('volume_breakout')!.buildOption() as {
+      series: { id: string; markLine?: { data: unknown[] } }[];
+    };
+    expect(option.series.map((s) => s.id)).toEqual(['price', 'prior-high', 'prior-low', 'volume']);
     expect(option.series[0].markLine?.data).toHaveLength(2);
   });
 });

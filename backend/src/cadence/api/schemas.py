@@ -2039,6 +2039,8 @@ class BotSnapshotResponse(BaseModel):
     """Outcome of one cron-triggered daily bot-snapshot run."""
 
     snapshots: int
+    #: Unrecorded bot orders booked by the reconciliation pass that opens the run.
+    reconciled: int = 0
     #: Active orchestrators snapshotted (and sent their daily push) after the bots.
     orchestrator_snapshots: int = 0
 

@@ -14,7 +14,7 @@ new `StrategyKey`.
 
 **Key insight — consolidation.** Once periods, thresholds, MA-type, and optional
 filters become *config*, many course folders collapse into the same bot. The ~35
-feasible/caveat folders reduce to **16 distinct bots** (14 shipped); a 17th
+feasible/caveat folders reduce to **16 distinct bots** (15 shipped); a 17th
 (Trend-Confirmation, #13) is derived from the AI-portfolio technical gate rather
 than a course algo. Each item below is one shippable bot; "Absorbs" lists the
 course folders it subsumes so we never build the same signal twice.
@@ -37,6 +37,7 @@ course folders it subsumes so we never build the same signal twice.
 - **VAMA** (`vama`) — Tier 2 #10, Algo 30. The course's "adaptive" α divides the current volatility by itself, so it is always α_max (0.20) — a fixed EMA. Shipped with both: fixed smoothing (course, used by the preset) and a real adaptive mode (α = α_max × current ÷ average volatility, clamped). Close above the VAMA in, at/below out; no TP/SL. Preset: VAMA (Algo 30, default, fixed smoothing).
 - **Price Velocity Reversal** (`price_velocity_reversal`) — Tier 2 #11, Algo 48 (file `algo 49.py`). Velocity = latest bar's % change; enter when velocity < −threshold and acceleration > 0 (a slowing sell-off), exit when velocity turns positive. The course's absolute ₹2 threshold (on a ₹1,000 simulated price) is expressed as 0.2% so it works at any share price (user decision). Preset: Price Velocity Reversal (Algo 48, default).
 - **Trend Confirmation** (`trend_confirmation`) — Tier 2 #13, Cadence's own design (option B below). AND of SMA 20 > 50, MACD 12/26/9 histogram > 0, RSI 14 in (50, 70), optional ROC 12 > 0 and OBV-20 rising; exit when any breaks, RSI exit below 45 (hysteresis), never sold for RSI above the cap. Shares the AI gate's indicator maths (`technical_indicators/series.py`, golden-value parity test). Preset: Trend Confirmation (Cadence, default; TP 1% / SL 1% / DD 5%).
+- **Volume Breakout** (`volume_breakout`) — Tier 3 #14, Algos 34 (a/b), 46, 45. Versions: Spike (close above the prior 29-bar high on volume > multiplier × 20-bar average; the course only prints signals, so its "short breakout" — close below the prior low on a spike — is the long exit), VROC (a volume surge in a tight range primes; enter on the first close above the primed range within 10 bars — the course remembers priming indefinitely, Cadence is stateless; exit when VROC < 0), Chaikin (accumulation/distribution from real high/low — the course fakes them at random — with proper converged EMA 3/5; enter on the zero cross up, exit below zero). Presets: Volume Spike (Algo 34 b, ×1.1, default), Volume Spike — Simple (Algo 34 a, ×1), VROC Breakout (Algo 46), Chaikin Oscillator (Algo 45); 5% drawdown where the course has none.
 
 Every shipped strategy also has its course presets in the preset catalog (`strategy_bots/presets.py`), which is all the AI orchestrator may deploy.
 
@@ -69,7 +70,7 @@ Every shipped strategy also has its course presets in the preset catalog (`strat
 
 | # | Bot | Absorbs | Caveat |
 |---|-----|---------|--------|
-| 14 | **Volume Breakout** (indicator: spike/VROC/Chaikin) | 34, 46, 45 | Needs reliable bar volume; 45 (Chaikin) fakes H/L with random in the course script — verify real bars fix it. |
+| 14 | ✅ **Volume Breakout** (indicator: spike/VROC/Chaikin) | 34, 46, 45 | **Shipped** (`volume_breakout`). Real OHLCV bars fix 45's random fake H/L; intraday volume's open/close skew makes spikes cluster there. |
 
 ## Tier 4 — Composites (build only after their primitives exist)
 

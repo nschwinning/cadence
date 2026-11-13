@@ -60,6 +60,10 @@ from cadence.strategy_bots.trend_confirmation import (
     TrendConfirmationStrategy,
 )
 from cadence.strategy_bots.vama import VamaParams, VamaStrategy
+from cadence.strategy_bots.volume_breakout import (
+    VolumeBreakoutParams,
+    VolumeBreakoutStrategy,
+)
 
 
 @dataclass(frozen=True)
@@ -175,6 +179,13 @@ _REGISTRY: dict[StrategyKey, StrategyRegistration] = {
         explanation=STRATEGY_EXPLANATIONS[StrategyKey.TREND_CONFIRMATION],
         strategy=TrendConfirmationStrategy(),
         params_schema=TrendConfirmationParams,
+    ),
+    StrategyKey.VOLUME_BREAKOUT: StrategyRegistration(
+        key=StrategyKey.VOLUME_BREAKOUT,
+        display_name=STRATEGY_DISPLAY_NAMES[StrategyKey.VOLUME_BREAKOUT],
+        explanation=STRATEGY_EXPLANATIONS[StrategyKey.VOLUME_BREAKOUT],
+        strategy=VolumeBreakoutStrategy(),
+        params_schema=VolumeBreakoutParams,
     ),
 }
 

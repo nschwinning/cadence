@@ -202,6 +202,10 @@ def test_list_presets(client: TestClient) -> None:
         "rolling_reversion_gradient_algo3",
         "price_velocity_algo48",
         "trend_confirmation_cadence",
+        "volume_spike_algo34",
+        "volume_spike_simple_algo34",
+        "vroc_breakout_algo46",
+        "chaikin_oscillator_algo45",
     ]
     turtle = body[2]
     assert turtle == {
@@ -811,7 +815,7 @@ def test_snapshot_daily_rolls_orchestrator_bots_into_one_push(
     )
 
     assert resp.status_code == 200
-    assert resp.json() == {"snapshots": 2, "orchestrator_snapshots": 1}
+    assert resp.json() == {"snapshots": 2, "reconciled": 0, "orchestrator_snapshots": 1}
     titles = sorted(title or "" for _, title in recording_notifier.sent)
     assert len(titles) == 2
     assert titles[0].startswith("Cadence bot:")  # the manual bot

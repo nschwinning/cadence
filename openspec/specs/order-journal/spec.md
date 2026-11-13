@@ -63,8 +63,9 @@ id, and SHALL then:
 - leave a record whose order is still working at the broker unbooked for a later pass.
 
 Administrator orders SHALL be marked booked without any ledger change. Reconciliation SHALL run
-before every strategy-bot tick processes its bots, before every AI-portfolio run trades, and on
-demand. A failure to resolve one record SHALL NOT prevent the others from being resolved.
+before every strategy-bot tick processes its bots, before every AI-portfolio run trades, before
+the daily strategy-bot value snapshot records any snapshot (for strategy-bot records), and on
+demand. A reconciliation failure during the daily snapshot SHALL NOT prevent the snapshots. A failure to resolve one record SHALL NOT prevent the others from being resolved.
 When the broker explicitly rejects a submission, the owner's lease on that record SHALL end
 immediately, so the next reconciliation pass confirms there is nothing to book and the owner is
 not kept from trading the symbol for the rest of the lease; a submission whose outcome is unknown
@@ -100,6 +101,18 @@ not kept from trading the symbol for the rest of the lease; a submission whose o
 - **WHEN** the broker explicitly rejects a bot's order
 - **THEN** the next reconciliation pass SHALL close the record without waiting for the lease, and
   the bot SHALL be free to submit a new order for that symbol in the same tick
+
+#### Scenario: Late-session fill booked before the daily snapshot
+
+- **WHEN** a bot's order sent shortly before the close fills after the bot's last tick, and the
+  daily strategy-bot snapshot runs after the close
+- **THEN** the fill SHALL be booked into that bot before its snapshot is recorded, so the snapshot
+  includes the position and the reduced cash
+
+#### Scenario: Snapshot runs despite a reconciliation failure
+
+- **WHEN** reconciliation fails during the daily strategy-bot snapshot
+- **THEN** every active bot SHALL still be snapshotted
 
 ### Requirement: Long-only sell guard
 

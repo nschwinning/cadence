@@ -1452,6 +1452,16 @@ The catalog SHALL include these presets, reproducing the reference-course recipe
 - **Trend Confirmation (Cadence)** — default for the Trend Confirmation strategy (Cadence's own
   recipe, not a course algorithm): SMA 20 / 50, MACD 12 / 26 / 9, RSI 14 entering between 50 and
   70 and exiting below 45, ROC and OBV legs off; take-profit 1%, stop-loss 1%, drawdown limit 5%.
+- **Volume Spike (Algo 34)** — default for the Volume Breakout strategy: Spike version, lookback
+  30, volume window 20, spike multiplier 1.1; take-profit off, stop-loss off, drawdown limit 5%
+  (the course script has no drawdown stop; 5% follows the catalog convention).
+- **Volume Spike — Simple (Algo 34)** — Volume Breakout strategy, Spike version, lookback 30,
+  volume window 20, spike multiplier 1; take-profit off, stop-loss off, drawdown limit 5%.
+- **VROC Breakout (Algo 46)** — Volume Breakout strategy, VROC version: VROC lookback 5, range
+  lookback 5, VROC threshold 40, surge level 70, tight range 0.6%, priming window 10;
+  take-profit 2%, stop-loss 1%, drawdown limit 5%.
+- **Chaikin Oscillator (Algo 45)** — Volume Breakout strategy, Chaikin version: fast EMA 3, slow
+  EMA 5; take-profit 0.6%, stop-loss 1.2%, drawdown limit 5%.
 
 #### Scenario: List presets
 
@@ -1535,6 +1545,13 @@ The catalog SHALL include these presets, reproducing the reference-course recipe
 - **WHEN** a client requests the preset catalog
 - **THEN** it SHALL include the Trend Confirmation (Cadence) preset as the Trend Confirmation
   strategy's default
+
+#### Scenario: Volume Breakout course presets listed
+
+- **WHEN** a client requests the preset catalog
+- **THEN** it SHALL include the Volume Spike (Algo 34), Volume Spike — Simple (Algo 34), VROC
+  Breakout (Algo 46) and Chaikin Oscillator (Algo 45) presets for the Volume Breakout strategy,
+  with the Volume Spike (Algo 34) preset marked as the strategy's default
 
 ### Requirement: Preset-driven build form
 
@@ -2184,3 +2201,103 @@ HOLD. It SHALL never signal a short entry.
 
 - **WHEN** fewer bars than the strategy needs are available
 - **THEN** it SHALL signal HOLD
+
+### Requirement: Volume Breakout strategy
+
+The system SHALL provide a **Volume Breakout** strategy, registered alongside the existing
+strategies. It SHALL be a pure, long-only signal generator that, given recent bars, the current
+position, and its parameters, returns one of ENTER_LONG, EXIT, or HOLD together with a
+human-readable reason, performing no I/O and holding no persisted state. Its `version` SHALL be
+`spike`, `vroc` or `chaikin` (default `spike`). With fewer bars than the selected version needs
+it SHALL signal HOLD. It SHALL never signal a short entry; take-profit, stop-loss and the drawdown
+kill-switch stay with the engine.
+
+**Spike version** (parameters `lookback` at least 3, default 30; `volume_window` at least 1,
+default 20; `spike_multiplier` greater than 0, default 1.1). The prior range SHALL be the highest
+and lowest close of the `lookback − 1` bars before the latest bar. A volume spike SHALL be the
+latest bar's volume strictly above `spike_multiplier` × the mean volume of the latest
+`volume_window` bars, the latest bar included. While flat, the strategy SHALL signal ENTER_LONG
+when the latest close is strictly above the prior high with a volume spike. While holding, it
+SHALL signal EXIT when the latest close is strictly below the prior low with a volume spike, and
+HOLD otherwise.
+
+**VROC version** (parameters `vroc_lookback` at least 1, default 5; `range_lookback` at least 2,
+default 5; `vroc_threshold` default 40; `vroc_surge` default 70 and not below `vroc_threshold`;
+`tight_range_pct` greater than 0, default 0.006; `prime_window` at least 1, default 10). The VROC
+at a bar SHALL be (its volume − the volume `vroc_lookback` bars earlier) ÷ that earlier volume ×
+100, undefined when the earlier volume is not positive. A bar SHALL **prime** when its VROC is
+strictly above `vroc_threshold` and either its VROC is strictly above `vroc_surge` or the range
+(highest − lowest close) of the `range_lookback` closes ending at it is strictly below
+`tight_range_pct` × its close; the priming's range high SHALL be that highest close. While flat,
+the strategy SHALL find the most recent priming bar among the `prime_window` bars before the
+latest bar and SHALL signal ENTER_LONG when the latest close is strictly above its range high and
+no close after the priming bar and before the latest bar was above it (the first breakout only);
+otherwise HOLD. While holding, it SHALL signal EXIT when the latest bar's VROC is negative, and
+HOLD otherwise.
+
+**Chaikin version** (parameters `chaikin_fast` at least 1, default 3; `chaikin_slow` greater
+than `chaikin_fast`, default 5). Each bar's money-flow multiplier SHALL be ((close − low) −
+(high − close)) ÷ (high − low), or 0 when high equals low; the accumulation/distribution line SHALL
+be the running sum of multiplier × volume over the bars provided. The oscillator SHALL be the
+exponential moving average of that line over `chaikin_fast` bars minus the one over
+`chaikin_slow` bars (smoothing 2 ÷ (span + 1), seeded with the first value), computed over the
+bars provided so the result is deterministic. While flat, the strategy SHALL signal ENTER_LONG
+when the previous bar's oscillator is at or below zero and the latest is strictly above zero.
+While holding, it SHALL signal EXIT when the latest oscillator is strictly below zero, and HOLD
+otherwise.
+
+#### Scenario: Spike enters on a volume-confirmed breakout
+
+- **WHEN** the Spike version is flat, the latest close is above the prior high and its volume is
+  above `spike_multiplier` × the average volume
+- **THEN** the strategy SHALL signal ENTER_LONG
+
+#### Scenario: Spike ignores a breakout without volume
+
+- **WHEN** the Spike version is flat and the latest close is above the prior high but its volume
+  is not above `spike_multiplier` × the average volume
+- **THEN** the strategy SHALL signal HOLD
+
+#### Scenario: Spike exits on a volume-confirmed breakdown
+
+- **WHEN** the Spike version holds a position and the latest close is below the prior low with a
+  volume spike
+- **THEN** the strategy SHALL signal EXIT
+
+#### Scenario: VROC enters on the first breakout after priming
+
+- **WHEN** the VROC version is flat, a bar within the priming window primed, and the latest
+  close is the first close above that priming's range high
+- **THEN** the strategy SHALL signal ENTER_LONG
+
+#### Scenario: VROC ignores stale or missing priming
+
+- **WHEN** the VROC version is flat and no bar within the priming window primed
+- **THEN** the strategy SHALL signal HOLD even if the close breaks above an older range
+
+#### Scenario: VROC does not re-enter on an already broken range
+
+- **WHEN** the VROC version is flat and an earlier close after the priming bar already broke
+  above its range high
+- **THEN** the strategy SHALL signal HOLD
+
+#### Scenario: VROC exits when volume momentum reverses
+
+- **WHEN** the VROC version holds a position and the latest VROC is negative
+- **THEN** the strategy SHALL signal EXIT
+
+#### Scenario: Chaikin enters on a zero-line cross up
+
+- **WHEN** the Chaikin version is flat, the previous oscillator is at or below zero and the
+  latest is above zero
+- **THEN** the strategy SHALL signal ENTER_LONG
+
+#### Scenario: Chaikin exits below zero
+
+- **WHEN** the Chaikin version holds a position and the latest oscillator is below zero
+- **THEN** the strategy SHALL signal EXIT
+
+#### Scenario: Insufficient history
+
+- **WHEN** fewer bars than the selected version needs are available
+- **THEN** the strategy SHALL signal HOLD

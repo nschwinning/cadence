@@ -12,6 +12,7 @@ import { buildRsiChartOption } from './rsiChart';
 import { buildTrendConfirmationChartOption } from './trendConfirmationChart';
 import { buildVamaChartOption } from './vamaChart';
 import { buildVelocityChartOption } from './velocityChart';
+import { buildVolumeBreakoutChartOption } from './volumeBreakoutChart';
 
 /**
  * A strategy's illustrative (synthetic, client-side) chart: how to build its
@@ -93,6 +94,11 @@ const STRATEGY_CHARTS: Record<string, StrategyChartDescriptor> = {
     buildOption: buildTrendConfirmationChartOption,
     ariaLabel:
       'Illustrative trend confirmation with an entry where every trend check agrees and an exit where one breaks',
+  },
+  volume_breakout: {
+    buildOption: buildVolumeBreakoutChartOption,
+    ariaLabel:
+      'Illustrative volume breakout with an entry on a high-volume break above the prior high and an exit on a high-volume break below the prior low',
   },
 };
 

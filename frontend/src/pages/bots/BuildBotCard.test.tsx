@@ -345,6 +345,62 @@ const PRESETS: BotPreset[] = [
     drawdown_stop_pct: 0.05,
     is_default: true,
   },
+  {
+    key: 'volume_spike_algo34',
+    display_name: 'Volume Spike (Algo 34)',
+    description: 'Volume-confirmed breakout.',
+    course_ref: 'Algo 34',
+    strategy_key: 'volume_breakout',
+    strategy_params: { version: 'spike', lookback: 30, volume_window: 20, spike_multiplier: 1.1 },
+    take_profit_pct: null,
+    stop_loss_pct: null,
+    drawdown_stop_pct: 0.05,
+    is_default: true,
+  },
+  {
+    key: 'volume_spike_simple_algo34',
+    display_name: 'Volume Spike — Simple (Algo 34)',
+    description: 'Any above-average volume.',
+    course_ref: 'Algo 34',
+    strategy_key: 'volume_breakout',
+    strategy_params: { version: 'spike', lookback: 30, volume_window: 20, spike_multiplier: 1 },
+    take_profit_pct: null,
+    stop_loss_pct: null,
+    drawdown_stop_pct: 0.05,
+    is_default: false,
+  },
+  {
+    key: 'vroc_breakout_algo46',
+    display_name: 'VROC Breakout (Algo 46)',
+    description: 'Volume surge in a tight range.',
+    course_ref: 'Algo 46',
+    strategy_key: 'volume_breakout',
+    strategy_params: {
+      version: 'vroc',
+      vroc_lookback: 5,
+      range_lookback: 5,
+      vroc_threshold: 40,
+      vroc_surge: 70,
+      tight_range_pct: 0.006,
+      prime_window: 10,
+    },
+    take_profit_pct: 0.02,
+    stop_loss_pct: 0.01,
+    drawdown_stop_pct: 0.05,
+    is_default: false,
+  },
+  {
+    key: 'chaikin_oscillator_algo45',
+    display_name: 'Chaikin Oscillator (Algo 45)',
+    description: 'A/D momentum crosses zero.',
+    course_ref: 'Algo 45',
+    strategy_key: 'volume_breakout',
+    strategy_params: { version: 'chaikin', chaikin_fast: 3, chaikin_slow: 5 },
+    take_profit_pct: 0.006,
+    stop_loss_pct: 0.012,
+    drawdown_stop_pct: 0.05,
+    is_default: false,
+  },
 ];
 
 /** Route the catalog GETs the form issues on mount plus the picker's asset search. */
@@ -386,6 +442,13 @@ function routeCatalogs({ presetsFail = false }: { presetsFail?: boolean } = {}) 
             display_name: 'Trend Confirmation',
             explanation: 'Buys when every trend check agrees.',
             required_history: 87,
+            params_schema: {},
+          },
+          {
+            key: 'volume_breakout',
+            display_name: 'Volume Breakout',
+            explanation: 'Buys volume-confirmed moves.',
+            required_history: 30,
             params_schema: {},
           },
           {
@@ -1720,6 +1783,106 @@ describe('BuildBotCard', () => {
     const exit = screen.getByLabelText('RSI exit below');
     await user.clear(exit);
     await user.type(exit, '55');
+
+    expect(screen.getByRole('button', { name: 'Create bot' })).toBeDisabled();
+  });
+
+  it('applies the Volume Spike preset and submits the spike params', async () => {
+    mockedPost.mockResolvedValue({ data: { id: 'b1' } });
+    const user = userEvent.setup();
+    renderCard(<BuildBotCard />);
+
+    await waitForPreset();
+    await user.selectOptions(screen.getByLabelText('Strategy'), 'volume_breakout');
+
+    await waitForPreset('Volume Spike (Algo 34)');
+    expect(screen.getByLabelText('Lookback')).toHaveValue(30);
+    expect(screen.getByLabelText('Volume window')).toHaveValue(20);
+    expect(screen.getByLabelText('Spike multiplier (×)')).toHaveValue(1.1);
+    expect(screen.queryByLabelText('VROC lookback')).not.toBeInTheDocument();
+    await pickAAPL(user);
+    await user.click(screen.getByRole('button', { name: 'Create bot' }));
+
+    await waitFor(() => {
+      expect(mockedPost).toHaveBeenCalledWith(
+        '/api/v1/bots/sessions',
+        expect.objectContaining({
+          strategy_key: 'volume_breakout',
+          preset_key: 'volume_spike_algo34',
+          strategy_params: {
+            version: 'spike',
+            lookback: 30,
+            volume_window: 20,
+            spike_multiplier: 1.1,
+          },
+        }),
+      );
+    });
+  });
+
+  it('switching to the VROC version applies its preset and sends the tight range as a fraction', async () => {
+    mockedPost.mockResolvedValue({ data: { id: 'b1' } });
+    const user = userEvent.setup();
+    renderCard(<BuildBotCard />);
+
+    await waitForPreset();
+    await user.selectOptions(screen.getByLabelText('Strategy'), 'volume_breakout');
+    await waitForPreset('Volume Spike (Algo 34)');
+    await user.selectOptions(screen.getByLabelText('Version'), 'vroc');
+
+    await waitForPreset('VROC Breakout (Algo 46)');
+    expect(screen.getByLabelText('Tight range (%)')).toHaveValue(0.6);
+    expect(screen.getByLabelText('Priming window')).toHaveValue(10);
+    expect(screen.queryByLabelText('Lookback')).not.toBeInTheDocument();
+    await pickAAPL(user);
+    await user.click(screen.getByRole('button', { name: 'Create bot' }));
+
+    await waitFor(() => {
+      expect(mockedPost).toHaveBeenCalledWith(
+        '/api/v1/bots/sessions',
+        expect.objectContaining({
+          preset_key: 'vroc_breakout_algo46',
+          take_profit_pct: 0.02,
+          strategy_params: {
+            version: 'vroc',
+            vroc_lookback: 5,
+            range_lookback: 5,
+            vroc_threshold: 40,
+            vroc_surge: 70,
+            tight_range_pct: 0.006,
+            prime_window: 10,
+          },
+        }),
+      );
+    });
+  });
+
+  it('the simple Volume Spike preset sets a multiplier of 1', async () => {
+    const user = userEvent.setup();
+    renderCard(<BuildBotCard />);
+
+    await waitForPreset();
+    await user.selectOptions(screen.getByLabelText('Strategy'), 'volume_breakout');
+    await waitForPreset('Volume Spike (Algo 34)');
+    await user.selectOptions(screen.getByLabelText('Preset'), 'volume_spike_simple_algo34');
+
+    expect(screen.getByLabelText('Spike multiplier (×)')).toHaveValue(1);
+  });
+
+  it('blocks Chaikin submission when the fast EMA is not below the slow EMA', async () => {
+    const user = userEvent.setup();
+    renderCard(<BuildBotCard />);
+
+    await waitForPreset();
+    await user.selectOptions(screen.getByLabelText('Strategy'), 'volume_breakout');
+    await waitForPreset('Volume Spike (Algo 34)');
+    await user.selectOptions(screen.getByLabelText('Version'), 'chaikin');
+    await waitForPreset('Chaikin Oscillator (Algo 45)');
+    await pickAAPL(user);
+    expect(screen.getByRole('button', { name: 'Create bot' })).toBeEnabled();
+    const fast = screen.getByLabelText('Fast EMA');
+    await user.clear(fast);
+    await user.type(fast, '5');
 
     expect(screen.getByRole('button', { name: 'Create bot' })).toBeDisabled();
   });

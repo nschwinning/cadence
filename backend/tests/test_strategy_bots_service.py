@@ -1145,14 +1145,14 @@ def test_snapshot_job_raising_notifier_still_records(db_session: Session) -> Non
     bot = _create(db_session)
     broker = _OpenableBroker()
 
-    count = service.run_bot_snapshots(
+    result = service.run_bot_snapshots(
         db_session,
         broker=broker,
         now=datetime(2026, 1, 6, 21, 0, tzinfo=UTC),
         notifier=RecordingNotifier(raises=True),
     )
 
-    assert count == 1
+    assert result.snapshots == 1
     assert len(service.list_bot_snapshots(db_session, bot)) == 1
 
 
@@ -1920,11 +1920,11 @@ def test_orchestrator_bots_are_snapshotted_without_their_own_push(
     notifier = RecordingNotifier()
     when = datetime(2026, 1, 6, 21, 0, tzinfo=UTC)
 
-    count = service.run_bot_snapshots(
+    result = service.run_bot_snapshots(
         db_session, broker=_OpenableBroker(), now=when, notifier=notifier
     )
 
-    assert count == 2
+    assert result.snapshots == 2
     snapped = {
         s.bot_session_id
         for s in db_session.query(BotValueSnapshot).filter(

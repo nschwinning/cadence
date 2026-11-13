@@ -287,3 +287,41 @@ def test_unfinished_admin_order_is_closed_without_ledger_changes(db_session: Ses
     assert result.booked == 1
     assert list(db_session.execute(select(PaperTrade)).scalars()) == []
     assert list(db_session.execute(select(BotTrade)).scalars()) == []
+
+
+# --- daily snapshot ----------------------------------------------------------------
+def test_daily_snapshot_books_a_late_session_fill_first(db_session: Session) -> None:
+    bot = _bot(db_session)
+    broker = _WorkingBroker()
+    gateway = OrderGateway(broker, owner_kind=OrderOwnerKind.BOT, owner_id=bot.id)
+    order = gateway.buy("AAPL", 3, purpose="entry", context={"asset_id": bot.symbols[0].asset_id})
+    # The tick stopped waiting; the order filled after the session's last tick.
+    broker.settle(order.client_order_id or "", status=OrderStatus.FILLED, qty=3, price=120.0)
+
+    result = bot_service.run_bot_snapshots(db_session, broker=broker, now=_LATER)
+
+    assert (result.snapshots, result.reconciled) == (1, 1)
+    db_session.refresh(bot)
+    assert [(p.quantity, p.avg_price) for p in bot.positions] == [(3, 120.0)]
+    assert bot.cash == pytest.approx(10_000.0 - 360.0)
+    [snapshot] = bot_service.list_bot_snapshots(db_session, bot)
+    mark = broker.get_quote("AAPL").last or 0.0
+    assert snapshot.total_value == pytest.approx(bot.cash + 3 * mark)
+    assert _row(db_session, order.client_order_id or "").booked_at is not None
+
+
+def test_daily_snapshot_runs_when_reconciliation_fails(
+    db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    bot = _bot(db_session)
+    db_session.commit()
+
+    def _boom(*args: Any, **kwargs: Any) -> None:
+        raise RuntimeError("journal unavailable")
+
+    monkeypatch.setattr(bot_service, "reconcile_orders", _boom)
+
+    result = bot_service.run_bot_snapshots(db_session, broker=StubBroker(), now=_LATER)
+
+    assert (result.snapshots, result.reconciled) == (1, 0)
+    assert len(bot_service.list_bot_snapshots(db_session, bot)) == 1

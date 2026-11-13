@@ -451,6 +451,88 @@ _PRESETS: tuple[BotPreset, ...] = (
         drawdown_stop_pct=0.05,
         is_default=True,
     ),
+    BotPreset(
+        key="volume_spike_algo34",
+        display_name="Volume Spike (Algo 34)",
+        description=(
+            "Buys a close above the prior 30-bar high on volume over 1.1× the 20-bar "
+            "average; sells a close below the prior low on such a spike. No take-profit "
+            "or stop-loss bracket."
+        ),
+        course_ref="Algo 34",
+        strategy_key=StrategyKey.VOLUME_BREAKOUT,
+        strategy_params={
+            "version": "spike",
+            "lookback": 30,
+            "volume_window": 20,
+            "spike_multiplier": 1.1,
+        },
+        take_profit_pct=None,
+        stop_loss_pct=None,
+        drawdown_stop_pct=0.05,
+        is_default=True,
+    ),
+    BotPreset(
+        key="volume_spike_simple_algo34",
+        display_name="Volume Spike — Simple (Algo 34)",
+        description=(
+            "The simple method: a 30-bar high breakout on any above-average volume, "
+            "exiting on a breakdown with above-average volume. No take-profit or "
+            "stop-loss bracket."
+        ),
+        course_ref="Algo 34",
+        strategy_key=StrategyKey.VOLUME_BREAKOUT,
+        strategy_params={
+            "version": "spike",
+            "lookback": 30,
+            "volume_window": 20,
+            "spike_multiplier": 1.0,
+        },
+        take_profit_pct=None,
+        stop_loss_pct=None,
+        drawdown_stop_pct=0.05,
+        is_default=False,
+    ),
+    BotPreset(
+        key="vroc_breakout_algo46",
+        display_name="VROC Breakout (Algo 46)",
+        description=(
+            "Primes when volume jumps over 40% in 5 bars while price is in a tight range, "
+            "then buys the first close above that range; exits when volume falls, with a "
+            "2% take-profit and 1% stop-loss."
+        ),
+        course_ref="Algo 46",
+        strategy_key=StrategyKey.VOLUME_BREAKOUT,
+        strategy_params={
+            "version": "vroc",
+            "vroc_lookback": 5,
+            "range_lookback": 5,
+            "vroc_threshold": 40.0,
+            "vroc_surge": 70.0,
+            "tight_range_pct": 0.006,
+            "prime_window": 10,
+        },
+        take_profit_pct=0.02,
+        stop_loss_pct=0.01,
+        drawdown_stop_pct=0.05,
+        is_default=False,
+    ),
+    BotPreset(
+        key="chaikin_oscillator_algo45",
+        display_name="Chaikin Oscillator (Algo 45)",
+        description=(
+            "Buys when the 3/5 Chaikin oscillator of accumulation/distribution crosses "
+            "above zero and sells when it falls below zero, with a 0.6% take-profit and "
+            "1.2% stop-loss."
+        ),
+        course_ref="Algo 45",
+        strategy_key=StrategyKey.VOLUME_BREAKOUT,
+        strategy_params={"version": "chaikin", "chaikin_fast": 3, "chaikin_slow": 5},
+        take_profit_pct=0.006,
+        stop_loss_pct=0.012,
+        drawdown_stop_pct=0.05,
+        is_default=False,
+    ),
 )
 
 _BY_KEY: dict[str, BotPreset] = {preset.key: preset for preset in _PRESETS}
