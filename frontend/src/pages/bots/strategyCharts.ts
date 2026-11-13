@@ -1,6 +1,8 @@
 import type { EChartsCoreOption } from 'echarts/core';
 import { buildAdxChartOption } from './adxChart';
 import { buildAtrBandChartOption } from './atrBandChart';
+import { buildBayesianChartOption } from './bayesianChart';
+import { buildConsensusChartOption } from './consensusChart';
 import { buildCrossoverChartOption } from './crossoverChart';
 import { buildMacdChartOption } from './macdChart';
 import { buildMaRibbonChartOption } from './maRibbonChart';
@@ -12,6 +14,7 @@ import { buildRsiChartOption } from './rsiChart';
 import { buildTrendConfirmationChartOption } from './trendConfirmationChart';
 import { buildVamaChartOption } from './vamaChart';
 import { buildVelocityChartOption } from './velocityChart';
+import { buildVolatilityRegimeChartOption } from './volatilityRegimeChart';
 import { buildVolumeBreakoutChartOption } from './volumeBreakoutChart';
 
 /**
@@ -99,6 +102,21 @@ const STRATEGY_CHARTS: Record<string, StrategyChartDescriptor> = {
     buildOption: buildVolumeBreakoutChartOption,
     ariaLabel:
       'Illustrative volume breakout with an entry on a high-volume break above the prior high and an exit on a high-volume break below the prior low',
+  },
+  volatility_regime: {
+    buildOption: buildVolatilityRegimeChartOption,
+    ariaLabel:
+      'Illustrative volatility regime switcher with a trend trade above the range midpoint while calm and a dip-buy back to the moving average while volatile',
+  },
+  signal_consensus: {
+    buildOption: buildConsensusChartOption,
+    ariaLabel:
+      'Illustrative multi-signal consensus with the vote score under the price and an entry where the oversold votes reach the consensus level',
+  },
+  bayesian_trend: {
+    buildOption: buildBayesianChartOption,
+    ariaLabel:
+      'Illustrative Bayesian trend predictor with up, flat and down regime probabilities under the price, an entry on a confident up-regime and an exit on a confident down-regime',
   },
 };
 

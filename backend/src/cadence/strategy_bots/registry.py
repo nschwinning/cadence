@@ -18,6 +18,7 @@ from pydantic import ValidationError
 
 from cadence.strategy_bots.adx_trend import AdxTrendParams, AdxTrendStrategy
 from cadence.strategy_bots.atr_band_trend import AtrBandTrendParams, AtrBandTrendStrategy
+from cadence.strategy_bots.bayesian_trend import BayesianTrendParams, BayesianTrendStrategy
 from cadence.strategy_bots.constants import (
     STRATEGY_DISPLAY_NAMES,
     STRATEGY_EXPLANATIONS,
@@ -54,12 +55,20 @@ from cadence.strategy_bots.rsi_mean_reversion import (
     RsiMeanReversionParams,
     RsiMeanReversionStrategy,
 )
+from cadence.strategy_bots.signal_consensus import (
+    SignalConsensusParams,
+    SignalConsensusStrategy,
+)
 from cadence.strategy_bots.strategy import Strategy, StrategyParams
 from cadence.strategy_bots.trend_confirmation import (
     TrendConfirmationParams,
     TrendConfirmationStrategy,
 )
 from cadence.strategy_bots.vama import VamaParams, VamaStrategy
+from cadence.strategy_bots.volatility_regime import (
+    VolatilityRegimeParams,
+    VolatilityRegimeStrategy,
+)
 from cadence.strategy_bots.volume_breakout import (
     VolumeBreakoutParams,
     VolumeBreakoutStrategy,
@@ -186,6 +195,27 @@ _REGISTRY: dict[StrategyKey, StrategyRegistration] = {
         explanation=STRATEGY_EXPLANATIONS[StrategyKey.VOLUME_BREAKOUT],
         strategy=VolumeBreakoutStrategy(),
         params_schema=VolumeBreakoutParams,
+    ),
+    StrategyKey.VOLATILITY_REGIME: StrategyRegistration(
+        key=StrategyKey.VOLATILITY_REGIME,
+        display_name=STRATEGY_DISPLAY_NAMES[StrategyKey.VOLATILITY_REGIME],
+        explanation=STRATEGY_EXPLANATIONS[StrategyKey.VOLATILITY_REGIME],
+        strategy=VolatilityRegimeStrategy(),
+        params_schema=VolatilityRegimeParams,
+    ),
+    StrategyKey.SIGNAL_CONSENSUS: StrategyRegistration(
+        key=StrategyKey.SIGNAL_CONSENSUS,
+        display_name=STRATEGY_DISPLAY_NAMES[StrategyKey.SIGNAL_CONSENSUS],
+        explanation=STRATEGY_EXPLANATIONS[StrategyKey.SIGNAL_CONSENSUS],
+        strategy=SignalConsensusStrategy(),
+        params_schema=SignalConsensusParams,
+    ),
+    StrategyKey.BAYESIAN_TREND: StrategyRegistration(
+        key=StrategyKey.BAYESIAN_TREND,
+        display_name=STRATEGY_DISPLAY_NAMES[StrategyKey.BAYESIAN_TREND],
+        explanation=STRATEGY_EXPLANATIONS[StrategyKey.BAYESIAN_TREND],
+        strategy=BayesianTrendStrategy(),
+        params_schema=BayesianTrendParams,
     ),
 }
 

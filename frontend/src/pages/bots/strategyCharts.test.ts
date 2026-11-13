@@ -10,6 +10,9 @@ import { macdEntryIndex, macdPoints } from './macdChart';
 import { ribbonEntryIndex, smaSeries } from './maRibbonChart';
 import { smoothingFactors, vamaSignals } from './vamaChart';
 import { velocitySignals } from './velocityChart';
+import { regimeSignals } from './volatilityRegimeChart';
+import { consensusEntries, consensusScores } from './consensusChart';
+import { bayesSignals, regimeProbabilities } from './bayesianChart';
 import { volumeSignals } from './volumeBreakoutChart';
 import { rsi, sma, trendConfirmationSignals } from './trendConfirmationChart';
 import { reversionSignals, rollingMean } from './rollingReversionChart';
@@ -382,5 +385,82 @@ describe('volumeBreakoutChart', () => {
     };
     expect(option.series.map((s) => s.id)).toEqual(['price', 'prior-high', 'prior-low', 'volume']);
     expect(option.series[0].markLine?.data).toHaveLength(2);
+  });
+});
+
+describe('volatilityRegimeChart', () => {
+  it('is registered for volatility_regime', () => {
+    expect(getStrategyChart('volatility_regime')?.ariaLabel).toMatch(/volatility regime/i);
+  });
+
+  it('shows one calm trend trade, then one volatile reversion trade', () => {
+    expect(regimeSignals()).toEqual([
+      { index: 11, kind: 'entry', regime: 'trend' },
+      { index: 15, kind: 'exit', regime: 'trend' },
+      { index: 16, kind: 'entry', regime: 'reversion' },
+      { index: 18, kind: 'exit', regime: 'reversion' },
+    ]);
+  });
+
+  it('builds price, HL2 and SMA series with a shaded volatile stretch', () => {
+    const option = getStrategyChart('volatility_regime')!.buildOption() as {
+      series: { id: string; markLine?: { data: unknown[] }; markArea?: { data: unknown[] } }[];
+    };
+    expect(option.series.map((s) => s.id)).toEqual(['price', 'hl2', 'sma']);
+    expect(option.series[0].markLine?.data).toHaveLength(4);
+    expect(option.series[0].markArea?.data).toHaveLength(1);
+  });
+});
+
+describe('consensusChart', () => {
+  it('is registered for signal_consensus', () => {
+    expect(getStrategyChart('signal_consensus')?.ariaLabel).toMatch(/multi-signal consensus/i);
+  });
+
+  it('scores from bar 14 and enters once, on the sell-off', () => {
+    const scores = consensusScores();
+    expect(scores.slice(0, 14).every((s) => s === null)).toBe(true);
+    // Matches the backend votes for the same closes.
+    expect(scores.slice(14)).toEqual([1, -4, 1, 7, 7, 4, 1, 0, -2, -4, -5]);
+    expect(consensusEntries()).toEqual([17]);
+  });
+
+  it('builds price and score series with the entry and consensus mark-lines', () => {
+    const option = getStrategyChart('signal_consensus')!.buildOption() as {
+      series: { id: string; markLine?: { data: unknown[] } }[];
+    };
+    expect(option.series.map((s) => s.id)).toEqual(['price', 'score']);
+    expect(option.series[0].markLine?.data).toHaveLength(1);
+    expect(option.series[1].markLine?.data).toHaveLength(1);
+  });
+});
+
+describe('bayesianChart', () => {
+  it('is registered for bayesian_trend', () => {
+    expect(getStrategyChart('bayesian_trend')?.ariaLabel).toMatch(/bayesian trend/i);
+  });
+
+  it('enters on the confident up-regime and exits on the confident down-regime', () => {
+    // Matches the backend posterior for the same closes (replay 8).
+    expect(bayesSignals()).toEqual([
+      { index: 13, kind: 'entry' },
+      { index: 27, kind: 'exit' },
+    ]);
+  });
+
+  it('keeps every probability row summing to 1', () => {
+    for (const p of regimeProbabilities()) {
+      if (p === null) continue;
+      expect(p.UP + p.FLAT + p.DOWN).toBeCloseTo(1, 9);
+    }
+  });
+
+  it('builds price and stacked regime series with entry/exit and threshold mark-lines', () => {
+    const option = getStrategyChart('bayesian_trend')!.buildOption() as {
+      series: { id: string; markLine?: { data: unknown[] } }[];
+    };
+    expect(option.series.map((s) => s.id)).toEqual(['price', 'up', 'flat', 'down']);
+    expect(option.series[0].markLine?.data).toHaveLength(2);
+    expect(option.series[3].markLine?.data).toHaveLength(1);
   });
 });

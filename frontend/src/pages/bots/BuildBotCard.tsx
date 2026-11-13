@@ -276,6 +276,24 @@ export function BuildBotCard() {
   const [pvThresholdPct, setPvThresholdPct] = useState('');
   // VAMA: lookback, smoothing range, and fixed (course) vs adaptive smoothing.
   const [vamaLookback, setVamaLookback] = useState('');
+  // Volatility Regime Switcher: ATR window, SMA period, baseline bars and the reversion
+  // deviation (a percent in the form, a fraction in the params).
+  const [vrAtrWindow, setVrAtrWindow] = useState('');
+  const [vrSmaPeriod, setVrSmaPeriod] = useState('');
+  const [vrBaselineBars, setVrBaselineBars] = useState('');
+  const [vrDeviationPct, setVrDeviationPct] = useState('');
+  // Multi-Signal Consensus: voting window, consensus level, RSI period, Bollinger k.
+  const [scWindow, setScWindow] = useState('');
+  const [scConsensus, setScConsensus] = useState('');
+  const [scRsiPeriod, setScRsiPeriod] = useState('');
+  const [scBbK, setScBbK] = useState('');
+  // Bayesian Trend Predictor: regime drift and spreads (percent in the form, fractions in
+  // the params), confidence threshold and replay window.
+  const [btDriftPct, setBtDriftPct] = useState('');
+  const [btTrendSigmaPct, setBtTrendSigmaPct] = useState('');
+  const [btFlatSigmaPct, setBtFlatSigmaPct] = useState('');
+  const [btThreshold, setBtThreshold] = useState('');
+  const [btReplayBars, setBtReplayBars] = useState('');
   const [vamaAlphaMin, setVamaAlphaMin] = useState('');
   const [vamaAlphaMax, setVamaAlphaMax] = useState('');
   const [vamaAdaptive, setVamaAdaptive] = useState(false);
@@ -405,6 +423,23 @@ export function BuildBotCard() {
         atrBandSetters[name]?.(value);
       } else if (preset.strategy_key === 'volume_breakout') {
         volumeSetters[name]?.(value);
+      } else if (preset.strategy_key === 'bayesian_trend') {
+        if (name === 'drift') setBtDriftPct(fractionToPercent(Number(value)));
+        if (name === 'trend_sigma') setBtTrendSigmaPct(fractionToPercent(Number(value)));
+        if (name === 'flat_sigma') setBtFlatSigmaPct(fractionToPercent(Number(value)));
+        if (name === 'threshold') setBtThreshold(String(value));
+        if (name === 'replay_bars') setBtReplayBars(String(value));
+      } else if (preset.strategy_key === 'signal_consensus') {
+        // `window` / `rsi_period` would collide with other strategies' fields.
+        if (name === 'window') setScWindow(String(value));
+        if (name === 'consensus') setScConsensus(String(value));
+        if (name === 'rsi_period') setScRsiPeriod(String(value));
+        if (name === 'bb_k') setScBbK(String(value));
+      } else if (preset.strategy_key === 'volatility_regime') {
+        if (name === 'atr_window') setVrAtrWindow(String(value));
+        if (name === 'sma_period') setVrSmaPeriod(String(value));
+        if (name === 'baseline_bars') setVrBaselineBars(String(value));
+        if (name === 'reversion_deviation') setVrDeviationPct(fractionToPercent(Number(value)));
       } else if (preset.strategy_key === 'adx_trend') {
         adxSetters[name]?.(String(value));
       } else if (preset.strategy_key === 'macd_momentum') {
@@ -524,6 +559,9 @@ export function BuildBotCard() {
   const isHma = strategyKey === 'hma_trend';
   const isRibbon = strategyKey === 'ma_ribbon';
   const isVama = strategyKey === 'vama';
+  const isVolatilityRegime = strategyKey === 'volatility_regime';
+  const isConsensus = strategyKey === 'signal_consensus';
+  const isBayesian = strategyKey === 'bayesian_trend';
   const isVelocity = strategyKey === 'price_velocity_reversal';
   const isTrendConfirmation = strategyKey === 'trend_confirmation';
 
@@ -724,6 +762,58 @@ export function BuildBotCard() {
     vamaAlphaInRange(vamaAlphaMaxValue) &&
     vamaAlphaMinValue < vamaAlphaMaxValue;
   const vamaParamsValid = !isVama || (vamaLookbackValid && vamaAlphasValid);
+
+  // Bayesian params: positive percentages, a threshold in (1/3, 1), replay ≥ 1 bar.
+  const btPositive = (value: string) => {
+    const n = Number.parseFloat(value);
+    return Number.isFinite(n) && n > 0 ? n : null;
+  };
+  const btDriftValue = btPositive(btDriftPct);
+  const btTrendSigmaValue = btPositive(btTrendSigmaPct);
+  const btFlatSigmaValue = btPositive(btFlatSigmaPct);
+  const btThresholdValue = Number.parseFloat(btThreshold);
+  const btThresholdValid =
+    Number.isFinite(btThresholdValue) && btThresholdValue > 1 / 3 && btThresholdValue < 1;
+  const btReplayValue = Number.parseInt(btReplayBars, 10);
+  const btReplayValid = Number.isInteger(btReplayValue) && btReplayValue >= 1;
+  const bayesianParamsValid =
+    !isBayesian ||
+    (btDriftValue !== null &&
+      btTrendSigmaValue !== null &&
+      btFlatSigmaValue !== null &&
+      btThresholdValid &&
+      btReplayValid);
+
+  // Multi-Signal Consensus params: window ≥ 5, consensus 1–8, RSI period ≥ 2, k > 0.
+  const scWindowValue = Number.parseInt(scWindow, 10);
+  const scWindowValid = Number.isInteger(scWindowValue) && scWindowValue >= 5;
+  const scConsensusValue = Number.parseInt(scConsensus, 10);
+  const scConsensusValid =
+    Number.isInteger(scConsensusValue) && scConsensusValue >= 1 && scConsensusValue <= 8;
+  const scRsiPeriodValue = Number.parseInt(scRsiPeriod, 10);
+  const scRsiPeriodValid = Number.isInteger(scRsiPeriodValue) && scRsiPeriodValue >= 2;
+  const scBbKValue = Number.parseFloat(scBbK);
+  const scBbKValid = Number.isFinite(scBbKValue) && scBbKValue > 0;
+  const consensusParamsValid =
+    !isConsensus || (scWindowValid && scConsensusValid && scRsiPeriodValid && scBbKValid);
+
+  // Volatility Regime params: integer windows ≥ 2 and a deviation in [0, 100) percent.
+  const vrInt = (value: string) => {
+    const n = Number.parseInt(value, 10);
+    return Number.isInteger(n) && n >= 2 ? n : null;
+  };
+  const vrAtrWindowValue = vrInt(vrAtrWindow);
+  const vrSmaPeriodValue = vrInt(vrSmaPeriod);
+  const vrBaselineBarsValue = vrInt(vrBaselineBars);
+  const vrDeviationValue = Number.parseFloat(vrDeviationPct);
+  const vrDeviationValid =
+    Number.isFinite(vrDeviationValue) && vrDeviationValue >= 0 && vrDeviationValue < 100;
+  const volatilityRegimeValid =
+    !isVolatilityRegime ||
+    (vrAtrWindowValue !== null &&
+      vrSmaPeriodValue !== null &&
+      vrBaselineBarsValue !== null &&
+      vrDeviationValid);
   const pvThresholdFraction = Number.parseFloat(pvThresholdPct) / 100;
   const pvThresholdValid =
     Number.isFinite(pvThresholdFraction) && pvThresholdFraction > 0 && pvThresholdFraction < 1;
@@ -896,6 +986,28 @@ export function BuildBotCard() {
                 }
               : isVelocity
               ? { threshold_pct: pvThresholdFraction }
+              : isBayesian
+              ? {
+                  drift: btDriftValue === null ? null : btDriftValue / 100,
+                  trend_sigma: btTrendSigmaValue === null ? null : btTrendSigmaValue / 100,
+                  flat_sigma: btFlatSigmaValue === null ? null : btFlatSigmaValue / 100,
+                  threshold: btThresholdValue,
+                  replay_bars: btReplayValue,
+                }
+              : isConsensus
+              ? {
+                  window: scWindowValue,
+                  consensus: scConsensusValue,
+                  rsi_period: scRsiPeriodValue,
+                  bb_k: scBbKValue,
+                }
+              : isVolatilityRegime
+              ? {
+                  atr_window: vrAtrWindowValue,
+                  sma_period: vrSmaPeriodValue,
+                  baseline_bars: vrBaselineBarsValue,
+                  reversion_deviation: vrDeviationValue / 100,
+                }
               : isVama
               ? {
                   lookback: vamaLookbackValue,
@@ -950,6 +1062,9 @@ export function BuildBotCard() {
     hmaParamsValid &&
     ribbonParamsValid &&
     vamaParamsValid &&
+    volatilityRegimeValid &&
+    consensusParamsValid &&
+    bayesianParamsValid &&
     velocityParamsValid &&
     trendConfirmationValid &&
     raAdxValid &&
@@ -994,6 +1109,12 @@ export function BuildBotCard() {
   const tcFieldInvalid = (value: string, ok: boolean) =>
     isTrendConfirmation && value.length > 0 && !ok;
   const pvThresholdInvalid = isVelocity && pvThresholdPct.length > 0 && !pvThresholdValid;
+  const btFieldInvalid = (value: string, ok: boolean) =>
+    isBayesian && value.length > 0 && !ok;
+  const scFieldInvalid = (value: string, ok: boolean) =>
+    isConsensus && value.length > 0 && !ok;
+  const vrFieldInvalid = (value: string, ok: boolean) =>
+    isVolatilityRegime && value.length > 0 && !ok;
   const vamaLookbackInvalid = isVama && vamaLookback.length > 0 && !vamaLookbackValid;
   const vamaAlphaInvalid = (value: string) => isVama && value.length > 0 && !vamaAlphasValid;
   const ribbonInvalid = (value: string) => isRibbon && value.length > 0 && !ribbonOrdered;
@@ -1718,6 +1839,167 @@ export function BuildBotCard() {
                 hint="Buys once a bar falls more than this, by less than the bar before; sells on the first up-bar."
                 invalid={pvThresholdInvalid}
               />
+            ) : isBayesian ? (
+              <div className="flex flex-col gap-3">
+                <p className="text-xs text-slate-500">
+                  Weighs the recent bar moves as evidence for an up, flat or down mood; buys a
+                  confident up-mood and sells a confident down-mood.
+                </p>
+                <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+                  <NumberField
+                    id="bot-bt-drift"
+                    label="Trend drift (%)"
+                    min={0.001}
+                    step={0.001}
+                    value={btDriftPct}
+                    onChange={setBtDriftPct}
+                    hint="Average per-bar move of an up / down mood."
+                    invalid={btFieldInvalid(btDriftPct, btDriftValue !== null)}
+                  />
+                  <NumberField
+                    id="bot-bt-trend-sigma"
+                    label="Trend spread (%)"
+                    min={0.001}
+                    step={0.001}
+                    value={btTrendSigmaPct}
+                    onChange={setBtTrendSigmaPct}
+                    hint="Typical scatter of moves in an up / down mood."
+                    invalid={btFieldInvalid(btTrendSigmaPct, btTrendSigmaValue !== null)}
+                  />
+                  <NumberField
+                    id="bot-bt-flat-sigma"
+                    label="Flat spread (%)"
+                    min={0.001}
+                    step={0.001}
+                    value={btFlatSigmaPct}
+                    onChange={setBtFlatSigmaPct}
+                    hint="Typical scatter of moves in a sideways mood."
+                    invalid={btFieldInvalid(btFlatSigmaPct, btFlatSigmaValue !== null)}
+                  />
+                  <NumberField
+                    id="bot-bt-threshold"
+                    label="Confidence (0–1)"
+                    min={0.34}
+                    max={0.99}
+                    step={0.01}
+                    value={btThreshold}
+                    onChange={setBtThreshold}
+                    hint="Probability the mood needs before the bot acts (above 1/3)."
+                    invalid={btFieldInvalid(btThreshold, btThresholdValid)}
+                  />
+                  <NumberField
+                    id="bot-bt-replay"
+                    label="Evidence window (bars)"
+                    min={1}
+                    step={1}
+                    value={btReplayBars}
+                    onChange={setBtReplayBars}
+                    hint="Recent bar moves weighed each tick."
+                    invalid={btFieldInvalid(btReplayBars, btReplayValid)}
+                  />
+                </div>
+              </div>
+            ) : isConsensus ? (
+              <div className="flex flex-col gap-3">
+                <p className="text-xs text-slate-500">
+                  Eight mean-reversion signals vote oversold, overbought or neutral; buys once
+                  the oversold votes lead by the consensus level. Exits are left to the
+                  take-profit and stop-loss below.
+                </p>
+                <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                  <NumberField
+                    id="bot-sc-window"
+                    label="Voting window (bars)"
+                    min={5}
+                    step={1}
+                    value={scWindow}
+                    onChange={setScWindow}
+                    hint="Recent closes the signals vote on."
+                    invalid={scFieldInvalid(scWindow, scWindowValid)}
+                  />
+                  <NumberField
+                    id="bot-sc-consensus"
+                    label="Consensus (votes)"
+                    min={1}
+                    max={8}
+                    step={1}
+                    value={scConsensus}
+                    onChange={setScConsensus}
+                    hint="Net oversold votes needed to buy (1–8)."
+                    invalid={scFieldInvalid(scConsensus, scConsensusValid)}
+                  />
+                  <NumberField
+                    id="bot-sc-rsi"
+                    label="RSI period"
+                    min={2}
+                    step={1}
+                    value={scRsiPeriod}
+                    onChange={setScRsiPeriod}
+                    hint="Bars in the RSI vote (oversold below 30)."
+                    invalid={scFieldInvalid(scRsiPeriod, scRsiPeriodValid)}
+                  />
+                  <NumberField
+                    id="bot-sc-bb-k"
+                    label="Bollinger width (σ)"
+                    min={0.1}
+                    step={0.1}
+                    value={scBbK}
+                    onChange={setScBbK}
+                    hint="Band distance in standard deviations."
+                    invalid={scFieldInvalid(scBbK, scBbKValid)}
+                  />
+                </div>
+              </div>
+            ) : isVolatilityRegime ? (
+              <div className="flex flex-col gap-3">
+                <p className="text-xs text-slate-500">
+                  Calm market (volatility at or below its recent norm): buys above the range
+                  midpoint, sells below it. Volatile market: buys a dip below the moving average,
+                  sells back at it.
+                </p>
+                <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                  <NumberField
+                    id="bot-vr-atr-window"
+                    label="Volatility window (bars)"
+                    min={2}
+                    step={1}
+                    value={vrAtrWindow}
+                    onChange={setVrAtrWindow}
+                    hint="Bars the volatility (ATR) and the range midpoint are measured over."
+                    invalid={vrFieldInvalid(vrAtrWindow, vrAtrWindowValue !== null)}
+                  />
+                  <NumberField
+                    id="bot-vr-baseline"
+                    label="Baseline (bars)"
+                    min={2}
+                    step={1}
+                    value={vrBaselineBars}
+                    onChange={setVrBaselineBars}
+                    hint="Bars the normal volatility is averaged over."
+                    invalid={vrFieldInvalid(vrBaselineBars, vrBaselineBarsValue !== null)}
+                  />
+                  <NumberField
+                    id="bot-vr-sma"
+                    label="SMA period"
+                    min={2}
+                    step={1}
+                    value={vrSmaPeriod}
+                    onChange={setVrSmaPeriod}
+                    hint="Moving average the volatile-market dip is measured against."
+                    invalid={vrFieldInvalid(vrSmaPeriod, vrSmaPeriodValue !== null)}
+                  />
+                  <NumberField
+                    id="bot-vr-deviation"
+                    label="Dip below SMA (%)"
+                    min={0}
+                    step={0.1}
+                    value={vrDeviationPct}
+                    onChange={setVrDeviationPct}
+                    hint="How far below the SMA a dip must be; 0 buys any close below it."
+                    invalid={vrFieldInvalid(vrDeviationPct, vrDeviationValid)}
+                  />
+                </div>
+              </div>
             ) : isVama ? (
               <div className="flex flex-col gap-3">
                 <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">

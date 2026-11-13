@@ -15,6 +15,7 @@ from cadence.assets.models import Asset
 from cadence.bot_orchestrator import runs
 from cadence.bot_orchestrator import service as orchestrator_service
 from cadence.bot_orchestrator.agent import (
+    ORCHESTRATOR_PROMPT_VERSION,
     DeployAction,
     OrchestratorDecision,
     StopAction,
@@ -239,7 +240,7 @@ def test_run_stops_and_deploys(db_session: Session) -> None:
 
     assert run.status == "succeeded"
     assert run.error is None
-    assert run.prompt_version == 1
+    assert run.prompt_version == ORCHESTRATOR_PROMPT_VERSION
     assert run.briefing is not None and run.decision is not None
     assert old.status == "stopped" and old.stop_reason == "orchestrator"
     deploys = [a for a in run.applied or [] if a["kind"] == "deploy"]

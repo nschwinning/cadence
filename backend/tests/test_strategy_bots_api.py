@@ -206,6 +206,9 @@ def test_list_presets(client: TestClient) -> None:
         "volume_spike_simple_algo34",
         "vroc_breakout_algo46",
         "chaikin_oscillator_algo45",
+        "volatility_regime_algo20",
+        "signal_consensus_algo43",
+        "bayesian_trend_algo33",
     ]
     turtle = body[2]
     assert turtle == {

@@ -1462,6 +1462,18 @@ The catalog SHALL include these presets, reproducing the reference-course recipe
   take-profit 2%, stop-loss 1%, drawdown limit 5%.
 - **Chaikin Oscillator (Algo 45)** — Volume Breakout strategy, Chaikin version: fast EMA 3, slow
   EMA 5; take-profit 0.6%, stop-loss 1.2%, drawdown limit 5%.
+- **Volatility Regime Switcher (Algo 20)** — default for the Volatility Regime Switcher strategy:
+  ATR window 20, SMA period 20, baseline 100 bars, reversion deviation 0; take-profit 0.5%,
+  stop-loss 1%, drawdown limit 5% (the course script has no drawdown stop; 5% follows the catalog
+  convention).
+- **Multi-Signal Consensus (Algo 43)** — default for the Multi-Signal Consensus strategy: window
+  10, consensus 3, RSI period 14, Bollinger multiplier 2; take-profit 0.5%, stop-loss 0.3%,
+  drawdown limit 5% (the course's ₹5 / ₹3 bracket on a ~₹1,000 price; the course has no drawdown
+  stop, 5% follows the catalog convention).
+- **Bayesian Trend Predictor (Algo 33)** — default for the Bayesian Trend Predictor strategy: drift
+  0.1%, trend σ 0.2%, flat σ 0.08%, threshold 0.6, replay 20 bars; take-profit off, stop-loss off,
+  drawdown limit 5% (the course script has no exit, bracket or drawdown stop; 5% follows the
+  catalog convention).
 
 #### Scenario: List presets
 
@@ -1552,6 +1564,24 @@ The catalog SHALL include these presets, reproducing the reference-course recipe
 - **THEN** it SHALL include the Volume Spike (Algo 34), Volume Spike — Simple (Algo 34), VROC
   Breakout (Algo 46) and Chaikin Oscillator (Algo 45) presets for the Volume Breakout strategy,
   with the Volume Spike (Algo 34) preset marked as the strategy's default
+
+#### Scenario: Volatility Regime Switcher preset listed
+
+- **WHEN** a client requests the preset catalog
+- **THEN** it SHALL include the Volatility Regime Switcher (Algo 20) preset as the Volatility Regime
+  Switcher strategy's default
+
+#### Scenario: Multi-Signal Consensus preset listed
+
+- **WHEN** a client requests the preset catalog
+- **THEN** it SHALL include the Multi-Signal Consensus (Algo 43) preset as the Multi-Signal
+  Consensus strategy's default
+
+#### Scenario: Bayesian Trend Predictor preset listed
+
+- **WHEN** a client requests the preset catalog
+- **THEN** it SHALL include the Bayesian Trend Predictor (Algo 33) preset as the Bayesian Trend
+  Predictor strategy's default
 
 ### Requirement: Preset-driven build form
 
@@ -2300,4 +2330,176 @@ otherwise.
 #### Scenario: Insufficient history
 
 - **WHEN** fewer bars than the selected version needs are available
+- **THEN** the strategy SHALL signal HOLD
+
+### Requirement: Volatility Regime Switcher strategy
+
+The system SHALL provide a **Volatility Regime Switcher** strategy, registered alongside the
+existing strategies. It SHALL be a pure, long-only signal generator that, given recent bars, the
+current position, and its parameters, returns one of ENTER_LONG, EXIT, or HOLD together with a
+human-readable reason, performing no I/O and holding no persisted state. Its parameters SHALL be
+`atr_window` (at least 2, default 20), `sma_period` (at least 2, default 20), `baseline_bars` (at
+least 2, default 100) and `reversion_deviation` (at least 0 and below 1, default 0).
+
+The ATR at a bar SHALL be the mean absolute change between consecutive closes over the
+`atr_window` closes ending at that bar. The baseline SHALL be the mean of the ATR at each of the
+latest `baseline_bars` bars, the latest included. The regime SHALL be **trend** when the latest ATR
+is at or below the baseline and **reversion** otherwise.
+
+In the trend regime, HL2 SHALL be the midpoint of the highest and lowest of the latest `atr_window`
+closes; while flat the strategy SHALL signal ENTER_LONG when the latest close is strictly above
+HL2, and while holding it SHALL signal EXIT when the latest close is strictly below HL2. In the
+reversion regime, with SMA the simple moving average of the latest `sma_period` closes, while flat
+the strategy SHALL signal ENTER_LONG when the latest close is strictly below SMA × (1 −
+`reversion_deviation`), and while holding it SHALL signal EXIT when the latest close is at or above
+the SMA. Exits SHALL follow the regime of the latest bar. Otherwise it SHALL signal HOLD. With
+fewer bars than the strategy needs it SHALL signal HOLD. It SHALL never signal a short entry.
+
+#### Scenario: Calm market enters on a close above HL2
+
+- **WHEN** the strategy is flat, the latest ATR is at or below the baseline and the latest close is
+  above HL2
+- **THEN** the strategy SHALL signal ENTER_LONG
+
+#### Scenario: Calm market exits below HL2
+
+- **WHEN** the strategy holds a position in the trend regime and the latest close is below HL2
+- **THEN** the strategy SHALL signal EXIT
+
+#### Scenario: Volatile market enters below the SMA
+
+- **WHEN** the strategy is flat, the latest ATR is above the baseline and the latest close is below
+  SMA × (1 − `reversion_deviation`)
+- **THEN** the strategy SHALL signal ENTER_LONG
+
+#### Scenario: Volatile market does not buy strength
+
+- **WHEN** the strategy is flat in the reversion regime and the latest close is above the SMA
+- **THEN** the strategy SHALL signal HOLD
+
+#### Scenario: Volatile market exits on the revert
+
+- **WHEN** the strategy holds a position in the reversion regime and the latest close is at or
+  above the SMA
+- **THEN** the strategy SHALL signal EXIT
+
+#### Scenario: Insufficient history
+
+- **WHEN** fewer bars than the strategy needs are available
+- **THEN** the strategy SHALL signal HOLD
+
+### Requirement: Multi-Signal Consensus strategy
+
+The system SHALL provide a **Multi-Signal Consensus** strategy, registered alongside the existing
+strategies. It SHALL be a pure, long-only signal generator that, given recent bars, the current
+position, and its parameters, returns one of ENTER_LONG or HOLD together with a human-readable
+reason, performing no I/O and holding no persisted state. Its parameters SHALL be `window` (at
+least 5, default 10), `consensus` (1 to 8, default 3), `rsi_period` (at least 2, default 14) and
+`bb_k` (greater than 0, default 2).
+
+Over the latest `window` closes, the latest included, with mean, population standard deviation σ
+and median of those closes and c the latest close, eight signals SHALL each vote +1, −1 or 0:
+
+- **z-score**: (c − mean) ÷ σ below −1 → +1, above 1 → −1 (0 when σ is 0);
+- **SMA deviation**: (c − mean) ÷ mean below −1% → +1, above 1% → −1;
+- **RSI** over the latest `rsi_period + 1` closes, from the simple means of gains and losses (100
+  when the mean loss is 0): below 30 → +1, above 70 → −1;
+- **Bollinger**: c below mean − `bb_k` × σ → +1, above mean + `bb_k` × σ → −1;
+- **percentile rank** (the share of window closes strictly below c): below 10% → +1, above 90% →
+  −1;
+- **median**: (c − median) ÷ median below −0.2% → +1, above 0.2% → −1;
+- **gradient**: c below the mean of the latest 5 closes → +1, above it → −1;
+- **range**: c at or above the window high × 0.999 → −1, otherwise c at or below the window low ×
+  1.001 → +1.
+
+The score SHALL be the sum of the votes. While flat the strategy SHALL signal ENTER_LONG when the
+score is at least `consensus`, and HOLD otherwise; its reason SHALL list the votes. While holding
+it SHALL signal HOLD, leaving every exit to the engine's take-profit / stop-loss bracket and
+drawdown kill-switch. With fewer than the larger of `window` and `rsi_period + 1` bars it SHALL
+signal HOLD. It SHALL never signal a short entry.
+
+#### Scenario: Enters on an oversold consensus
+
+- **WHEN** the strategy is flat and the vote sum reaches `consensus`
+- **THEN** the strategy SHALL signal ENTER_LONG
+
+#### Scenario: Does not enter on a weak consensus
+
+- **WHEN** the strategy is flat and the vote sum is below `consensus`
+- **THEN** the strategy SHALL signal HOLD
+
+#### Scenario: Overbought votes count against an entry
+
+- **WHEN** some signals vote oversold and others overbought
+- **THEN** the overbought votes SHALL be subtracted from the score
+
+#### Scenario: RSI votes with its own history
+
+- **WHEN** `rsi_period + 1` exceeds `window` and the RSI over the latest `rsi_period + 1` closes is
+  below 30
+- **THEN** the RSI signal SHALL vote +1
+
+#### Scenario: Holds while in a position
+
+- **WHEN** the strategy holds a position, whatever the score
+- **THEN** the strategy SHALL signal HOLD and leave the exit to the engine
+
+#### Scenario: Insufficient history
+
+- **WHEN** fewer bars than the strategy needs are available
+- **THEN** the strategy SHALL signal HOLD
+
+### Requirement: Bayesian Trend Predictor strategy
+
+The system SHALL provide a **Bayesian Trend Predictor** strategy, registered alongside the existing
+strategies. It SHALL be a pure, long-only signal generator that, given recent bars, the current
+position, and its parameters, returns one of ENTER_LONG, EXIT, or HOLD together with a
+human-readable reason, performing no I/O and holding no persisted state. Its parameters SHALL be
+`drift` (greater than 0, default 0.001), `trend_sigma` (greater than 0, default 0.002),
+`flat_sigma` (greater than 0, default 0.0008), `threshold` (above 1/3 and below 1, default 0.6)
+and `replay_bars` (at least 1, default 20).
+
+Each bar's return SHALL be (close − previous close) ÷ previous close. Its likelihood under each of
+three states SHALL be the normal density with mean +`drift` and standard deviation `trend_sigma`
+for UP, mean 0 and `flat_sigma` for FLAT, and mean −`drift` and `trend_sigma` for DOWN. Starting
+from equal priors, the strategy SHALL update the state probabilities with Bayes' rule over the
+latest `replay_bars` returns, oldest first, each posterior becoming the next prior; a return that
+is extremely unlikely under every state SHALL NOT erase the probabilities. The most likely state
+SHALL be the one with the highest final posterior (ties resolved in the order UP, FLAT, DOWN).
+
+While flat the strategy SHALL signal ENTER_LONG when the most likely state is UP with posterior
+at least `threshold`. While holding it SHALL signal EXIT when the most likely state is DOWN with
+posterior at least `threshold`. Otherwise it SHALL signal HOLD. With fewer than `replay_bars + 1`
+bars it SHALL signal HOLD. It SHALL never signal a short entry.
+
+#### Scenario: Enters a confident up-regime
+
+- **WHEN** the strategy is flat and the latest returns make UP the most likely state with
+  posterior at least `threshold`
+- **THEN** the strategy SHALL signal ENTER_LONG
+
+#### Scenario: Does not enter a flat regime
+
+- **WHEN** the strategy is flat and FLAT is the most likely state
+- **THEN** the strategy SHALL signal HOLD
+
+#### Scenario: Holds through a flat spell
+
+- **WHEN** the strategy holds a position and FLAT or UP is the most likely state
+- **THEN** the strategy SHALL signal HOLD
+
+#### Scenario: Exits a confident down-regime
+
+- **WHEN** the strategy holds a position and DOWN is the most likely state with posterior at least
+  `threshold`
+- **THEN** the strategy SHALL signal EXIT
+
+#### Scenario: Extreme return does not reset the probabilities
+
+- **WHEN** one return is so large that its likelihood underflows under every state
+- **THEN** the posterior SHALL still favour the state whose mean lies in the return's direction
+
+#### Scenario: Insufficient history
+
+- **WHEN** fewer than `replay_bars + 1` bars are available
 - **THEN** the strategy SHALL signal HOLD

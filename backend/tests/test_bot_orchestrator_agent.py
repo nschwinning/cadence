@@ -31,6 +31,9 @@ def _briefing() -> dict[str, Any]:
             "breadth": [{"sector": "technology", "gate_pass_share": 0.6}],
             "news_tone": {"status": "unavailable"},
         },
+        "strategies": [
+            {"key": "donchian_breakout", "style": "breakout", "explanation": "Buys new highs."}
+        ],
         "presets": [{"key": "donchian_turtle_algo25", "name": "Turtle Breakout"}],
         "running_bots": [{"bot_id": "b-1", "preset_key": "ma_crossover_algo6"}],
         "liquidating_bots": [],
@@ -46,6 +49,7 @@ def test_prompt_includes_every_section() -> None:
         "## Market technicals (indices)",
         "## Sector breadth",
         "## Sector news tone",
+        "## Strategies",
         "## Presets",
         "## Running bots",
         "## Candidate tickers",
@@ -54,7 +58,16 @@ def test_prompt_includes_every_section() -> None:
     assert '"free_capital":7000.0' in prompt
     assert "donchian_turtle_algo25" in prompt
     assert '"bot_id":"b-1"' in prompt
-    assert ORCHESTRATOR_PROMPT_VERSION >= 1
+    assert ORCHESTRATOR_PROMPT_VERSION >= 2
+    assert '"style":"breakout"' in prompt
+    assert prompt.index("## Strategies") < prompt.index("## Presets")
+
+
+def test_instructions_match_presets_by_style() -> None:
+    from cadence.bot_orchestrator.agent import _AGENT_INSTRUCTIONS
+
+    for phrase in ("Strategies section", "mean-reversion", "regime-switching", "momentum"):
+        assert phrase in _AGENT_INSTRUCTIONS
 
 
 def test_prompt_is_deterministic() -> None:

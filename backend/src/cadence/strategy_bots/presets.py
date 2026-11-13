@@ -533,6 +533,64 @@ _PRESETS: tuple[BotPreset, ...] = (
         drawdown_stop_pct=0.05,
         is_default=False,
     ),
+    BotPreset(
+        key="volatility_regime_algo20",
+        display_name="Volatility Regime Switcher (Algo 20)",
+        description=(
+            "Trades the trend above the 20-bar HL2 when volatility is at or below its "
+            "100-bar norm, and buys dips below SMA 20 when it is above; 0.5% take-profit "
+            "and 1% stop-loss."
+        ),
+        course_ref="Algo 20",
+        strategy_key=StrategyKey.VOLATILITY_REGIME,
+        strategy_params={
+            "atr_window": 20,
+            "sma_period": 20,
+            "baseline_bars": 100,
+            "reversion_deviation": 0.0,
+        },
+        take_profit_pct=0.005,
+        stop_loss_pct=0.01,
+        drawdown_stop_pct=0.05,
+        is_default=True,
+    ),
+    BotPreset(
+        key="signal_consensus_algo43",
+        display_name="Multi-Signal Consensus (Algo 43)",
+        description=(
+            "Eight mean-reversion signals over the last 10 bars vote; buys once the "
+            "oversold votes lead by 3. Exits via a 0.5% take-profit and 0.3% stop-loss."
+        ),
+        course_ref="Algo 43",
+        strategy_key=StrategyKey.SIGNAL_CONSENSUS,
+        strategy_params={"window": 10, "consensus": 3, "rsi_period": 14, "bb_k": 2.0},
+        take_profit_pct=0.005,
+        stop_loss_pct=0.003,
+        drawdown_stop_pct=0.05,
+        is_default=True,
+    ),
+    BotPreset(
+        key="bayesian_trend_algo33",
+        display_name="Bayesian Trend Predictor (Algo 33)",
+        description=(
+            "Classifies the last 20 bar returns as an up, flat or down regime with Bayes' "
+            "rule; buys a ≥60% up-regime and sells a ≥60% down-regime. No take-profit or "
+            "stop-loss bracket."
+        ),
+        course_ref="Algo 33",
+        strategy_key=StrategyKey.BAYESIAN_TREND,
+        strategy_params={
+            "drift": 0.001,
+            "trend_sigma": 0.002,
+            "flat_sigma": 0.0008,
+            "threshold": 0.6,
+            "replay_bars": 20,
+        },
+        take_profit_pct=None,
+        stop_loss_pct=None,
+        drawdown_stop_pct=0.05,
+        is_default=True,
+    ),
 )
 
 _BY_KEY: dict[str, BotPreset] = {preset.key: preset for preset in _PRESETS}

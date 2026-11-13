@@ -73,6 +73,9 @@ class StrategyKey(StrEnum):
     PRICE_VELOCITY_REVERSAL = "price_velocity_reversal"
     TREND_CONFIRMATION = "trend_confirmation"
     VOLUME_BREAKOUT = "volume_breakout"
+    VOLATILITY_REGIME = "volatility_regime"
+    SIGNAL_CONSENSUS = "signal_consensus"
+    BAYESIAN_TREND = "bayesian_trend"
 
 
 class SizingMethod(StrEnum):
@@ -87,6 +90,16 @@ class SizingMethod(StrEnum):
 
     ATR_RISK = "atr_risk"
     ALL_IN = "all_in"
+
+
+class StrategyStyle(StrEnum):
+    """The family a strategy belongs to — how the bot orchestrator matches it to conditions."""
+
+    TREND = "trend"
+    MOMENTUM = "momentum"
+    BREAKOUT = "breakout"
+    MEAN_REVERSION = "mean_reversion"
+    REGIME_SWITCHING = "regime_switching"
 
 
 #: Human-facing display names for the strategy catalog (``/api/v1/bots`` reads).
@@ -105,6 +118,9 @@ STRATEGY_DISPLAY_NAMES: dict[StrategyKey, str] = {
     StrategyKey.PRICE_VELOCITY_REVERSAL: "Price Velocity Reversal",
     StrategyKey.TREND_CONFIRMATION: "Trend Confirmation",
     StrategyKey.VOLUME_BREAKOUT: "Volume Breakout",
+    StrategyKey.VOLATILITY_REGIME: "Volatility Regime Switcher",
+    StrategyKey.SIGNAL_CONSENSUS: "Multi-Signal Consensus",
+    StrategyKey.BAYESIAN_TREND: "Bayesian Trend Predictor",
 }
 
 #: Human-readable explanations for the strategy catalog, shown on the strategy
@@ -267,6 +283,62 @@ STRATEGY_EXPLANATIONS: dict[StrategyKey, str] = {
         "leaves take-profit, stop-loss, sizing and the drawdown kill-switch to the bot's "
         "risk controls."
     ),
+    StrategyKey.VOLATILITY_REGIME: (
+        "The Volatility Regime Switcher changes its playbook with the market's mood. It "
+        "measures how much the price has been moving bar to bar and compares that with "
+        "its recent norm. When the market is calm it trades the trend: it buys while the "
+        "price sits in the upper half of its recent range and sells once it drops into "
+        "the lower half. When the market is volatile it trades the snap-back: it buys a "
+        "dip below the moving average and sells once the price is back at the average. "
+        "Exits follow the current mood, so a sudden burst of volatility can close a trend "
+        "trade early. It is deterministic and long-only, and leaves take-profit, "
+        "stop-loss, sizing and the drawdown kill-switch to the bot's risk controls."
+    ),
+    StrategyKey.SIGNAL_CONSENSUS: (
+        "The Multi-Signal Consensus strategy only buys a dip when several independent "
+        "readings agree it is oversold. Over the last few bars eight simple measures each "
+        "vote: how far the price sits from its average and its median, its z-score, its "
+        "RSI, the Bollinger bands, where it ranks among recent closes, whether it dipped "
+        "below the very latest bars, and whether it sits at the bottom of the recent "
+        "range. Each votes buy, sell or neutral; the bot buys once the buy votes "
+        "outnumber the sell votes by the consensus level. It never sells on a signal — "
+        "the take-profit and stop-loss close the trade. It is deterministic and "
+        "long-only, and leaves sizing and the drawdown kill-switch to the bot's risk "
+        "controls."
+    ),
+    StrategyKey.BAYESIAN_TREND: (
+        "The Bayesian Trend Predictor asks which of three market moods best explains the "
+        "last few bars: drifting up, going sideways or drifting down. Each mood expects "
+        "bar-to-bar moves of a typical size and direction; with Bayes' rule the bot turns "
+        "every recent move into evidence and updates how likely each mood is. It buys once "
+        "an upward drift is the most likely mood with enough confidence, holds through "
+        "sideways spells, and sells once a downward drift becomes the confident favourite. "
+        "Quiet, sideways names mostly read as flat and rarely trade. It is deterministic "
+        "and long-only, and leaves take-profit, stop-loss, sizing and the drawdown "
+        "kill-switch to the bot's risk controls."
+    ),
+}
+
+
+#: Each strategy's style. Every registered strategy must declare one (asserted by tests).
+STRATEGY_STYLES: dict[StrategyKey, StrategyStyle] = {
+    StrategyKey.MA_CROSSOVER: StrategyStyle.TREND,
+    StrategyKey.RSI_MEAN_REVERSION: StrategyStyle.MEAN_REVERSION,
+    StrategyKey.DONCHIAN_BREAKOUT: StrategyStyle.BREAKOUT,
+    StrategyKey.ROLLING_AVERAGE_REVERSION: StrategyStyle.MEAN_REVERSION,
+    StrategyKey.ATR_BAND_TREND: StrategyStyle.TREND,
+    StrategyKey.ADX_TREND: StrategyStyle.TREND,
+    StrategyKey.MACD_MOMENTUM: StrategyStyle.MOMENTUM,
+    StrategyKey.HEIKIN_ASHI_TREND: StrategyStyle.TREND,
+    StrategyKey.HMA_TREND: StrategyStyle.TREND,
+    StrategyKey.MA_RIBBON: StrategyStyle.TREND,
+    StrategyKey.VAMA: StrategyStyle.TREND,
+    StrategyKey.PRICE_VELOCITY_REVERSAL: StrategyStyle.MEAN_REVERSION,
+    StrategyKey.TREND_CONFIRMATION: StrategyStyle.TREND,
+    StrategyKey.VOLUME_BREAKOUT: StrategyStyle.BREAKOUT,
+    StrategyKey.VOLATILITY_REGIME: StrategyStyle.REGIME_SWITCHING,
+    StrategyKey.SIGNAL_CONSENSUS: StrategyStyle.MEAN_REVERSION,
+    StrategyKey.BAYESIAN_TREND: StrategyStyle.TREND,
 }
 
 

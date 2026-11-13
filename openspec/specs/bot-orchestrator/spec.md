@@ -181,7 +181,11 @@ adding new data providers. The briefing SHALL contain:
 - **Candidate tickers** — the eligible universe equities with sector, trend-gate result,
   key indicators and news tone, from which the AI may choose bot tickers.
 - **Presets** — every preset in the bot preset catalog with its key, display name,
-  description, strategy and risk controls.
+  description, course reference, strategy key, strategy style, strategy parameters and risk
+  controls.
+- **Strategies** — once for each strategy used by a listed preset: its key, display name,
+  style (trend, momentum, breakout, mean-reversion or regime-switching) and plain-language
+  explanation of how it trades.
 - **Running bots** — each of the orchestrator's active bots with its preset, tickers, days
   active, allocated capital, current value, return, maximum drawdown and trade statistics,
   plus bots stopped but still being sold.
@@ -208,6 +212,18 @@ unavailable rather than failing the run. The briefing SHALL be stored with the r
 - **WHEN** an orchestrator has two active bots
 - **THEN** the briefing SHALL list both with their preset, tickers, days active, allocated
   capital, current value and return
+
+#### Scenario: Briefing explains each strategy once
+
+- **WHEN** a run builds its briefing and several presets share one strategy
+- **THEN** the briefing SHALL list that strategy once with its style and explanation, and each
+  of those presets SHALL carry the strategy's key and style
+
+#### Scenario: Every strategy has a style
+
+- **WHEN** a strategy is registered
+- **THEN** it SHALL have one of the styles trend, momentum, breakout, mean-reversion or
+  regime-switching
 
 ### Requirement: AI decision and its application
 
@@ -468,6 +484,10 @@ The orchestrator area SHALL offer:
 - a **list view** of orchestrators (active and stopped by default, with an option to
   include archived), each with its label, status, cadence, value, return on its capital
   pool, active bots out of the maximum, all-time AI cost, and last run status and time;
+- on the list view, a read-only **preset catalog** listing every preset an orchestrator may
+  deploy, each with its display name, description and key, its strategy (linking to that
+  strategy's guide page) and course reference, its strategy parameters, and its take-profit,
+  stop-loss (each shown as "Off" when disabled) and drawdown limit;
 - a **deploy form** (opened from the list view) with the label, capital pool, maximum
   parallel bots, maximum share per bot, maximum tickers per bot, cadence, AI model and
   benchmark, pre-filled with the defaults and validated like the backend; on success it
@@ -523,3 +543,10 @@ cost of zero SHALL render as `$0.00`.
 
 - **WHEN** the cost source is unavailable
 - **THEN** the AI cost tile and the per-run costs SHALL render as "—", not `$0.00`
+
+#### Scenario: List view shows the preset catalog
+
+- **WHEN** a user opens the orchestrator list
+- **THEN** it SHALL list every catalog preset with its strategy linking to the strategy's guide
+  page, its parameters, and its risk controls, showing a disabled take-profit or stop-loss as
+  "Off"

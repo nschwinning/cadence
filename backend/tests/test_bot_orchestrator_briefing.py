@@ -14,8 +14,15 @@ from cadence.assets.models import Asset
 from cadence.bot_orchestrator import briefing
 from cadence.bot_orchestrator import service as orchestrator_service
 from cadence.paper_trading.models import BenchmarkPrice
+from cadence.strategy_bots import presets
 from cadence.strategy_bots import service as bot_service
-from cadence.strategy_bots.constants import BotOrigin
+from cadence.strategy_bots.constants import (
+    STRATEGY_EXPLANATIONS,
+    STRATEGY_STYLES,
+    BotOrigin,
+    StrategyKey,
+    StrategyStyle,
+)
 from cadence.technical_indicators.models import TechnicalIndicator
 
 _NOW = datetime(2026, 11, 10, 14, 0, tzinfo=UTC)
@@ -230,6 +237,7 @@ def test_build_briefing_end_to_end(db_session: Session) -> None:
     assert result["sectors"]["news_tone"]["status"] == "available"
     assert [c["ticker"] for c in result["candidates"]] == ["AAPL", "XOM"]
     assert len(result["presets"]) >= 8
+    assert result["strategies"] == briefing.strategy_rows()
     running = result["running_bots"]
     assert len(running) == 1
     assert running[0]["bot_id"] == str(bot.id)
@@ -245,3 +253,44 @@ def test_build_briefing_end_to_end(db_session: Session) -> None:
     assert limits["open_slots"] == 2
     assert limits["max_bot_capital"] == 5_000.0
     assert limits["min_bot_capital"] == 1_000.0
+
+
+# --- strategies & presets --------------------------------------------------------
+def test_every_strategy_has_a_style() -> None:
+    assert set(STRATEGY_STYLES) == set(StrategyKey)
+    assert {key for key, style in STRATEGY_STYLES.items() if style is StrategyStyle.BREAKOUT} == {
+        StrategyKey.DONCHIAN_BREAKOUT,
+        StrategyKey.VOLUME_BREAKOUT,
+    }
+    assert STRATEGY_STYLES[StrategyKey.VOLATILITY_REGIME] is StrategyStyle.REGIME_SWITCHING
+    assert STRATEGY_STYLES[StrategyKey.MACD_MOMENTUM] is StrategyStyle.MOMENTUM
+
+
+def test_strategy_rows_explain_each_used_strategy_once() -> None:
+    rows = briefing.strategy_rows()
+    keys = [row["key"] for row in rows]
+
+    assert len(keys) == len(set(keys))
+    assert set(keys) == {p.strategy_key.value for p in presets.list_presets()}
+    # Catalog order of first use: the first preset's strategy leads.
+    assert keys[0] == presets.list_presets()[0].strategy_key.value
+    donchian = next(row for row in rows if row["key"] == "donchian_breakout")
+    assert donchian == {
+        "key": "donchian_breakout",
+        "name": "Donchian Range Breakout",
+        "style": "breakout",
+        "explanation": STRATEGY_EXPLANATIONS[StrategyKey.DONCHIAN_BREAKOUT],
+    }
+
+
+def test_preset_rows_join_to_their_strategy() -> None:
+    rows = {row["key"]: row for row in briefing.preset_rows()}
+    strategies = {row["key"] for row in briefing.strategy_rows()}
+
+    assert all(row["strategy_key"] in strategies for row in rows.values())
+    turtle = rows["donchian_turtle_algo25"]
+    assert (turtle["strategy_key"], turtle["style"]) == ("donchian_breakout", "breakout")
+    assert turtle["params"] == {"version": "turtle", "entry_period": 20, "exit_period": 10}
+    assert rows["rsi_mean_reversion_algo16"]["style"] == "mean_reversion"
+    json.dumps(list(rows.values()))
+

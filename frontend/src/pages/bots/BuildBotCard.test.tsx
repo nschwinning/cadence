@@ -401,6 +401,48 @@ const PRESETS: BotPreset[] = [
     drawdown_stop_pct: 0.05,
     is_default: false,
   },
+  {
+    key: 'volatility_regime_algo20',
+    display_name: 'Volatility Regime Switcher (Algo 20)',
+    description: 'Trend when calm, reversion when volatile.',
+    course_ref: 'Algo 20',
+    strategy_key: 'volatility_regime',
+    strategy_params: { atr_window: 20, sma_period: 20, baseline_bars: 100, reversion_deviation: 0 },
+    take_profit_pct: 0.005,
+    stop_loss_pct: 0.01,
+    drawdown_stop_pct: 0.05,
+    is_default: true,
+  },
+  {
+    key: 'signal_consensus_algo43',
+    display_name: 'Multi-Signal Consensus (Algo 43)',
+    description: 'Eight signals vote.',
+    course_ref: 'Algo 43',
+    strategy_key: 'signal_consensus',
+    strategy_params: { window: 10, consensus: 3, rsi_period: 14, bb_k: 2 },
+    take_profit_pct: 0.005,
+    stop_loss_pct: 0.003,
+    drawdown_stop_pct: 0.05,
+    is_default: true,
+  },
+  {
+    key: 'bayesian_trend_algo33',
+    display_name: 'Bayesian Trend Predictor (Algo 33)',
+    description: 'Up / flat / down regimes.',
+    course_ref: 'Algo 33',
+    strategy_key: 'bayesian_trend',
+    strategy_params: {
+      drift: 0.001,
+      trend_sigma: 0.002,
+      flat_sigma: 0.0008,
+      threshold: 0.6,
+      replay_bars: 20,
+    },
+    take_profit_pct: null,
+    stop_loss_pct: null,
+    drawdown_stop_pct: 0.05,
+    is_default: true,
+  },
 ];
 
 /** Route the catalog GETs the form issues on mount plus the picker's asset search. */
@@ -442,6 +484,27 @@ function routeCatalogs({ presetsFail = false }: { presetsFail?: boolean } = {}) 
             display_name: 'Trend Confirmation',
             explanation: 'Buys when every trend check agrees.',
             required_history: 87,
+            params_schema: {},
+          },
+          {
+            key: 'bayesian_trend',
+            display_name: 'Bayesian Trend Predictor',
+            explanation: 'Up / flat / down regimes.',
+            required_history: 21,
+            params_schema: {},
+          },
+          {
+            key: 'signal_consensus',
+            display_name: 'Multi-Signal Consensus',
+            explanation: 'Eight signals vote.',
+            required_history: 15,
+            params_schema: {},
+          },
+          {
+            key: 'volatility_regime',
+            display_name: 'Volatility Regime Switcher',
+            explanation: 'Trend when calm, reversion when volatile.',
+            required_history: 119,
             params_schema: {},
           },
           {
@@ -1883,6 +1946,149 @@ describe('BuildBotCard', () => {
     const fast = screen.getByLabelText('Fast EMA');
     await user.clear(fast);
     await user.type(fast, '5');
+
+    expect(screen.getByRole('button', { name: 'Create bot' })).toBeDisabled();
+  });
+
+  it('applies the Volatility Regime preset and submits the deviation as a fraction', async () => {
+    mockedPost.mockResolvedValue({ data: { id: 'b1' } });
+    const user = userEvent.setup();
+    renderCard(<BuildBotCard />);
+
+    await waitForPreset();
+    await user.selectOptions(screen.getByLabelText('Strategy'), 'volatility_regime');
+
+    await waitForPreset('Volatility Regime Switcher (Algo 20)');
+    expect(screen.getByLabelText('Volatility window (bars)')).toHaveValue(20);
+    expect(screen.getByLabelText('Baseline (bars)')).toHaveValue(100);
+    expect(screen.getByLabelText('Dip below SMA (%)')).toHaveValue(0);
+    const dip = screen.getByLabelText('Dip below SMA (%)');
+    await user.clear(dip);
+    await user.type(dip, '0.5');
+    await pickAAPL(user);
+    await user.click(screen.getByRole('button', { name: 'Create bot' }));
+
+    await waitFor(() => {
+      expect(mockedPost).toHaveBeenCalledWith(
+        '/api/v1/bots/sessions',
+        expect.objectContaining({
+          strategy_key: 'volatility_regime',
+          preset_key: 'volatility_regime_algo20',
+          strategy_params: {
+            atr_window: 20,
+            sma_period: 20,
+            baseline_bars: 100,
+            reversion_deviation: 0.005,
+          },
+        }),
+      );
+    });
+  });
+
+  it('blocks Volatility Regime submission with a baseline below 2 bars', async () => {
+    const user = userEvent.setup();
+    renderCard(<BuildBotCard />);
+
+    await waitForPreset();
+    await user.selectOptions(screen.getByLabelText('Strategy'), 'volatility_regime');
+    await waitForPreset('Volatility Regime Switcher (Algo 20)');
+    await pickAAPL(user);
+    expect(screen.getByRole('button', { name: 'Create bot' })).toBeEnabled();
+    const baseline = screen.getByLabelText('Baseline (bars)');
+    await user.clear(baseline);
+    await user.type(baseline, '1');
+
+    expect(screen.getByRole('button', { name: 'Create bot' })).toBeDisabled();
+  });
+
+  it('applies the Multi-Signal Consensus preset and submits its params', async () => {
+    mockedPost.mockResolvedValue({ data: { id: 'b1' } });
+    const user = userEvent.setup();
+    renderCard(<BuildBotCard />);
+
+    await waitForPreset();
+    await user.selectOptions(screen.getByLabelText('Strategy'), 'signal_consensus');
+
+    await waitForPreset('Multi-Signal Consensus (Algo 43)');
+    expect(screen.getByLabelText('Voting window (bars)')).toHaveValue(10);
+    expect(screen.getByLabelText('Consensus (votes)')).toHaveValue(3);
+    await pickAAPL(user);
+    await user.click(screen.getByRole('button', { name: 'Create bot' }));
+
+    await waitFor(() => {
+      expect(mockedPost).toHaveBeenCalledWith(
+        '/api/v1/bots/sessions',
+        expect.objectContaining({
+          strategy_key: 'signal_consensus',
+          preset_key: 'signal_consensus_algo43',
+          stop_loss_pct: 0.003,
+          strategy_params: { window: 10, consensus: 3, rsi_period: 14, bb_k: 2 },
+        }),
+      );
+    });
+  });
+
+  it('blocks Multi-Signal Consensus submission with a consensus above 8', async () => {
+    const user = userEvent.setup();
+    renderCard(<BuildBotCard />);
+
+    await waitForPreset();
+    await user.selectOptions(screen.getByLabelText('Strategy'), 'signal_consensus');
+    await waitForPreset('Multi-Signal Consensus (Algo 43)');
+    await pickAAPL(user);
+    expect(screen.getByRole('button', { name: 'Create bot' })).toBeEnabled();
+    const consensus = screen.getByLabelText('Consensus (votes)');
+    await user.clear(consensus);
+    await user.type(consensus, '9');
+
+    expect(screen.getByRole('button', { name: 'Create bot' })).toBeDisabled();
+  });
+
+  it('applies the Bayesian preset in percent and submits fractions', async () => {
+    mockedPost.mockResolvedValue({ data: { id: 'b1' } });
+    const user = userEvent.setup();
+    renderCard(<BuildBotCard />);
+
+    await waitForPreset();
+    await user.selectOptions(screen.getByLabelText('Strategy'), 'bayesian_trend');
+
+    await waitForPreset('Bayesian Trend Predictor (Algo 33)');
+    expect(screen.getByLabelText('Trend drift (%)')).toHaveValue(0.1);
+    expect(screen.getByLabelText('Flat spread (%)')).toHaveValue(0.08);
+    expect(screen.getByLabelText('Confidence (0–1)')).toHaveValue(0.6);
+    await pickAAPL(user);
+    await user.click(screen.getByRole('button', { name: 'Create bot' }));
+
+    await waitFor(() => {
+      expect(mockedPost).toHaveBeenCalledWith(
+        '/api/v1/bots/sessions',
+        expect.objectContaining({
+          strategy_key: 'bayesian_trend',
+          preset_key: 'bayesian_trend_algo33',
+          strategy_params: {
+            drift: 0.001,
+            trend_sigma: 0.002,
+            flat_sigma: 0.0008,
+            threshold: 0.6,
+            replay_bars: 20,
+          },
+        }),
+      );
+    });
+  });
+
+  it('blocks Bayesian submission with a confidence of 1/3 or less', async () => {
+    const user = userEvent.setup();
+    renderCard(<BuildBotCard />);
+
+    await waitForPreset();
+    await user.selectOptions(screen.getByLabelText('Strategy'), 'bayesian_trend');
+    await waitForPreset('Bayesian Trend Predictor (Algo 33)');
+    await pickAAPL(user);
+    expect(screen.getByRole('button', { name: 'Create bot' })).toBeEnabled();
+    const threshold = screen.getByLabelText('Confidence (0–1)');
+    await user.clear(threshold);
+    await user.type(threshold, '0.3');
 
     expect(screen.getByRole('button', { name: 'Create bot' })).toBeDisabled();
   });

@@ -8,6 +8,8 @@ Built only from data Cadence already stores, rolled up to market and sector leve
 * **sectors** — per-sector breadth from the latest per-asset indicator snapshots, and
   per-sector news tone aggregated from per-ticker news sentiment;
 * **candidates** — the eligible universe equities the AI may choose bot tickers from;
+* **strategies** — once per strategy used by a preset: style and plain-language
+  explanation;
 * **presets**, **running bots**, **liquidating bots** and **limits**.
 
 The pure helpers take loaded rows so they are unit-testable; :func:`build_briefing`
@@ -40,7 +42,12 @@ from cadence.paper_trading.constants import BENCHMARK_DISPLAY_NAMES, Benchmark
 from cadence.paper_trading.models import BenchmarkPrice
 from cadence.strategy_bots import presets
 from cadence.strategy_bots import service as bot_service
-from cadence.strategy_bots.constants import STRATEGY_DISPLAY_NAMES, BotSessionStatus
+from cadence.strategy_bots.constants import (
+    STRATEGY_DISPLAY_NAMES,
+    STRATEGY_EXPLANATIONS,
+    STRATEGY_STYLES,
+    BotSessionStatus,
+)
 from cadence.strategy_bots.models import BotSession
 from cadence.technical_indicators.compute import compute_snapshot
 from cadence.technical_indicators.models import TechnicalIndicator
@@ -197,6 +204,25 @@ def candidate_rows(
     return rows
 
 
+def strategy_rows() -> list[dict[str, Any]]:
+    """Each strategy used by a preset, once, in catalog order of first use."""
+    rows: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for p in presets.list_presets():
+        if p.strategy_key in seen:
+            continue
+        seen.add(p.strategy_key)
+        rows.append(
+            {
+                "key": p.strategy_key.value,
+                "name": STRATEGY_DISPLAY_NAMES[p.strategy_key],
+                "style": STRATEGY_STYLES[p.strategy_key].value,
+                "explanation": STRATEGY_EXPLANATIONS[p.strategy_key],
+            }
+        )
+    return rows
+
+
 def preset_rows() -> list[dict[str, Any]]:
     """Every catalog preset the AI may deploy."""
     return [
@@ -204,6 +230,9 @@ def preset_rows() -> list[dict[str, Any]]:
             "key": p.key,
             "name": p.display_name,
             "strategy": STRATEGY_DISPLAY_NAMES[p.strategy_key],
+            "strategy_key": p.strategy_key.value,
+            "style": STRATEGY_STYLES[p.strategy_key].value,
+            "params": dict(p.strategy_params),
             "course_ref": p.course_ref,
             "description": p.description,
             "take_profit_pct": p.take_profit_pct,
@@ -303,6 +332,7 @@ def build_briefing(
             "news_tone": sector_news_tone(assets, annotations),
         },
         "candidates": candidate_rows(assets, snapshots, annotations),
+        "strategies": strategy_rows(),
         "presets": preset_rows(),
         "running_bots": [running_bot_row(db, b, now=now) for b in active],
         "liquidating_bots": [

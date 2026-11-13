@@ -14,9 +14,9 @@ new `StrategyKey`.
 
 **Key insight — consolidation.** Once periods, thresholds, MA-type, and optional
 filters become *config*, many course folders collapse into the same bot. The ~35
-feasible/caveat folders reduce to **16 distinct bots** (15 shipped); a 17th
+feasible/caveat folders reduce to **16 distinct bots**; a 17th
 (Trend-Confirmation, #13) is derived from the AI-portfolio technical gate rather
-than a course algo. Each item below is one shippable bot; "Absorbs" lists the
+than a course algo. All of them are shipped — the roadmap is complete. Each item below is one shippable bot; "Absorbs" lists the
 course folders it subsumes so we never build the same signal twice.
 
 ---
@@ -38,6 +38,9 @@ course folders it subsumes so we never build the same signal twice.
 - **Price Velocity Reversal** (`price_velocity_reversal`) — Tier 2 #11, Algo 48 (file `algo 49.py`). Velocity = latest bar's % change; enter when velocity < −threshold and acceleration > 0 (a slowing sell-off), exit when velocity turns positive. The course's absolute ₹2 threshold (on a ₹1,000 simulated price) is expressed as 0.2% so it works at any share price (user decision). Preset: Price Velocity Reversal (Algo 48, default).
 - **Trend Confirmation** (`trend_confirmation`) — Tier 2 #13, Cadence's own design (option B below). AND of SMA 20 > 50, MACD 12/26/9 histogram > 0, RSI 14 in (50, 70), optional ROC 12 > 0 and OBV-20 rising; exit when any breaks, RSI exit below 45 (hysteresis), never sold for RSI above the cap. Shares the AI gate's indicator maths (`technical_indicators/series.py`, golden-value parity test). Preset: Trend Confirmation (Cadence, default; TP 1% / SL 1% / DD 5%).
 - **Volume Breakout** (`volume_breakout`) — Tier 3 #14, Algos 34 (a/b), 46, 45. Versions: Spike (close above the prior 29-bar high on volume > multiplier × 20-bar average; the course only prints signals, so its "short breakout" — close below the prior low on a spike — is the long exit), VROC (a volume surge in a tight range primes; enter on the first close above the primed range within 10 bars — the course remembers priming indefinitely, Cadence is stateless; exit when VROC < 0), Chaikin (accumulation/distribution from real high/low — the course fakes them at random — with proper converged EMA 3/5; enter on the zero cross up, exit below zero). Presets: Volume Spike (Algo 34 b, ×1.1, default), Volume Spike — Simple (Algo 34 a, ×1), VROC Breakout (Algo 46), Chaikin Oscillator (Algo 45); 5% drawdown where the course has none.
+- **Volatility Regime Switcher** (`volatility_regime`) — Tier 4 #15, Algo 20 (script header says "Algo 21"). Course ATR proxy over 20 closes vs a baseline; calm (ATR ≤ baseline) trades the trend (close above HL2 of the 20-close range in, below out), volatile trades reversion (close below SMA 20 in, back at it out); exits follow the current regime. The course freezes the baseline from its 20-price warm-up; Cadence is stateless, so the baseline is the mean rolling ATR over the latest 100 bars (user decision); course regime mapping kept; legs inline rather than composing catalog strategies. Preset: Volatility Regime Switcher (Algo 20, default; TP 0.5% / SL 1% / DD 5%).
+- **Multi-Signal Consensus** (`signal_consensus`) — Tier 4 #16, Algo 43. Eight course mean-reversion votes over 10 closes (z-score, SMA ±1%, RSI 30/70, Bollinger 2σ, percentile rank, median, 5-bar gradient, range position); enter when the vote sum ≥ 3, exits via the engine bracket only (as the course). Course bug fixed (user decision): its RSI needs 15 prices from a 10-price deque so it never voted — RSI reads its own 15 closes. Rupee thresholds on a ~₹1,000 price became percentages (median ±0.2%, range 0.1%, TP 0.5%, SL 0.3%). Votes are inline, not composed from other catalog strategies. Preset: Multi-Signal Consensus (Algo 43, default; DD 5%).
+- **Bayesian Trend Predictor** (`bayesian_trend`) — Tier 4 #17, Algo 33. Three Gaussian regimes on bar returns (UP μ +0.1% σ 0.2%, FLAT μ 0 σ 0.08%, DOWN μ −0.1% σ 0.2%), sequential Bayes update; enter when UP is the MAP regime at ≥ 60%, exit when DOWN is (the course only prints LONG/SHORT; its SHORT is the long exit — user decision). The course carries the posterior for its whole run; Cadence is stateless, so it is rebuilt from equal priors over the latest 20 returns (user decision). Course whole-rupee rounding dropped; log-space update (no underflow-to-uniform). Preset: Bayesian Trend Predictor (Algo 33, default; no TP/SL, DD 5%).
 
 Every shipped strategy also has its course presets in the preset catalog (`strategy_bots/presets.py`), which is all the AI orchestrator may deploy.
 
@@ -76,9 +79,9 @@ Every shipped strategy also has its course presets in the preset catalog (`strat
 
 | # | Bot | Absorbs | Depends on |
 |---|-----|---------|-----------|
-| 15 | **Volatility Regime Switcher** | 20 | a trend bot + a reversion bot (Tier 1) |
-| 16 | **Multi-Signal Consensus** | 43 | several Tier 1/2 signals to vote |
-| 17 | **Bayesian Trend Predictor** | 33 | stateful posterior — its own thing |
+| 15 | ✅ **Volatility Regime Switcher** | 20 | **Shipped** (`volatility_regime`). Trend / reversion legs inline (HL2 and SMA, as in the course); rolling 100-bar ATR baseline. |
+| 16 | ✅ **Multi-Signal Consensus** | 43 | **Shipped** (`signal_consensus`). The course's own eight mean-reversion votes, inline; RSI vote fixed. |
+| 17 | ✅ **Bayesian Trend Predictor** | 33 | **Shipped** (`bayesian_trend`). Stateful course posterior replayed statelessly over the latest 20 returns. |
 
 ## ⛔ Excluded
 

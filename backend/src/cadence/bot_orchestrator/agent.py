@@ -26,7 +26,7 @@ from cadence.bot_orchestrator.errors import OrchestratorUnavailableError
 from cadence.config import settings
 
 #: Bumped whenever the instructions or prompt layout change; stored on each run.
-ORCHESTRATOR_PROMPT_VERSION = 1
+ORCHESTRATOR_PROMPT_VERSION = 2
 
 _AGENT_NAME = "BotOrchestratorAgent"
 
@@ -38,7 +38,7 @@ not trade yourself: once a day before the market opens you decide which running 
 to STOP and which preset bots to DEPLOY. Bots act from the opening bell.
 
 Decide from the briefing (market technicals, sector breadth and news tone, candidate
-tickers, presets, your running bots, and your limits). You may run a few web searches
+tickers, strategies, presets, your running bots, and your limits). You may run a few web searches
 for current market or sector news; use them only when they add something the briefing
 lacks.
 
@@ -46,9 +46,11 @@ Guidelines:
 - Prefer few, deliberate changes. Doing nothing is often right. Do not churn: avoid
   stopping a bot that has run only a day or two unless it is clearly broken or its
   setup is gone.
-- Match presets to conditions: trend and breakout presets suit names and sectors in an
-  up-trend regime with healthy breadth; mean-reversion presets suit liquid names that
-  have pulled back inside an intact longer-term trend.
+- Each preset names its strategy; the Strategies section explains how each one trades
+  and gives its style. Match styles to conditions: trend, momentum and breakout presets
+  suit names and sectors in an up-trend regime with healthy breadth; mean-reversion
+  presets suit liquid names that have pulled back inside an intact longer-term trend;
+  regime-switching presets suit names whose regime is unclear or changing.
 - Diversify across presets and sectors rather than stacking similar bots.
 - Choose tickers only from the candidate list, at most the per-bot ticker limit.
 - Respect every limit: capital per bot between the minimum and the per-bot maximum, the
@@ -135,6 +137,7 @@ def build_orchestrator_prompt(briefing: dict[str, Any]) -> str:
             _section("Market technicals (indices)", briefing.get("market")),
             _section("Sector breadth", sectors.get("breadth")),
             _section("Sector news tone", sectors.get("news_tone")),
+            _section("Strategies", briefing.get("strategies")),
             _section("Presets", briefing.get("presets")),
             _section("Running bots", briefing.get("running_bots")),
             _section(
