@@ -40,6 +40,9 @@ SERPER_SEARCH_URL = "https://google.serper.dev/search"
 #: without ballooning the context.
 MAX_ORGANIC_RESULTS = 5
 
+#: How many top stories (the provider's news block) to keep per search.
+MAX_TOP_STORIES = 5
+
 #: Per-run remaining web-search budget. ``None`` means "unbounded" (no budget was
 #: installed for this context); an int is the number of searches still allowed.
 #: Set via :func:`web_search_budget` and read/decremented inside the tool. A
@@ -117,6 +120,32 @@ def _compact(source: dict[str, Any], keys: tuple[str, ...]) -> dict[str, Any]:
     return {key: source[key] for key in keys if source.get(key)}
 
 
+def _top_stories(raw: Any) -> list[dict[str, Any]]:
+    """The provider's news block as ``{title, link, source, date}`` entries (≤ 5).
+
+    SerpAPI usually returns a list; for some queries it groups stories into
+    sections (a dict of lists), which are flattened in order. A ``source`` given as
+    an object is reduced to its name.
+    """
+    if isinstance(raw, dict):
+        raw = [item for value in raw.values() if isinstance(value, list) for item in value]
+    if not isinstance(raw, list):
+        return []
+    stories: list[dict[str, Any]] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        story = dict(item)
+        if isinstance(story.get("source"), dict):
+            story["source"] = story["source"].get("name")
+        compact = _compact(story, ("title", "link", "source", "date"))
+        if compact.get("title"):
+            stories.append(compact)
+        if len(stories) == MAX_TOP_STORIES:
+            break
+    return stories
+
+
 def _trim_serp_payload(raw: dict[str, Any]) -> dict[str, Any]:
     """Reduce a raw SerpAPI Google payload to a small, agent-useful subset."""
     trimmed: dict[str, Any] = {}
@@ -128,10 +157,14 @@ def _trim_serp_payload(raw: dict[str, Any]) -> dict[str, Any]:
     organic = raw.get("organic_results")
     if isinstance(organic, list):
         trimmed["organic_results"] = [
-            _compact(item, ("title", "link", "snippet"))
+            _compact(item, ("title", "link", "snippet", "date"))
             for item in organic[:MAX_ORGANIC_RESULTS]
             if isinstance(item, dict)
         ]
+
+    stories = _top_stories(raw.get("top_stories"))
+    if stories:
+        trimmed["top_stories"] = stories
 
     answer_box = raw.get("answer_box")
     if isinstance(answer_box, dict):
@@ -153,7 +186,7 @@ def _trim_serper_payload(raw: dict[str, Any]) -> dict[str, Any]:
 
     Serper uses different top-level keys than SerpAPI (``organic`` /
     ``answerBox`` / ``knowledgeGraph``); this maps them onto the exact same
-    ``organic_results`` / ``answer_box`` / ``knowledge_graph`` shape
+    ``organic_results`` / ``top_stories`` / ``answer_box`` / ``knowledge_graph`` shape
     :func:`_trim_serp_payload` emits, so downstream consumers see one shape
     regardless of provider.
     """
@@ -166,10 +199,14 @@ def _trim_serper_payload(raw: dict[str, Any]) -> dict[str, Any]:
     organic = raw.get("organic")
     if isinstance(organic, list):
         trimmed["organic_results"] = [
-            _compact(item, ("title", "link", "snippet"))
+            _compact(item, ("title", "link", "snippet", "date"))
             for item in organic[:MAX_ORGANIC_RESULTS]
             if isinstance(item, dict)
         ]
+
+    stories = _top_stories(raw.get("topStories"))
+    if stories:
+        trimmed["top_stories"] = stories
 
     answer_box = raw.get("answerBox")
     if isinstance(answer_box, dict):
@@ -286,8 +323,9 @@ async def _run_web_search(query: str) -> dict[str, Any]:
 @function_tool(
     description_override=(
         "Search Google (via the configured provider, SerpAPI or Serper) and "
-        "return the top organic results (title, link, snippet) plus any answer "
-        "box or knowledge-graph snippet."
+        "return the top organic results (title, link, snippet, date when known), "
+        "the top news stories (title, link, source, date) when Google shows them, "
+        "plus any answer box or knowledge-graph snippet."
     )
 )
 async def web_search(query: str) -> dict[str, Any]:

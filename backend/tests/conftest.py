@@ -21,6 +21,7 @@ from sqlalchemy.orm import Session
 # create the schema on the test database.
 from tests.fakes import FakeFundamentalsProvider
 
+from cadence import environment
 from cadence.ai_portfolio import models as _ai_portfolio_models  # noqa: F401
 from cadence.api.app import app
 from cadence.api.routers.assets import get_fundamentals_provider
@@ -31,6 +32,7 @@ from cadence.broker import Broker, get_broker
 from cadence.broker.stub import StubBroker
 from cadence.config import settings
 from cadence.database import Base, SessionLocal, get_db
+from cadence.news_sentiment import news as news_module
 from cadence.orders import journal as order_journal
 from cadence.orders import models as _orders_models  # noqa: F401
 from cadence.paper_trading import models as _paper_trading_models  # noqa: F401
@@ -154,6 +156,22 @@ class _NullJournalSession:
 
     def close(self) -> None:
         return None
+
+
+@pytest.fixture(autouse=True)
+def _offline_news(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Never call Alpaca News from tests, even with real keys in a local ``.env``."""
+    monkeypatch.setattr(
+        news_module.AlpacaNewsSource, "fetch_news", lambda self, *args, **kwargs: []
+    )
+
+
+@pytest.fixture(autouse=True)
+def _fresh_environment_cache() -> Iterator[None]:
+    """Forget cached account-mode probes so no test sees another's result."""
+    environment.reset_cache()
+    yield
+    environment.reset_cache()
 
 
 @pytest.fixture(autouse=True)

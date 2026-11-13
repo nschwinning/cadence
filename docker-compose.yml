@@ -115,6 +115,14 @@ services:
       ALPACA_SECRET_KEY: ${ALPACA_SECRET_KEY:-}
       ALPACA_PAPER: ${ALPACA_PAPER:-true}
       ALPACA_STUB: ${ALPACA_STUB:-}
+      # Live trading needs this explicit opt-in on top of a live account (PRD only).
+      ALPACA_ALLOW_LIVE: ${ALPACA_ALLOW_LIVE:-false}
+      # This deployment's name, shown in the UI header (e.g. QA, PRD).
+      CADENCE_ENVIRONMENT: ${CADENCE_ENVIRONMENT:-QA}
+      # Newest Alpaca News headlines per holding / candidate in every AI rebalance
+      # (0 disables), drawn from the last N days.
+      NEWS_HEADLINES_PER_TICKER: ${NEWS_HEADLINES_PER_TICKER:-3}
+      NEWS_HEADLINES_WINDOW_DAYS: ${NEWS_HEADLINES_WINDOW_DAYS:-3}
       # Shared secret guarding the daily-rebalance trigger; the cron sidecar sends
       # the same value in the X-Cron-Token header. Empty => every trigger is
       # rejected, so set REBALANCE_CRON_TOKEN in the root .env to enable rebalances.

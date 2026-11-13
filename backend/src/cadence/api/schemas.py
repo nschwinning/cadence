@@ -1575,6 +1575,20 @@ class BackendStatusRead(BaseModel):
     detail: str | None = None
 
 
+class EnvironmentRead(BaseModel):
+    """This deployment's name, verified account mode and trading permission."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    environment: str
+    configured_mode: Literal["paper", "live", "unknown"]
+    account_mode: Literal["paper", "live", "unknown"]
+    mismatch: bool
+    trading_enabled: bool
+    #: Why trading is disabled; ``None`` while it is enabled.
+    reason: str | None
+
+
 class SystemStatusRead(BaseModel):
     """Aggregated live status of every external backend the app depends on."""
 

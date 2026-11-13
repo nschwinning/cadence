@@ -58,7 +58,7 @@ def test_prompt_includes_every_section() -> None:
     assert '"free_capital":7000.0' in prompt
     assert "donchian_turtle_algo25" in prompt
     assert '"bot_id":"b-1"' in prompt
-    assert ORCHESTRATOR_PROMPT_VERSION >= 2
+    assert ORCHESTRATOR_PROMPT_VERSION >= 3
     assert '"style":"breakout"' in prompt
     assert prompt.index("## Strategies") < prompt.index("## Presets")
 
@@ -67,6 +67,13 @@ def test_instructions_match_presets_by_style() -> None:
     from cadence.bot_orchestrator.agent import _AGENT_INSTRUCTIONS
 
     for phrase in ("Strategies section", "mean-reversion", "regime-switching", "momentum"):
+        assert phrase in _AGENT_INSTRUCTIONS
+
+
+def test_instructions_carry_recent_developments_guidance() -> None:
+    from cadence.bot_orchestrator.agent import _AGENT_INSTRUCTIONS
+
+    for phrase in ("last 7 days", "top_stories", "fiscal years", "month and year"):
         assert phrase in _AGENT_INSTRUCTIONS
 
 

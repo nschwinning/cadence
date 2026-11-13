@@ -26,7 +26,7 @@ from cadence.bot_orchestrator.errors import OrchestratorUnavailableError
 from cadence.config import settings
 
 #: Bumped whenever the instructions or prompt layout change; stored on each run.
-ORCHESTRATOR_PROMPT_VERSION = 2
+ORCHESTRATOR_PROMPT_VERSION = 3
 
 _AGENT_NAME = "BotOrchestratorAgent"
 
@@ -40,7 +40,11 @@ to STOP and which preset bots to DEPLOY. Bots act from the opening bell.
 Decide from the briefing (market technicals, sector breadth and news tone, candidate
 tickers, strategies, presets, your running bots, and your limits). You may run a few web searches
 for current market or sector news; use them only when they add something the briefing
-lacks.
+lacks. When you search, look for material developments of the last 7 days relative to
+the briefing's date (management changes, investigations, guidance changes, mergers):
+put the current month and year in the query, prefer the `top_stories` block of the
+results, check each result's date and disregard stale ones, and remember that company
+fiscal years differ from calendar years (a 'fiscal 2026' quarter may have ended in 2025).
 
 Guidelines:
 - Prefer few, deliberate changes. Doing nothing is often right. Do not churn: avoid

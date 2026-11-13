@@ -25,6 +25,8 @@ class NewsItem:
     headline: str
     summary: str | None
     published_at: datetime
+    #: The publisher as reported by the source (e.g. "Benzinga"), when known.
+    source: str | None = None
 
     def text(self) -> str:
         """The text scored for tone (headline, plus summary when present)."""

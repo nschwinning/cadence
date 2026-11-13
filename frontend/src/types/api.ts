@@ -1348,6 +1348,22 @@ export interface SystemStatusResponse {
   backends: SystemBackendStatus[];
 }
 
+/** A brokerage account mode: configured, or verified against the broker. */
+export type AccountMode = 'paper' | 'live' | 'unknown';
+
+/** Response of `GET /api/v1/system/environment`: this deployment's identity. */
+export interface EnvironmentStatus {
+  /** The deployment's name (`CADENCE_ENVIRONMENT`, e.g. "QA", "PRD"). */
+  environment: string;
+  configured_mode: AccountMode;
+  /** The account mode verified against the broker. */
+  account_mode: AccountMode;
+  mismatch: boolean;
+  trading_enabled: boolean;
+  /** Why trading is disabled; null while it is enabled. */
+  reason: string | null;
+}
+
 // --- Strategy bots ----------------------------------------------------------
 
 /** A registered bot strategy, its explanation, and its default parameter schema. Mirrors `BotStrategyCatalogEntry`. */

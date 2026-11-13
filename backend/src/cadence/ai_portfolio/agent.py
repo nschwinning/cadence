@@ -26,6 +26,7 @@ from __future__ import annotations
 import asyncio
 import json
 from dataclasses import dataclass
+from datetime import date
 from enum import Enum
 from typing import Any, Protocol, runtime_checkable
 
@@ -236,6 +237,27 @@ def _recent_outcomes_block(summary: str) -> str:
     )
 
 
+def _run_context_block(run_date: date) -> str:
+    """Today's date and recency-aware research guidance, appended to every run.
+
+    Added to every rebalance input whatever the session's frozen prompt version
+    (like the guardrails and recent-outcomes sections), so every portfolio researches
+    with the current date in mind and sees the per-ticker ``recent_headlines``.
+    """
+    return (
+        f"\n## Run context\n"
+        f"Today is {run_date.isoformat()} (US/Eastern).\n"
+        "Research guidance: before keeping or adding a name, check for material "
+        "developments of the last 7 days (management changes, investigations, "
+        "guidance changes, mergers). Put the current month and year in news searches "
+        "and prefer the `top_stories` block of search results. Check each result's "
+        "date and disregard results older than the period you are assessing; company "
+        "fiscal years differ from calendar years (a 'fiscal 2026' quarter may have "
+        "ended in 2025). Each holding and candidate may carry `recent_headlines` — the "
+        "newest news headlines about it, with their publication times.\n"
+    )
+
+
 def _build_rebalance_input(
     input_template: str,
     holdings: list[dict[str, Any]],
@@ -244,6 +266,7 @@ def _build_rebalance_input(
     risk_profile: str,
     guardrails: GuardrailInstruction | None = None,
     recent_outcomes: list[dict[str, Any]] | None = None,
+    run_date: date | None = None,
 ) -> str:
     """Render the versioned rebalance ``input_template`` with the run's values.
 
@@ -266,6 +289,8 @@ def _build_rebalance_input(
         summary = _summarize_recent_outcomes(recent_outcomes)
         if summary:
             rendered = f"{rendered}\n{_recent_outcomes_block(summary)}"
+    if run_date is not None:
+        rendered = f"{rendered}\n{_run_context_block(run_date)}"
     return rendered
 
 
@@ -284,6 +309,7 @@ def rebalance_ai_portfolio(
     guardrails: GuardrailInstruction | None = None,
     recent_outcomes: list[dict[str, Any]] | None = None,
     model: str | None = None,
+    run_date: date | None = None,
 ) -> AIRebalanceResult:
     """Run the rebalance agent and return its validated :class:`AIRebalanceResult`.
 
@@ -307,6 +333,7 @@ def rebalance_ai_portfolio(
             guardrails=guardrails,
             recent_outcomes=recent_outcomes,
             model=model,
+            run_date=run_date,
         )
     )
 
@@ -321,6 +348,7 @@ async def _run_rebalance(
     guardrails: GuardrailInstruction | None = None,
     recent_outcomes: list[dict[str, Any]] | None = None,
     model: str | None = None,
+    run_date: date | None = None,
 ) -> AIRebalanceResult:
     agent = build_agent(
         name="AIRebalanceEvaluatorAgent",
@@ -346,6 +374,7 @@ async def _run_rebalance(
                     risk_profile,
                     guardrails,
                     recent_outcomes,
+                    run_date,
                 ),
                 max_turns=settings.AI_PORTFOLIO_MAX_TURNS,
                 run_config=run_config_for_trace(),
@@ -381,6 +410,7 @@ class AIPortfolioAgent(Protocol):
         guardrails: GuardrailInstruction | None = None,
         recent_outcomes: list[dict[str, Any]] | None = None,
         model: str | None = None,
+        run_date: date | None = None,
     ) -> AIRebalanceResult:
         """Return the agent's structured rebalance target weights.
 
@@ -409,6 +439,7 @@ class OpenAIAIPortfolioAgent:
         guardrails: GuardrailInstruction | None = None,
         recent_outcomes: list[dict[str, Any]] | None = None,
         model: str | None = None,
+        run_date: date | None = None,
     ) -> AIRebalanceResult:
         return rebalance_ai_portfolio(
             holdings=holdings,
@@ -420,4 +451,5 @@ class OpenAIAIPortfolioAgent:
             guardrails=guardrails,
             recent_outcomes=recent_outcomes,
             model=model,
+            run_date=run_date,
         )

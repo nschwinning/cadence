@@ -23,6 +23,7 @@ from typing import Any
 from cadence.broker.base import Broker, BrokerError, OrderError
 from cadence.broker.models import AssetClass, Order, OrderSide
 from cadence.broker.symbols import symbol_key
+from cadence.environment import ensure_trading_allowed
 from cadence.orders import journal
 from cadence.orders.models import JournalState, OrderOwnerKind
 
@@ -113,6 +114,9 @@ class OrderGateway:
         broker_symbol: str | None,
         context: dict[str, Any] | None,
     ) -> Order:
+        # Refused before anything is journaled: a deployment that may not trade its
+        # account (mismatch, or live without the opt-in) never reaches the broker.
+        ensure_trading_allowed(self.broker)
         symbol = broker_symbol or ticker
         record: dict[str, Any] = {
             "owner_kind": self.owner_kind,

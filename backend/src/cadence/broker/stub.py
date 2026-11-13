@@ -15,6 +15,7 @@ from datetime import UTC, date, datetime
 from cadence.broker.base import OrderError
 from cadence.broker.models import (
     AccountInfo,
+    AccountMode,
     AssetClass,
     BrokerAsset,
     Order,
@@ -299,6 +300,11 @@ class StubBroker:
                 client_order_id=client_order_id,
             )
         )
+
+    # Account mode --------------------------------------------------------
+    def probe_account_mode(self) -> AccountMode:
+        """The stub is a paper account."""
+        return "paper"
 
     # Market status -------------------------------------------------------
     def is_market_open(self) -> bool:

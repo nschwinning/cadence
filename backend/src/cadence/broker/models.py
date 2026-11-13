@@ -12,7 +12,10 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
-from typing import Any
+from typing import Any, Literal
+
+#: The kind of brokerage account verified behind the credentials.
+AccountMode = Literal["paper", "live", "unknown"]
 
 
 class AssetClass(str, Enum):

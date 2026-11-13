@@ -11,6 +11,7 @@ host; quote endpoints target the Alpaca market-data host.
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import logging
 from datetime import date, datetime
 from typing import Any, Protocol, cast
@@ -21,6 +22,7 @@ import requests
 from cadence.broker.base import BrokerError, ConnectionError, OrderError
 from cadence.broker.models import (
     AccountInfo,
+    AccountMode,
     AssetClass,
     BrokerAsset,
     Order,
@@ -119,6 +121,12 @@ class AlpacaBroker:
         self._base_url = PAPER_BASE_URL if self._paper else LIVE_BASE_URL
 
     @property
+    def credentials_fingerprint(self) -> str:
+        """A one-way hash of the credentials and mode, for in-process caching only."""
+        raw = f"{self._api_key}:{self._secret_key}:{self._paper}"
+        return hashlib.sha256(raw.encode()).hexdigest()
+
+    @property
     def _headers(self) -> dict[str, str]:
         return {
             "APCA-API-KEY-ID": self._api_key,
@@ -160,6 +168,34 @@ class AlpacaBroker:
             raise OrderError(f"Alpaca API error: {error_msg}") from exc
         except requests.exceptions.RequestException as exc:
             raise ConnectionError(f"Alpaca connection error: {exc}") from exc
+
+    # Account mode --------------------------------------------------------
+    def probe_account_mode(self) -> AccountMode:
+        """Which kind of account the credentials belong to, by a read-only probe.
+
+        Alpaca keys only authenticate against their own endpoint, so the account is
+        read on the configured endpoint first and, when the keys are rejected there
+        (401/403), on the other one. Returns the mode of the endpoint whose read
+        succeeds, or ``"unknown"`` when neither does. Never places or changes anything.
+        """
+        configured: AccountMode = "paper" if self._paper else "live"
+        other: AccountMode = "live" if self._paper else "paper"
+        for mode in (configured, other):
+            base_url = PAPER_BASE_URL if mode == "paper" else LIVE_BASE_URL
+            try:
+                response = self._session.request(
+                    "GET", f"{base_url}/v2/account", headers=self._headers, timeout=10
+                )
+            except requests.exceptions.RequestException:
+                logger.warning("account-mode probe: %s endpoint unreachable", mode)
+                return "unknown"
+            status = int(getattr(response, "status_code", 0))
+            if 200 <= status < 300:
+                return mode
+            if status not in (401, 403):
+                logger.warning("account-mode probe: %s endpoint answered %s", mode, status)
+                return "unknown"
+        return "unknown"
 
     # Account / positions -------------------------------------------------
     def get_account_info(self) -> AccountInfo:

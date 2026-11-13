@@ -2036,6 +2036,38 @@ def test_one_bots_rejection_does_not_fail_or_undo_the_tick(db_session: Session) 
     assert bad.positions == []
 
 
+class _LiveAccountBroker(_OpenableBroker):
+    """Open-market stub whose credentials belong to a live account."""
+
+    def probe_account_mode(self):  # type: ignore[no-untyped-def]
+        return "live"
+
+
+def test_account_mismatch_blocks_orders_and_records_the_failure(
+    db_session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from cadence.config import settings as app_settings
+    from cadence.orders.models import BrokerOrder
+
+    monkeypatch.setattr(app_settings, "ALPACA_PAPER", True)
+    broker = _LiveAccountBroker()
+    _add_asset(db_session)
+    bot = _create(db_session, tickers=["AAPL"])
+    db_session.commit()  # the failing bot's rollback must not undo the test setup
+    aapl = broker.get_quote("AAPL").last
+    assert aapl is not None
+    market = _PerSymbolMarketData({"AAPL": _up_cross(aapl)})
+
+    result = service.run_tick(db_session, broker=broker, market_data=market, now=_NOW)
+
+    assert result.failed == 1
+    db_session.refresh(bot)
+    assert bot.positions == []
+    assert bot.last_failure_error is not None
+    assert "Trading disabled" in bot.last_failure_error
+    assert db_session.query(BrokerOrder).count() == 0
+
+
 def test_flattened_positions_are_not_sold_again_next_tick(db_session: Session) -> None:
     broker = _RejectingBuyBroker(reject="NVDA")
     stopped = _stopped_bot_with_positions(db_session, broker)

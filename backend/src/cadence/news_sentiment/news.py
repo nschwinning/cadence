@@ -11,6 +11,8 @@ unavailable".
 from __future__ import annotations
 
 import logging
+from collections.abc import Sequence
+from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime, timedelta
 from typing import Any, Protocol, runtime_checkable
 
@@ -111,12 +113,14 @@ class AlpacaNewsSource:
             if published is None or not isinstance(headline, str) or not headline:
                 continue
             summary = row.get("summary")
+            source = row.get("source")
             items.append(
                 NewsItem(
                     ticker=ticker,
                     headline=headline,
                     summary=summary if isinstance(summary, str) and summary else None,
                     published_at=published,
+                    source=source if isinstance(source, str) and source else None,
                 )
             )
         items.sort(key=lambda item: item.published_at, reverse=True)
@@ -142,3 +146,61 @@ def window_start(as_of: date, window_days: int) -> datetime:
     return datetime(
         start_date.year, start_date.month, start_date.day, tzinfo=MARKET_TZ
     )
+
+
+#: Concurrent headline fetches per run (one request per ticker).
+_HEADLINE_WORKERS = 8
+
+
+def news_symbol(ticker: str) -> str:
+    """The ticker in Alpaca News form (crypto pairs without a separator: ``BTCUSD``)."""
+    return ticker.upper().replace("-", "").replace("/", "")
+
+
+def recent_headlines(
+    tickers: Sequence[str],
+    *,
+    as_of: date,
+    per_ticker: int | None = None,
+    window_days: int | None = None,
+    source: NewsSource | None = None,
+) -> dict[str, list[dict[str, str]]]:
+    """The newest headlines per ticker over the trailing window (never raises).
+
+    Returns ``{ticker: [{headline, source, published_at}, ...]}`` newest first, at most
+    ``per_ticker`` each (``NEWS_HEADLINES_PER_TICKER`` by default; 0 disables), over
+    the last ``window_days`` days (``NEWS_HEADLINES_WINDOW_DAYS``). Tickers without
+    headlines are omitted. Fetches run on a small thread pool, one request per ticker.
+    """
+    limit = settings.NEWS_HEADLINES_PER_TICKER if per_ticker is None else per_ticker
+    days = settings.NEWS_HEADLINES_WINDOW_DAYS if window_days is None else window_days
+    unique = list(dict.fromkeys(t for t in tickers if t))
+    if limit <= 0 or not unique:
+        return {}
+    news_source = source if source is not None else AlpacaNewsSource()
+    start = window_start(as_of, days)
+
+    def fetch(ticker: str) -> tuple[str, list[NewsItem]]:
+        try:
+            items = news_source.fetch_news(news_symbol(ticker), start=start, limit=limit)
+        except Exception:  # the source contract says never raise; stay safe anyway
+            logger.warning("headline fetch failed for %s", ticker, exc_info=True)
+            items = []
+        return ticker, items
+
+    with ThreadPoolExecutor(max_workers=min(_HEADLINE_WORKERS, len(unique))) as pool:
+        results = list(pool.map(fetch, unique))
+
+    headlines: dict[str, list[dict[str, str]]] = {}
+    for ticker, items in results:
+        newest = sorted(items, key=lambda item: item.published_at, reverse=True)[:limit]
+        if newest:
+            headlines[ticker] = [
+                {
+                    "headline": item.headline,
+                    **({"source": item.source} if item.source else {}),
+                    "published_at": item.published_at.isoformat(),
+                }
+                for item in newest
+            ]
+    return headlines

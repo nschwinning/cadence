@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from cadence.agents.tools import (
     MAX_ORGANIC_RESULTS,
+    MAX_TOP_STORIES,
     _trim_serp_payload,
     _trim_serper_payload,
     note_web_search,
@@ -62,6 +63,46 @@ def test_trim_includes_answer_box_and_knowledge_graph_when_present() -> None:
     }
 
 
+def _raw_story(i: int, source: object = "Reuters") -> dict[str, object]:
+    return {
+        "title": f"Story {i}",
+        "link": f"https://news.example.com/{i}",
+        "source": source,
+        "date": f"{i + 1} hours ago",
+        "thumbnail": "drop-me",
+    }
+
+
+def test_trim_keeps_top_stories_and_result_dates() -> None:
+    raw = {
+        "organic_results": [{**_raw_result(0), "date": "Nov 12, 2026"}],
+        "top_stories": [_raw_story(i) for i in range(8)],
+    }
+
+    trimmed = _trim_serp_payload(raw)
+
+    assert trimmed["organic_results"][0]["date"] == "Nov 12, 2026"
+    assert len(trimmed["top_stories"]) == MAX_TOP_STORIES
+    assert trimmed["top_stories"][0] == {
+        "title": "Story 0",
+        "link": "https://news.example.com/0",
+        "source": "Reuters",
+        "date": "1 hours ago",
+    }
+
+
+def test_trim_flattens_sectioned_top_stories() -> None:
+    raw = {"top_stories": {"latest": [_raw_story(0)], "more": [_raw_story(1)]}}
+    assert [s["title"] for s in _trim_serp_payload(raw)["top_stories"]] == [
+        "Story 0",
+        "Story 1",
+    ]
+
+
+def test_trim_omits_absent_top_stories() -> None:
+    assert "top_stories" not in _trim_serp_payload({"organic_results": [], "top_stories": []})
+
+
 def test_trim_surfaces_serpapi_error() -> None:
     trimmed = _trim_serp_payload({"error": "Invalid API key."})
     assert trimmed["error"] == "Invalid API key."
@@ -107,6 +148,22 @@ def test_trim_serper_normalises_to_the_shared_shape() -> None:
         "type": "Company",
         "description": "A company.",
     }
+
+
+def test_trim_serper_top_stories_match_the_serpapi_shape() -> None:
+    serper = _trim_serper_payload(
+        {
+            "organic": [{**_raw_serper_result(0), "date": "Nov 12, 2026"}],
+            "topStories": [_raw_story(0, source={"name": "Reuters"})],
+        }
+    )
+    serp = _trim_serp_payload(
+        {
+            "organic_results": [{**_raw_result(0), "date": "Nov 12, 2026"}],
+            "top_stories": [_raw_story(0)],
+        }
+    )
+    assert serper == serp
 
 
 def test_trim_serper_surfaces_error() -> None:

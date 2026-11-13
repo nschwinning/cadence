@@ -94,8 +94,13 @@ class Settings(BaseSettings):
     # without them; a rebalance run fails cleanly when a required key is missing.
     ALPACA_API_KEY: str = ""
     ALPACA_SECRET_KEY: str = ""
-    # Use Alpaca's paper-trading endpoint (never live). Default True for safety.
+    # Use Alpaca's paper-trading endpoint. Default True for safety; a live account is
+    # verified against Alpaca and additionally needs ALPACA_ALLOW_LIVE to trade.
     ALPACA_PAPER: bool = True
+    # Explicit opt-in to submit orders on a verified live account (PRD deployments only).
+    ALPACA_ALLOW_LIVE: bool = False
+    # This deployment's name, shown in the UI header (e.g. "QA", "PRD").
+    CADENCE_ENVIRONMENT: str = "QA"
     # Opt-in offline stub for the Alpaca client (no network calls), for the
     # Docker end-to-end smoke or local dev without Alpaca credentials.
     ALPACA_STUB: bool = False
@@ -232,6 +237,11 @@ class Settings(BaseSettings):
     SENTIMENT_NEUTRAL_BAND: float = 0.15
     #: Maximum news items fetched per ticker per window (bounds the scoring batch).
     SENTIMENT_MAX_ARTICLES: int = 50
+    #: Newest headlines per holding / candidate handed to every AI-portfolio rebalance
+    #: (independent of news sentiment). 0 disables headlines.
+    NEWS_HEADLINES_PER_TICKER: int = 3
+    #: Trailing window (calendar days) the headlines are drawn from.
+    NEWS_HEADLINES_WINDOW_DAYS: int = 3
     #: Base URL of the Alpaca News API used as the news source (reuses the Alpaca
     #: credentials above).
     ALPACA_NEWS_BASE_URL: str = "https://data.alpaca.markets/v1beta1/news"

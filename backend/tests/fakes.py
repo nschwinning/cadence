@@ -478,6 +478,7 @@ class FakeAIPortfolioAgent:
         guardrails: Any = None,
         recent_outcomes: Any = None,
         model: str | None = None,
+        run_date: Any = None,
     ) -> AIRebalanceResult:
         self.rebalance_calls.append(
             {
@@ -490,6 +491,7 @@ class FakeAIPortfolioAgent:
                 "guardrails": guardrails,
                 "recent_outcomes": recent_outcomes,
                 "model": model,
+                "run_date": run_date,
                 # The spend-log run config active during this call, so tests can
                 # assert the flow threaded the trace/session/portfolio metadata.
                 "trace_run_config": run_config_for_trace(),

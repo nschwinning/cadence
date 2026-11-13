@@ -12,7 +12,9 @@ from __future__ import annotations
 import logging
 import time
 import uuid
+from datetime import date, datetime
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from sqlalchemy.orm import Session
 
@@ -68,6 +70,7 @@ from cadence.assets.market_data import MarketDataProvider
 from cadence.broker.base import Broker
 from cadence.broker.models import AssetClass, Position
 from cadence.config import settings
+from cadence.news_sentiment import news as news_headlines
 from cadence.news_sentiment import service as news_sentiment_service
 from cadence.notify.base import Notifier
 from cadence.orders.models import OrderOwnerKind
@@ -475,6 +478,11 @@ def run_rebalance_event(
             price_ml_by_ticker=holding_price_ml,
             news_sentiment_by_ticker=holding_news_sentiment,
         )
+        # Newest headlines for every holding and candidate, for every session (with
+        # or without news sentiment), so the agent sees what just happened. Best
+        # effort: a ticker without news (or a failed fetch) simply carries none.
+        run_date = _run_date()
+        _attach_recent_headlines(candidates, holdings, run_date=run_date)
         if gating_enabled:
             trend_context = {
                 "dropped_candidates": dropped_candidates,
@@ -600,6 +608,7 @@ def run_rebalance_event(
                 guardrails=rebalance_guardrails,
                 recent_outcomes=recent_outcomes,
                 model=session_row.model,
+                run_date=run_date,
             )
         agent_output = result.model_dump(mode="json")
 
@@ -802,3 +811,30 @@ def run_rebalance_event(
                 title="Cadence: daily rebalance failed",
                 message=f"Rebalance {event_id} failed: {reason}",
             )
+
+
+#: The market timezone the run's date is taken in.
+_MARKET_TZ = ZoneInfo("America/New_York")
+
+
+def _run_date() -> date:
+    """Today in the market timezone — the date the agent is told (a test seam)."""
+    return datetime.now(tz=_MARKET_TZ).date()
+
+
+def _attach_recent_headlines(
+    candidates: list[dict[str, Any]],
+    holdings: list[dict[str, Any]],
+    *,
+    run_date: date,
+) -> None:
+    """Set ``recent_headlines`` on every candidate / holding that has some (in place)."""
+    rows = [*candidates, *holdings]
+    headlines = news_headlines.recent_headlines(
+        [row["ticker"] for row in rows], as_of=run_date
+    )
+    for row in rows:
+        found = headlines.get(row["ticker"])
+        if found:
+            row["recent_headlines"] = found
+

@@ -1,12 +1,13 @@
 import logoUrl from '../../assets/cadence-logo.svg';
 import { HamburgerIcon } from '../icons/HamburgerIcon';
+import { EnvironmentBadge } from './EnvironmentBadge';
 
 interface HeaderProps {
   /** Toggles the off-canvas sidebar on narrow viewports. */
   onToggleSidebar: () => void;
 }
 
-/** Dark, sticky top menu: brand on the left, mobile nav toggle beside it. */
+/** Dark, sticky top menu: brand on the left, mobile nav toggle beside it, environment badge on the right. */
 export function Header({ onToggleSidebar }: HeaderProps) {
   return (
     <header className="sticky top-0 z-30 flex h-[60px] items-center gap-3 bg-[#2a3547] px-4 text-white">
@@ -23,6 +24,10 @@ export function Header({ onToggleSidebar }: HeaderProps) {
         <img src={logoUrl} alt="" className="h-8 w-8" />
         <span className="text-lg font-semibold text-white">Cadence</span>
       </a>
+
+      <div className="ml-auto">
+        <EnvironmentBadge />
+      </div>
     </header>
   );
 }
