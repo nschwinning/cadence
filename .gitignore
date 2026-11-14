@@ -22,5 +22,8 @@ dist-ssr/
 
 # OS
 .DS_Store
+
+# Other
 deploy-qa.sh
 deploy-dev.sh
+backup-cadence.log
