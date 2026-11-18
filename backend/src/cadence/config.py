@@ -97,6 +97,20 @@ class Settings(BaseSettings):
     # Use Alpaca's paper-trading endpoint. Default True for safety; a live account is
     # verified against Alpaca and additionally needs ALPACA_ALLOW_LIVE to trade.
     ALPACA_PAPER: bool = True
+    # --- Authentication (Keycloak, realm "cadence") ---
+    # Every /api/v1 route requires a Keycloak access token. Disable ONLY for local
+    # development (logged as a warning at startup).
+    AUTH_ENABLED: bool = True
+    # The address users open (the HTTPS entry point), e.g. https://cadence.local:8443.
+    CADENCE_PUBLIC_URL: str = "https://localhost:8443"
+    # Expected token issuer; empty derives it: {CADENCE_PUBLIC_URL}/auth/realms/cadence.
+    OIDC_ISSUER: str = ""
+    # Realm signing keys, fetched over the compose network (not the public URL).
+    OIDC_JWKS_URL: str = (
+        "http://keycloak:8080/auth/realms/cadence/protocol/openid-connect/certs"
+    )
+    # Audience every access token must carry.
+    OIDC_AUDIENCE: str = "cadence-api"
     # Explicit opt-in to submit orders on a verified live account (PRD deployments only).
     ALPACA_ALLOW_LIVE: bool = False
     # This deployment's name, shown in the UI header (e.g. "QA", "PRD").

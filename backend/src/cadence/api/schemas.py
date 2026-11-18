@@ -1581,8 +1581,8 @@ class EnvironmentRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     environment: str
-    configured_mode: Literal["paper", "live", "unknown"]
-    account_mode: Literal["paper", "live", "unknown"]
+    configured_mode: Literal["paper", "live", "mock", "unknown"]
+    account_mode: Literal["paper", "live", "mock", "unknown"]
     mismatch: bool
     trading_enabled: bool
     #: Why trading is disabled; ``None`` while it is enabled.

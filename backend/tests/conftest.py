@@ -167,6 +167,12 @@ def _offline_news(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture(autouse=True)
+def _auth_disabled_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Existing API tests run without tokens; the auth tests switch it back on."""
+    monkeypatch.setattr(settings, "AUTH_ENABLED", False)
+
+
+@pytest.fixture(autouse=True)
 def _fresh_environment_cache() -> Iterator[None]:
     """Forget cached account-mode probes so no test sees another's result."""
     environment.reset_cache()

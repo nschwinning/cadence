@@ -5,6 +5,7 @@ import type { BotSession } from '../../types/api';
 import { formatAge, formatCurrency } from '../../lib/format';
 import { BuildBotCard } from './BuildBotCard';
 import { Modal } from '../../components/Modal';
+import { RequireRole } from '../../auth/RequireRole';
 
 /** Status pill colors per bot status. */
 const STATUS_STYLES: Record<string, string> = {
@@ -154,13 +155,15 @@ export function BotsPage() {
           >
             Strategy guide
           </Link>
-          <button
-            type="button"
-            onClick={() => setBuildOpen(true)}
-            className="rounded bg-emerald-500 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-600 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 focus-visible:ring-offset-1"
-          >
-            Build a bot
-          </button>
+          <RequireRole role="trader">
+            <button
+              type="button"
+              onClick={() => setBuildOpen(true)}
+              className="rounded bg-emerald-500 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-600 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 focus-visible:ring-offset-1"
+            >
+              Build a bot
+            </button>
+          </RequireRole>
         </div>
       </div>
 

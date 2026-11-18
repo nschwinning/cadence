@@ -74,6 +74,9 @@ class AlpacaNewsSource:
     def fetch_news(
         self, ticker: str, *, start: datetime, limit: int
     ) -> list[NewsItem]:
+        # A stubbed deployment (DEV) never contacts Alpaca, even with keys configured.
+        if settings.ALPACA_STUB:
+            return []
         if not self._api_key or not self._secret_key:
             return []
         try:

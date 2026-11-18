@@ -1,0 +1,77 @@
+{
+  "realm": "cadence",
+  "displayName": "Cadence",
+  "enabled": true,
+  "sslRequired": "external",
+  "registrationAllowed": false,
+  "resetPasswordAllowed": false,
+  "rememberMe": false,
+  "editUsernameAllowed": false,
+  "loginWithEmailAllowed": true,
+  "duplicateEmailsAllowed": false,
+  "bruteForceProtected": true,
+  "permanentLockout": false,
+  "failureFactor": 5,
+  "waitIncrementSeconds": 60,
+  "maxFailureWaitSeconds": 900,
+  "maxDeltaTimeSeconds": 43200,
+  "passwordPolicy": "length(12) and notUsername",
+  "accessTokenLifespan": 300,
+  "ssoSessionIdleTimeout": 1800,
+  "ssoSessionMaxLifespan": 36000,
+  "roles": {
+    "realm": [
+      {
+        "name": "viewer",
+        "description": "Read everything in Cadence."
+      },
+      {
+        "name": "trader",
+        "description": "Viewer, plus every action that changes portfolios, bots, orchestrators and recommendations.",
+        "composite": true,
+        "composites": { "realm": ["viewer"] }
+      },
+      {
+        "name": "admin",
+        "description": "Trader, plus the Admin area and managing the asset universe.",
+        "composite": true,
+        "composites": { "realm": ["trader"] }
+      }
+    ]
+  },
+  "clients": [
+    {
+      "clientId": "cadence-web",
+      "name": "Cadence web app",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": true,
+      "standardFlowEnabled": true,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": false,
+      "frontchannelLogout": true,
+      "rootUrl": "${CADENCE_PUBLIC_URL}",
+      "baseUrl": "/",
+      "redirectUris": ["${CADENCE_PUBLIC_URL}/*"],
+      "webOrigins": ["${CADENCE_PUBLIC_URL}"],
+      "attributes": {
+        "pkce.code.challenge.method": "S256",
+        "post.logout.redirect.uris": "${CADENCE_PUBLIC_URL}/*"
+      },
+      "protocolMappers": [
+        {
+          "name": "cadence-api audience",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.custom.audience": "cadence-api",
+            "access.token.claim": "true",
+            "id.token.claim": "false"
+          }
+        }
+      ]
+    }
+  ]
+}

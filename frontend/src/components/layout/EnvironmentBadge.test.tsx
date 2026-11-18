@@ -87,4 +87,15 @@ describe('EnvironmentBadge', () => {
     expect(badge).toHaveTextContent('QA · account unknown');
     expect(badge.className).toContain('ring-slate-400');
   });
+
+  it('shows a blue DEV · Mock badge for a mocked brokerage', async () => {
+    const badge = await renderBadge(
+      env({ environment: 'DEV', configured_mode: 'mock', account_mode: 'mock' }),
+    );
+    expect(badge).toHaveTextContent('DEV · Mock');
+    expect(badge.className).toContain('bg-sky-100');
+    for (const other of ['bg-slate-100', 'bg-red-600', 'bg-amber-100']) {
+      expect(badge.className).not.toContain(other);
+    }
+  });
 });

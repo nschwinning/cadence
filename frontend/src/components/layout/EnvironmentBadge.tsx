@@ -25,6 +25,14 @@ function badgeFor(env: EnvironmentStatus): { label: string; className: string; w
       warning: false,
     };
   }
+  if (env.account_mode === 'mock') {
+    // A mocked brokerage (DEV): never reaches Alpaca.
+    return {
+      label: `${env.environment} · Mock`,
+      className: 'bg-sky-100 text-sky-800',
+      warning: false,
+    };
+  }
   if (env.account_mode === 'paper') {
     return {
       label: `${env.environment} · Paper`,
@@ -41,8 +49,9 @@ function badgeFor(env: EnvironmentStatus): { label: string; className: string; w
 
 /**
  * The deployment's environment and verified account mode, shown in the header on every
- * page. One colour per meaning: grey paper, solid red live, amber warning when trading is
- * blocked, grey outline while the account can't be verified. Hidden until loaded.
+ * page. One colour per meaning: grey paper, solid red live, blue mock (DEV), amber warning
+ * when trading is blocked, grey outline while the account can't be verified. Hidden until
+ * loaded.
  */
 export function EnvironmentBadge() {
   const { data } = useEnvironment();

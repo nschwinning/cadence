@@ -10,6 +10,7 @@ import { formatAge, formatCurrency } from '../../lib/format';
 import { SessionComparisonChart } from './SessionComparisonChart';
 import { BuildAIPortfolioCard } from '../portfolios/BuildAIPortfolioCard';
 import { Modal } from '../../components/Modal';
+import { RequireRole } from '../../auth/RequireRole';
 
 /**
  * Compact schedule indicator. Keeps the column narrow by rendering a single
@@ -167,13 +168,15 @@ export function PaperTradingPage() {
         <h1 className="text-2xl font-bold tracking-tight text-slate-900">
           Portfolios
         </h1>
-        <button
-          type="button"
-          onClick={() => setBuildOpen(true)}
-          className="rounded bg-emerald-500 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-600 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 focus-visible:ring-offset-1"
-        >
-          Build an AI portfolio
-        </button>
+        <RequireRole role="trader">
+          <button
+            type="button"
+            onClick={() => setBuildOpen(true)}
+            className="rounded bg-emerald-500 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-600 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 focus-visible:ring-offset-1"
+          >
+            Build an AI portfolio
+          </button>
+        </RequireRole>
       </div>
 
       <Modal

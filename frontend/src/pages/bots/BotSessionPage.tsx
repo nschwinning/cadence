@@ -28,6 +28,7 @@ import type {
   TradeExtreme,
   BotTrade,
 } from '../../types/api';
+import { useHasRole } from '../../auth/useRoles';
 
 /** Status pill colors per bot status. */
 const STATUS_STYLES: Record<string, string> = {
@@ -292,8 +293,9 @@ function SessionHeader({ sessionId }: { sessionId: string }) {
   const { data: strategies } = useStrategies();
   const stop = useStopBotSession();
   const archive = useArchiveBotSession();
+  const canTrade = useHasRole('trader');
 
-  const actions = bot ? (
+  const actions = bot && canTrade ? (
     <div className="flex flex-wrap items-center gap-2">
       {bot.status === 'active' && (
         <button

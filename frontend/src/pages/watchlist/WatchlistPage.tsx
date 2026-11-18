@@ -32,6 +32,7 @@ import type {
   RunPhase,
   Sector,
 } from '../../types/api';
+import { RequireRole } from '../../auth/RequireRole';
 
 /** Human label per in-flight/terminal phase, for the live status badge. */
 const PHASE_LABELS: Record<RunPhase, string> = {
@@ -184,14 +185,16 @@ function WatchlistRecommendCard({ onAdded }: { onAdded: () => void }) {
           )}
 
           <div className="flex justify-end">
-            <button
-              type="submit"
-              disabled={!countValid || createRun.isPending}
-              aria-busy={createRun.isPending}
-              className="rounded bg-emerald-500 px-4 py-2 font-medium text-white hover:bg-emerald-600 disabled:cursor-not-allowed disabled:opacity-50"
-            >
-              {createRun.isPending ? 'Discover…' : 'Discover'}
-            </button>
+            <RequireRole role="trader">
+              <button
+                type="submit"
+                disabled={!countValid || createRun.isPending}
+                aria-busy={createRun.isPending}
+                className="rounded bg-emerald-500 px-4 py-2 font-medium text-white hover:bg-emerald-600 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {createRun.isPending ? 'Discover…' : 'Discover'}
+              </button>
+            </RequireRole>
           </div>
         </form>
       )}

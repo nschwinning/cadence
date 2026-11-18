@@ -1349,7 +1349,7 @@ export interface SystemStatusResponse {
 }
 
 /** A brokerage account mode: configured, or verified against the broker. */
-export type AccountMode = 'paper' | 'live' | 'unknown';
+export type AccountMode = 'paper' | 'live' | 'mock' | 'unknown';
 
 /** Response of `GET /api/v1/system/environment`: this deployment's identity. */
 export interface EnvironmentStatus {

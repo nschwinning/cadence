@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, Request, status
+from fastapi import Depends, FastAPI, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
@@ -26,6 +27,7 @@ from cadence.api.routers import (
     system_router,
     technical_indicators_router,
 )
+from cadence.auth import authorize
 from cadence.bot_orchestrator.background import (
     cleanup_orphaned_runs_on_startup as cleanup_orphaned_orchestrator_runs_on_startup,
 )
@@ -34,6 +36,8 @@ from cadence.recommendations.background import cleanup_orphaned_runs_on_startup
 from cadence.technical_indicators.background import (
     cleanup_orphaned_runs_on_startup as cleanup_orphaned_indicator_runs_on_startup,
 )
+
+logger = logging.getLogger(__name__)
 
 
 @asynccontextmanager
@@ -44,6 +48,11 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     orchestrator decision run left non-terminal by a prior process (e.g. a restart
     mid-job) is marked failed so it never appears stuck.
     """
+    if not settings.AUTH_ENABLED:
+        logger.warning(
+            "AUTH_ENABLED is false: the API is open to anyone who can reach it. "
+            "Use this only for local development."
+        )
     cleanup_orphaned_runs_on_startup()
     cleanup_orphaned_events_on_startup()
     cleanup_orphaned_indicator_runs_on_startup()
@@ -62,6 +71,9 @@ def create_app() -> FastAPI:
         title=settings.APP_NAME,
         version=settings.APP_VERSION,
         lifespan=lifespan,
+        # Every route authenticates and checks its role (health and cron routes are
+        # exempt inside ``authorize``); see :mod:`cadence.auth`.
+        dependencies=[Depends(authorize)],
     )
 
     app.add_middleware(

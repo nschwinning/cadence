@@ -132,3 +132,25 @@ def test_alpaca_parse_keeps_the_source() -> None:
         ("Nvidia CEO resigns", "benzinga"),
         ("No source", None),
     ]
+
+
+# The conftest autouse fixture replaces ``fetch_news`` for every test; keep the real
+# method (captured at import, before fixtures run) to exercise the stub guard itself.
+_REAL_FETCH_NEWS = AlpacaNewsSource.fetch_news
+
+
+def test_stub_never_calls_alpaca_news(monkeypatch: pytest.MonkeyPatch) -> None:
+    from cadence.config import settings
+    from cadence.news_sentiment import news as news_module
+
+    monkeypatch.setattr(AlpacaNewsSource, "fetch_news", _REAL_FETCH_NEWS)
+    monkeypatch.setattr(settings, "ALPACA_STUB", True)
+
+    def _no_network(*args: object, **kwargs: object) -> None:
+        raise AssertionError("Alpaca News must not be called under the stub")
+
+    monkeypatch.setattr(news_module.httpx, "get", _no_network)
+    source = AlpacaNewsSource(api_key="key", secret_key="secret")
+
+    assert source.fetch_news("NVDA", start=datetime(2026, 11, 10, tzinfo=MARKET_TZ), limit=3) == []
+    assert recent_headlines(["NVDA"], as_of=_TODAY, per_ticker=3, source=source) == {}

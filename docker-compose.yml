@@ -6,8 +6,9 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-cadence}
       POSTGRES_DB: ${POSTGRES_DB:-cadence}
     ports:
-      # Host 5435 -> container 5432 (5432/5433/5434 already used by other apps locally)
-      - "5435:5432"
+      # Host 5435 -> container 5432 (5432/5433/5434 already used by other apps locally).
+      # Configurable so a second environment (DEV) can run on the same host.
+      - "${DB_HOST_PORT:-5435}:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
       # Creates the separate `litellm` database on a FRESH volume only (Postgres
@@ -43,7 +44,7 @@ services:
       - ./litellm/config.yaml:/app/config.yaml:ro
     ports:
       # Host 4000 -> container 4000 (proxy API + admin UI at /ui).
-      - "4000:4000"
+      - "${LITELLM_HOST_PORT:-4000}:4000"
     depends_on:
       db:
         condition: service_healthy
@@ -119,6 +120,13 @@ services:
       ALPACA_ALLOW_LIVE: ${ALPACA_ALLOW_LIVE:-false}
       # This deployment's name, shown in the UI header (e.g. QA, PRD).
       CADENCE_ENVIRONMENT: ${CADENCE_ENVIRONMENT:-QA}
+      # Authentication (Keycloak realm "cadence"). Every /api/v1 route needs a token;
+      # set AUTH_ENABLED=false ONLY for local development. The issuer is the public
+      # URL users open (via Caddy); signing keys are fetched over the compose network.
+      AUTH_ENABLED: ${AUTH_ENABLED:-true}
+      CADENCE_PUBLIC_URL: ${CADENCE_PUBLIC_URL:-https://localhost:8443}
+      OIDC_ISSUER: ${OIDC_ISSUER:-}
+      OIDC_JWKS_URL: http://keycloak:8080/auth/realms/cadence/protocol/openid-connect/certs
       # Newest Alpaca News headlines per holding / candidate in every AI rebalance
       # (0 disables), drawn from the last N days.
       NEWS_HEADLINES_PER_TICKER: ${NEWS_HEADLINES_PER_TICKER:-3}
@@ -139,8 +147,10 @@ services:
       # is unreachable.
       SENTIMENT_SERVICE_URL: http://sentiment-service:8080
     ports:
-      # Host 8002 -> container 8000 (8000/8001 already used by other apps locally)
-      - "8002:8000"
+      # Host 8002 -> container 8000 (8000/8001 already used by other apps locally).
+      # Bound to 127.0.0.1: reachable on the host for debugging only; the network
+      # reaches the API through Caddy.
+      - "127.0.0.1:${BACKEND_HOST_PORT:-8002}:8000"
     depends_on:
       db:
         condition: service_healthy
@@ -315,8 +325,17 @@ services:
     environment:
       # Dev proxy target = backend service on the compose network
       VITE_PROXY_TARGET: http://backend:8000
+      # Behind Caddy: accept its Host header and point the HMR websocket at the
+      # HTTPS port the browser uses.
+      CADENCE_HOSTNAME: ${CADENCE_HOSTNAME:-localhost}
+      CADDY_HTTPS_PORT: ${CADDY_HTTPS_PORT:-8443}
+      # Login (OIDC authorization code + PKCE) against the Keycloak realm.
+      VITE_AUTH_ENABLED: ${AUTH_ENABLED:-true}
+      VITE_OIDC_AUTHORITY: ${CADENCE_PUBLIC_URL:-https://localhost:8443}/auth/realms/cadence
+      VITE_OIDC_CLIENT_ID: cadence-web
     ports:
-      - "5174:5173"
+      # Bound to 127.0.0.1: the network reaches the app through Caddy only.
+      - "127.0.0.1:${FRONTEND_HOST_PORT:-5174}:5173"
     depends_on:
       - backend
     volumes:
@@ -324,5 +343,91 @@ services:
       - ./frontend/src:/app/src
     restart: unless-stopped
 
+  caddy:
+    # The HTTPS entry point: the only way into Cadence from the network. Routes
+    # /auth to Keycloak, /api and /health to the backend, everything else to the
+    # frontend. Serves certificates from its own local CA (kept in caddy_data);
+    # see docs/environments.md for trusting it and for going public.
+    image: caddy:2-alpine
+    environment:
+      CADENCE_HOSTNAME: ${CADENCE_HOSTNAME:-localhost}
+    ports:
+      - "${CADDY_HTTPS_PORT:-8443}:443"
+    volumes:
+      - ./caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - frontend
+      - backend
+      - keycloak
+    restart: unless-stopped
+
+  keycloak:
+    # Identity provider (realm "cadence"), served under /auth behind Caddy. Its own
+    # `keycloak` database on the shared Postgres (db/init/02; on an existing volume
+    # create it once: `docker compose exec db createdb -U cadence keycloak`). The
+    # realm is imported from keycloak/cadence-realm.json on first start only.
+    image: quay.io/keycloak/keycloak:26.4
+    command: ["start", "--import-realm"]
+    environment:
+      KC_DB: postgres
+      KC_DB_URL: jdbc:postgresql://db:5432/keycloak
+      KC_DB_USERNAME: ${POSTGRES_USER:-cadence}
+      KC_DB_PASSWORD: ${POSTGRES_PASSWORD:-cadence}
+      KC_HTTP_ENABLED: "true"
+      KC_HTTP_RELATIVE_PATH: /auth
+      KC_HOSTNAME: ${CADENCE_PUBLIC_URL:-https://localhost:8443}/auth
+      KC_HOSTNAME_BACKCHANNEL_DYNAMIC: "true"
+      KC_PROXY_HEADERS: xforwarded
+      KC_HEALTH_ENABLED: "true"
+      # Keycloak's own admin (master realm, admin console at /auth/admin). It only
+      # manages Keycloak and has no Cadence role.
+      KC_BOOTSTRAP_ADMIN_USERNAME: ${KEYCLOAK_ADMIN:-}
+      KC_BOOTSTRAP_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD:-}
+      # Fits the Pi: cap the JVM heap.
+      JAVA_OPTS_KC_HEAP: "-Xms256m -Xmx512m"
+      # Substituted into the realm import (client redirect URIs / web origins).
+      CADENCE_PUBLIC_URL: ${CADENCE_PUBLIC_URL:-https://localhost:8443}
+    volumes:
+      - ./keycloak/cadence-realm.json:/opt/keycloak/data/import/cadence-realm.json:ro
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          exec 3<>/dev/tcp/127.0.0.1/9000 &&
+          printf 'GET /auth/health/ready HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n' >&3 &&
+          grep -q '"UP"' <&3
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 60s
+    restart: unless-stopped
+
+  keycloak-init:
+    # One-shot setup after Keycloak is healthy: the optional one-time seed of a
+    # Cadence admin (CADENCE_ADMIN_USERNAME / CADENCE_ADMIN_PASSWORD, temporary
+    # password). Exits when done; safe to run on every start.
+    image: quay.io/keycloak/keycloak:26.4
+    entrypoint: ["/bin/bash", "/opt/cadence/init.sh"]
+    environment:
+      KC_BOOTSTRAP_ADMIN_USERNAME: ${KEYCLOAK_ADMIN:-}
+      KC_BOOTSTRAP_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD:-}
+      CADENCE_ADMIN_USERNAME: ${CADENCE_ADMIN_USERNAME:-}
+      CADENCE_ADMIN_PASSWORD: ${CADENCE_ADMIN_PASSWORD:-}
+    volumes:
+      - ./keycloak/init.sh:/opt/cadence/init.sh:ro
+    depends_on:
+      keycloak:
+        condition: service_healthy
+    restart: "no"
+
 volumes:
   pgdata:
+  # Caddy's local certificate authority and issued certificates: keep it, or every
+  # device has to trust a new root certificate.
+  caddy_data:
+  caddy_config:

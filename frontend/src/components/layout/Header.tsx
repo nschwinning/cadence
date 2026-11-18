@@ -1,6 +1,7 @@
 import logoUrl from '../../assets/cadence-logo.svg';
 import { HamburgerIcon } from '../icons/HamburgerIcon';
 import { EnvironmentBadge } from './EnvironmentBadge';
+import { UserMenu } from '../../auth/UserMenu';
 
 interface HeaderProps {
   /** Toggles the off-canvas sidebar on narrow viewports. */
@@ -25,8 +26,9 @@ export function Header({ onToggleSidebar }: HeaderProps) {
         <span className="text-lg font-semibold text-white">Cadence</span>
       </a>
 
-      <div className="ml-auto">
+      <div className="ml-auto flex items-center gap-3">
         <EnvironmentBadge />
+        <UserMenu />
       </div>
     </header>
   );

@@ -45,6 +45,7 @@ import type {
   SessionRun,
   SessionSectorPerformance,
 } from '../../types/api';
+import { useHasRole } from '../../auth/useRoles';
 
 /** The supported asset scopes with their human-readable labels. */
 const SCOPE_OPTIONS: { value: 'stocks' | 'crypto' | 'both'; label: string }[] = [
@@ -612,14 +613,15 @@ function SessionHeader({
   const archive = useArchiveAction(sessionId, session);
   const { data: models } = useModels();
   const modelCatalog = Array.isArray(models) ? models : [];
+  const canTrade = useHasRole('trader');
 
-  const actions = (
+  const actions = canTrade ? (
     <div className="flex flex-wrap items-center gap-2">
       <RebalanceButton action={rebalance} />
       <CloseButton action={close} />
       <ArchiveButton action={archive} />
     </div>
-  );
+  ) : null;
   const feedback =
     rebalance.hasFeedback || close.hasFeedback || archive.hasFeedback ? (
       <div className="mt-4 flex flex-col gap-3">
@@ -1080,6 +1082,7 @@ function BenchmarkSwitcher({
 }) {
   const { data: benchmarks } = useBenchmarks();
   const mutation = useChangeSessionBenchmark(sessionId);
+  const canTrade = useHasRole('trader');
   const catalog = Array.isArray(benchmarks) ? benchmarks : null;
   return (
     <div>
@@ -1093,7 +1096,7 @@ function BenchmarkSwitcher({
         id="benchmark-select"
         className="mt-1 block w-full rounded border border-slate-300 bg-white px-2 py-1 text-sm text-slate-900 disabled:opacity-60"
         value={current}
-        disabled={mutation.isPending || !catalog}
+        disabled={mutation.isPending || !catalog || !canTrade}
         onChange={(e) => mutation.mutate(e.target.value)}
       >
         {(catalog ?? [{ id: current, name: current }]).map((b) => (
@@ -1134,6 +1137,7 @@ function ScopeSwitcher({
   current: string;
 }) {
   const mutation = useChangeSessionScope(sessionId);
+  const canTrade = useHasRole('trader');
   const { data: sectorPerformance } = useSessionSectorPerformance(sessionId);
   const [pending, setPending] = useState<'stocks' | 'crypto' | 'both' | null>(
     null,
@@ -1172,7 +1176,7 @@ function ScopeSwitcher({
         id="scope-select"
         className="mt-1 block w-full rounded border border-slate-300 bg-white px-2 py-1 text-sm text-slate-900 disabled:opacity-60"
         value={current}
-        disabled={mutation.isPending}
+        disabled={mutation.isPending || !canTrade}
         onChange={(e) =>
           handleSelect(e.target.value as 'stocks' | 'crypto' | 'both')
         }
@@ -1238,6 +1242,7 @@ function ScopeSwitcher({
 function CapitalIncreaser({ sessionId }: { sessionId: string }) {
   const [amount, setAmount] = useState('');
   const mutation = useIncreaseSessionCapital(sessionId);
+  const canTrade = useHasRole('trader');
   const parsed = Number(amount);
   const valid = amount.trim() !== '' && Number.isFinite(parsed) && parsed > 0;
 
@@ -1247,6 +1252,7 @@ function CapitalIncreaser({ sessionId }: { sessionId: string }) {
     mutation.mutate(parsed, { onSuccess: () => setAmount('') });
   }
 
+  if (!canTrade) return null;
   return (
     <form onSubmit={handleSubmit}>
       <label

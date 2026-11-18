@@ -6,6 +6,7 @@ import {
 } from '../../api/assetEvaluation';
 import { formatRelativeTime } from '../../lib/format';
 import type { AssetUniverseEvaluation } from '../../types/api';
+import { RequireRole } from '../../auth/RequireRole';
 
 /** A titled bulleted list of findings; renders nothing when the list is empty. */
 function FindingList({
@@ -110,21 +111,23 @@ export function UniverseEvaluationPanel() {
           </p>
         </div>
         <div className="flex items-center gap-2">
-          <button
-            type="button"
-            onClick={() => refresh.mutate()}
-            disabled={generating}
-            aria-busy={refresh.isPending}
-            className="inline-flex items-center gap-2 rounded border border-slate-300 px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 focus-visible:ring-offset-1"
-          >
-            {refresh.isPending && (
-              <span
-                aria-hidden="true"
-                className="h-3.5 w-3.5 rounded-full border-2 border-slate-300 border-t-emerald-500 motion-safe:animate-spin"
-              />
-            )}
-            {refresh.isPending ? 'Refreshing…' : 'Refresh'}
-          </button>
+          <RequireRole role="admin">
+            <button
+              type="button"
+              onClick={() => refresh.mutate()}
+              disabled={generating}
+              aria-busy={refresh.isPending}
+              className="inline-flex items-center gap-2 rounded border border-slate-300 px-3 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 focus-visible:ring-offset-1"
+            >
+              {refresh.isPending && (
+                <span
+                  aria-hidden="true"
+                  className="h-3.5 w-3.5 rounded-full border-2 border-slate-300 border-t-emerald-500 motion-safe:animate-spin"
+                />
+              )}
+              {refresh.isPending ? 'Refreshing…' : 'Refresh'}
+            </button>
+          </RequireRole>
           <button
             type="button"
             onClick={() => setExpanded((value) => !value)}

@@ -26,6 +26,7 @@ import type {
   CriterionResult,
   Sector,
 } from '../../types/api';
+import { RequireRole } from '../../auth/RequireRole';
 
 /** Format a USD monetary value compactly (e.g. $1.2B, $3.4M, $5.00). `null` → "—". */
 function formatUsd(value: number | null): string {
@@ -176,15 +177,17 @@ function AssetRow({ asset }: { asset: Asset }) {
         </div>
       </td>
       <td className="px-4 py-3 text-right">
-        <button
-          type="button"
-          onClick={() => deleteAsset.mutate(asset.id)}
-          disabled={deleteAsset.isPending}
-          className="rounded border border-red-300 px-2.5 py-1 text-xs font-medium text-red-700 hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-50"
-          aria-label={`Delete ${asset.ticker}`}
-        >
-          {deleteAsset.isPending ? 'Deleting…' : 'Delete'}
-        </button>
+        <RequireRole role="admin">
+          <button
+            type="button"
+            onClick={() => deleteAsset.mutate(asset.id)}
+            disabled={deleteAsset.isPending}
+            className="rounded border border-red-300 px-2.5 py-1 text-xs font-medium text-red-700 hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-50"
+            aria-label={`Delete ${asset.ticker}`}
+          >
+            {deleteAsset.isPending ? 'Deleting…' : 'Delete'}
+          </button>
+        </RequireRole>
       </td>
     </tr>
   );
@@ -495,7 +498,9 @@ export function AssetsPage() {
       {/* AI assessment of the whole universe, directly below the donuts. */}
       <UniverseEvaluationPanel />
 
-      {/* Add / Recommend — two-column grid (stacks on mobile, equal height ≥ md) */}
+      {/* Add / Recommend — two-column grid (stacks on mobile, equal height ≥ md).
+          Both change the shared universe, so they are admin-only. */}
+      <RequireRole role="admin">
       <div className="grid grid-cols-1 gap-6 md:grid-cols-[minmax(0,2fr)_minmax(0,3fr)] md:items-stretch">
         {/* Add-asset section */}
         <div className="flex h-full flex-col rounded-lg border border-slate-200 bg-white p-6 shadow-sm">
@@ -543,6 +548,7 @@ export function AssetsPage() {
         {/* Recommend-assets section */}
         <RecommendAssetsCard onViewUniverse={focusUniverse} />
       </div>
+      </RequireRole>
 
       {/* List section */}
       <div className="rounded-lg border border-slate-200 bg-white shadow-sm">

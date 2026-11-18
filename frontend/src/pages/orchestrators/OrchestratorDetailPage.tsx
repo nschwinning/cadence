@@ -26,6 +26,7 @@ import {
   formatSignedPercent,
   signClass,
 } from './orchestratorUi';
+import { RequireRole } from '../../auth/RequireRole';
 
 const BUTTON_CLASS =
   'rounded border border-slate-300 px-3 py-1.5 text-sm font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-50';
@@ -59,6 +60,7 @@ function Header({ orchestrator }: { orchestrator: BotOrchestratorDetail }) {
           </h1>
           <StatusBadge status={orchestrator.status} />
         </div>
+        <RequireRole role="trader">
         <div className="flex flex-wrap items-center gap-2">
           {isActive && (
             <button
@@ -118,6 +120,7 @@ function Header({ orchestrator }: { orchestrator: BotOrchestratorDetail }) {
             </button>
           )}
         </div>
+        </RequireRole>
       </div>
       {(runNow.isError || stop.isError || archive.isError) && (
         <p role="alert" className="mt-3 text-sm text-red-700">

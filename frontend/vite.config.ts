@@ -8,11 +8,18 @@ import react from '@vitejs/plugin-react';
 // override with VITE_PROXY_TARGET=http://localhost:8002 (the backend's host port).
 const proxyTarget = process.env.VITE_PROXY_TARGET || 'http://backend:8000';
 
+// Behind the Caddy HTTPS entry point (compose): accept its Host header (Vite rejects
+// unknown hosts) and connect the HMR websocket through the HTTPS port the browser uses.
+const publicHostname = process.env.CADENCE_HOSTNAME;
+const httpsPort = process.env.CADDY_HTTPS_PORT ? Number(process.env.CADDY_HTTPS_PORT) : undefined;
+
 // https://vite.dev/config/
 export default defineConfig({
   plugins: [react()],
   server: {
     port: 5173,
+    allowedHosts: publicHostname ? [publicHostname] : undefined,
+    hmr: httpsPort ? { clientPort: httpsPort, protocol: 'wss' } : undefined,
     proxy: {
       // Forward API and health requests to the backend so the browser talks
       // to the frontend origin only (no CORS in the common path).

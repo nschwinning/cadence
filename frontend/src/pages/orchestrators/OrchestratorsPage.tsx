@@ -13,6 +13,7 @@ import {
   formatSignedPercent,
   signClass,
 } from './orchestratorUi';
+import { RequireRole } from '../../auth/RequireRole';
 
 function OrchestratorRow({ orchestrator }: { orchestrator: BotOrchestrator }) {
   const run = orchestrator.last_run;
@@ -77,13 +78,15 @@ export function OrchestratorsPage() {
     <section className="flex flex-col gap-6">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <h1 className="text-2xl font-bold tracking-tight text-slate-900">Orchestrators</h1>
-        <button
-          type="button"
-          onClick={() => setDeployOpen(true)}
-          className="rounded bg-emerald-500 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-600 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 focus-visible:ring-offset-1"
-        >
-          Deploy orchestrator
-        </button>
+        <RequireRole role="trader">
+          <button
+            type="button"
+            onClick={() => setDeployOpen(true)}
+            className="rounded bg-emerald-500 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-600 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500 focus-visible:ring-offset-1"
+          >
+            Deploy orchestrator
+          </button>
+        </RequireRole>
       </div>
 
       <Modal

@@ -17,6 +17,7 @@ import { RunDetailPage } from './pages/runs/RunDetailPage';
 import { TechnicalIndicatorsPage } from './pages/technical-indicators/TechnicalIndicatorsPage';
 import { SystemStatusPage } from './pages/system/SystemStatusPage';
 import { AdminPage } from './pages/admin/AdminPage';
+import { RequireRole } from './auth/RequireRole';
 
 /**
  * Redirect a legacy `/paper-trading/:id` deep link to the merged
@@ -61,7 +62,14 @@ export function App() {
           element={<TechnicalIndicatorsPage />}
         />
         <Route path="system" element={<SystemStatusPage />} />
-        <Route path="admin" element={<AdminPage />} />
+        <Route
+          path="admin"
+          element={
+            <RequireRole role="admin" fallback={<Navigate to="/" replace />}>
+              <AdminPage />
+            </RequireRole>
+          }
+        />
       </Route>
     </Routes>
   );

@@ -49,7 +49,9 @@ class EnvironmentStatus:
 
 
 def configured_mode() -> AccountMode:
-    """The account mode the configuration asks for."""
+    """The account mode the configuration asks for (``mock`` under the Alpaca stub)."""
+    if settings.ALPACA_STUB:
+        return "mock"
     return "paper" if settings.ALPACA_PAPER else "live"
 
 
@@ -86,7 +88,8 @@ def resolve_environment(broker: Broker | None) -> EnvironmentStatus:
     """This deployment's identity, verified account mode and trading permission."""
     configured = configured_mode()
     verified = account_mode(broker)
-    mismatch = verified != "unknown" and verified != configured
+    # A mocked account never mismatches: it cannot trade real money.
+    mismatch = verified not in ("unknown", "mock") and verified != configured
     reason: str | None = None
     if mismatch:
         reason = (

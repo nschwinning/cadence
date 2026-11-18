@@ -303,8 +303,8 @@ class StubBroker:
 
     # Account mode --------------------------------------------------------
     def probe_account_mode(self) -> AccountMode:
-        """The stub is a paper account."""
-        return "paper"
+        """The stub is a mocked account (it never reaches Alpaca)."""
+        return "mock"
 
     # Market status -------------------------------------------------------
     def is_market_open(self) -> bool:

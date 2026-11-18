@@ -100,8 +100,8 @@ def test_probe_unknown_when_no_endpoint_confirms(paper: Any, live: Any) -> None:
     assert _alpaca(_ProbeSession(paper=paper, live=live)).probe_account_mode() == "unknown"
 
 
-def test_stub_is_paper() -> None:
-    assert StubBroker().probe_account_mode() == "paper"
+def test_stub_is_mock() -> None:
+    assert StubBroker().probe_account_mode() == "mock"
 
 
 # Resolver ------------------------------------------------------------------------
@@ -241,3 +241,45 @@ def test_environment_endpoint_without_credentials(
     body = resp.json()
     assert body["account_mode"] == "unknown"
     assert "key" not in str(body).lower()
+
+
+def test_mocked_dev_deployment(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(settings, "CADENCE_ENVIRONMENT", "DEV")
+    monkeypatch.setattr(settings, "ALPACA_STUB", True)
+    monkeypatch.setattr(settings, "ALPACA_PAPER", False)  # irrelevant under the stub
+
+    status = environment.resolve_environment(StubBroker())
+
+    assert status == environment.EnvironmentStatus(
+        environment="DEV",
+        configured_mode="mock",
+        account_mode="mock",
+        mismatch=False,
+        trading_enabled=True,
+        reason=None,
+    )
+
+
+def test_mock_account_never_mismatches(monkeypatch: pytest.MonkeyPatch) -> None:
+    # A stub injected without ALPACA_STUB (e.g. in tests) still trades: it can't touch money.
+    monkeypatch.setattr(settings, "ALPACA_STUB", False)
+    status = environment.resolve_environment(StubBroker())
+    assert (status.mismatch, status.trading_enabled) == (False, True)
+
+
+def test_environment_endpoint_reports_mock(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(settings, "CADENCE_ENVIRONMENT", "DEV")
+    monkeypatch.setattr(settings, "ALPACA_STUB", True)
+    app.dependency_overrides[optional_broker] = StubBroker
+    try:
+        body = client.get("/api/v1/system/environment").json()
+    finally:
+        app.dependency_overrides.pop(optional_broker, None)
+    assert (body["environment"], body["configured_mode"], body["account_mode"]) == (
+        "DEV",
+        "mock",
+        "mock",
+    )
+

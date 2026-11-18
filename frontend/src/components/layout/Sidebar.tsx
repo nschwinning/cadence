@@ -10,6 +10,8 @@ import { RunsIcon } from '../icons/RunsIcon';
 import { TechnicalIndicatorsIcon } from '../icons/TechnicalIndicatorsIcon';
 import { SystemIcon } from '../icons/SystemIcon';
 import { AdminIcon } from '../icons/AdminIcon';
+import type { Role } from '../../auth/roles';
+import { useRoles } from '../../auth/useRoles';
 
 interface SidebarProps {
   /** Whether the off-canvas sidebar is open (narrow viewports only). */
@@ -24,6 +26,8 @@ interface NavItem {
   icon: ReactNode;
   /** Whether the link matches only the exact path (index route). */
   end?: boolean;
+  /** Shown only to users holding this role. */
+  role?: Role;
 }
 
 const NAV_ITEMS: NavItem[] = [
@@ -48,7 +52,7 @@ const NAV_ITEMS: NavItem[] = [
     icon: <TechnicalIndicatorsIcon className="h-5 w-5" />,
   },
   { to: '/system', label: 'System', icon: <SystemIcon className="h-5 w-5" /> },
-  { to: '/admin', label: 'Admin', icon: <AdminIcon className="h-5 w-5" /> },
+  { to: '/admin', label: 'Admin', icon: <AdminIcon className="h-5 w-5" />, role: 'admin' },
 ];
 
 /**
@@ -56,6 +60,7 @@ const NAV_ITEMS: NavItem[] = [
  * `xl`, opened from the header and dismissed via the dimmed overlay.
  */
 export function Sidebar({ isOpen, onClose }: SidebarProps) {
+  const roles = useRoles();
   const location = useLocation();
   const navState = location.state as { from?: string } | null;
   // An asset detail page (`/assets/:ticker`) opened from the watchlist belongs to
@@ -82,7 +87,7 @@ export function Sidebar({ isOpen, onClose }: SidebarProps) {
       >
         <nav className="p-3" aria-label="Main">
           <ul className="m-0 list-none p-0">
-            {NAV_ITEMS.map((item) => (
+            {NAV_ITEMS.filter((item) => !item.role || roles.has(item.role)).map((item) => (
               <li key={item.to}>
                 <NavLink
                   to={item.to}

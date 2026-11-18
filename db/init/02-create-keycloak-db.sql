@@ -1,0 +1,12 @@
+-- Create the separate `keycloak` database on the shared Postgres instance for the
+-- Keycloak identity provider (realm `cadence`), isolated from the app's `cadence`
+-- database.
+--
+-- Postgres only runs scripts in /docker-entrypoint-initdb.d when the data volume
+-- is FIRST initialized (a fresh `pgdata`). On an EXISTING volume this will not
+-- run, so create the database once manually:
+--   docker compose exec db createdb -U cadence keycloak
+--
+-- Keycloak creates its own tables on first start; the app's Alembic migrations
+-- never touch this database.
+CREATE DATABASE keycloak;

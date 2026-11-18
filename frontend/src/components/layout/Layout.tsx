@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { Outlet } from 'react-router-dom';
+import { PermissionBanner } from '../../auth/PermissionBanner';
 import { Header } from './Header';
 import { Sidebar } from './Sidebar';
 
@@ -18,6 +19,7 @@ export function Layout() {
       <Sidebar isOpen={sidebarOpen} onClose={() => setSidebarOpen(false)} />
 
       <main className="min-h-[calc(100vh-60px)] bg-[#f5f7fa] p-4 xl:ml-[270px]">
+        <PermissionBanner />
         <Outlet />
       </main>
     </div>

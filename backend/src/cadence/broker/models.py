@@ -15,7 +15,7 @@ from enum import Enum
 from typing import Any, Literal
 
 #: The kind of brokerage account verified behind the credentials.
-AccountMode = Literal["paper", "live", "unknown"]
+AccountMode = Literal["paper", "live", "mock", "unknown"]
 
 
 class AssetClass(str, Enum):
