@@ -57,6 +57,13 @@ its own local certificate authority, kept in the `caddy_data` volume:
 docker compose cp caddy:/data/caddy/pki/authorities/local/root.crt ./cadence-<env>-root.crt
 ```
 
+`CADENCE_HOSTNAME` may be a host name (e.g. `raspberrypi.local`) or the Pi's IP address. An IP
+avoids depending on `.local` name resolution (and its IPv6 quirks); give the Pi a fixed address
+in your router then (a DHCP reservation), because the certificate and Keycloak's allowed
+addresses are tied to it. Changing `CADENCE_HOSTNAME` on an existing environment also requires
+updating the `cadence-web` client's redirect URIs and web origins in Keycloak (realm import runs
+only on the first start) — on DEV simply recreate it with `docker compose down -v`.
+
 Install that file as a trusted root certificate on each device (macOS: Keychain Access → System →
 import, set "Always Trust"; iOS: open it, then Settings → General → About → Certificate Trust
 Settings; Windows: "Trusted Root Certification Authorities"). Until then the browser warns once.

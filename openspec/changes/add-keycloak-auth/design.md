@@ -35,6 +35,9 @@ API keys for scripts.
        handle { reverse_proxy frontend:5173 }   # Vite dev server incl. HMR websocket
    }
    ```
+   Global option `default_sni {$CADENCE_HOSTNAME}` (found on DEV): clients opening an IP address
+   send no SNI, and behind Docker's port mapping Caddy only sees the container's own address, so
+   without it the TLS handshake aborts ("tlsv1 alert internal error").
    Published `${CADDY_HTTPS_PORT:-8443}:443`; `caddy_data` volume keeps the local CA (root
    certificate at `/data/caddy/pki/authorities/local/root.crt`, exported with `docker compose cp`
    and installed once per device). `CADENCE_HOSTNAME` is the Pi's hostname or IP the browser uses;

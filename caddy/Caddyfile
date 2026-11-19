@@ -9,6 +9,10 @@
 {
 	# Only the HTTPS port is published; no HTTP->HTTPS redirect listener needed.
 	auto_https disable_redirects
+	# Clients opening an IP address send no server name (SNI) in the TLS handshake,
+	# and behind Docker's port mapping Caddy only sees the container's own address —
+	# so it could not pick a certificate. Fall back to the configured host name.
+	default_sni {$CADENCE_HOSTNAME}
 }
 
 {$CADENCE_HOSTNAME} {
