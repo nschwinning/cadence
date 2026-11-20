@@ -210,30 +210,45 @@ def _asset_universe_metrics(session: Session) -> AssetUniverseMetrics:
     )
 
 
-def _paper_trading_metrics(session: Session) -> PaperTradingMetrics:
+def _paper_trading_metrics(
+    session: Session, *, owner_ids: set[uuid.UUID] | None = None
+) -> PaperTradingMetrics:
     """Count active sessions and trades executed within the recent window."""
     active_sessions = paper_trading_service.count_sessions(
-        session, status=SessionStatus.ACTIVE
+        session, status=SessionStatus.ACTIVE, owner_ids=owner_ids
     )
     cutoff = datetime.now(tz=UTC) - timedelta(days=RECENT_TRADE_WINDOW_DAYS)
-    recent_trades = session.execute(
-        select(func.count(PaperTrade.id)).where(PaperTrade.executed_at >= cutoff)
-    ).scalar_one()
+    trades_stmt = select(func.count(PaperTrade.id)).where(PaperTrade.executed_at >= cutoff)
+    if owner_ids is not None:
+        from cadence.portfolios.models import Portfolio
+
+        trades_stmt = trades_stmt.where(
+            PaperTrade.session_id.in_(
+                select(PaperTradingSession.id).where(
+                    PaperTradingSession.portfolio_id.in_(
+                        select(Portfolio.id).where(Portfolio.owner_user_id.in_(owner_ids))
+                    )
+                )
+            )
+        )
+    recent_trades = session.execute(trades_stmt).scalar_one()
     return PaperTradingMetrics(
         active_sessions=active_sessions,
         recent_trades=recent_trades,
     )
 
 
-def get_dashboard_metrics(session: Session) -> DashboardMetrics:
+def get_dashboard_metrics(
+    session: Session, *, owner_ids: set[uuid.UUID] | None = None
+) -> DashboardMetrics:
     """Compute the full dashboard overview over the current data.
 
     Succeeds on an empty database, returning zero counts and empty breakdowns.
     """
     return DashboardMetrics(
         assets=_asset_universe_metrics(session),
-        portfolio_count=portfolios_service.count_portfolios(session),
-        paper_trading=_paper_trading_metrics(session),
+        portfolio_count=portfolios_service.count_portfolios(session, owner_ids=owner_ids),
+        paper_trading=_paper_trading_metrics(session, owner_ids=owner_ids),
     )
 
 
@@ -635,6 +650,7 @@ def _automation_summary(
     active_sessions: list[PaperTradingSession],
     start_dt: datetime | None,
     now: datetime,
+    owner_ids: set[uuid.UUID] | None = None,
 ) -> AutomationSummary:
     """Summarize the AI rebalance automation's health over the range."""
     latest_runs = ai_portfolio_service.list_ai_runs(
@@ -663,6 +679,8 @@ def _automation_summary(
     )
     if start_dt is not None:
         failed_stmt = failed_stmt.where(AIPortfolioEvent.created_at >= start_dt)
+    if owner_ids is not None:
+        failed_stmt = failed_stmt.where(AIPortfolioEvent.owner_user_id.in_(owner_ids))
     failed_in_range = session.execute(failed_stmt).scalar_one()
 
     return AutomationSummary(
@@ -679,6 +697,7 @@ def _recent_activity(
     *,
     start_dt: datetime | None,
     label_map: dict[uuid.UUID, str],
+    owner_ids: set[uuid.UUID] | None = None,
 ) -> list[ActivityEntry]:
     """The most recent AI runs within the range, newest first, capped."""
     stmt = select(AIPortfolioEvent).order_by(
@@ -686,6 +705,8 @@ def _recent_activity(
     )
     if start_dt is not None:
         stmt = stmt.where(AIPortfolioEvent.created_at >= start_dt)
+    if owner_ids is not None:
+        stmt = stmt.where(AIPortfolioEvent.owner_user_id.in_(owner_ids))
     events = session.execute(stmt.limit(RECENT_ACTIVITY_LIMIT)).scalars().all()
     return [
         ActivityEntry(
@@ -836,7 +857,9 @@ class DashboardAiCosts:
     orchestrators: list[OrchestratorAiCost] = field(default_factory=list)
 
 
-def get_dashboard_ai_costs(session: Session) -> DashboardAiCosts:
+def get_dashboard_ai_costs(
+    session: Session, *, owner_ids: set[uuid.UUID] | None = None
+) -> DashboardAiCosts:
     """Return the all-time AI cost per active portfolio with a grand total.
 
     Lists active (non-archived) paper-trading sessions, reads their cumulative
@@ -851,7 +874,7 @@ def get_dashboard_ai_costs(session: Session) -> DashboardAiCosts:
     total.
     """
     active_sessions = paper_trading_service.list_sessions(
-        session, status=SessionStatus.ACTIVE, limit=_OVERVIEW_SESSION_LIMIT
+        session, status=SessionStatus.ACTIVE, limit=_OVERVIEW_SESSION_LIMIT, owner_ids=owner_ids
     )
     session_ids = [str(row.id) for row in active_sessions]
     cost_map = session_ai_costs_usd(session_ids)
@@ -870,7 +893,7 @@ def get_dashboard_ai_costs(session: Session) -> DashboardAiCosts:
     # Sort by cost descending; unavailable (None) costs sort last.
     portfolios.sort(key=lambda p: (p.ai_cost_usd is not None, p.ai_cost_usd or 0.0), reverse=True)
 
-    orchestrators = _orchestrator_ai_costs(session)
+    orchestrators = _orchestrator_ai_costs(session, owner_ids=owner_ids)
     readable = [p.ai_cost_usd for p in portfolios] + [
         o.ai_cost_usd for o in orchestrators
     ]
@@ -883,14 +906,20 @@ def get_dashboard_ai_costs(session: Session) -> DashboardAiCosts:
     )
 
 
-def _orchestrator_ai_costs(session: Session) -> list[OrchestratorAiCost]:
+def _orchestrator_ai_costs(
+    session: Session, *, owner_ids: set[uuid.UUID] | None = None
+) -> list[OrchestratorAiCost]:
     """Active orchestrators with their all-time AI cost, most expensive first."""
     # Imported here: the orchestrator package depends on strategy_bots, which imports
     # this module, so a top-level import would be circular.
     from cadence.bot_orchestrator import costs as orchestrator_costs
     from cadence.bot_orchestrator import service as orchestrator_service
 
-    active = orchestrator_service.active_orchestrators(session)
+    active = [
+        o
+        for o in orchestrator_service.active_orchestrators(session)
+        if owner_ids is None or o.owner_user_id in owner_ids
+    ]
     totals = orchestrator_costs.orchestrator_ai_costs(session, active)
     rows = [
         OrchestratorAiCost(
@@ -911,6 +940,7 @@ def get_dashboard_overview(
     broker: Broker,
     today: date | None = None,
     now: datetime | None = None,
+    owner_ids: set[uuid.UUID] | None = None,
 ) -> DashboardOverview:
     """Compute the range-scoped overview over the active paper-trading sessions.
 
@@ -925,7 +955,7 @@ def get_dashboard_overview(
     start_dt = _range_start_datetime(start_date)
 
     active_sessions = paper_trading_service.list_sessions(
-        session, status=SessionStatus.ACTIVE, limit=_OVERVIEW_SESSION_LIMIT
+        session, status=SessionStatus.ACTIVE, limit=_OVERVIEW_SESSION_LIMIT, owner_ids=owner_ids
     )
     sessions = [
         _session_performance(
@@ -948,7 +978,7 @@ def get_dashboard_overview(
 
     sessions.extend(
         strategy_bots_service.dashboard_performances(
-            session, range_=range_, today=today
+            session, range_=range_, today=today, owner_ids=owner_ids
         )
     )
     # Bot orchestrators are one row each, covering their free capital and their bots
@@ -957,14 +987,14 @@ def get_dashboard_overview(
 
     sessions.extend(
         orchestrator_dashboard.dashboard_performances(
-            session, range_=range_, today=today
+            session, range_=range_, today=today, owner_ids=owner_ids
         )
     )
 
     label_map = {
         row.id: (row.portfolio_name or row.strategy_key)
         for row in paper_trading_service.list_sessions(
-            session, include_archived=True, limit=_OVERVIEW_SESSION_LIMIT
+            session, include_archived=True, limit=_OVERVIEW_SESSION_LIMIT, owner_ids=owner_ids
         )
     }
 
@@ -995,9 +1025,10 @@ def get_dashboard_overview(
             active_sessions=active_sessions,
             start_dt=start_dt,
             now=now,
+            owner_ids=owner_ids,
         ),
         recent_activity=_recent_activity(
-            session, start_dt=start_dt, label_map=label_map
+            session, start_dt=start_dt, label_map=label_map, owner_ids=owner_ids
         ),
         universe_balance=_universe_balance(session),
         universe_performers=_universe_performers(

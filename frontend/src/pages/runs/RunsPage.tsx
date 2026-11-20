@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { Link } from 'react-router-dom';
 import { useAIRuns } from '../../api/aiPortfolio';
 import type { AIPortfolioEvent } from '../../types/api';
+import { AllUsersToggle, ownerLabel } from '../../components/AllUsersToggle';
 
 /** Format an ISO timestamp for display, or an em dash when absent. */
 function ts(value: string | null | undefined): string {
@@ -38,7 +39,7 @@ const TYPE_FILTERS: { value: TypeFilter; label: string }[] = [
   { value: 'close', label: 'Closes' },
 ];
 
-function RunRow({ run }: { run: AIPortfolioEvent }) {
+function RunRow({ run, showOwner = false }: { run: AIPortfolioEvent; showOwner?: boolean }) {
   return (
     <tr className="border-b border-slate-100 hover:bg-slate-50">
       <td className="px-4 py-3 font-semibold">
@@ -74,14 +75,17 @@ function RunRow({ run }: { run: AIPortfolioEvent }) {
           <span className="text-slate-400">—</span>
         )}
       </td>
+      {showOwner && <td className="px-4 py-3 text-slate-600">{ownerLabel(run.owner)}</td>}
     </tr>
   );
 }
 
 export function RunsPage() {
   const [typeFilter, setTypeFilter] = useState<TypeFilter>('all');
+  const [allUsers, setAllUsers] = useState(false);
   const { data, isPending, isError } = useAIRuns({
     eventType: typeFilter === 'all' ? undefined : typeFilter,
+    allUsers,
   });
   const runs = data?.items ?? [];
   const total = data?.total ?? 0;
@@ -98,7 +102,10 @@ export function RunsPage() {
           {!isPending && !isError && total > 0 && (
             <span className="text-sm text-slate-500">{total} total</span>
           )}
-          <div className="ml-auto inline-flex rounded-md border border-slate-200 p-0.5">
+          <div className="ml-auto">
+            <AllUsersToggle checked={allUsers} onChange={setAllUsers} />
+          </div>
+          <div className="inline-flex rounded-md border border-slate-200 p-0.5">
             {TYPE_FILTERS.map((f) => (
               <button
                 key={f.value}
@@ -151,11 +158,12 @@ export function RunsPage() {
                   <th className="px-4 py-3 text-right">Searches</th>
                   <th className="px-4 py-3 text-right">Duration</th>
                   <th className="px-4 py-3">Session</th>
+                  {allUsers && <th className="px-4 py-3">Owner</th>}
                 </tr>
               </thead>
               <tbody>
                 {runs.map((run) => (
-                  <RunRow key={run.id} run={run} />
+                  <RunRow key={run.id} run={run} showOwner={allUsers} />
                 ))}
               </tbody>
             </table>

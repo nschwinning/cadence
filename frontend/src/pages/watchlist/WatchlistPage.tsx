@@ -185,7 +185,7 @@ function WatchlistRecommendCard({ onAdded }: { onAdded: () => void }) {
           )}
 
           <div className="flex justify-end">
-            <RequireRole role="trader">
+            <RequireRole role="admin">
               <button
                 type="submit"
                 disabled={!countValid || createRun.isPending}

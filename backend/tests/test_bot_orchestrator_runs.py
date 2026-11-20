@@ -319,7 +319,9 @@ def test_no_action_decision_succeeds(db_session: Session) -> None:
 
     assert run.status == "succeeded"
     assert run.applied == [] and run.rejected == []
-    assert not runs.orchestrator_due(db_session, orchestrator, _PRE_OPEN)
+    # finished_at is wall-clock time, so check from there rather than from _PRE_OPEN.
+    assert run.finished_at is not None
+    assert not runs.orchestrator_due(db_session, orchestrator, run.finished_at)
 
 
 def test_run_is_skipped_on_a_non_trading_day(db_session: Session) -> None:

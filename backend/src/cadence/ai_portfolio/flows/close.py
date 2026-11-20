@@ -13,6 +13,7 @@ import uuid
 
 from sqlalchemy.orm import Session
 
+from cadence.accounts.lookups import session_owner_id
 from cadence.ai_portfolio._helpers import (
     _apply_rebalance_trades,
     _asset_class_map,
@@ -106,6 +107,7 @@ def close_session(
             broker,
             session_row.allocated_capital,
             session_id=session_row.id,
+            account_user_id=session_owner_id(session, session_row.id),
             purpose="ai_close",
         )
         trade_results = executor.execute_close(positions, asset_classes=asset_classes)

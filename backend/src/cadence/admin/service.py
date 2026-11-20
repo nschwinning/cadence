@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import logging
 import time
+import uuid
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -413,7 +414,11 @@ def reconcile_now(db: Session, broker: Broker) -> ReconcileResult:
 
 # Flattening and restoring ------------------------------------------------------
 def flatten_orphans(
-    db: Session, broker: Broker, *, symbol: str | None = None
+    db: Session,
+    broker: Broker,
+    *,
+    symbol: str | None = None,
+    account_user_id: uuid.UUID | None = None,
 ) -> list[FlattenOutcome]:
     """Sell the recomputed orphan excess for ``symbol`` (or every orphan when ``None``).
 
@@ -424,11 +429,17 @@ def flatten_orphans(
     Nothing is written to any Cadence ledger. Raises :class:`BrokerError` when the
     broker cannot be read at all.
     """
-    return _adjust(db, broker, symbol=symbol, restore=False)
+    return _adjust(
+        db, broker, symbol=symbol, restore=False, account_user_id=account_user_id
+    )
 
 
 def restore_positions(
-    db: Session, broker: Broker, *, symbol: str | None = None
+    db: Session,
+    broker: Broker,
+    *,
+    symbol: str | None = None,
+    account_user_id: uuid.UUID | None = None,
 ) -> list[FlattenOutcome]:
     """Buy back shortfalls and shorts so the account holds exactly what Cadence tracks.
 
@@ -437,11 +448,18 @@ def restore_positions(
     while the market is closed; per-symbol rejections are reported, the rest still run.
     The purchases are journaled administrator orders and touch no Cadence ledger.
     """
-    return _adjust(db, broker, symbol=symbol, restore=True)
+    return _adjust(
+        db, broker, symbol=symbol, restore=True, account_user_id=account_user_id
+    )
 
 
 def _adjust(
-    db: Session, broker: Broker, *, symbol: str | None, restore: bool
+    db: Session,
+    broker: Broker,
+    *,
+    symbol: str | None,
+    restore: bool,
+    account_user_id: uuid.UUID | None = None,
 ) -> list[FlattenOutcome]:
     positions = broker.get_positions()
     orders = broker.get_open_orders()
@@ -458,7 +476,9 @@ def _adjust(
         if not targets:
             return [FlattenOutcome(symbol=symbol, result="skipped", reason="not_found")]
 
-    gateway = OrderGateway(broker, owner_kind=OrderOwnerKind.ADMIN)
+    gateway = OrderGateway(
+        broker, owner_kind=OrderOwnerKind.ADMIN, account_user_id=account_user_id
+    )
     market_open: bool | None = None
     outcomes: list[FlattenOutcome] = []
     for row in targets:

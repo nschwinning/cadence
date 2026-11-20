@@ -16,6 +16,7 @@ from datetime import UTC, datetime
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from cadence.accounts.models import LEGACY_OWNER_ID
 from cadence.bot_orchestrator.constants import (
     DEFAULT_MAX_BOT_SHARE,
     DEFAULT_MAX_PARALLEL_BOTS,
@@ -67,6 +68,7 @@ def create_orchestrator(
     cadence: str = RebalanceCadence.DAILY.value,
     model: str | None = None,
     benchmark: str = Benchmark.SP500.value,
+    owner_user_id: uuid.UUID = LEGACY_OWNER_ID,
 ) -> BotOrchestrator:
     """Validate and persist an active orchestrator. Invokes no AI, creates no bot."""
     clean_label = label.strip()
@@ -104,6 +106,7 @@ def create_orchestrator(
             ) from exc
 
     orchestrator = BotOrchestrator(
+        owner_user_id=owner_user_id,
         label=clean_label,
         status=OrchestratorStatus.ACTIVE.value,
         capital=capital,
@@ -129,10 +132,15 @@ def get_orchestrator(db: Session, orchestrator_id: uuid.UUID) -> BotOrchestrator
 
 
 def list_orchestrators(
-    db: Session, *, include_archived: bool = False
+    db: Session,
+    *,
+    include_archived: bool = False,
+    owner_ids: set[uuid.UUID] | None = None,
 ) -> list[BotOrchestrator]:
     """Orchestrators newest first; archived ones only when requested."""
     stmt = select(BotOrchestrator).order_by(BotOrchestrator.created_at.desc())
+    if owner_ids is not None:
+        stmt = stmt.where(BotOrchestrator.owner_user_id.in_(owner_ids))
     if not include_archived:
         stmt = stmt.where(BotOrchestrator.status != OrchestratorStatus.ARCHIVED.value)
     return list(db.execute(stmt).scalars())

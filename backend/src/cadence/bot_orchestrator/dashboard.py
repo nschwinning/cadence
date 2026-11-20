@@ -10,6 +10,7 @@ a fresh contribution — the capital pool is the row's single contribution.
 
 from __future__ import annotations
 
+import uuid
 from datetime import UTC, date, datetime
 
 from sqlalchemy import select
@@ -111,10 +112,15 @@ def dashboard_performance(
 
 
 def dashboard_performances(
-    db: Session, *, range_: DashboardRange, today: date | None = None
+    db: Session,
+    *,
+    range_: DashboardRange,
+    today: date | None = None,
+    owner_ids: set[uuid.UUID] | None = None,
 ) -> list[SessionPerformance]:
-    """One dashboard row per active orchestrator."""
+    """One dashboard row per active orchestrator (of ``owner_ids`` when given)."""
     return [
         dashboard_performance(db, orchestrator, range_=range_, today=today)
         for orchestrator in service.active_orchestrators(db)
+        if owner_ids is None or orchestrator.owner_user_id in owner_ids
     ]

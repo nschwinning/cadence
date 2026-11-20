@@ -327,6 +327,9 @@ export type RiskProfile = 'conservative' | 'balanced' | 'aggressive';
 
 /** A stored portfolio. Mirrors the backend `PortfolioRead` schema. */
 export interface Portfolio {
+  /** The owner's account id and username (shown to admins viewing all users). */
+  owner_user_id?: string | null;
+  owner?: string | null;
   id: string;
   name: string;
   description: string | null;
@@ -368,6 +371,9 @@ export type ScheduleMode = 'MANUAL' | 'SCHEDULED' | 'DAILY_REBALANCING';
 
 /** A paper-trading session and its running totals. Mirrors `PaperTradingSessionRead`. */
 export interface PaperTradingSession {
+  /** The owner's account id and username (shown to admins viewing all users). */
+  owner_user_id?: string | null;
+  owner?: string | null;
   id: string;
   portfolio_id: string;
   portfolio_name: string | null;
@@ -892,6 +898,9 @@ export interface AIDailyRebalanceResponse {
  * Mirrors the backend `AIPortfolioEventRead` schema.
  */
 export interface AIPortfolioEvent {
+  /** The owner's account id and username (shown to admins viewing all users). */
+  owner_user_id?: string | null;
+  owner?: string | null;
   id: string;
   session_id: string | null;
   portfolio_id: string | null;
@@ -1413,6 +1422,9 @@ export interface BotPosition {
 
 /** A strategy-bot session with its configuration and running totals. Mirrors `BotSessionRead`. */
 export interface BotSession {
+  /** The owner's account id and username (shown to admins viewing all users). */
+  owner_user_id?: string | null;
+  owner?: string | null;
   id: string;
   strategy_key: string;
   label: string | null;
@@ -1697,6 +1709,9 @@ export interface OrchestratorBot {
 
 /** An orchestrator with computed capital figures. Mirrors `BotOrchestratorRead`. */
 export interface BotOrchestrator {
+  /** The owner's account id and username (shown to admins viewing all users). */
+  owner_user_id?: string | null;
+  owner?: string | null;
   id: string;
   label: string;
   status: 'active' | 'stopped' | 'archived' | string;
@@ -1851,3 +1866,11 @@ export interface AdminReconcileResult {
   closed: number;
   remaining: number;
 }
+
+/** Response of `GET /api/v1/me`: the signed-in user's Cadence account. */
+export interface Me {
+  user_id: string;
+  username: string | null;
+  is_admin: boolean;
+}
+

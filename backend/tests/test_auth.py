@@ -41,11 +41,12 @@ def _token(
     iss: str = _ISSUER,
     exp_in: int = 300,
     sub: str = "user-1",
+    username: str = "nils",
 ) -> str:
     now = int(time.time())
     claims = {
         "sub": sub,
-        "preferred_username": "nils",
+        "preferred_username": username,
         "iss": iss,
         "aud": aud,
         "iat": now,
@@ -105,6 +106,8 @@ def test_role_hierarchy(raw: Any, expected: set[str]) -> None:
         ("POST", "/api/v1/assets", "admin"),
         ("DELETE", "/api/v1/assets/{asset_id}", "admin"),
         ("POST", "/api/v1/assets/universe-evaluation/refresh", "admin"),
+        ("POST", "/api/v1/recommendations", "admin"),
+        ("GET", "/api/v1/recommendations", "viewer"),
         ("GET", "/api/v1/assets", "viewer"),
         # Router-relative templates (how FastAPI 0.141 reports included routes).
         ("POST", "/admin/reconcile-orders", "admin"),

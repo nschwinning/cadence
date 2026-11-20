@@ -79,10 +79,12 @@ settings, no user SHALL be created.
 
 ### Requirement: Roles
 
-The system SHALL define three roles: `viewer`, which may read everything; `trader`, which
-includes `viewer` and may also perform every state-changing action except administration; and
-`admin`, which includes `trader` and may also use the Admin area and manage the asset universe
-(adding and removing assets, regenerating the universe evaluation). A user without any of these
+The system SHALL define three roles: `viewer`, which may read their own data and the shared data
+(the asset universe, watchlist, market data and catalogs); `trader`, which includes `viewer` and
+may also perform every state-changing action on their own data; and `admin`, which includes
+`trader` and may also use the Admin area, manage the shared asset data (adding and removing assets,
+regenerating the universe evaluation, running asset recommendations into the universe or the
+watchlist), and read every user's data. A user without any of these
 roles SHALL have no access.
 
 #### Scenario: Trader includes viewer
@@ -95,14 +97,20 @@ roles SHALL have no access.
 - **WHEN** an authenticated user holds none of the three roles
 - **THEN** every API request SHALL be refused with 403
 
+#### Scenario: Admin manages the watchlist
+
+- **WHEN** a `trader` asks to run an asset recommendation into the watchlist
+- **THEN** the request SHALL be refused with 403
+
 ### Requirement: API authentication and authorization
 
 When authentication is enabled, every API route SHALL require a bearer access token issued by the
 `cadence` realm, verified against the realm's public signing keys, with the configured issuer, the
 audience `cadence-api`, and an unexpired lifetime; otherwise the request SHALL be refused with 401.
 Read requests (GET, HEAD) SHALL require `viewer`; all other methods SHALL require `trader`; every
-route under `/api/v1/admin` and every universe-management route (adding or deleting an asset,
-regenerating the universe evaluation) SHALL require `admin`; a missing role SHALL be refused with
+route under `/api/v1/admin` and every route that changes the shared asset data (adding or deleting
+an asset, regenerating the universe evaluation, starting an asset recommendation run) SHALL require
+`admin`; a missing role SHALL be refused with
 403. The
 health route and the cron-triggered routes SHALL be exempt and keep their own protection (the
 cron token). Authentication SHALL be enabled by default; disabling it SHALL be an explicit setting
@@ -165,8 +173,8 @@ user's name and a **Log out** action that ends the Keycloak session.
 
 ### Requirement: Role-aware interface
 
-The web application SHALL show the Admin menu entry and the universe-management controls only to
-`admin` users, SHALL hide or disable controls that change state for users without `trader`, and SHALL show a "You don't have
+The web application SHALL show the Admin menu entry, the universe-management controls and the
+watchlist's discover control only to `admin` users, SHALL hide or disable controls that change state for users without `trader`, and SHALL show a "You don't have
 permission for this action" message when the API answers 403.
 
 #### Scenario: Viewer sees no write controls
@@ -179,3 +187,8 @@ permission for this action" message when the API answers 403.
 - **WHEN** a `trader` signs in
 - **THEN** the navigation SHALL not show the Admin entry, and the assets page SHALL not offer
   adding or removing assets or regenerating the universe evaluation
+
+#### Scenario: Watchlist discover hidden
+
+- **WHEN** a `trader` opens the watchlist
+- **THEN** the page SHALL not offer discovering new watchlist assets

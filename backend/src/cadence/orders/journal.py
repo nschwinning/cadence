@@ -19,6 +19,7 @@ from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
 from cadence import database
+from cadence.accounts.models import LEGACY_OWNER_ID
 from cadence.broker.models import Order
 from cadence.broker.symbols import symbol_key
 from cadence.orders.models import (
@@ -70,6 +71,28 @@ def new_client_order_id(owner_kind: OrderOwnerKind) -> str:
     return f"cad-{_KIND_TAG[owner_kind]}-{uuid.uuid4().hex}"
 
 
+def _account_for(
+    db: Session, owner_kind: OrderOwnerKind, owner_id: uuid.UUID | None
+) -> uuid.UUID:
+    """The user an order trades for: its bot's or AI portfolio's owner (else legacy)."""
+    from cadence.paper_trading.models import PaperTradingSession
+    from cadence.portfolios.models import Portfolio
+    from cadence.strategy_bots.models import BotSession
+
+    owner: uuid.UUID | None = None
+    if owner_id is not None and owner_kind is OrderOwnerKind.BOT:
+        owner = db.execute(
+            select(BotSession.owner_user_id).where(BotSession.id == owner_id)
+        ).scalar_one_or_none()
+    elif owner_id is not None and owner_kind is OrderOwnerKind.AI_SESSION:
+        owner = db.execute(
+            select(Portfolio.owner_user_id)
+            .join(PaperTradingSession, PaperTradingSession.portfolio_id == Portfolio.id)
+            .where(PaperTradingSession.id == owner_id)
+        ).scalar_one_or_none()
+    return owner if owner is not None else LEGACY_OWNER_ID
+
+
 def record_intent(
     *,
     owner_kind: OrderOwnerKind,
@@ -84,12 +107,19 @@ def record_intent(
     lease: timedelta,
     state: JournalState = JournalState.INTENT,
     error: str | None = None,
+    account_user_id: uuid.UUID | None = None,
 ) -> str:
-    """Durably record an intended order before it is sent; return its client order id."""
+    """Durably record an intended order before it is sent; return its client order id.
+
+    ``account_user_id`` is the user whose account the order trades for; when omitted it
+    is derived from the owning bot or AI portfolio (the legacy owner otherwise).
+    """
     client_order_id = new_client_order_id(owner_kind)
     with _independent() as db:
+        account = account_user_id or _account_for(db, owner_kind, owner_id)
         db.add(
             BrokerOrder(
+                account_user_id=account,
                 client_order_id=client_order_id,
                 owner_kind=owner_kind.value,
                 owner_id=owner_id,

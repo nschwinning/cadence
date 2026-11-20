@@ -25,8 +25,9 @@ from sqlalchemy import (
 )
 from sqlalchemy import Enum as SQLEnum
 from sqlalchemy.dialects.postgresql import JSONB, UUID
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 
+from cadence.accounts.models import LEGACY_OWNER_ID, User
 from cadence.ai_portfolio.constants import EventStatus, EventType, PromptKind
 from cadence.database import Base
 
@@ -62,6 +63,21 @@ class AIPortfolioEvent(Base):
         primary_key=True,
         server_default=func.gen_random_uuid(),
     )
+    # The user who owns this ai portfolio event (see :mod:`cadence.accounts`).
+    owner_user_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="RESTRICT"),
+        nullable=False,
+        index=True,
+        default=LEGACY_OWNER_ID,
+    )
+    owner_account: Mapped[User] = relationship(lazy="joined", foreign_keys=[owner_user_id])
+
+    @property
+    def owner(self) -> str | None:
+        """The owner's username (``None`` for the legacy owner before it is linked)."""
+        return self.owner_account.username if self.owner_account is not None else None
+
     session_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True),
         ForeignKey("paper_trading_sessions.id", ondelete="SET NULL"),

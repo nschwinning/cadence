@@ -224,7 +224,12 @@ class ExecutionEngine:
         self._poll_interval = poll_interval_seconds
 
     def _gateway(self, bot: BotSession) -> OrderGateway:
-        return OrderGateway(self._broker, owner_kind=OrderOwnerKind.BOT, owner_id=bot.id)
+        return OrderGateway(
+            self._broker,
+            owner_kind=OrderOwnerKind.BOT,
+            owner_id=bot.id,
+            account_user_id=bot.owner_user_id,
+        )
 
     def _blocked(self, bot: BotSession, ticker: str) -> bool:
         if journal.has_unresolved(

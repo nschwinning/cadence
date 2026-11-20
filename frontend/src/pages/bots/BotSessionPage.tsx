@@ -29,6 +29,8 @@ import type {
   BotTrade,
 } from '../../types/api';
 import { useHasRole } from '../../auth/useRoles';
+import { useIsOwn } from '../../api/me';
+import { ownerLabel } from '../../components/AllUsersToggle';
 
 /** Status pill colors per bot status. */
 const STATUS_STYLES: Record<string, string> = {
@@ -294,8 +296,10 @@ function SessionHeader({ sessionId }: { sessionId: string }) {
   const stop = useStopBotSession();
   const archive = useArchiveBotSession();
   const canTrade = useHasRole('trader');
+  // Actions need the trader role and ownership (admins only view others' bots).
+  const isOwn = useIsOwn(bot?.owner_user_id);
 
-  const actions = bot && canTrade ? (
+  const actions = bot && canTrade && isOwn ? (
     <div className="flex flex-wrap items-center gap-2">
       {bot.status === 'active' && (
         <button
@@ -350,6 +354,11 @@ function SessionHeader({ sessionId }: { sessionId: string }) {
             </p>
           </div>
           <StatusBadge status={bot.status} />
+          {!isOwn && (
+            <span className="text-sm text-slate-500" data-testid="bot-owner">
+              Owner: {ownerLabel(bot.owner)}
+            </span>
+          )}
           {bot.archived_at != null && (
             <span className="inline-flex items-center rounded-full bg-slate-100 px-2 py-0.5 text-xs font-medium text-slate-500">
               Archived

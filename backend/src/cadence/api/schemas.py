@@ -323,6 +323,10 @@ class PortfolioRead(BaseModel):
     source_run_id: str | None
     created_at: datetime
     archived_at: datetime | None
+    #: The owning user's id and username (``owner`` is ``None`` for the legacy owner
+    #: until its first sign-in links it).
+    owner_user_id: uuid.UUID | None = None
+    owner: str | None = None
 
 
 class PortfolioListResponse(BaseModel):
@@ -446,6 +450,10 @@ class PaperTradingSessionRead(BaseModel):
         # a legacy/non-rebalancing mode reads as 'daily'.
         self.rebalance_cadence = schedule_mode_to_cadence(self.schedule_mode).value
         return self
+    #: The owning user's id and username (``owner`` is ``None`` for the legacy owner
+    #: until its first sign-in links it).
+    owner_user_id: uuid.UUID | None = None
+    owner: str | None = None
 
 
 class PaperTradingSessionListResponse(BaseModel):
@@ -1214,6 +1222,10 @@ class AIPortfolioEventRead(BaseModel):
     duration_ms: int | None
     created_at: datetime
     updated_at: datetime
+    #: The owning user's id and username (``owner`` is ``None`` for the legacy owner
+    #: until its first sign-in links it).
+    owner_user_id: uuid.UUID | None = None
+    owner: str | None = None
 
 
 class AIPortfolioRunListResponse(BaseModel):
@@ -1248,6 +1260,10 @@ class AIPortfolioRunDetail(BaseModel):
 # --------------------------------------------------------------------------- #
 # Dashboard                                                                    #
 # --------------------------------------------------------------------------- #
+    #: The owning user's id and username (``owner`` is ``None`` for the legacy owner
+    #: until its first sign-in links it).
+    owner_user_id: uuid.UUID | None = None
+    owner: str | None = None
 
 
 class DashboardBreakdownEntry(BaseModel):
@@ -1575,6 +1591,14 @@ class BackendStatusRead(BaseModel):
     detail: str | None = None
 
 
+class MeRead(BaseModel):
+    """The signed-in user's Cadence account."""
+
+    user_id: uuid.UUID
+    username: str | None
+    is_admin: bool
+
+
 class EnvironmentRead(BaseModel):
     """This deployment's name, verified account mode and trading permission."""
 
@@ -1883,6 +1907,10 @@ class BotSessionRead(BaseModel):
     last_failure_at: datetime | None = None
     last_failure_error: str | None = None
     consecutive_failures: int = 0
+    #: The owning user's id and username (``owner`` is ``None`` for the legacy owner
+    #: until its first sign-in links it).
+    owner_user_id: uuid.UUID | None = None
+    owner: str | None = None
 
 
 class BotSessionListResponse(BaseModel):
@@ -2153,6 +2181,10 @@ class BotOrchestratorRead(BaseModel):
     last_run: OrchestratorRunSummaryRead | None
     #: All-time AI cost in USD (sum of its runs); null when the source is unavailable.
     ai_cost_usd: float | None = None
+    #: The owning user's id and username (``owner`` is ``None`` for the legacy owner
+    #: until its first sign-in links it).
+    owner_user_id: uuid.UUID | None = None
+    owner: str | None = None
 
 
 class BotOrchestratorDetailRead(BotOrchestratorRead):

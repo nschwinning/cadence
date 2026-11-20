@@ -18,6 +18,7 @@ from typing import Any
 
 from sqlalchemy.orm import Session
 
+from cadence.accounts.lookups import session_owner_id
 from cadence.ai_portfolio._helpers import (
     _asset_class_map,
     _elapsed_ms,
@@ -238,6 +239,7 @@ def _stop_out_position(
         broker,
         session_row.allocated_capital,
         session_id=session_row.id,
+        account_user_id=session_owner_id(session, session_row.id),
         purpose=STOP_LOSS_SIGNAL_TYPE,
     )
     trade_results = executor.execute_close(

@@ -104,6 +104,9 @@ describe('AdminPage', () => {
     expect(screen.getByText('$12,500.00')).toBeInTheDocument();
     expect(screen.getByTestId('cash-difference')).toHaveTextContent('$7,500.00');
     expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+    expect(screen.getByTestId('shared-account-notice')).toHaveTextContent(
+      'configured Alpaca account',
+    );
   });
 
   it('warns on a cash shortfall', async () => {

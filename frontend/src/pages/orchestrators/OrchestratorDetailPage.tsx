@@ -27,6 +27,8 @@ import {
   signClass,
 } from './orchestratorUi';
 import { RequireRole } from '../../auth/RequireRole';
+import { useIsOwn } from '../../api/me';
+import { ownerLabel } from '../../components/AllUsersToggle';
 
 const BUTTON_CLASS =
   'rounded border border-slate-300 px-3 py-1.5 text-sm font-medium text-slate-700 hover:bg-slate-50 disabled:opacity-50';
@@ -44,6 +46,7 @@ function Fact({ label, value }: { label: string; value: React.ReactNode }) {
 
 /** Header with the lifecycle actions available for the orchestrator's status. */
 function Header({ orchestrator }: { orchestrator: BotOrchestratorDetail }) {
+  const isOwn = useIsOwn(orchestrator.owner_user_id);
   const runNow = useStartOrchestratorRun();
   const stop = useStopOrchestrator();
   const archive = useArchiveOrchestrator();
@@ -59,8 +62,14 @@ function Header({ orchestrator }: { orchestrator: BotOrchestratorDetail }) {
             {orchestrator.label}
           </h1>
           <StatusBadge status={orchestrator.status} />
+          {!isOwn && (
+            <span className="text-sm text-slate-500" data-testid="orchestrator-owner">
+              Owner: {ownerLabel(orchestrator.owner)}
+            </span>
+          )}
         </div>
         <RequireRole role="trader">
+        {isOwn && (
         <div className="flex flex-wrap items-center gap-2">
           {isActive && (
             <button
@@ -120,6 +129,7 @@ function Header({ orchestrator }: { orchestrator: BotOrchestratorDetail }) {
             </button>
           )}
         </div>
+        )}
         </RequireRole>
       </div>
       {(runNow.isError || stop.isError || archive.isError) && (

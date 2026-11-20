@@ -41,6 +41,7 @@ from sqlalchemy import Enum as SQLEnum
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
+from cadence.accounts.models import LEGACY_OWNER_ID, User
 from cadence.broker.models import OrderSide, OrderStatus
 from cadence.database import Base
 from cadence.strategy_bots.constants import BotSessionStatus, SizingMethod
@@ -76,6 +77,21 @@ class BotSession(Base):
         primary_key=True,
         server_default=func.gen_random_uuid(),
     )
+    # The user who owns this bot session (see :mod:`cadence.accounts`).
+    owner_user_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="RESTRICT"),
+        nullable=False,
+        index=True,
+        default=LEGACY_OWNER_ID,
+    )
+    owner_account: Mapped[User] = relationship(lazy="joined", foreign_keys=[owner_user_id])
+
+    @property
+    def owner(self) -> str | None:
+        """The owner's username (``None`` for the legacy owner before it is linked)."""
+        return self.owner_account.username if self.owner_account is not None else None
+
     # The registered strategy driving this bot (a StrategyKey value). Stored as
     # free text (like paper_trading.strategy_key) so a new strategy is additive;
     # creation rejects an unregistered key.

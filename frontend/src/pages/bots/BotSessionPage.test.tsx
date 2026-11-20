@@ -547,6 +547,24 @@ describe('BotSessionPage', () => {
     expect(screen.queryByRole('button', { name: 'Stop' })).not.toBeInTheDocument();
   });
 
+  it("shows the owner and hides actions on another user's bot", async () => {
+    const base = routeGet({
+      session: { ...bot, owner_user_id: 'u-bob', owner: 'bob' },
+    });
+    mockedGet.mockImplementation((url: string) =>
+      url.endsWith('/me')
+        ? Promise.resolve({
+            data: { user_id: 'u-admin', username: 'admin', is_admin: true },
+          })
+        : base(url),
+    );
+
+    renderDetail(<BotSessionPage />);
+
+    expect(await screen.findByTestId('bot-owner')).toHaveTextContent('bob');
+    expect(screen.queryByRole('button', { name: 'Stop' })).not.toBeInTheDocument();
+  });
+
   // Session summary -------------------------------------------------------
   it('hides the session summary for an active bot', async () => {
     mockedGet.mockImplementation(routeGet());

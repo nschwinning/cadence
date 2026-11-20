@@ -13,6 +13,7 @@ from datetime import UTC, datetime
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from cadence.accounts.models import LEGACY_OWNER_ID
 from cadence.paper_trading.constants import SessionStatus
 from cadence.paper_trading.models import PaperTradingSession
 from cadence.portfolios.constants import LEGACY_SOURCES, PortfolioSource, RiskProfile
@@ -65,6 +66,7 @@ def create_portfolio(
     max_allocation_pct: float = 1.0,
     source_run_id: str | None = None,
     allow_empty: bool = False,
+    owner_user_id: uuid.UUID = LEGACY_OWNER_ID,
 ) -> Portfolio:
     """Validate the request and insert a portfolio.
 
@@ -93,6 +95,7 @@ def create_portfolio(
         source=source.value,
         risk_profile=risk_profile.value if risk_profile else None,
         source_run_id=source_run_id,
+        owner_user_id=owner_user_id,
     )
     session.add(portfolio)
     session.commit()
@@ -114,6 +117,7 @@ def list_portfolios(
     limit: int = 50,
     include_legacy: bool = True,
     include_archived: bool = False,
+    owner_ids: set[uuid.UUID] | None = None,
 ) -> list[Portfolio]:
     """List portfolios newest first, optionally excluding legacy/archived ones.
 
@@ -128,6 +132,8 @@ def list_portfolios(
         stmt = stmt.where(Portfolio.source.not_in([s.value for s in LEGACY_SOURCES]))
     if not include_archived:
         stmt = stmt.where(Portfolio.archived_at.is_(None))
+    if owner_ids is not None:
+        stmt = stmt.where(Portfolio.owner_user_id.in_(owner_ids))
     return list(session.execute(stmt.limit(safe_limit)).scalars())
 
 
@@ -146,6 +152,7 @@ def count_portfolios(
     *,
     include_legacy: bool = True,
     include_archived: bool = False,
+    owner_ids: set[uuid.UUID] | None = None,
 ) -> int:
     """Count stored portfolios (optionally excluding legacy/archived ones)."""
     stmt = select(func.count()).select_from(Portfolio)
@@ -153,6 +160,8 @@ def count_portfolios(
         stmt = stmt.where(Portfolio.source.not_in([s.value for s in LEGACY_SOURCES]))
     if not include_archived:
         stmt = stmt.where(Portfolio.archived_at.is_(None))
+    if owner_ids is not None:
+        stmt = stmt.where(Portfolio.owner_user_id.in_(owner_ids))
     return session.execute(stmt).scalar_one()
 
 

@@ -6,6 +6,7 @@ import { formatAge, formatCurrency } from '../../lib/format';
 import { BuildBotCard } from './BuildBotCard';
 import { Modal } from '../../components/Modal';
 import { RequireRole } from '../../auth/RequireRole';
+import { AllUsersToggle, ownerLabel } from '../../components/AllUsersToggle';
 
 /** Status pill colors per bot status. */
 const STATUS_STYLES: Record<string, string> = {
@@ -44,10 +45,13 @@ function symbolsSummary(bot: BotSession): string {
 function BotRow({
   bot,
   strategyName,
+  showOwner = false,
 }: {
   bot: BotSession;
   /** The strategy's display name (falls back to its key while the catalog loads). */
   strategyName: string;
+  /** Show the owner column (admins viewing all users). */
+  showOwner?: boolean;
 }) {
   const isArchived = bot.archived_at !== null;
   return (
@@ -116,14 +120,16 @@ function BotRow({
       <td className="px-4 py-3 text-slate-500">
         {bot.last_tick_at ? new Date(bot.last_tick_at).toLocaleString() : '—'}
       </td>
+      {showOwner && <td className="px-4 py-3 text-slate-600">{ownerLabel(bot.owner)}</td>}
     </tr>
   );
 }
 
 export function BotsPage() {
   const [showArchived, setShowArchived] = useState(false);
+  const [allUsers, setAllUsers] = useState(false);
   const [buildOpen, setBuildOpen] = useState(false);
-  const { data, isPending, isError } = useBotSessions(showArchived);
+  const { data, isPending, isError } = useBotSessions(showArchived, allUsers);
   const { data: strategies } = useStrategies();
   const strategyNames = useMemo(
     () =>
@@ -177,7 +183,9 @@ export function BotsPage() {
           {!isPending && !isError && total > 0 && (
             <span className="text-sm text-slate-500">{total} total</span>
           )}
-          <label className="ml-auto flex items-center gap-2 text-sm text-slate-600">
+          <div className="ml-auto flex items-center gap-4">
+          <AllUsersToggle checked={allUsers} onChange={setAllUsers} />
+          <label className="flex items-center gap-2 text-sm text-slate-600">
             <input
               type="checkbox"
               checked={showArchived}
@@ -186,6 +194,7 @@ export function BotsPage() {
             />
             Show archived
           </label>
+          </div>
         </div>
 
         {isPending && (
@@ -224,6 +233,7 @@ export function BotsPage() {
                   <th className="px-4 py-3 text-right">Trades</th>
                   <th className="px-4 py-3 text-right">Realised P&amp;L</th>
                   <th className="px-4 py-3">Last Tick</th>
+                  {allUsers && <th className="px-4 py-3">Owner</th>}
                 </tr>
               </thead>
               <tbody>
@@ -232,6 +242,7 @@ export function BotsPage() {
                     key={bot.id}
                     bot={bot}
                     strategyName={strategyNames.get(bot.strategy_key) ?? bot.strategy_key}
+                    showOwner={allUsers}
                   />
                 ))}
               </tbody>

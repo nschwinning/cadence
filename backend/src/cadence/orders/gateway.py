@@ -59,12 +59,16 @@ class OrderGateway:
         owner_id: uuid.UUID | None = None,
         lease: timedelta | None = None,
         context: dict[str, Any] | None = None,
+        account_user_id: uuid.UUID | None = None,
     ) -> None:
         self.broker = broker
         self.owner_kind = owner_kind
         self.owner_id = owner_id
         self._lease = lease or _DEFAULT_LEASES[owner_kind]
         self._context = context or {}
+        # Whose account the orders trade for (None: derived from the owning bot / AI
+        # portfolio by the journal). Admin orders pass the acting admin.
+        self.account_user_id = account_user_id
 
     def buy(
         self,
@@ -129,6 +133,7 @@ class OrderGateway:
             "purpose": purpose,
             "context": {**self._context, **(context or {})},
             "lease": self._lease,
+            "account_user_id": self.account_user_id,
         }
 
         if side is OrderSide.SELL:

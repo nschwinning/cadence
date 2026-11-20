@@ -16,7 +16,9 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
 
+from cadence.accounts.service import CurrentAccount, OwnerFilter
 from cadence.api.cron_auth import require_valid_cron_token
+from cadence.api.ownership import ActBot, ReadBot
 from cadence.api.schemas import (
     BotKpisRead,
     BotPresetRead,
@@ -130,7 +132,7 @@ def list_presets() -> list[BotPresetRead]:
     status_code=status.HTTP_201_CREATED,
 )
 def create_bot_session(
-    payload: BotSessionCreateRequest, db: DbSession
+    payload: BotSessionCreateRequest, db: DbSession, account: CurrentAccount
 ) -> BotSessionRead:
     """Create an active bot session over a set of eligible universe equities.
 
@@ -143,6 +145,7 @@ def create_bot_session(
     try:
         row = service.create_bot_session(
             db,
+            owner_user_id=account.user_id,
             strategy_key=payload.strategy_key,
             preset_key=payload.preset_key,
             tickers=payload.tickers,
@@ -193,12 +196,13 @@ def create_bot_session(
 @router.get("/sessions", response_model=BotSessionListResponse)
 def list_bot_sessions(
     db: DbSession,
+    owner_ids: OwnerFilter,
     include_archived: Annotated[
         bool, Query(description="Include archived sessions in the result")
     ] = False,
 ) -> BotSessionListResponse:
     """Return bot sessions, newest first, hiding archived ones by default."""
-    rows = service.list_bot_sessions(db, include_archived=include_archived)
+    rows = service.list_bot_sessions(db, include_archived=include_archived, owner_ids=owner_ids)
     items = [_to_read(db, row) for row in rows]
     return BotSessionListResponse(items=items, total=len(items))
 
@@ -213,13 +217,13 @@ def _get_session_or_404(db: Session, session_id: uuid.UUID) -> BotSessionRead:
     return _to_read(db, row)
 
 
-@router.get("/sessions/{session_id}", response_model=BotSessionRead)
+@router.get("/sessions/{session_id}", response_model=BotSessionRead, dependencies=[ReadBot])
 def get_bot_session(session_id: uuid.UUID, db: DbSession) -> BotSessionRead:
     """Return a single bot session (404 if unknown)."""
     return _get_session_or_404(db, session_id)
 
 
-@router.post("/sessions/{session_id}/stop", response_model=BotSessionRead)
+@router.post("/sessions/{session_id}/stop", response_model=BotSessionRead, dependencies=[ActBot])
 def stop_bot_session(session_id: uuid.UUID, db: DbSession) -> BotSessionRead:
     """Stop an active session so it is no longer ticked (404 if unknown)."""
     try:
@@ -231,7 +235,7 @@ def stop_bot_session(session_id: uuid.UUID, db: DbSession) -> BotSessionRead:
     return _to_read(db, row)
 
 
-@router.post("/sessions/{session_id}/archive", response_model=BotSessionRead)
+@router.post("/sessions/{session_id}/archive", response_model=BotSessionRead, dependencies=[ActBot])
 def archive_bot_session(session_id: uuid.UUID, db: DbSession) -> BotSessionRead:
     """Archive a stopped session (404 unknown, 409 if it is not stopped)."""
     try:
@@ -247,7 +251,7 @@ def archive_bot_session(session_id: uuid.UUID, db: DbSession) -> BotSessionRead:
     return _to_read(db, row)
 
 
-@router.get("/sessions/{session_id}/kpis", response_model=BotKpisRead)
+@router.get("/sessions/{session_id}/kpis", response_model=BotKpisRead, dependencies=[ReadBot])
 def get_bot_session_kpis(session_id: uuid.UUID, db: DbSession) -> BotKpisRead:
     """Return a session's KPIs from its own ledger + snapshots (404 if unknown)."""
     try:
@@ -260,7 +264,8 @@ def get_bot_session_kpis(session_id: uuid.UUID, db: DbSession) -> BotKpisRead:
 
 
 @router.get(
-    "/sessions/{session_id}/summary", response_model=BotSessionSummaryRead
+    "/sessions/{session_id}/summary", response_model=BotSessionSummaryRead,
+    dependencies=[ReadBot],
 )
 def get_bot_session_summary(
     session_id: uuid.UUID, db: DbSession, agent: SummaryAgentDep
@@ -290,6 +295,7 @@ def get_bot_session_summary(
 @router.get(
     "/sessions/{session_id}/value-history",
     response_model=BotValueHistoryResponse,
+    dependencies=[ReadBot],
 )
 def list_bot_value_history(
     session_id: uuid.UUID,
@@ -315,7 +321,7 @@ def list_bot_value_history(
     return BotValueHistoryResponse(items=items, total=len(items), resolution=resolution)
 
 
-@router.get("/sessions/{session_id}/trades", response_model=BotTradeListResponse)
+@router.get("/sessions/{session_id}/trades", response_model=BotTradeListResponse, dependencies=[ReadBot])
 def list_bot_trades(
     session_id: uuid.UUID,
     db: DbSession,

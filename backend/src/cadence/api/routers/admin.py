@@ -15,6 +15,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
+from cadence.accounts.service import CurrentAccount
 from cadence.admin import service
 from cadence.api.schemas import (
     AdminAccountRead,
@@ -41,11 +42,13 @@ def get_account(db: DbSession, broker: BrokerDep) -> AdminAccountRead:
 
 @router.post("/flatten-orphans", response_model=AdminFlattenResponse)
 def flatten_orphans(
-    payload: AdminFlattenRequest, db: DbSession, broker: BrokerDep
+    payload: AdminFlattenRequest, db: DbSession, broker: BrokerDep, account: CurrentAccount
 ) -> AdminFlattenResponse:
     """Sell the orphan excess for one symbol, or for every orphan when none is given."""
     try:
-        outcomes = service.flatten_orphans(db, broker, symbol=payload.symbol)
+        outcomes = service.flatten_orphans(
+            db, broker, symbol=payload.symbol, account_user_id=account.user_id
+        )
     except BrokerError as exc:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -58,11 +61,13 @@ def flatten_orphans(
 
 @router.post("/restore-positions", response_model=AdminFlattenResponse)
 def restore_positions(
-    payload: AdminFlattenRequest, db: DbSession, broker: BrokerDep
+    payload: AdminFlattenRequest, db: DbSession, broker: BrokerDep, account: CurrentAccount
 ) -> AdminFlattenResponse:
     """Buy back shortfalls/shorts to Cadence's quantity for one symbol, or for all."""
     try:
-        outcomes = service.restore_positions(db, broker, symbol=payload.symbol)
+        outcomes = service.restore_positions(
+            db, broker, symbol=payload.symbol, account_user_id=account.user_id
+        )
     except BrokerError as exc:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,

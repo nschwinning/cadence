@@ -22,8 +22,8 @@ const LIVE_RUN_POLL_MS = 3_000;
 /** Typed query keys for orchestrator queries. */
 export const orchestratorKeys = {
   all: ['orchestrators'] as const,
-  list: (includeArchived: boolean) =>
-    ['orchestrators', 'list', includeArchived] as const,
+  list: (includeArchived: boolean, allUsers = false) =>
+    ['orchestrators', 'list', includeArchived, allUsers] as const,
   detail: (id: string) => ['orchestrators', 'detail', id] as const,
   runs: (id: string, page: number) => ['orchestrators', 'runs', id, page] as const,
 };
@@ -35,10 +35,12 @@ export function isLiveRunStatus(status: string | undefined | null): boolean {
 
 export async function listOrchestrators(
   includeArchived = false,
+  allUsers = false,
 ): Promise<BotOrchestratorListResponse> {
-  const { data } = await apiClient.get<BotOrchestratorListResponse>(BASE, {
-    params: includeArchived ? { include_archived: true } : {},
-  });
+  const params: Record<string, string | boolean> = {};
+  if (includeArchived) params.include_archived = true;
+  if (allUsers) params.scope = 'all';
+  const { data } = await apiClient.get<BotOrchestratorListResponse>(BASE, { params });
   return data;
 }
 
@@ -88,10 +90,10 @@ export async function listOrchestratorRuns(
 }
 
 /** Orchestrators (newest first); refreshes every 30s for live values. */
-export function useOrchestrators(includeArchived = false) {
+export function useOrchestrators(includeArchived = false, allUsers = false) {
   return useQuery<BotOrchestratorListResponse>({
-    queryKey: orchestratorKeys.list(includeArchived),
-    queryFn: () => listOrchestrators(includeArchived),
+    queryKey: orchestratorKeys.list(includeArchived, allUsers),
+    queryFn: () => listOrchestrators(includeArchived, allUsers),
     refetchInterval: 30_000,
   });
 }

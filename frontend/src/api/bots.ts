@@ -25,8 +25,8 @@ export const botKeys = {
   all: ['bots'] as const,
   strategies: () => ['bots', 'strategies'] as const,
   presets: () => ['bots', 'presets'] as const,
-  sessions: (includeArchived: boolean) =>
-    ['bots', 'sessions', includeArchived] as const,
+  sessions: (includeArchived: boolean, allUsers = false) =>
+    ['bots', 'sessions', includeArchived, allUsers] as const,
   session: (sessionId: string) => ['bots', 'session', sessionId] as const,
   kpis: (sessionId: string) => ['bots', 'session', sessionId, 'kpis'] as const,
   summary: (sessionId: string) =>
@@ -66,11 +66,14 @@ export async function listPresets(): Promise<BotPreset[]> {
 /** Fetch bot sessions (newest first) plus the total. */
 export async function listBotSessions(
   includeArchived = false,
+  allUsers = false,
 ): Promise<BotSessionListResponse> {
-  const { data } = await apiClient.get<BotSessionListResponse>(
-    '/api/v1/bots/sessions',
-    { params: includeArchived ? { include_archived: true } : {} },
-  );
+  const params: Record<string, string | boolean> = {};
+  if (includeArchived) params.include_archived = true;
+  if (allUsers) params.scope = 'all';
+  const { data } = await apiClient.get<BotSessionListResponse>('/api/v1/bots/sessions', {
+    params,
+  });
   return data;
 }
 
@@ -180,10 +183,10 @@ export function usePresets() {
 }
 
 /** React Query hook listing bot sessions. */
-export function useBotSessions(includeArchived = false) {
+export function useBotSessions(includeArchived = false, allUsers = false) {
   return useQuery<BotSessionListResponse>({
-    queryKey: botKeys.sessions(includeArchived),
-    queryFn: () => listBotSessions(includeArchived),
+    queryKey: botKeys.sessions(includeArchived, allUsers),
+    queryFn: () => listBotSessions(includeArchived, allUsers),
     // Live-refresh the marked-to-market totals ~every 30s. Pauses in the
     // background (TanStack default refetchIntervalInBackground: false).
     refetchInterval: 30_000,

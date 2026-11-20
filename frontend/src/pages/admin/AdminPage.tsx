@@ -626,6 +626,14 @@ export function AdminPage() {
         </button>
       </div>
 
+      <p
+        data-testid="shared-account-notice"
+        className="rounded border border-sky-200 bg-sky-50 px-3 py-2 text-sm text-sky-900"
+      >
+        All users currently trade on the configured Alpaca account. Per-user brokerage keys
+        come with bring-your-own-keys; until then this page shows positions of every user.
+      </p>
+
       {isPending && (
         <p role="status" aria-live="polite" className="text-slate-500">
           Loading the broker account…

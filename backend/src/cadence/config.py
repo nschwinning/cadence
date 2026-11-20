@@ -111,6 +111,9 @@ class Settings(BaseSettings):
     )
     # Audience every access token must carry.
     OIDC_AUDIENCE: str = "cadence-api"
+    # Keycloak username that receives all data created before user accounts existed:
+    # its first sign-in links the legacy owner to that account (once).
+    CADENCE_LEGACY_OWNER: str = ""
     # Explicit opt-in to submit orders on a verified live account (PRD deployments only).
     ALPACA_ALLOW_LIVE: bool = False
     # This deployment's name, shown in the UI header (e.g. "QA", "PRD").

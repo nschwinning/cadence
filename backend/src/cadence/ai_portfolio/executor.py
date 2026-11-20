@@ -289,12 +289,17 @@ class AIPortfolioExecutor:
         *,
         session_id: uuid.UUID | None = None,
         purpose: str = "ai_portfolio",
+        account_user_id: uuid.UUID | None = None,
     ) -> None:
         self.broker = broker
         self.allocated_capital = allocated_capital
-        # Every order goes through the journaled, long-only gateway owned by the session.
+        # Every order goes through the journaled, long-only gateway owned by the session,
+        # trading for the session owner's account.
         self.orders = OrderGateway(
-            broker, owner_kind=OrderOwnerKind.AI_SESSION, owner_id=session_id
+            broker,
+            owner_kind=OrderOwnerKind.AI_SESSION,
+            owner_id=session_id,
+            account_user_id=account_user_id,
         )
         self._purpose = purpose
         # Set by ``execute_rebalance`` when a run is skipped as a no-op (a buy-only

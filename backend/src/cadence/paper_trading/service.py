@@ -15,10 +15,11 @@ from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from typing import Any
 
-from sqlalchemy import func, select
+from sqlalchemy import Select, func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from cadence.accounts.lookups import session_owner_id
 from cadence.assets.category import AssetCategory, AssetScope, scope_categories
 from cadence.assets.models import Asset
 from cadence.assets.service import normalize_ticker
@@ -197,12 +198,28 @@ def get_session(session: Session, session_id: uuid.UUID) -> PaperTradingSession:
     return row
 
 
+def _owned_sessions[T: tuple[Any, ...]](
+    stmt: Select[T], owner_ids: set[uuid.UUID] | None
+) -> Select[T]:
+    """Restrict a session query to sessions whose portfolio belongs to ``owner_ids``."""
+    if owner_ids is None:
+        return stmt
+    from cadence.portfolios.models import Portfolio
+
+    return stmt.where(
+        PaperTradingSession.portfolio_id.in_(
+            select(Portfolio.id).where(Portfolio.owner_user_id.in_(owner_ids))
+        )
+    )
+
+
 def list_sessions(
     session: Session,
     *,
     status: SessionStatus | None = None,
     include_archived: bool = False,
     limit: int = 50,
+    owner_ids: set[uuid.UUID] | None = None,
 ) -> list[PaperTradingSession]:
     """List sessions, most recently updated first, optionally filtered by status.
 
@@ -216,6 +233,7 @@ def list_sessions(
         stmt = stmt.where(PaperTradingSession.status == status.value)
     if not include_archived:
         stmt = stmt.where(PaperTradingSession.archived_at.is_(None))
+    stmt = _owned_sessions(stmt, owner_ids)
     return list(session.execute(stmt.limit(limit)).scalars())
 
 
@@ -224,6 +242,7 @@ def count_sessions(
     *,
     status: SessionStatus | None = None,
     include_archived: bool = False,
+    owner_ids: set[uuid.UUID] | None = None,
 ) -> int:
     """Count sessions, optionally filtered by status; excludes archived by default."""
     stmt = select(func.count()).select_from(PaperTradingSession)
@@ -231,6 +250,7 @@ def count_sessions(
         stmt = stmt.where(PaperTradingSession.status == status.value)
     if not include_archived:
         stmt = stmt.where(PaperTradingSession.archived_at.is_(None))
+    stmt = _owned_sessions(stmt, owner_ids)
     return session.execute(stmt).scalar_one()
 
 
@@ -465,6 +485,7 @@ def _liquidate_out_of_scope_positions(
         broker,
         session_row.allocated_capital,
         session_id=session_row.id,
+        account_user_id=session_owner_id(session, session_row.id),
         purpose=SCOPE_CHANGE_SIGNAL_TYPE,
     )
     now = datetime.now(tz=UTC)
@@ -2015,6 +2036,8 @@ class SessionComparisonSeries:
 
 def list_sessions_value_comparison(
     session: Session,
+    *,
+    owner_ids: set[uuid.UUID] | None = None,
 ) -> list[SessionComparisonSeries]:
     """Return every non-archived session with its value points, for comparison.
 
@@ -2025,7 +2048,7 @@ def list_sessions_value_comparison(
     chart has a stable, predictable order (newly created sessions append at the end).
     """
     rows = sorted(
-        list_sessions(session, include_archived=False),
+        list_sessions(session, include_archived=False, owner_ids=owner_ids),
         key=lambda row: (row.created_at, row.id),
     )
     return [

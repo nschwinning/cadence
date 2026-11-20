@@ -46,6 +46,8 @@ import type {
   SessionSectorPerformance,
 } from '../../types/api';
 import { useHasRole } from '../../auth/useRoles';
+import { useIsOwn } from '../../api/me';
+import { ownerLabel } from '../../components/AllUsersToggle';
 
 /** The supported asset scopes with their human-readable labels. */
 const SCOPE_OPTIONS: { value: 'stocks' | 'crypto' | 'both'; label: string }[] = [
@@ -614,8 +616,11 @@ function SessionHeader({
   const { data: models } = useModels();
   const modelCatalog = Array.isArray(models) ? models : [];
   const canTrade = useHasRole('trader');
+  // Actions need the trader role and ownership (admins only view others' portfolios).
+  const isOwn = useIsOwn(session?.owner_user_id);
+  const canAct = canTrade && isOwn;
 
-  const actions = canTrade ? (
+  const actions = canAct ? (
     <div className="flex flex-wrap items-center gap-2">
       <RebalanceButton action={rebalance} />
       <CloseButton action={close} />
@@ -802,14 +807,28 @@ function SessionHeader({
           </dd>
         </div>
         <div>
-          <BenchmarkSwitcher sessionId={sessionId} current={session.benchmark} />
+          <BenchmarkSwitcher
+            sessionId={sessionId}
+            current={session.benchmark}
+            canAct={canAct}
+          />
         </div>
         <div>
-          <ScopeSwitcher sessionId={sessionId} current={session.asset_types} />
+          <ScopeSwitcher sessionId={sessionId} current={session.asset_types} canAct={canAct} />
         </div>
         <div>
-          <CapitalIncreaser sessionId={sessionId} />
+          <CapitalIncreaser sessionId={sessionId} canAct={canAct} />
         </div>
+        {!isOwn && (
+          <div>
+            <dt className="text-xs font-semibold uppercase tracking-wide text-slate-500">
+              Owner
+            </dt>
+            <dd className="text-sm text-slate-900" data-testid="session-owner">
+              {ownerLabel(session.owner)}
+            </dd>
+          </div>
+        )}
       </dl>
       {feedback}
     </header>
@@ -1075,14 +1094,16 @@ function KpiRow({ sessionId }: { sessionId: string }) {
  */
 function BenchmarkSwitcher({
   sessionId,
+  canAct,
   current,
 }: {
   sessionId: string;
+  /** Trader role and ownership: may change the setting. */
+  canAct: boolean;
   current: string;
 }) {
   const { data: benchmarks } = useBenchmarks();
   const mutation = useChangeSessionBenchmark(sessionId);
-  const canTrade = useHasRole('trader');
   const catalog = Array.isArray(benchmarks) ? benchmarks : null;
   return (
     <div>
@@ -1096,7 +1117,7 @@ function BenchmarkSwitcher({
         id="benchmark-select"
         className="mt-1 block w-full rounded border border-slate-300 bg-white px-2 py-1 text-sm text-slate-900 disabled:opacity-60"
         value={current}
-        disabled={mutation.isPending || !catalog || !canTrade}
+        disabled={mutation.isPending || !catalog || !canAct}
         onChange={(e) => mutation.mutate(e.target.value)}
       >
         {(catalog ?? [{ id: current, name: current }]).map((b) => (
@@ -1131,13 +1152,15 @@ function BenchmarkSwitcher({
  */
 function ScopeSwitcher({
   sessionId,
+  canAct,
   current,
 }: {
   sessionId: string;
+  /** Trader role and ownership: may change the setting. */
+  canAct: boolean;
   current: string;
 }) {
   const mutation = useChangeSessionScope(sessionId);
-  const canTrade = useHasRole('trader');
   const { data: sectorPerformance } = useSessionSectorPerformance(sessionId);
   const [pending, setPending] = useState<'stocks' | 'crypto' | 'both' | null>(
     null,
@@ -1176,7 +1199,7 @@ function ScopeSwitcher({
         id="scope-select"
         className="mt-1 block w-full rounded border border-slate-300 bg-white px-2 py-1 text-sm text-slate-900 disabled:opacity-60"
         value={current}
-        disabled={mutation.isPending || !canTrade}
+        disabled={mutation.isPending || !canAct}
         onChange={(e) =>
           handleSelect(e.target.value as 'stocks' | 'crypto' | 'both')
         }
@@ -1239,10 +1262,9 @@ function ScopeSwitcher({
  * submit clears the field and the hook invalidates the session, its KPIs, and its
  * value-history so the added investable cash is reflected.
  */
-function CapitalIncreaser({ sessionId }: { sessionId: string }) {
+function CapitalIncreaser({ sessionId, canAct }: { sessionId: string; canAct: boolean }) {
   const [amount, setAmount] = useState('');
   const mutation = useIncreaseSessionCapital(sessionId);
-  const canTrade = useHasRole('trader');
   const parsed = Number(amount);
   const valid = amount.trim() !== '' && Number.isFinite(parsed) && parsed > 0;
 
@@ -1252,7 +1274,7 @@ function CapitalIncreaser({ sessionId }: { sessionId: string }) {
     mutation.mutate(parsed, { onSuccess: () => setAmount('') });
   }
 
-  if (!canTrade) return null;
+  if (!canAct) return null;
   return (
     <form onSubmit={handleSubmit}>
       <label

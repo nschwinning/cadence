@@ -8,6 +8,8 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
+from cadence.accounts.service import CurrentAccount, OwnerFilter
+from cadence.api.ownership import ActPortfolio, ReadPortfolio
 from cadence.api.schemas import (
     PortfolioCreate,
     PortfolioListResponse,
@@ -27,7 +29,9 @@ DbSession = Annotated[Session, Depends(get_db)]
 
 
 @router.post("", response_model=PortfolioRead, status_code=status.HTTP_201_CREATED)
-def create_portfolio(payload: PortfolioCreate, db: DbSession) -> PortfolioRead:
+def create_portfolio(
+    payload: PortfolioCreate, db: DbSession, account: CurrentAccount
+) -> PortfolioRead:
     """Create a portfolio, normalizing and validating its tickers."""
     try:
         portfolio = service.create_portfolio(
@@ -39,6 +43,7 @@ def create_portfolio(payload: PortfolioCreate, db: DbSession) -> PortfolioRead:
             risk_profile=payload.risk_profile,
             max_allocation_pct=payload.max_allocation_pct,
             source_run_id=payload.source_run_id,
+            owner_user_id=account.user_id,
         )
     except PortfolioValidationError as exc:
         raise HTTPException(
@@ -50,6 +55,7 @@ def create_portfolio(payload: PortfolioCreate, db: DbSession) -> PortfolioRead:
 @router.get("", response_model=PortfolioListResponse)
 def list_portfolios(
     db: DbSession,
+    owner_ids: OwnerFilter,
     include_legacy: bool = True,
     include_archived: bool = False,
     limit: int = 50,
@@ -62,15 +68,19 @@ def list_portfolios(
             limit=limit,
             include_legacy=include_legacy,
             include_archived=include_archived,
+            owner_ids=owner_ids,
         )
     ]
     total = service.count_portfolios(
-        db, include_legacy=include_legacy, include_archived=include_archived
+        db,
+        include_legacy=include_legacy,
+        include_archived=include_archived,
+        owner_ids=owner_ids,
     )
     return PortfolioListResponse(items=items, total=total)
 
 
-@router.get("/{portfolio_id}", response_model=PortfolioRead)
+@router.get("/{portfolio_id}", response_model=PortfolioRead, dependencies=[ReadPortfolio])
 def get_portfolio(portfolio_id: uuid.UUID, db: DbSession) -> PortfolioRead:
     """Return a single portfolio by id."""
     try:
@@ -82,7 +92,7 @@ def get_portfolio(portfolio_id: uuid.UUID, db: DbSession) -> PortfolioRead:
     return PortfolioRead.model_validate(portfolio)
 
 
-@router.post("/{portfolio_id}/archive", response_model=PortfolioRead)
+@router.post("/{portfolio_id}/archive", response_model=PortfolioRead, dependencies=[ActPortfolio])
 def archive_portfolio(portfolio_id: uuid.UUID, db: DbSession) -> PortfolioRead:
     """Soft-archive a portfolio (409 if it has an active or paused session)."""
     try:
@@ -98,7 +108,7 @@ def archive_portfolio(portfolio_id: uuid.UUID, db: DbSession) -> PortfolioRead:
     return PortfolioRead.model_validate(portfolio)
 
 
-@router.post("/{portfolio_id}/unarchive", response_model=PortfolioRead)
+@router.post("/{portfolio_id}/unarchive", response_model=PortfolioRead, dependencies=[ActPortfolio])
 def unarchive_portfolio(portfolio_id: uuid.UUID, db: DbSession) -> PortfolioRead:
     """Restore an archived portfolio to the default listing."""
     try:

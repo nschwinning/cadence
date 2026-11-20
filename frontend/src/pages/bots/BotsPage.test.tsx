@@ -101,6 +101,28 @@ describe('BotsPage', () => {
     expect(within(row).queryByText('$10,000.00')).not.toBeInTheDocument();
   });
 
+  it('adds an Owner column when listing all users', async () => {
+    mockedGet.mockImplementation(
+      routeGet([
+        { ...bot, owner_user_id: 'u-bob', owner: 'bob' },
+        { ...bot, id: 'b2', label: 'Legacy bot', display_name: 'Legacy bot', owner: null },
+      ]),
+    );
+    const user = userEvent.setup();
+
+    renderWithClient(<BotsPage />);
+    await screen.findByRole('link', { name: 'Apple crossover' });
+    expect(screen.queryByRole('columnheader', { name: 'Owner' })).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole('checkbox', { name: 'All users' }));
+
+    expect(await screen.findByRole('columnheader', { name: 'Owner' })).toBeInTheDocument();
+    const bobRow = screen.getByRole('link', { name: 'Apple crossover' }).closest('tr') as HTMLElement;
+    expect(within(bobRow).getByText('bob')).toBeInTheDocument();
+    const legacyRow = screen.getByRole('link', { name: 'Legacy bot' }).closest('tr') as HTMLElement;
+    expect(within(legacyRow).getByText('legacy owner')).toBeInTheDocument();
+  });
+
   it('shows an em dash for a bot without an end-of-day snapshot', async () => {
     mockedGet.mockImplementation(routeGet([{ ...bot, eod_value: null }]));
 

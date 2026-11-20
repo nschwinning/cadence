@@ -12,6 +12,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 
+from cadence.accounts.service import CurrentAccount
 from cadence.api.schemas import (
     DashboardAiCostsRead,
     DashboardMetrics,
@@ -35,14 +36,16 @@ BrokerDep = Annotated[Broker, Depends(get_broker)]
 
 
 @router.get("/metrics", response_model=DashboardMetrics)
-def read_dashboard_metrics(db: DbSession) -> DashboardMetrics:
-    """Return aggregate overview metrics over the current data."""
-    return DashboardMetrics.model_validate(get_dashboard_metrics(db))
+def read_dashboard_metrics(db: DbSession, account: CurrentAccount) -> DashboardMetrics:
+    """Return aggregate overview metrics over the caller's own data."""
+    return DashboardMetrics.model_validate(
+        get_dashboard_metrics(db, owner_ids={account.user_id})
+    )
 
 
 @router.get("/overview", response_model=DashboardOverview)
 def read_dashboard_overview(
-    db: DbSession, broker: BrokerDep, range: DashboardRange
+    db: DbSession, broker: BrokerDep, range: DashboardRange, account: CurrentAccount
 ) -> DashboardOverview:
     """Return the range-scoped overview over the active sessions.
 
@@ -50,19 +53,19 @@ def read_dashboard_overview(
     422 by the enum validation rather than silently defaulted.
     """
     return DashboardOverview.model_validate(
-        get_dashboard_overview(db, range_=range, broker=broker)
+        get_dashboard_overview(db, range_=range, broker=broker, owner_ids={account.user_id})
     )
 
 
 @router.get("/ai-costs", response_model=DashboardAiCostsRead)
-def read_dashboard_ai_costs(db: DbSession) -> DashboardAiCostsRead:
+def read_dashboard_ai_costs(db: DbSession, account: CurrentAccount) -> DashboardAiCostsRead:
     """Return the all-time AI cost per active portfolio and orchestrator, with a total.
 
     Range-independent: the figures are cumulative since each session began, so
     there is no ``range`` parameter. Costs degrade to ``null`` when the LiteLLM
     cost source is unavailable rather than failing.
     """
-    costs = get_dashboard_ai_costs(db)
+    costs = get_dashboard_ai_costs(db, owner_ids={account.user_id})
     return DashboardAiCostsRead(
         portfolios=[
             DashboardPortfolioAiCostRead(

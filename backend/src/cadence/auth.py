@@ -8,7 +8,7 @@ with the hierarchy ``viewer`` ⊂ ``trader`` ⊂ ``admin`` expanded here as well
 editing the composites in Keycloak cannot widen access by accident.
 
 Reads (GET / HEAD) need ``viewer``; other methods need ``trader``; the Admin area and
-the universe-management routes need ``admin``. ``/health`` and the cron-triggered
+the shared-asset routes (universe, watchlist, recommendation runs) need ``admin``. ``/health`` and the cron-triggered
 routes (guarded by :func:`~cadence.api.cron_auth.require_valid_cron_token`) are
 exempt. The authenticated user is kept on ``request.state.user`` and exposed to
 routes via :func:`current_user` (the hook for later per-user data).
@@ -42,12 +42,14 @@ _IMPLIED: dict[str, frozenset[str]] = {
 
 #: Mount prefix of the resource routers; rules below use templates without it.
 API_PREFIX = "/api/v1"
-#: Routes that change the shared asset universe: admin only.
-UNIVERSE_ROUTES: frozenset[tuple[str, str]] = frozenset(
+#: Routes that change the shared asset data (universe and watchlist): admin only.
+#: An asset recommendation run adds its results to the universe or the watchlist.
+SHARED_ASSET_ROUTES: frozenset[tuple[str, str]] = frozenset(
     {
         ("POST", "/assets"),
         ("DELETE", "/assets/{asset_id}"),
         ("POST", "/assets/universe-evaluation/refresh"),
+        ("POST", "/recommendations"),
     }
 )
 ADMIN_PREFIX = "/admin"
@@ -146,7 +148,7 @@ def required_role(method: str, path: str) -> str:
     path = route_template(path)
     if path == ADMIN_PREFIX or path.startswith(ADMIN_PREFIX + "/"):
         return ADMIN
-    if (method, path) in UNIVERSE_ROUTES:
+    if (method, path) in SHARED_ASSET_ROUTES:
         return ADMIN
     return VIEWER if method in _READ_METHODS else TRADER
 

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { MemoryRouter } from 'react-router-dom';
 import type { Role } from './roles';
@@ -20,6 +20,8 @@ vi.mock('../api/client', () => ({
 
 const { Sidebar } = await import('../components/layout/Sidebar');
 const { BotsPage } = await import('../pages/bots/BotsPage');
+const { WatchlistPage } = await import('../pages/watchlist/WatchlistPage');
+const { apiClient } = await import('../api/client');
 
 function renderWithProviders(ui: React.ReactNode) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -57,5 +59,36 @@ describe('role-aware interface', () => {
     currentRoles = new Set<Role>(['viewer', 'trader']);
     renderWithProviders(<BotsPage />);
     expect(screen.getByRole('button', { name: 'Build a bot' })).toBeInTheDocument();
+  });
+
+  it('shows the All users toggle to admins and requests every user\'s bots', async () => {
+    renderWithProviders(<BotsPage />);
+    const toggle = screen.getByRole('checkbox', { name: 'All users' });
+
+    fireEvent.click(toggle);
+
+    await waitFor(() =>
+      expect(vi.mocked(apiClient.get)).toHaveBeenCalledWith(
+        '/api/v1/bots/sessions',
+        expect.objectContaining({ params: expect.objectContaining({ scope: 'all' }) }),
+      ),
+    );
+  });
+
+  it('hides the All users toggle from traders', () => {
+    currentRoles = new Set<Role>(['viewer', 'trader']);
+    renderWithProviders(<BotsPage />);
+    expect(screen.queryByRole('checkbox', { name: 'All users' })).not.toBeInTheDocument();
+  });
+
+  it('offers watchlist discovery to admins only', () => {
+    renderWithProviders(<WatchlistPage />);
+    expect(screen.getByRole('button', { name: 'Discover' })).toBeInTheDocument();
+  });
+
+  it('hides watchlist discovery from traders', () => {
+    currentRoles = new Set<Role>(['viewer', 'trader']);
+    renderWithProviders(<WatchlistPage />);
+    expect(screen.queryByRole('button', { name: 'Discover' })).not.toBeInTheDocument();
   });
 });

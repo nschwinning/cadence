@@ -112,6 +112,8 @@ def run_build_event(
             max_allocation_pct=per_asset_cap,
             source_run_id=str(event.id),
             allow_empty=True,
+            # The portfolio belongs to whoever requested the build.
+            owner_user_id=event.owner_user_id,
         )
 
         # Rebalancing is the mandatory operating mode for AI portfolios: every built

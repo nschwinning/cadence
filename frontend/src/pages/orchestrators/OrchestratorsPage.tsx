@@ -14,8 +14,16 @@ import {
   signClass,
 } from './orchestratorUi';
 import { RequireRole } from '../../auth/RequireRole';
+import { AllUsersToggle, ownerLabel } from '../../components/AllUsersToggle';
 
-function OrchestratorRow({ orchestrator }: { orchestrator: BotOrchestrator }) {
+function OrchestratorRow({
+  orchestrator,
+  showOwner = false,
+}: {
+  orchestrator: BotOrchestrator;
+  /** Show the owner column (admins viewing all users). */
+  showOwner?: boolean;
+}) {
   const run = orchestrator.last_run;
   return (
     <tr className="border-b border-slate-100 hover:bg-slate-50">
@@ -63,6 +71,7 @@ function OrchestratorRow({ orchestrator }: { orchestrator: BotOrchestrator }) {
           <span className="text-slate-400">No runs yet</span>
         )}
       </td>
+      {showOwner && <td className="px-4 py-3 text-slate-600">{ownerLabel(orchestrator.owner)}</td>}
     </tr>
   );
 }
@@ -71,7 +80,8 @@ function OrchestratorRow({ orchestrator }: { orchestrator: BotOrchestrator }) {
 export function OrchestratorsPage() {
   const [showArchived, setShowArchived] = useState(false);
   const [deployOpen, setDeployOpen] = useState(false);
-  const { data, isPending, isError } = useOrchestrators(showArchived);
+  const [allUsers, setAllUsers] = useState(false);
+  const { data, isPending, isError } = useOrchestrators(showArchived, allUsers);
   const items = data?.items ?? [];
 
   return (
@@ -103,7 +113,9 @@ export function OrchestratorsPage() {
           {!isPending && !isError && items.length > 0 && (
             <span className="text-sm text-slate-500">{data?.total} total</span>
           )}
-          <label className="ml-auto flex items-center gap-2 text-sm text-slate-600">
+          <div className="ml-auto flex items-center gap-4">
+          <AllUsersToggle checked={allUsers} onChange={setAllUsers} />
+          <label className="flex items-center gap-2 text-sm text-slate-600">
             <input
               type="checkbox"
               checked={showArchived}
@@ -112,6 +124,7 @@ export function OrchestratorsPage() {
             />
             Show archived
           </label>
+          </div>
         </div>
 
         {isPending && (
@@ -147,11 +160,12 @@ export function OrchestratorsPage() {
                   <th className="px-4 py-3 text-right">Bots</th>
                   <th className="px-4 py-3 text-right">AI cost</th>
                   <th className="px-4 py-3">Last run</th>
+                  {allUsers && <th className="px-4 py-3">Owner</th>}
                 </tr>
               </thead>
               <tbody>
                 {items.map((o) => (
-                  <OrchestratorRow key={o.id} orchestrator={o} />
+                  <OrchestratorRow key={o.id} orchestrator={o} showOwner={allUsers} />
                 ))}
               </tbody>
             </table>

@@ -69,13 +69,26 @@ import, set "Always Trust"; iOS: open it, then Settings → General → About �
 Settings; Windows: "Trusted Root Certification Authorities"). Until then the browser warns once.
 Do not delete `caddy_data`, or every device has to trust a new certificate.
 
-**Users and roles (Keycloak realm `cadence`).** `viewer` reads everything; `trader` also acts on
-portfolios, bots, orchestrators and recommendations; `admin` also uses the Admin page and manages
-the asset universe. New users get no role until one is assigned. Set `CADENCE_ADMIN_USERNAME` /
+**Users and roles (Keycloak realm `cadence`).** `viewer` reads; `trader` also acts on
+portfolios, bots and orchestrators; `admin` also uses the Admin page and manages the shared asset
+data (universe, watchlist discovery, asset recommendations). New users get no role until one is assigned. Set `CADENCE_ADMIN_USERNAME` /
 `CADENCE_ADMIN_PASSWORD` before the first start to have your admin created once (you choose a new
 password at the first login); otherwise create users in the Keycloak admin console
 (`<CADENCE_PUBLIC_URL>/auth/admin`, logging in with `KEYCLOAK_ADMIN`). Each environment has its
 own Keycloak and users.
+
+**Data ownership.** Every portfolio, paper-trading session, AI run, bot and orchestrator
+belongs to one user. Users see and change only their own; admins can also view everyone's (the
+"All users" switch on the lists) but cannot change other users' objects. The asset universe and
+watchlist are shared. All users still trade on the one Alpaca account configured in `.env` until
+per-user keys arrive (the Admin page says so).
+
+Data created before accounts existed belongs to a *legacy owner*. Set `CADENCE_LEGACY_OWNER` to
+your Keycloak username **before** deploying the release that introduces ownership; the migration
+assigns all existing data to the legacy owner, and your first login links it to you (once). Deploy
+order: set `CADENCE_LEGACY_OWNER` in `.env` → deploy (migrations run) → log in as that user first.
+Anyone else logging in first just gets a new, empty account. Without auth (`AUTH_ENABLED=false`)
+every request acts as the legacy owner.
 
 **Existing database volume** (QA): create Keycloak's database once before the first start with
 it — `docker compose exec db createdb -U cadence keycloak`. A fresh volume (new DEV) gets it

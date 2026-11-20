@@ -84,6 +84,7 @@ def test_engine() -> Iterator[Engine]:
         settings.TEST_DATABASE_URL, echo=False, pool_pre_ping=True
     )
     Base.metadata.create_all(engine)
+    _ensure_legacy_owner(engine)
     original_bind = SessionLocal.kw.get("bind")
     SessionLocal.configure(bind=engine)
     try:
@@ -91,6 +92,16 @@ def test_engine() -> Iterator[Engine]:
     finally:
         SessionLocal.configure(bind=original_bind)
         engine.dispose()
+
+
+def _ensure_legacy_owner(engine: Engine) -> None:
+    """Create the legacy owner (the migration's seed) once; owned rows default to it."""
+    from cadence.accounts.models import LEGACY_OWNER_ID, User
+
+    with Session(engine) as session:
+        if session.get(User, LEGACY_OWNER_ID) is None:
+            session.add(User(id=LEGACY_OWNER_ID, is_legacy_owner=True))
+            session.commit()
 
 
 def _seed_rebalance_prompt(session: Session) -> None:

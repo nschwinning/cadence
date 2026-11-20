@@ -28,6 +28,7 @@ from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
 from cadence import database
+from cadence.accounts.models import LEGACY_OWNER_ID
 from cadence.agents import llm_trace
 from cadence.assets import service as assets_service
 from cadence.assets.category import AssetCategory, AssetMembership
@@ -379,6 +380,7 @@ def create_bot_session(
     max_positions: int | None = None,
     origin: BotOrigin = BotOrigin.MANUAL,
     orchestrator_id: uuid.UUID | None = None,
+    owner_user_id: uuid.UUID = LEGACY_OWNER_ID,
 ) -> BotSession:
     """Create and persist an active multi-asset bot session, validating every input.
 
@@ -477,7 +479,18 @@ def create_bot_session(
         else settings.BOT_CASH_BUFFER_PCT
     )
 
+    if orchestrator_id is not None:
+        # A bot deployed by an orchestrator always belongs to the orchestrator's owner.
+        from cadence.bot_orchestrator.models import BotOrchestrator
+
+        orchestrator_owner = session.execute(
+            select(BotOrchestrator.owner_user_id).where(BotOrchestrator.id == orchestrator_id)
+        ).scalar_one_or_none()
+        if orchestrator_owner is not None:
+            owner_user_id = orchestrator_owner
+
     bot = BotSession(
+        owner_user_id=owner_user_id,
         strategy_key=registration.key.value,
         label=label,
         status=BotSessionStatus.ACTIVE.value,
@@ -575,10 +588,15 @@ def get_bot_session(session: Session, bot_id: uuid.UUID) -> BotSession:
 
 
 def list_bot_sessions(
-    session: Session, *, include_archived: bool = False
+    session: Session,
+    *,
+    include_archived: bool = False,
+    owner_ids: set[uuid.UUID] | None = None,
 ) -> list[BotSession]:
     """List bot sessions newest-first, hiding archived ones by default."""
     stmt = select(BotSession).order_by(BotSession.created_at.desc())
+    if owner_ids is not None:
+        stmt = stmt.where(BotSession.owner_user_id.in_(owner_ids))
     if not include_archived:
         stmt = stmt.where(
             BotSession.status != BotSessionStatus.ARCHIVED.value
@@ -1877,6 +1895,7 @@ def dashboard_performances(
     *,
     range_: DashboardRange,
     today: date | None = None,
+    owner_ids: set[uuid.UUID] | None = None,
 ) -> list[SessionPerformance]:
     """Dashboard rows for every active **manually created** bot (``kind='bot'``).
 
@@ -1887,5 +1906,6 @@ def dashboard_performances(
     return [
         dashboard_performance(session, bot, range_=range_, today=today)
         for bot in active_bot_sessions(session)
+        if owner_ids is None or bot.owner_user_id in owner_ids
         if bot.orchestrator_id is None
     ]

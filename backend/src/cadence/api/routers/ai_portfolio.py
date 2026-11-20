@@ -16,6 +16,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
 
+from cadence.accounts.service import CurrentAccount, OwnerFilter
 from cadence.ai_portfolio.agent import AIPortfolioAgent, OpenAIAIPortfolioAgent
 from cadence.ai_portfolio.background import (
     AIPortfolioJobRunner,
@@ -33,6 +34,7 @@ from cadence.ai_portfolio.errors import (
 )
 from cadence.ai_portfolio.service import AIBuildParams
 from cadence.api.cron_auth import require_valid_cron_token
+from cadence.api.ownership import ActSession, ReadEvent, ReadSession
 from cadence.api.routers.assets import get_market_data_provider
 from cadence.api.schemas import (
     AIBenchmarkIngestResponse,
@@ -103,6 +105,7 @@ def build_ai_portfolio_endpoint(
     broker: BrokerDep,
     provider: Provider,
     job_runner: JobRunner,
+    account: CurrentAccount,
 ) -> AIPortfolioBuildResponse:
     """Queue an AI portfolio build and return the event immediately (202)."""
     params = AIBuildParams(
@@ -136,7 +139,9 @@ def build_ai_portfolio_endpoint(
         rebalance_cadence=payload.rebalance_cadence.value,
     )
     try:
-        event = job_runner.start_build(db, params, agent, broker, provider)
+        event = job_runner.start_build(
+            db, params, agent, broker, provider, owner_user_id=account.user_id
+        )
     except AIPortfolioValidationError as exc:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
@@ -144,7 +149,7 @@ def build_ai_portfolio_endpoint(
     return AIPortfolioBuildResponse(event_id=event.id, status=event.status)
 
 
-@router.get("/build/status/{event_id}", response_model=AIPortfolioEventRead)
+@router.get("/build/status/{event_id}", response_model=AIPortfolioEventRead, dependencies=[ReadEvent])
 def get_build_status(
     event_id: uuid.UUID,
     db: DbSession,
@@ -161,7 +166,8 @@ def get_build_status(
 
 
 @router.post(
-    "/sessions/{session_id}/rebalance", response_model=AIRebalanceResponse
+    "/sessions/{session_id}/rebalance", response_model=AIRebalanceResponse,
+    dependencies=[ActSession],
 )
 def rebalance_session(
     session_id: uuid.UUID,
@@ -194,7 +200,8 @@ def rebalance_session(
 
 
 @router.post(
-    "/sessions/{session_id}/close", response_model=AIPortfolioRunDetail
+    "/sessions/{session_id}/close", response_model=AIPortfolioRunDetail,
+    dependencies=[ActSession],
 )
 def close_session_endpoint(
     session_id: uuid.UUID,
@@ -521,6 +528,7 @@ def fetch_benchmarks(
 @router.get(
     "/sessions/{session_id}/events",
     response_model=AIPortfolioEventListResponse,
+    dependencies=[ReadSession],
 )
 def list_session_events(
     session_id: uuid.UUID,
@@ -544,6 +552,7 @@ def list_session_events(
 @router.get("/runs", response_model=AIPortfolioRunListResponse)
 def list_ai_runs_endpoint(
     db: DbSession,
+    owner_ids: OwnerFilter,
     event_type: Annotated[EventType | None, Query()] = None,
     run_status: Annotated[EventStatus | None, Query(alias="status")] = None,
     limit: Annotated[int, Query(ge=1, le=100)] = 50,
@@ -558,15 +567,18 @@ def list_ai_runs_endpoint(
         status=run_status,
         limit=limit,
         offset=offset,
+        owner_ids=owner_ids,
     )
-    total = ai_service.count_ai_runs(db, event_type=event_type, status=run_status)
+    total = ai_service.count_ai_runs(
+        db, event_type=event_type, status=run_status, owner_ids=owner_ids
+    )
     return AIPortfolioRunListResponse(
         items=[AIPortfolioEventRead.model_validate(e) for e in events],
         total=total,
     )
 
 
-@router.get("/runs/{event_id}", response_model=AIPortfolioRunDetail)
+@router.get("/runs/{event_id}", response_model=AIPortfolioRunDetail, dependencies=[ReadEvent])
 def get_ai_run_detail(
     event_id: uuid.UUID,
     db: DbSession,

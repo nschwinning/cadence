@@ -15,13 +15,16 @@ from typing import Annotated
 from fastapi import APIRouter, Depends
 
 from cadence import environment
-from cadence.api.schemas import EnvironmentRead, SystemStatusRead
+from cadence.accounts.service import CurrentAccount
+from cadence.api.schemas import EnvironmentRead, MeRead, SystemStatusRead
 from cadence.broker import Broker, BrokerError, get_broker
 from cadence.system import service
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/system", tags=["system"])
+#: Account routes without the /system prefix (``GET /api/v1/me``).
+me_router = APIRouter(tags=["account"])
 
 
 @router.get("/status", response_model=SystemStatusRead)
@@ -54,3 +57,8 @@ def get_environment(
     """
     return EnvironmentRead.model_validate(environment.resolve_environment(broker))
 
+
+@me_router.get("/me", response_model=MeRead)
+def get_me(account: CurrentAccount) -> MeRead:
+    """The signed-in user's account (with authentication disabled: the legacy owner)."""
+    return MeRead(user_id=account.user_id, username=account.username, is_admin=account.is_admin)

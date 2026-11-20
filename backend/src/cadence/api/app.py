@@ -20,6 +20,7 @@ from cadence.api.routers import (
     bots_router,
     dashboard_router,
     health_router,
+    me_router,
     paper_trading_router,
     portfolios_router,
     price_ml_router,
@@ -114,6 +115,7 @@ def create_app() -> FastAPI:
     app.include_router(technical_indicators_router, prefix="/api/v1")
     app.include_router(price_ml_router, prefix="/api/v1")
     app.include_router(system_router, prefix="/api/v1")
+    app.include_router(me_router, prefix="/api/v1")
     app.include_router(admin_router, prefix="/api/v1")
 
     return app

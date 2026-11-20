@@ -13,6 +13,8 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
 
+from cadence.accounts.service import OwnerFilter, owner_name
+from cadence.api.ownership import ActSession, ReadSession, session_owner
 from cadence.api.schemas import (
     BenchmarkCatalogEntry,
     ClosedPositionListResponse,
@@ -66,6 +68,7 @@ BrokerDep = Annotated[Broker, Depends(get_broker)]
 def list_sessions(
     db: DbSession,
     broker: BrokerDep,
+    owner_ids: OwnerFilter,
     status_filter: Annotated[
         SessionStatus | None,
         Query(alias="status", description="Filter by session status"),
@@ -89,10 +92,11 @@ def list_sessions(
             status=status_filter,
             include_archived=include_archived,
             limit=limit,
+            owner_ids=owner_ids,
         )
     ]
     total = service.count_sessions(
-        db, status=status_filter, include_archived=include_archived
+        db, status=status_filter, include_archived=include_archived, owner_ids=owner_ids
     )
     return PaperTradingSessionListResponse(items=items, total=total)
 
@@ -103,6 +107,7 @@ def list_sessions(
 )
 def list_sessions_value_comparison(
     db: DbSession,
+    owner_ids: OwnerFilter,
 ) -> SessionValueComparisonResponse:
     """Return every non-archived session with its value points, for comparison.
 
@@ -112,7 +117,7 @@ def list_sessions_value_comparison(
     return SessionValueComparisonResponse(
         sessions=[
             SessionValueComparisonSeries.model_validate(series)
-            for series in service.list_sessions_value_comparison(db)
+            for series in service.list_sessions_value_comparison(db, owner_ids=owner_ids)
         ]
     )
 
@@ -139,6 +144,9 @@ def _session_read(
     position's average cost inside ``compute_session_value`` rather than failing.
     """
     read = PaperTradingSessionRead.model_validate(row)
+    read.owner_user_id = session_owner(db, row.id)
+    if read.owner_user_id is not None:
+        read.owner = owner_name(db, read.owner_user_id)
     triple = service.session_pnl_triple(db, session_id=row.id, broker=broker)
     read.current_value = triple.current_value
     read.realised_pnl = triple.realised_pnl
@@ -147,7 +155,8 @@ def _session_read(
 
 
 @router.post(
-    "/sessions/{session_id}/archive", response_model=PaperTradingSessionRead
+    "/sessions/{session_id}/archive", response_model=PaperTradingSessionRead,
+    dependencies=[ActSession],
 )
 def archive_session(
     session_id: uuid.UUID, db: DbSession, broker: BrokerDep
@@ -167,7 +176,8 @@ def archive_session(
 
 
 @router.post(
-    "/sessions/{session_id}/unarchive", response_model=PaperTradingSessionRead
+    "/sessions/{session_id}/unarchive", response_model=PaperTradingSessionRead,
+    dependencies=[ActSession],
 )
 def unarchive_session(
     session_id: uuid.UUID, db: DbSession, broker: BrokerDep
@@ -183,7 +193,8 @@ def unarchive_session(
 
 
 @router.post(
-    "/sessions/{session_id}/reconcile", response_model=PaperTradeReconcileRead
+    "/sessions/{session_id}/reconcile", response_model=PaperTradeReconcileRead,
+    dependencies=[ActSession],
 )
 def reconcile_session(
     session_id: uuid.UUID, db: DbSession, broker: BrokerDep
@@ -213,7 +224,8 @@ def reconcile_session(
 
 
 @router.get(
-    "/sessions/{session_id}/trades", response_model=PaperTradeListResponse
+    "/sessions/{session_id}/trades", response_model=PaperTradeListResponse,
+    dependencies=[ReadSession],
 )
 def list_session_trades(
     session_id: uuid.UUID,
@@ -233,7 +245,7 @@ def list_session_trades(
     return PaperTradeListResponse(items=items, total=total)
 
 
-@router.get("/sessions/{session_id}/runs", response_model=SessionRunListResponse)
+@router.get("/sessions/{session_id}/runs", response_model=SessionRunListResponse, dependencies=[ReadSession])
 def list_session_runs(
     session_id: uuid.UUID,
     db: DbSession,
@@ -255,6 +267,7 @@ def list_session_runs(
 @router.get(
     "/sessions/{session_id}/positions",
     response_model=ClosedPositionListResponse,
+    dependencies=[ReadSession],
 )
 def list_session_positions(
     session_id: uuid.UUID,
@@ -277,6 +290,7 @@ def list_session_positions(
 @router.get(
     "/sessions/{session_id}/kpis",
     response_model=PaperTradingSessionKpisRead,
+    dependencies=[ReadSession],
 )
 def get_session_kpis(
     session_id: uuid.UUID, db: DbSession, broker: BrokerDep
@@ -320,6 +334,7 @@ def get_session_kpis(
 @router.get(
     "/sessions/{session_id}/sector-performance",
     response_model=SessionSectorPerformanceRead,
+    dependencies=[ReadSession],
 )
 def get_session_sector_performance(
     session_id: uuid.UUID, db: DbSession, broker: BrokerDep
@@ -346,6 +361,7 @@ def get_session_sector_performance(
 @router.get(
     "/sessions/{session_id}/value-history",
     response_model=SessionValueHistoryResponse,
+    dependencies=[ReadSession],
 )
 def list_session_value_history(
     session_id: uuid.UUID,
@@ -383,6 +399,7 @@ def list_models() -> list[ModelCatalogEntry]:
 @router.put(
     "/sessions/{session_id}/benchmark",
     response_model=PaperTradingSessionRead,
+    dependencies=[ActSession],
 )
 def change_session_benchmark(
     session_id: uuid.UUID,
@@ -409,6 +426,7 @@ def change_session_benchmark(
 @router.put(
     "/sessions/{session_id}/scope",
     response_model=PaperTradingSessionRead,
+    dependencies=[ActSession],
 )
 def change_session_scope(
     session_id: uuid.UUID,
@@ -448,6 +466,7 @@ def change_session_scope(
 @router.post(
     "/sessions/{session_id}/capital",
     response_model=PaperTradingSessionRead,
+    dependencies=[ActSession],
 )
 def increase_session_capital(
     session_id: uuid.UUID,

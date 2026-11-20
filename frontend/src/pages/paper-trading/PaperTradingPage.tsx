@@ -11,6 +11,7 @@ import { SessionComparisonChart } from './SessionComparisonChart';
 import { BuildAIPortfolioCard } from '../portfolios/BuildAIPortfolioCard';
 import { Modal } from '../../components/Modal';
 import { RequireRole } from '../../auth/RequireRole';
+import { AllUsersToggle, ownerLabel } from '../../components/AllUsersToggle';
 
 /**
  * Compact schedule indicator. Keeps the column narrow by rendering a single
@@ -67,10 +68,13 @@ function StatusBadge({ status }: { status: string }) {
 function SessionRow({
   session,
   portfolio,
+  showOwner = false,
 }: {
   session: PaperTradingSession;
   /** The session's portfolio definition, resolved by `portfolio_id` (may be absent). */
   portfolio: Portfolio | undefined;
+  /** Show the owner column (admins viewing all users). */
+  showOwner?: boolean;
 }) {
   const isArchived = session.archived_at !== null;
   return (
@@ -130,16 +134,19 @@ function SessionRow({
           ? new Date(session.last_run_at).toLocaleString()
           : '—'}
       </td>
+      {showOwner && <td className="px-4 py-3 text-slate-600">{ownerLabel(session.owner)}</td>}
     </tr>
   );
 }
 
 export function PaperTradingPage() {
   const [showArchived, setShowArchived] = useState(false);
+  const [allUsers, setAllUsers] = useState(false);
   const [buildOpen, setBuildOpen] = useState(false);
   const { data, isPending, isError } = useSessions({
     ...DEFAULT_SESSIONS_PARAMS,
     includeArchived: showArchived,
+    allUsers,
   });
   // Resolve each session's portfolio definition (risk profile, holdings count).
   // Include archived portfolios so an archived session's definition still
@@ -195,7 +202,9 @@ export function PaperTradingPage() {
           {!isPending && !isError && total > 0 && (
             <span className="text-sm text-slate-500">{total} total</span>
           )}
-          <label className="ml-auto flex items-center gap-2 text-sm text-slate-600">
+          <div className="ml-auto flex items-center gap-4">
+          <AllUsersToggle checked={allUsers} onChange={setAllUsers} />
+          <label className="flex items-center gap-2 text-sm text-slate-600">
             <input
               type="checkbox"
               checked={showArchived}
@@ -204,6 +213,7 @@ export function PaperTradingPage() {
             />
             Show archived
           </label>
+          </div>
         </div>
 
         {isPending && (
@@ -244,6 +254,7 @@ export function PaperTradingPage() {
                   <th className="px-4 py-3 text-right">Realised P&amp;L</th>
                   <th className="px-4 py-3 text-right">Unrealised P&amp;L</th>
                   <th className="px-4 py-3">Last Run</th>
+                  {allUsers && <th className="px-4 py-3">Owner</th>}
                 </tr>
               </thead>
               <tbody>
@@ -252,6 +263,7 @@ export function PaperTradingPage() {
                     key={session.id}
                     session={session}
                     portfolio={portfoliosById.get(session.portfolio_id)}
+                    showOwner={allUsers}
                   />
                 ))}
               </tbody>

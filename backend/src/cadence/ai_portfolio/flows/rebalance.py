@@ -18,6 +18,7 @@ from zoneinfo import ZoneInfo
 
 from sqlalchemy.orm import Session
 
+from cadence.accounts.lookups import session_owner_id
 from cadence.agents import llm_trace
 from cadence.agents.tools import record_web_searches
 from cadence.ai_portfolio._helpers import (
@@ -660,6 +661,7 @@ def run_rebalance_event(
             broker,
             session_row.allocated_capital,
             session_id=session_row.id,
+            account_user_id=session_owner_id(session, session_row.id),
             purpose="ai_rebalance",
         )
         trade_results = executor.execute_rebalance(

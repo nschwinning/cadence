@@ -15,7 +15,9 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from cadence.accounts.service import CurrentAccount, OwnerFilter
 from cadence.api.cron_auth import require_valid_cron_token
+from cadence.api.ownership import ActOrchestrator, ReadOrchestrator, ReadOrchestratorRun
 from cadence.api.schemas import (
     BotOrchestratorCreateRequest,
     BotOrchestratorDetailRead,
@@ -169,6 +171,8 @@ def _read(
         stopped_at=orchestrator.stopped_at,
         archived_at=orchestrator.archived_at,
         last_run=_run_summary(latest, run_costs) if latest is not None else None,
+        owner_user_id=orchestrator.owner_user_id,
+        owner=orchestrator.owner,
     )
 
 
@@ -212,10 +216,10 @@ def _load(db: Session, orchestrator_id: uuid.UUID) -> BotOrchestrator:
 # Lifecycle ---------------------------------------------------------------------
 @router.get("", response_model=BotOrchestratorListResponse)
 def list_orchestrators(
-    db: DbSession, include_archived: bool = False
+    db: DbSession, owner_ids: OwnerFilter, include_archived: bool = False
 ) -> BotOrchestratorListResponse:
     """Orchestrators newest first (archived only when requested)."""
-    rows = service.list_orchestrators(db, include_archived=include_archived)
+    rows = service.list_orchestrators(db, include_archived=include_archived, owner_ids=owner_ids)
     return BotOrchestratorListResponse(items=_reads(db, rows), total=len(rows))
 
 
@@ -223,7 +227,7 @@ def list_orchestrators(
     "", response_model=BotOrchestratorDetailRead, status_code=status.HTTP_201_CREATED
 )
 def create_orchestrator(
-    payload: BotOrchestratorCreateRequest, db: DbSession
+    payload: BotOrchestratorCreateRequest, db: DbSession, account: CurrentAccount
 ) -> BotOrchestratorDetailRead:
     """Deploy an orchestrator (no AI call, no bots yet). 422 on invalid config."""
     try:
@@ -237,6 +241,7 @@ def create_orchestrator(
             cadence=payload.cadence,
             model=payload.model,
             benchmark=payload.benchmark,
+            owner_user_id=account.user_id,
         )
     except InvalidOrchestratorConfigError as exc:
         raise HTTPException(
@@ -245,7 +250,7 @@ def create_orchestrator(
     return _detail(db, orchestrator)
 
 
-@router.get("/{orchestrator_id}", response_model=BotOrchestratorDetailRead)
+@router.get("/{orchestrator_id}", response_model=BotOrchestratorDetailRead, dependencies=[ReadOrchestrator])
 def get_orchestrator(
     orchestrator_id: uuid.UUID, db: DbSession
 ) -> BotOrchestratorDetailRead:
@@ -253,7 +258,7 @@ def get_orchestrator(
     return _detail(db, _load(db, orchestrator_id))
 
 
-@router.post("/{orchestrator_id}/stop", response_model=BotOrchestratorDetailRead)
+@router.post("/{orchestrator_id}/stop", response_model=BotOrchestratorDetailRead, dependencies=[ActOrchestrator])
 def stop_orchestrator(
     orchestrator_id: uuid.UUID, db: DbSession
 ) -> BotOrchestratorDetailRead:
@@ -265,7 +270,7 @@ def stop_orchestrator(
     return _detail(db, orchestrator)
 
 
-@router.post("/{orchestrator_id}/archive", response_model=BotOrchestratorDetailRead)
+@router.post("/{orchestrator_id}/archive", response_model=BotOrchestratorDetailRead, dependencies=[ActOrchestrator])
 def archive_orchestrator(
     orchestrator_id: uuid.UUID, db: DbSession
 ) -> BotOrchestratorDetailRead:
@@ -301,7 +306,7 @@ def run_due(
     )
 
 
-@router.get("/runs/{run_id}", response_model=OrchestratorRunRead)
+@router.get("/runs/{run_id}", response_model=OrchestratorRunRead, dependencies=[ReadOrchestratorRun])
 def get_run(run_id: uuid.UUID, db: DbSession) -> OrchestratorRunRead:
     """A decision run in full. 404 if unknown."""
     try:
@@ -314,6 +319,7 @@ def get_run(run_id: uuid.UUID, db: DbSession) -> OrchestratorRunRead:
     "/{orchestrator_id}/runs",
     response_model=OrchestratorRunSummaryRead,
     status_code=status.HTTP_202_ACCEPTED,
+    dependencies=[ActOrchestrator],
 )
 def start_run(
     orchestrator_id: uuid.UUID, db: DbSession, runner: RunnerDep
@@ -331,7 +337,7 @@ def start_run(
     return _run_summary(run)
 
 
-@router.get("/{orchestrator_id}/runs", response_model=OrchestratorRunListResponse)
+@router.get("/{orchestrator_id}/runs", response_model=OrchestratorRunListResponse, dependencies=[ReadOrchestrator])
 def list_runs(
     orchestrator_id: uuid.UUID,
     db: DbSession,

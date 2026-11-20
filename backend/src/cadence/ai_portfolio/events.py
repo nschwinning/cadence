@@ -14,6 +14,7 @@ from datetime import datetime
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from cadence.accounts.models import LEGACY_OWNER_ID
 from cadence.ai_portfolio._helpers import _asset_class_map, _involves_crypto
 from cadence.ai_portfolio.constants import EventStatus, EventType
 from cadence.ai_portfolio.errors import (
@@ -30,6 +31,7 @@ from cadence.paper_trading import service as paper_service
 from cadence.paper_trading.constants import TERMINAL_ORDER_STATUSES
 from cadence.paper_trading.models import PaperTradingSession
 from cadence.portfolios import service as portfolios_service
+from cadence.portfolios.models import Portfolio
 
 logger = logging.getLogger(__name__)
 
@@ -76,6 +78,7 @@ def list_ai_runs(
     status: EventStatus | None = None,
     limit: int = 50,
     offset: int = 0,
+    owner_ids: set[uuid.UUID] | None = None,
 ) -> list[AIPortfolioEvent]:
     """List AI runs across all sessions, newest first, for the Runs history.
 
@@ -89,6 +92,8 @@ def list_ai_runs(
         stmt = stmt.where(AIPortfolioEvent.event_type == event_type.value)
     if status is not None:
         stmt = stmt.where(AIPortfolioEvent.status == status.value)
+    if owner_ids is not None:
+        stmt = stmt.where(AIPortfolioEvent.owner_user_id.in_(owner_ids))
     return list(session.execute(stmt.limit(limit).offset(offset)).scalars())
 
 
@@ -97,6 +102,7 @@ def count_ai_runs(
     *,
     event_type: EventType | None = None,
     status: EventStatus | None = None,
+    owner_ids: set[uuid.UUID] | None = None,
 ) -> int:
     """Count AI runs across all sessions, with the same optional filters."""
     stmt = select(func.count()).select_from(AIPortfolioEvent)
@@ -104,10 +110,24 @@ def count_ai_runs(
         stmt = stmt.where(AIPortfolioEvent.event_type == event_type.value)
     if status is not None:
         stmt = stmt.where(AIPortfolioEvent.status == status.value)
+    if owner_ids is not None:
+        stmt = stmt.where(AIPortfolioEvent.owner_user_id.in_(owner_ids))
     return session.execute(stmt).scalar_one()
 
 
-def create_build_event(session: Session, params: AIBuildParams) -> AIPortfolioEvent:
+def _session_owner(session: Session, session_id: uuid.UUID) -> uuid.UUID:
+    """The owner of a paper-trading session (its portfolio's owner)."""
+    owner = session.execute(
+        select(Portfolio.owner_user_id)
+        .join(PaperTradingSession, PaperTradingSession.portfolio_id == Portfolio.id)
+        .where(PaperTradingSession.id == session_id)
+    ).scalar_one_or_none()
+    return owner if owner is not None else LEGACY_OWNER_ID
+
+
+def create_build_event(
+    session: Session, params: AIBuildParams, *, owner_user_id: uuid.UUID = LEGACY_OWNER_ID
+) -> AIPortfolioEvent:
     """Validate the request and insert a queued build event; return it.
 
     The build allocates over the entire asset universe, so the only validation is
@@ -125,6 +145,7 @@ def create_build_event(session: Session, params: AIBuildParams) -> AIPortfolioEv
         event_type=EventType.BUILD.value,
         status=EventStatus.QUEUED.value,
         request_payload=params.to_payload(),
+        owner_user_id=owner_user_id,
     )
     session.add(event)
     session.commit()
@@ -140,6 +161,7 @@ def create_rebalance_event(
         session_id=session_id,
         event_type=EventType.REBALANCE.value,
         status=EventStatus.QUEUED.value,
+        owner_user_id=_session_owner(session, session_id),
     )
     session.add(event)
     session.commit()
@@ -153,6 +175,7 @@ def create_close_event(session: Session, session_id: uuid.UUID) -> AIPortfolioEv
         session_id=session_id,
         event_type=EventType.CLOSE.value,
         status=EventStatus.QUEUED.value,
+        owner_user_id=_session_owner(session, session_id),
     )
     session.add(event)
     session.commit()

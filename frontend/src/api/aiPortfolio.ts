@@ -19,6 +19,8 @@ export interface AIRunsQuery {
   status?: AIEventStatus;
   limit?: number;
   offset?: number;
+  /** Admins only: every user's runs instead of their own. */
+  allUsers?: boolean;
 }
 
 /** How often (ms) to poll an in-progress build/rebalance event. */
@@ -135,6 +137,7 @@ export async function listAIRuns(
         status: query.status,
         limit: query.limit,
         offset: query.offset,
+        scope: query.allUsers ? 'all' : undefined,
       },
     },
   );

@@ -4,6 +4,7 @@ from alembic import context
 
 # Import domain models here so Alembic autogenerate sees them.
 # Later phases add their model modules above so they register on Base.metadata.
+from cadence.accounts import models as _accounts_models  # noqa: F401
 from cadence.ai_portfolio import models as _ai_portfolio_models  # noqa: F401
 from cadence.assets import models as _assets_models  # noqa: F401
 from cadence.bot_orchestrator import models as _bot_orchestrator_models  # noqa: F401

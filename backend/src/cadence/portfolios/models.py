@@ -15,14 +15,16 @@ from sqlalchemy import (
     CheckConstraint,
     DateTime,
     Float,
+    ForeignKey,
     Index,
     Text,
     func,
 )
 from sqlalchemy import Enum as SQLEnum
 from sqlalchemy.dialects.postgresql import ARRAY, UUID
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 
+from cadence.accounts.models import LEGACY_OWNER_ID, User
 from cadence.database import Base
 from cadence.portfolios.constants import PortfolioSource, RiskProfile
 
@@ -49,6 +51,21 @@ class Portfolio(Base):
         primary_key=True,
         server_default=func.gen_random_uuid(),
     )
+    # The user who owns this portfolio (see :mod:`cadence.accounts`).
+    owner_user_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="RESTRICT"),
+        nullable=False,
+        index=True,
+        default=LEGACY_OWNER_ID,
+    )
+    owner_account: Mapped[User] = relationship(lazy="joined", foreign_keys=[owner_user_id])
+
+    @property
+    def owner(self) -> str | None:
+        """The owner's username (``None`` for the legacy owner before it is linked)."""
+        return self.owner_account.username if self.owner_account is not None else None
+
     name: Mapped[str] = mapped_column(Text, nullable=False)
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
     stocks: Mapped[list[str]] = mapped_column(ARRAY(Text), nullable=False)

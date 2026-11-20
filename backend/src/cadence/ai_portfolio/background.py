@@ -24,6 +24,7 @@ from typing import Protocol, cast
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from cadence.accounts.models import LEGACY_OWNER_ID
 from cadence.ai_portfolio import service
 from cadence.ai_portfolio.agent import AIPortfolioAgent
 from cadence.ai_portfolio.constants import TERMINAL_STATUSES, EventStatus
@@ -80,10 +81,12 @@ class AIPortfolioJobRunner:
         agent: AIPortfolioAgent,
         broker: Broker,
         provider: MarketDataProvider,
+        *,
+        owner_user_id: uuid.UUID = LEGACY_OWNER_ID,
     ) -> AIPortfolioEvent:
         """Create and submit a build event; return it (validation errors propagate)."""
         with self._lock:
-            event = service.create_build_event(session, params)
+            event = service.create_build_event(session, params, owner_user_id=owner_user_id)
             future = self._executor.submit(
                 self._job_build, event.id, agent, broker, provider
             )

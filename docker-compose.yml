@@ -126,6 +126,8 @@ services:
       AUTH_ENABLED: ${AUTH_ENABLED:-true}
       CADENCE_PUBLIC_URL: ${CADENCE_PUBLIC_URL:-https://localhost:8443}
       OIDC_ISSUER: ${OIDC_ISSUER:-}
+      # Keycloak username that inherits all data created before user accounts existed.
+      CADENCE_LEGACY_OWNER: ${CADENCE_LEGACY_OWNER:-}
       OIDC_JWKS_URL: http://keycloak:8080/auth/realms/cadence/protocol/openid-connect/certs
       # Newest Alpaca News headlines per holding / candidate in every AI rebalance
       # (0 disables), drawn from the last N days.

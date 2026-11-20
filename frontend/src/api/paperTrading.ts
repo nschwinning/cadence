@@ -38,6 +38,8 @@ export function isTerminalOrderStatus(status: string): boolean {
 export interface SessionsListParams {
   status?: SessionStatus;
   includeArchived?: boolean;
+  /** Admins only: every user's sessions instead of their own. */
+  allUsers?: boolean;
   limit: number;
 }
 
@@ -100,6 +102,7 @@ export async function listSessions(
   };
   if (params.status) query.status = params.status;
   if (params.includeArchived) query.include_archived = true;
+  if (params.allUsers) query.scope = 'all';
   const { data } = await apiClient.get<PaperTradingSessionListResponse>(
     '/api/v1/paper-trading/sessions',
     { params: query },
