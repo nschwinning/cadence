@@ -36,3 +36,9 @@
 		reverse_proxy frontend:5173
 	}
 }
+# Finance dashboard (separate compose project "finance", joins this network as
+# finance-app). It does its own login against Keycloak, realm "family".
+{$CADENCE_HOSTNAME}:8444 {
+        tls internal
+        reverse_proxy finance-app:8082
+}

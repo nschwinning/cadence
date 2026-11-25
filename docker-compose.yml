@@ -353,6 +353,8 @@ services:
       CADENCE_HOSTNAME: ${CADENCE_HOSTNAME:-localhost}
     ports:
       - "${CADDY_HTTPS_PORT:-8443}:443"
+        # finance dashboard; a second stack on the same host (DEV) sets another free port
+      - "${FINANCE_HTTPS_PORT:-8444}:8444"
     volumes:
       - ./caddy/Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy_data:/data
